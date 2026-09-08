@@ -992,6 +992,73 @@ static void dbgconsole_mic_bad_sub_verb_rejected_end_to_end(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* S31 — "music" / "music seed <n>". Unlike mic/i2c/perf, no platform
+ * hook: real on both targets (see dbgconsole_music's own doc comment,
+ * ff_debug_console.c) — these tests drive the shell's beat detector
+ * directly via ff_shell_set_beat_input, the same public API app_main.c
+ * would call, and check the console's reply against it. */
+/* ------------------------------------------------------------------- */
+
+static void dbgconsole_music_reports_no_source_by_default(void)
+{
+    harness_init(1000);
+    capture_t cap;
+    dispatch("music", &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: music source=none loudness=0.00 bpm=0.0", cap.lines[0]);
+}
+
+static void dbgconsole_music_reports_mic_source_and_loudness(void)
+{
+    harness_init(1000);
+    /* A sustained loud MIC sample, long enough for the auto-ranging
+     * ceiling to have moved — same shape test_beat.c's own
+     * a_sustained_loud_level_after_a_quiet_baseline_reads_loud uses. */
+    uint32_t now = ff_shell_now_ms(&H.shell);
+    for (int i = 0; i < 100; i++) {
+        now += 20u;
+        ff_shell_set_beat_input(&H.shell, true, -20.0f, -20.0f, false, 0.0f, now);
+    }
+    capture_t cap;
+    dispatch("music", &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_TRUE_MESSAGE(capture_has_line_containing(&cap, "source=mic"), cap.lines[0]);
+}
+
+static void dbgconsole_music_seed_reseeds_and_reports_it(void)
+{
+    harness_init(1000);
+    capture_t cap;
+    dispatch("music seed 77", &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: music seed=77", cap.lines[0]);
+    /* ff_shell_set_music_seed is a raw setter; the VIEW only picks it up
+     * on the next shell_project (ff_shell_tick) — same "getter reads the
+     * shell field directly, view needs a tick" distinction every other
+     * push-then-view test in this codebase respects. */
+    (void)ff_shell_tick(&H.shell, ff_shell_now_ms(&H.shell));
+    TEST_ASSERT_EQUAL_UINT32(77u, ff_shell_view(&H.shell)->music.seed);
+}
+
+static void dbgconsole_music_with_extra_arg_rejected_end_to_end(void)
+{
+    harness_init(1000);
+    capture_t cap;
+    dispatch("music status", &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: ? try help", cap.lines[0]);
+}
+
+static void dbgconsole_music_seed_out_of_range_rejected_end_to_end(void)
+{
+    harness_init(1000);
+    capture_t cap;
+    dispatch("music seed 9999", &cap); /* > parse_u32_dec's 3-digit ceiling */
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: ? try help", cap.lines[0]);
+}
+
+/* ------------------------------------------------------------------- */
 /* S12 step 3 — "cal" and its four sub-verbs                             */
 /* ------------------------------------------------------------------- */
 
@@ -1369,6 +1436,12 @@ int main(void)
     RUN_TEST(dbgconsole_mic_watch_passes_seconds_through);
     RUN_TEST(dbgconsole_mic_watch_out_of_range_never_reaches_the_hook);
     RUN_TEST(dbgconsole_mic_bad_sub_verb_rejected_end_to_end);
+
+    RUN_TEST(dbgconsole_music_reports_no_source_by_default);
+    RUN_TEST(dbgconsole_music_reports_mic_source_and_loudness);
+    RUN_TEST(dbgconsole_music_seed_reseeds_and_reports_it);
+    RUN_TEST(dbgconsole_music_with_extra_arg_rejected_end_to_end);
+    RUN_TEST(dbgconsole_music_seed_out_of_range_rejected_end_to_end);
 
     RUN_TEST(dbgconsole_cal_status_reports_identity_when_uncalibrated_and_inactive);
     RUN_TEST(dbgconsole_cal_start_then_status_reports_live_progress);

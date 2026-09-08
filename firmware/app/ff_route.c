@@ -10,23 +10,38 @@
 #include "ff_route.h"
 
 /* The swipe axis, in order. `ff_route_swipe`'s `dir` steps along THIS
- * array, which is why -1 is "toward Radar" and +1 "toward Settings" —
- * see ff_route_swipe's doc comment on why that is not a finger
- * direction.
+ * array, which is why -1 is "toward Radar" and +1 "toward Music" — see
+ * ff_route_swipe's doc comment on why that is not a finger direction.
  *
- * As of the horizontal-carousel rework this is the WHOLE face set the
- * user swipes between: Radar · Now · Signals · Map · Settings, left to
- * right. Map and Settings used to be modals reached off-axis (Map by a
- * vertical top-swipe, Settings by a nav long-press); they are ordinary
- * horizontal neighbours now. Compose is still absent on purpose: it is
- * the one remaining modal (reached from Signals' "+"), not a swipe
- * tile. */
+ * More precisely: this is `route_base_is_valid`'s WHOLE definition of a
+ * legal, launcher-reached `base` face other than the launcher itself —
+ * "swipe axis" is this array's name for historical reasons (the
+ * horizontal-carousel rework that first assembled it), not a live UI
+ * mechanism any more (S26 slice e retired swipe navigation entirely —
+ * `ff_route_swipe` is a fully-tested pure primitive with no caller left,
+ * see that function's own doc comment). Every member is reached the
+ * SAME way today: a launcher tap (`ff_route_launcher_select`).
+ *
+ * As of S31 (Music/Swarm) this is Radar · Now · Signals · Map ·
+ * Settings · Music. Map and Settings used to be modals reached off-axis
+ * (Map by a vertical top-swipe, Settings by a nav long-press); they
+ * became ordinary members of this set in the horizontal-carousel
+ * rework. Music (S31) joins the same way for the same reason: any base
+ * face a PWR long-press (`ff_route_push_modal`) can be raised over must
+ * pass `route_base_is_valid`, and the launcher's own fifth satellite
+ * needs `ff_route_launcher_select` to accept its target — both checks
+ * are this array's membership test, so a face left off it would make
+ * the power menu (and the launcher itself) silently refuse to work from
+ * that face. Compose is still absent on purpose: it is the one
+ * remaining modal (reached from Signals' "+"), not a member of this
+ * set. */
 static ff_app_face_t const k_swipe_axis[] = {
     FF_APP_FACE_RADAR,
     FF_APP_FACE_LINEUP,
     FF_APP_FACE_INBOX,
     FF_APP_FACE_MAP,
     FF_APP_FACE_SETTINGS,
+    FF_APP_FACE_MUSIC,
 };
 #define K_SWIPE_AXIS_N ((int)(sizeof(k_swipe_axis) / sizeof(k_swipe_axis[0])))
 

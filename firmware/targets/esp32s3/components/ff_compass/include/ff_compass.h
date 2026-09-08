@@ -253,6 +253,36 @@ ff_compass_status_t ff_compass_status(void);
 ff_vec3_t ff_compass_last_mag_board(void);
 
 /**
+ * ff_compass_last_accel_board — S31 Music/Swarm: the board-frame
+ * ACCELEROMETER vector (after the per-axis remap, the same `accel_board`
+ * value `ff_geo_heading_deg` was handed) from the MOST RECENT
+ * `ff_compass_read()` call — the small accessor S31's own spec asked
+ * for ("ff_compass for the IMU accel access... add a small accessor if
+ * there is none"; there was none before this). Units are g (gravity is
+ * (0,0,1) when the board sits level) — the Music face's beat detector
+ * (`firmware/core/ff_beat.h`) derives a vertical-axis bounce magnitude
+ * from this for its IMU fallback path.
+ *
+ * Same "most recent, not a fresh transaction" contract as
+ * `ff_compass_last_mag_board` above, and the SAME early-return caveat:
+ * `ff_compass_read()` returns its honest -1 "unknown" sentinel (and
+ * touches neither this nor the mag accessor) whenever NO magnetometer
+ * is present at all, because a full sample today reads mag+accel
+ * together for the tilt-compensated heading computation — there is no
+ * IMU-only read path. **Known limitation, not fixed by this PR**: on a
+ * puck with the onboard QMI8658 IMU present but no GY-273 magnetometer
+ * wired (the magnetometer is an aftermarket add-on — this header's own
+ * top comment), this accessor never updates at all, even though the
+ * IMU itself is healthy — Music's IMU fallback is unavailable on such a
+ * puck today (it honestly reports NO SOURCE instead, never a fabricated
+ * bounce). Splitting `ff_compass_read()` into independent mag-only/
+ * IMU-only sampling would be the real fix; out of scope here (S31 is
+ * additive, not a rework of S15's read path) — see
+ * docs/specs/S31-music-swarm.md's own "Questions" section.
+ */
+ff_vec3_t ff_compass_last_accel_board(void);
+
+/**
  * ff_compass_set_cal — install (or clear, if `cal` is NULL) the active
  * compass calibration `ff_compass_read()` applies via
  * `ff_geo_heading_deg`. `cal` is COPIED — the caller's storage need not

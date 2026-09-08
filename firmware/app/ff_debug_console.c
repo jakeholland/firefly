@@ -158,6 +158,8 @@ static void dbgconsole_help(ff_dbgconsole_reply_fn reply, void *user)
     reply_line(reply, user, "dbg: mic on                   S30: start the mic channel + reader task");
     reply_line(reply, user, "dbg: mic off                  S30: stop them");
     reply_line(reply, user, "dbg: mic watch <secs>         S30: print RMS/peak/envelope every 250ms, 1-30s");
+    reply_line(reply, user, "dbg: music                    S31: beat detector source/loudness/bpm-estimate");
+    reply_line(reply, user, "dbg: music seed <n>           S31: reseed the swarm (bench determinism)");
 }
 
 static void dbgconsole_me(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
@@ -806,6 +808,36 @@ static void dbgconsole_mic(ff_dbgconsole_mic_fn mic, ff_dbgconsole_mic_action_t 
     mic(hook_user, action, watch_secs, reply, user);
 }
 
+/* S31 — `music` / `music seed <n>`. Unlike `mic`/`i2c`/`perf`, this
+ * needs no platform hook at all: `ff_beat_t` is core state the SHELL
+ * already owns regardless of target (`ff_shell_music_debug`/
+ * `ff_shell_set_music_seed`, app/include/ff_shell.h) — the mic/IMU
+ * bytes feeding it are esp32s3-only, but this command only ever reads
+ * the shell's already-projected RESULT, the same "public getter, never
+ * reach into shell_t" rule this file's own top comment states for
+ * every read-only command. Real (non-NULL-hook, in the sense that there
+ * is no hook to be NULL) on BOTH targets — the sim can genuinely answer
+ * "what does the beat detector currently think", it just never has real
+ * mic/IMU bytes feeding it, so `source` honestly reads `none` there. */
+static void dbgconsole_music(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+{
+    ff_shell_music_debug_t const d = ff_shell_music_debug(sh);
+    char const *src_text =
+        (d.source == FF_APP_MUSIC_SRC_MIC) ? "mic" : (d.source == FF_APP_MUSIC_SRC_IMU) ? "imu" : "none";
+    char line[DBGCONSOLE_LINE_BUF];
+    snprintf(line, sizeof(line), "dbg: music source=%s loudness=%.2f bpm=%.1f", src_text, (double)d.loudness,
+              (double)d.bpm_estimate);
+    reply_line(reply, user, line);
+}
+
+static void dbgconsole_music_seed(ff_shell_t *sh, uint32_t seed, ff_dbgconsole_reply_fn reply, void *user)
+{
+    ff_shell_set_music_seed(sh, seed);
+    char line[DBGCONSOLE_LINE_BUF];
+    snprintf(line, sizeof(line), "dbg: music seed=%u", (unsigned)seed);
+    reply_line(reply, user, line);
+}
+
 void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len, uint32_t now_ms,
                                 ff_dbgconsole_reply_fn reply, void *user, ff_dbgconsole_i2c_scan_fn i2c_scan,
                                 ff_dbgconsole_compass_status_fn compass_status,
@@ -853,6 +885,8 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
     case FF_DBGCMD_MIC_WATCH:
         dbgconsole_mic(mic, FF_DBGCONSOLE_MIC_WATCH, cmd.u.mic_watch_secs, user, reply, user);
         return;
+    case FF_DBGCMD_MUSIC: dbgconsole_music(sh, reply, user); return;
+    case FF_DBGCMD_MUSIC_SEED: dbgconsole_music_seed(sh, cmd.u.music_seed, reply, user); return;
     case FF_DBGCMD_NONE: break; /* ff_dbgcmd_parse never returns OK with NONE — unreachable */
     }
     reply_line(reply, user, "dbg: ? try help");

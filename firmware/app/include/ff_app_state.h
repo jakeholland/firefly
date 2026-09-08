@@ -1432,6 +1432,19 @@ typedef enum {
      * `FF_LAUNCHER_TIMEOUT_MS` auto-dismiss. All of that is gone: Radar
      * is an ordinary circle now, and there is no timeout. */
     FF_APP_FACE_LAUNCHER,
+    /* S31 — Music/Swarm: the fifth launcher app (docs/specs/S31-music-
+     * swarm.md). Appended after LAUNCHER, this enum's own standing
+     * append-only convention (no existing member's numeric value
+     * moves — every comment above makes the same promise for its own
+     * addition). An ordinary `base` face, reached via
+     * `FF_INTENT_LAUNCHER_SELECT` idx 5 exactly like RADAR..SETTINGS —
+     * see `ff_route.c`'s `k_swipe_axis` (Music joins it, so
+     * `ff_route_launcher_select`/`ff_route_push_modal`'s base-validity
+     * check accept it) and `ff_shell.c`'s `k_launcher_faces`. Dispatched
+     * through its OWN screen (`scr_music.c`), not through
+     * `ff_scr_nav_build`'s shared five-swipe-face shell — see
+     * `ff_face_dispatch.c`'s own comment for why. */
+    FF_APP_FACE_MUSIC,
 } ff_app_face_t;
 
 /* -------------------------------------------------------------------
@@ -1466,6 +1479,35 @@ typedef struct {
      * every other age in this app. */
     uint32_t age_ms;
 } ff_app_banner_t;
+
+/* -------------------------------------------------------------------
+ * music (S31 — Music/Swarm, docs/specs/S31-music-swarm.md). Deliberately
+ * SMALL and NOT the particle simulation itself: the 60-firefly swarm
+ * changes every rendered frame and is core-owned state private to
+ * `scr_music.c` (see `firmware/core/ff_swarm.h`'s own top comment,
+ * "Ownership") — putting it here would either force a full-screen
+ * rebuild every frame (S16's render-key rule) or need per-particle
+ * render-key masking at 60x the surface area of every other "must not
+ * churn" field this header already carries. This struct is only the
+ * few facts the CHROME actually draws (the source chip, the QUIET/LOUD
+ * word) plus the seam a per-frame reader needs to detect a new beat
+ * (`beat_count`, diffed rather than sampled as a transient edge — see
+ * `ff_beat.h`'s own doc comment for why) and reseed the swarm
+ * deterministically (`seed`).
+ * ------------------------------------------------------------------- */
+typedef enum {
+    FF_APP_MUSIC_SRC_NONE = 0, /* honest "nothing is listening" — least-claiming default, this header's standing convention */
+    FF_APP_MUSIC_SRC_MIC,
+    FF_APP_MUSIC_SRC_IMU,
+} ff_app_music_src_t;
+
+typedef struct {
+    ff_app_music_src_t source;
+    float    loudness;    /* [0,1] — ff_beat_t.loudness verbatim; ff_shell.c's render key buckets this to the QUIET/LOUD word threshold (FF_BEAT_LOUD_THRESHOLD), never compares it raw */
+    uint32_t beat_count;  /* monotonic; ff_shell.c's render key zeroes this entirely — see that function's comment */
+    float    bpm_estimate; /* 0 until a second beat has been seen; console-only ("music" command), not rendered on glass */
+    uint32_t seed;          /* the swarm PRNG seed currently in effect — FF_SWARM_DEFAULT_SEED unless the bench console's "music seed <n>" changed it */
+} ff_app_music_t;
 
 typedef struct {
     /* Debug/provenance only: which fixture produced this state, e.g.
@@ -1516,6 +1558,7 @@ typedef struct {
     ff_app_settings_t settings;
     ff_app_map_t      map;
     ff_app_banner_t   banner; /* S26(d) — the ff_notify queue's head; scr_banner.c's whole input */
+    ff_app_music_t    music; /* S31 — Music/Swarm chrome facts; see ff_app_music_t's own top comment for what deliberately is NOT here */
 
     /* S10 quick flare (docs/specs/S10-flare.md's Amendments, 2026-09-03):
      * true while the shell's HOME/BOOT multitap FSM has an in-progress,

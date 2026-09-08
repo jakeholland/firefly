@@ -56,7 +56,8 @@ void tearDown(void) {}
  * sequence against this so a reordering (or a dropped/added face) fails
  * loudly rather than passing on a count that happens to still match. */
 static ff_app_face_t const k_axis[] = {
-    FF_APP_FACE_RADAR, FF_APP_FACE_LINEUP, FF_APP_FACE_INBOX, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS,
+    FF_APP_FACE_RADAR,    FF_APP_FACE_LINEUP, FF_APP_FACE_INBOX,
+    FF_APP_FACE_MAP,      FF_APP_FACE_SETTINGS, FF_APP_FACE_MUSIC,
 };
 enum { AXIS_N = (int)(sizeof(k_axis) / sizeof(k_axis[0])) };
 
@@ -114,27 +115,38 @@ static void S16_AC1_swipe_back_from_radar_is_a_no_op(void)
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
 }
 
-/* The 5-face order, forward, end to end: RADAR -> NOW -> SIGNALS ->
- * MAP -> SETTINGS, then off the right end is a no-op. Starts from
- * route_at(RADAR) (a launcher-select, not a bare init) since
- * ff_route_init no longer opens on Radar. */
-static void S16_AC1_forward_traverses_all_five_then_clamps_at_settings(void)
+/* The 6-face order, forward, end to end: RADAR -> NOW -> SIGNALS -> MAP
+ * -> SETTINGS -> MUSIC (S31 appended Music to the axis), then off the
+ * right end is a no-op. Starts from route_at(RADAR) (a launcher-select,
+ * not a bare init) since ff_route_init no longer opens on Radar. */
+static void S16_AC1_forward_traverses_all_six_then_clamps_at_music(void)
 {
     ff_route_t r = route_at(FF_APP_FACE_RADAR);
     for (int i = 1; i < AXIS_N; i++) {
         TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
         TEST_ASSERT_EQUAL_INT(k_axis[i], r.base);
     }
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SETTINGS, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_MUSIC, r.base);
     TEST_ASSERT_FALSE(ff_route_swipe(&r, 1)); /* off the right end: no-op, no wrap */
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SETTINGS, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_MUSIC, r.base);
 }
 
-static void S16_AC1_swipe_forward_from_settings_is_a_no_op(void)
+static void S16_AC1_swipe_forward_from_music_is_a_no_op(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_MUSIC);
+    TEST_ASSERT_FALSE(ff_route_swipe(&r, 1));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_MUSIC, r.base);
+}
+
+/* Settings is no longer the terminal member (Music is, as of S31), but
+ * it must still swipe forward normally to its new neighbour — pins that
+ * the S31 axis extension did not accidentally special-case Settings as
+ * a dead end anywhere else in ff_route.c. */
+static void swipe_forward_from_settings_now_reaches_music(void)
 {
     ff_route_t r = route_at(FF_APP_FACE_SETTINGS);
-    TEST_ASSERT_FALSE(ff_route_swipe(&r, 1));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SETTINGS, r.base);
+    TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_MUSIC, r.base);
 }
 
 static void S16_AC1_swipe_axis_is_symmetric_and_round_trips(void)
@@ -411,6 +423,7 @@ static void push_modal_accepts_only_compose_and_power_menu(void)
     ff_app_face_t const rejected[] = {
         FF_APP_FACE_NONE, FF_APP_FACE_RADAR,    FF_APP_FACE_LINEUP,     FF_APP_FACE_INBOX,
         FF_APP_FACE_SETTINGS, FF_APP_FACE_MAP,  FF_APP_FACE_FLARE,   FF_APP_FACE_LAUNCHER,
+        FF_APP_FACE_MUSIC,
     };
     for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
         ff_route_t r = route_at(FF_APP_FACE_RADAR);
@@ -785,8 +798,9 @@ int main(void)
     RUN_TEST(init_is_null_safe);
 
     RUN_TEST(S16_AC1_swipe_back_from_radar_is_a_no_op);
-    RUN_TEST(S16_AC1_forward_traverses_all_five_then_clamps_at_settings);
-    RUN_TEST(S16_AC1_swipe_forward_from_settings_is_a_no_op);
+    RUN_TEST(S16_AC1_forward_traverses_all_six_then_clamps_at_music);
+    RUN_TEST(S16_AC1_swipe_forward_from_music_is_a_no_op);
+    RUN_TEST(swipe_forward_from_settings_now_reaches_music);
     RUN_TEST(S16_AC1_swipe_axis_is_symmetric_and_round_trips);
     RUN_TEST(carousel_inbox_map_settings_are_swipe_neighbours);
     RUN_TEST(swipe_rejects_directions_other_than_plus_or_minus_one);

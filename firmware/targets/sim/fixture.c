@@ -1738,6 +1738,72 @@ static ff_fixture_result_t fx_parse_map(fx_ctx_t const *c, int obj_i, ff_app_map
     return FF_FIXTURE_OK;
 }
 
+/* S31 — the "music" fixture section (docs/specs/S31-music-swarm.md's
+ * "Sim" section, tests/fixtures/README.md). Two ways to set
+ * `loudness`/`beat_count`: directly (`loudness`/`beat_count`/`source`),
+ * or via the `mic_stream` convenience key this deliverable's own spec
+ * names — `{"kind":"static","level":0.7}` (a steady reading) or
+ * `{"kind":"click","bpm":128,"loud":0.7}` (captures the golden AT a
+ * beat: `beat_count` is set to 1, which `scr_music.c`'s build-time
+ * "settle" step reads as "a beat just landed" — see that file's own
+ * top comment, "Golden determinism" — giving a mid-flare frame rather
+ * than a resting one). `mic_stream` implies `source: mic` UNLESS an
+ * explicit `source` key (parsed AFTER, so it always wins — this
+ * section's own override convention) says otherwise; `bpm` is accepted
+ * for fixture-authoring documentation only — this format renders one
+ * static frame, not a running click train, so nothing currently
+ * consumes it beyond that intent. */
+static ff_fixture_result_t fx_parse_music(fx_ctx_t const *c, int obj_i, ff_app_music_t *m)
+{
+    int t;
+    if (fx_obj_get(c, obj_i, "seed", &t)) m->seed = (uint32_t)fx_num(c, t, 0.0);
+
+    int stream_i;
+    if (fx_obj_get(c, obj_i, "mic_stream", &stream_i) && !fx_is_null(c, stream_i)) {
+        m->source = FF_APP_MUSIC_SRC_MIC;
+        bool is_click = false;
+        int kind_t;
+        if (fx_obj_get(c, stream_i, "kind", &kind_t)) {
+            static fx_enum_entry_t const kind_table[] = {
+                {"static", 0},
+                {"click", 1},
+            };
+            int v;
+            ff_fixture_result_t const rc =
+                fx_enum(c, kind_t, kind_table, sizeof(kind_table) / sizeof(kind_table[0]), "music.mic_stream.kind", &v);
+            if (rc != FF_FIXTURE_OK) return rc;
+            is_click = (v == 1);
+        }
+        int val_t;
+        if (is_click) {
+            if (fx_obj_get(c, stream_i, "loud", &val_t)) m->loudness = (float)fx_num(c, val_t, 0.0);
+            m->beat_count = 1u; /* "a beat just landed" — see this function's own top comment */
+        } else {
+            if (fx_obj_get(c, stream_i, "level", &val_t)) m->loudness = (float)fx_num(c, val_t, 0.0);
+        }
+    }
+
+    if (fx_obj_get(c, obj_i, "source", &t)) {
+        static fx_enum_entry_t const src_table[] = {
+            {"none", FF_APP_MUSIC_SRC_NONE},
+            {"mic", FF_APP_MUSIC_SRC_MIC},
+            {"imu", FF_APP_MUSIC_SRC_IMU},
+        };
+        int v;
+        ff_fixture_result_t const rc =
+            fx_enum(c, t, src_table, sizeof(src_table) / sizeof(src_table[0]), "music.source", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        m->source = (ff_app_music_src_t)v;
+    }
+    /* Explicit loudness/beat_count, applied last, override whatever
+     * mic_stream derived — same "explicit field always wins" convention
+     * every other section in this parser already follows. */
+    if (fx_obj_get(c, obj_i, "loudness", &t)) m->loudness = (float)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "beat_count", &t)) m->beat_count = (uint32_t)fx_num(c, t, 0.0);
+
+    return FF_FIXTURE_OK;
+}
+
 static const fx_enum_entry_t fx_face_table[] = {
     {"radar", FF_APP_FACE_RADAR},
     {"now", FF_APP_FACE_LINEUP},
@@ -1756,6 +1822,9 @@ static const fx_enum_entry_t fx_face_table[] = {
      * a launcher fixture that wants the badge just supplies "signals"
      * like any signals-face fixture does. */
     {"launcher", FF_APP_FACE_LAUNCHER},
+    /* S31 — Music/Swarm, the fifth launcher app. Reads its own "music"
+     * section (fx_parse_music) — never "signals"/"radar"/etc. */
+    {"music", FF_APP_FACE_MUSIC},
 };
 
 ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_state_t *out)
@@ -1878,6 +1947,14 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
     /* S29 PR2 */
     if (fx_obj_get(&ctx, 0, "find", &sec_i) && !fx_is_null(&ctx, sec_i)) {
         ff_fixture_result_t rc = fx_parse_find(&ctx, sec_i, &out->find);
+        if (rc != FF_FIXTURE_OK) {
+            memset(out, 0, sizeof(*out));
+            return rc;
+        }
+    }
+    /* S31 */
+    if (fx_obj_get(&ctx, 0, "music", &sec_i) && !fx_is_null(&ctx, sec_i)) {
+        ff_fixture_result_t rc = fx_parse_music(&ctx, sec_i, &out->music);
         if (rc != FF_FIXTURE_OK) {
             memset(out, 0, sizeof(*out));
             return rc;
