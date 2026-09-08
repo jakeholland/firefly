@@ -27,6 +27,72 @@ concept sheet (owner-approved, via the coordinator):
 > small MIC or IMU chip), and with neither source it says so and stays
 > calm.
 
+## S31 polish (owner feedback on PR #245, 2026-09-08)
+
+Jake, trying Swarm on the field puck: "works, clap flares it and quiet
+calms it. Would love it to be more dynamic like the design originally.
+Not sure we need the text QUIET and LOUD or the MIC chip." Three
+changes from PR #245, all in `firmware/core/ff_swarm.h`/`.c` and
+`firmware/app/screens/scr_music.c`/`.h` unless noted:
+
+1. **Motion model replaced**, not tuned. PR #245's particles wandered
+   around a fixed per-particle "home" position and a beat LEANED that
+   home inward. The original concept-mockup behaviour this polish
+   restores is different in kind: every firefly drifts CONTINUOUSLY on
+   its own fixed angular (±0.2 rad/s) and radial (±12 px/s, mockup
+   units) velocity forever — reflecting off the swarm's own
+   inner/outer radius bounds rather than orbiting a home point — so the
+   swarm is never static even in total silence. A beat no longer leans
+   a home position; it LERPS every firefly's rendered radius toward a
+   shared pull target (~120px, mockup units) by a strength proportional
+   to a shared beat envelope (`exp(-phase*5.5)` across the beat
+   interval) and loudness, so the whole swarm visibly snaps inward
+   together on a beat and eases back out onto each firefly's own
+   drift trajectory as the envelope decays — literally "then wander off
+   again," not a return to a fixed point. A new per-firefly TWINKLE
+   term (`0.35 + 0.65*max(0, sin(...))`, phase-offset per firefly) keeps
+   each firefly visibly alive between beats, when the shared envelope
+   has decayed to near zero. See `ff_swarm.h`'s own top comment for the
+   full writeup and every constant's provenance.
+2. **QUIET/LOUD word removed entirely** from `scr_music.c`'s chrome —
+   Jake's own call, quoted above. `shell_render_key` (`ff_shell.c`)
+   drops `music.loudness`'s previous QUIET/LOUD-threshold bucketing and
+   now zeros it unconditionally, joining `beat_count`/`bpm_estimate` —
+   nothing the render key drives reads it any more (see "Render key"
+   below, updated).
+3. **Source chip shown ONLY when the source is NOT the mic** (IMU or
+   NO SOURCE) — a deliberate NARROWING of this spec's original "the
+   source is always shown" line above, not a reversal of the honesty
+   rule it serves. **Recorded here as the owner's call**: an UNUSUAL
+   source is always labelled (IMU renders amber, NO SOURCE renders
+   muted — never an alarm color, unchanged from the original honesty
+   posture); it is only the NORMAL, expected case — the mic running,
+   which is what "Swarm" is built around — that now goes unlabelled.
+   With the mic running, the glass shows nothing but the clock and the
+   swarm: no MIC chip. This is the same "only flag what's unusual"
+   posture already applied elsewhere in this codebase (a face with a
+   live peer draws no special banner; a STALE or LOST one does).
+
+A fourth change was forced by the first, not requested by the owner:
+the original three-object-per-firefly rendering plan (a core dot plus
+TWO halo rings, 180 objects) was measured to CRASH — this target's
+LVGL heap is a fixed 64KB arena (`sdkconfig.defaults`'s
+`CONFIG_LV_MEM_SIZE_KILOBYTES=64`, mirrored by the sim build's own LVGL
+default), and 180 small objects plus the rest of the screen's chrome
+does not fit in it. Shipped as ONE halo ring per firefly instead (120
+objects total) — see `scr_music.c`'s own top comment, "Object count is
+bounded by the LVGL heap," for the measured numbers and the fallback
+this file would reach for (a canvas) if a future change ever needs a
+third object per firefly again.
+
+**Goldens regenerated, deliberately** (the motion model, twinkle, and
+chip-visibility changes all move committed pixels): `music_swarm_quiet.
+png`, `music_swarm_loud.png`, `music_swarm_imu.png`,
+`music_swarm_nosource.png`. Verified determinism-clean (byte-identical
+across two renders each, and across the clang and gcc-14 sim builds) —
+every other committed golden is untouched (confirmed via `git status`
+after `tests/run_goldens.sh --update-golden`).
+
 ## Data contract
 
 ### Core: `ff_beat.h`/`.c` (`firmware/core`)
@@ -101,18 +167,37 @@ The 60-particle simulation, ALSO pure/host-testable/deterministic, but
 deliberately **not** part of `ff_app_state_t` — see "Render key" below
 for why, and `ff_swarm.h`'s own top comment ("Ownership") for the full
 reasoning. `ff_swarm_init(ff_swarm_t *sw, uint32_t seed)` derives every
-particle's fixed "personality" (home radius/angle, wander speed/phase)
-from a small xorshift32 PRNG seeded once — `seed == 0` remaps to
-`FF_SWARM_DEFAULT_SEED` (xorshift32 fixes at exactly 0 forever if
-seeded with 0). `ff_swarm_step(ff_swarm_t *sw, float loudness, bool
-beat_now, float dt_s)` advances every particle: a slow per-particle
-phase-driven wander around its home position, a beat-triggered `lean`
-(pulls radius toward the centre, up to `FF_SWARM_MAX_PULL` = 60% of
-home radius, proportional to `loudness`) that decays over
-`FF_SWARM_LEAN_DECAY_MS` (450 ms), and a `flare` (glow flash) that
-decays over `FF_SWARM_FLARE_DECAY_MS` (150 ms, the deliverable's own
-stated number). Glow = `FF_SWARM_IDLE_GLOW` (0.15, never fully dark) +
-`loudness * 0.5` (ambient) + `flare * 0.6` (the flash).
+particle's fixed "personality" (initial radius/angle, angular/radial
+drift velocity, twinkle phase, accent color) from a small xorshift32
+PRNG seeded once — `seed == 0` remaps to `FF_SWARM_DEFAULT_SEED`
+(xorshift32 fixes at exactly 0 forever if seeded with 0).
+
+**Motion model (S31 polish, see that section above for the "why"):**
+`ff_swarm_step(ff_swarm_t *sw, float loudness, bool beat_now, float
+dt_s)` advances every particle on its own fixed angular
+(±`FF_SWARM_ANGULAR_DRIFT_MAX_RAD_S` = 0.2 rad/s) and radial
+(±`FF_SWARM_RADIAL_DRIFT_MAX_PX_S`, ~8.24 px/s on the puck's 412px
+glass) drift velocity, reflecting off [`FF_SWARM_R_MIN_PX`,
+`FF_SWARM_R_MAX_PX`] (~41-184px, the mockup's own 60-268px scaled by
+412/600) forever — this NEVER stops, even at loudness 0 with no beat.
+A beat resets a SHARED envelope to 1.0
+(`envelope = exp(-phase*FF_SWARM_ENVELOPE_DECAY_RATE)`, `phase` the
+fraction of the beat interval elapsed since, decay rate 5.5) and, every
+`FF_SWARM_DROP_EVERY_N_BEATS`th (8th) beat, arms a stronger `drop`
+accent for the interval that follows. Every firefly's RENDERED radius
+is then `wander_r_px` lerped toward `FF_SWARM_PULL_TARGET_R_PX` (~82px,
+the mockup's own 120px scaled) by `envelope * (FF_SWARM_PULL_LOUDNESS_
+BASE + loudness)` clamped to [0,1] — a beat snaps the whole swarm
+toward that shared target together, then it relaxes back onto each
+firefly's own drift trajectory as the envelope decays. Glow =
+`clamp01(FF_SWARM_GLOW_IDLE_BASE + FF_SWARM_GLOW_LOUDNESS_GAIN*envelope
+*loudness + FF_SWARM_GLOW_DROP_GAIN*drop*envelope) * twinkle`, where
+`twinkle = FF_SWARM_TWINKLE_FLOOR + FF_SWARM_TWINKLE_GAIN * max(0,
+sin((t + twinkle_phase*FF_SWARM_TWINKLE_PHASE_GAIN) *
+FF_SWARM_TWINKLE_RATE))` — a slow, per-firefly phase-offset brightness
+oscillation that keeps a firefly visibly alive even when the shared
+envelope has fully decayed between beats. See `ff_swarm.h`'s own doc
+comments for every constant's exact value and provenance.
 
 ## Frame budget / renderer choice
 
@@ -121,22 +206,40 @@ Map face's own measured cost (`scr_map.c`'s top comment): that face's
 draw-op pool exists because CREATING ~300 `lv_obj_t` synchronously
 during a full-screen REBUILD stalled the touch-poll loop by ~520 ms — a
 rebuild cost, not a per-frame one. Music's problem is different in
-kind: 60 particles moving continuously at up to 30fps, but the shell's
+kind: particles moving continuously at up to 30fps, but the shell's
 `lv_obj_clean`+rebuild happens RARELY (the particle state is
 deliberately kept out of the render key — see below), so the "hundreds
 of objects at once" cost Map hit essentially never recurs. What
-happens every frame instead is 60 property MUTATIONS
-(`lv_obj_set_pos`/`_set_size`/`_set_style_bg_opa`) on already-existing
-objects — no create/delete, no style-tree rebuild. Estimated cost: 60
-small circle redraws (a few px radius each, a small fraction of the
-412×412 panel's pixels) plus 60 cheap struct-field writes, comfortably
-inside an 8 ms/frame budget on the S3's 240 MHz core — the same
-order-of-magnitude per-frame object count Radar's own live arrow+ring
-redraw already runs at interactive rates with. A canvas would trade
-this for one large buffer clear plus 60 software-rasterized fills per
-frame (strictly MORE per-frame work at this particle count) and loses
-LVGL's own dirty-rect invalidation. See `scr_music.c`'s own top comment
-for the full writeup.
+happens every frame instead is property MUTATIONS
+(`lv_obj_set_size`/`_align`/`_set_style_bg_opa`) on already-existing
+objects — no create/delete, no style-tree rebuild.
+
+**Each firefly is TWO objects (S31 polish, revised from PR #245's
+original THREE-object plan), 120 total, not 180** — a small ink-white
+core dot plus ONE halo ring (not two), the "2-3 concentric circles"
+range this section's own original amendment allowed. The THIRD object
+(a second halo ring) was tried and dropped for a reason that has
+nothing to do with per-frame CPU cost: this target's LVGL heap is a
+fixed 64KB arena (`sdkconfig.defaults`'s own
+`CONFIG_LV_MEM_SIZE_KILOBYTES=64`, mirrored by the sim build's LVGL
+default), and 180 small `lv_obj_t` — each costing roughly 230-280 bytes
+once `spec_attr` (children/align bookkeeping, allocated lazily on an
+object's first `lv_obj_align` call) is counted, measured directly
+against this exact LVGL build — consumes essentially the whole arena
+before the screen's own clock/source-chip labels get a turn;
+`test_gesture_glue.c`'s `S31_back_on_music_goes_home` reproduced this
+as a hard crash (`lv_realloc` returning NULL, then an unchecked NULL
+write) the one time it actually built a full 180-object Music screen
+end to end. 120 objects leaves comfortable headroom — see
+`scr_music.c`'s own top comment, "Object count is bounded by the LVGL
+heap," for the full writeup including the exact probe methodology, and
+its "Per-frame cost estimate" section for why 120 objects' redraw cost
+is still the same order of magnitude as the original 60-object budget
+that was already comfortably inside 8ms at Radar's own measured
+per-frame object count. A canvas remains the documented fallback if a
+future change ever needs a third object per firefly again (it needs
+one object plus one pixel buffer, not N objects — sidestepping the
+LVGL-heap ceiling entirely) — not needed at 120.
 
 **Frame cap**: 30 fps normally; 15 fps once `state->radar.batt_pct` is
 a KNOWN reading (never treats "unknown" as low, same convention
@@ -165,24 +268,28 @@ two parts:
    them to what the chrome actually renders: `beat_count`/
    `bpm_estimate` are zeroed unconditionally (nothing on glass draws
    either — the particle sim reads `beat_count` itself, by diffing it
-   every frame OUTSIDE the render key, in `scr_music.c`'s own timer);
-   `loudness` is bucketed to a single bit at `FF_BEAT_LOUD_THRESHOLD`
-   (0.5, shared by `ff_shell.c`'s key AND `scr_music.c`'s own
-   QUIET/LOUD word rendering — a single named constant, not a
-   duplicated formula, so the two can never disagree); `source` and
-   `loudness` are both explicitly gated on `active_face ==
-   FF_APP_FACE_MUSIC` (unlike the DIAGNOSTICS fields, `shell_project`
-   writes `music.*` UNCONDITIONALLY every tick — see that projection's
-   own comment for why — so an explicit gate is needed here the same
-   way `heading_deg`'s own DIAGNOSTICS-bucket fix needed one).
+   every frame OUTSIDE the render key, in `scr_music.c`'s own timer).
+   **`loudness` (S31 polish)** now joins them, zeroed unconditionally —
+   the QUIET/LOUD word it used to bucket for is gone from the chrome
+   entirely (see "S31 polish" above), so nothing the render key drives
+   reads `loudness` any more; the particle sim still reads the RAW
+   value every frame, but straight off the live view in `scr_music.c`'s
+   own timer, outside this key. `source` still earns its keep — the
+   source chip's own presence and color depend on it — and stays
+   gated on `active_face == FF_APP_FACE_MUSIC` (unlike the DIAGNOSTICS
+   fields, `shell_project` writes `music.*` UNCONDITIONALLY every
+   tick — see that projection's own comment for why — so an explicit
+   gate is needed here the same way `heading_deg`'s own
+   DIAGNOSTICS-bucket fix needed one).
 
 Regression coverage: `test_shell.c`'s `S16_render_key_churn_budget_music`
 (the aggregate budget, ≤ 60/min over the shared S16 churn scenario) and
-`S31_music_loudness_keys_rendered_word_bucket_only` (a dedicated pin: a
-settled quiet baseline produces no further churn, and pushing toward a
-sustained loud level dirties the key EXACTLY ONCE across 75 ticks of a
-continuously-changing raw loudness float — proof the key compares the
-bucketed WORD, not the raw value).
+`S31_music_loudness_never_dirties_render_key` (S31 polish, renamed from
+`..._keys_rendered_word_bucket_only` — a dedicated pin: a settled quiet
+baseline produces no further churn, and NEITHER does pushing all the
+way to a sustained loud level, across 75 ticks of a continuously-
+changing raw loudness float — proof `loudness` is unconditionally
+zeroed, not merely bucketed).
 
 ## Power policy
 
@@ -281,11 +388,13 @@ built (`ff_gesture_glue.c`), never touching `scr_music.c` at all
 (pinned by `test_gesture_glue.c`'s `S31_back_on_music_goes_home`).
 
 Chrome, centred: the wall clock (`state->radar.clock_str`, the same
-honest "--:--" convention every other face's clock uses), the
-QUIET/LOUD word underneath (bucketed at `FF_BEAT_LOUD_THRESHOLD`), and
-the source chip underneath that (MIC / IMU / NO SOURCE — MIC in
-`FF_THEME_COLOR_LIVE_GREEN`, IMU in `FF_THEME_COLOR_AMBER`, NO SOURCE in
-`FF_THEME_COLOR_MUTED` — "stays calm", never an alarm color).
+honest "--:--" convention every other face's clock uses) and — ONLY
+while `state->music.source != FF_APP_MUSIC_SRC_MIC` (S31 polish, see
+that section above for the owner's call and the honesty reasoning) — a
+small muted source chip underneath (IMU in `FF_THEME_COLOR_AMBER`, NO
+SOURCE in `FF_THEME_COLOR_MUTED` — "stays calm", never an alarm color).
+No QUIET/LOUD word (removed, S31 polish); with the mic running (the
+normal case), the glass shows nothing but the clock and the swarm.
 
 ### Golden determinism without ever running the per-frame timer
 
@@ -323,19 +432,22 @@ comment states for every read-only command.
 Four fixtures (`firmware/tests/fixtures/music_swarm_*.json`), one per
 honesty/loudness state the concept sheet names, all sharing the same
 `seed` (424242) so their particle LAYOUTS are directly comparable
-frame to frame — only chrome/glow/lean differ:
+frame to frame — only chrome/glow/pull differ. **Regenerated for the
+S31 polish** (new motion model + no QUIET/LOUD word + narrowed chip
+visibility — see "S31 polish" above); no MIC/IMU/NO SOURCE word is
+rendered any more for the MIC case specifically, since that chip is
+no longer built at all while `source == MIC`:
 
 - `music_swarm_quiet.json` — a steady, quiet MIC reading
-  (`mic_stream: {"kind":"static","level":0.08}`) — QUIET word, calm
+  (`mic_stream: {"kind":"static","level":0.08}`) — no chip (MIC), calm
   idle glow.
 - `music_swarm_loud.json` — a 128 BPM click train, captured mid-beat
-  (`mic_stream: {"kind":"click","bpm":128,"loud":0.85}`) — LOUD word,
-  the swarm mid-flare/lean.
+  (`mic_stream: {"kind":"click","bpm":128,"loud":0.85}`) — no chip
+  (MIC), the swarm mid-beat-pull.
 - `music_swarm_imu.json` — the IMU fallback source, a moderate
-  loudness (`source: "imu"`, `loudness: 0.55`) — LOUD word (>=
-  threshold), amber IMU chip.
+  loudness (`source: "imu"`, `loudness: 0.55`) — amber IMU chip.
 - `music_swarm_nosource.json` — honestly `source: "none"`, `loudness:
-  0` — QUIET word, muted "NO SOURCE" chip, never an alarm.
+  0` — muted "NO SOURCE" chip, never an alarm.
 
 `ff_app_music_t`'s fixture schema (a `music` section, plus the `music`
 member of `fx_face_table`) is documented in
@@ -346,14 +458,15 @@ what the sugar derived.
 
 ## Interpretation calls / questions (flagged per AGENTS.md)
 
-- Every numeric time constant in `ff_beat.h`/`ff_swarm.h` (floor/ceil
-  attack-release windows, onset threshold, refractory, lean/flare
-  decay, idle glow floor, max pull fraction) is a judgment call — no
-  existing spec pinned any of them before this change. The bench
-  protocol below is the mechanism to find out whether they feel right
-  on glass; nothing here claims they are correct, only plausible (same
-  posture `ff_audio.h`'s `FF_AUDIO_AMPLITUDE`/S30's dBFS range already
-  carry).
+- Every numeric constant in `ff_beat.h`/`ff_swarm.h` (floor/ceil
+  attack-release windows, onset threshold, refractory, drift velocity
+  ranges, envelope decay rate, pull-strength loudness base, twinkle
+  floor/gain/rate, halo opacity gain) is a judgment call — no existing
+  spec pinned any of them before this change (or before the S31 polish,
+  for the motion-model constants specifically). The bench protocol
+  below is the mechanism to find out whether they feel right on glass;
+  nothing here claims they are correct, only plausible (same posture
+  `ff_audio.h`'s `FF_AUDIO_AMPLITUDE`/S30's dBFS range already carry).
 - The launcher's fifth-satellite `compass_pos` (288°, appended after
   Map) is a defensible reading of "adding a fifth app" with no
   design-canvas pentagon reference in-tree to consult; a real mockup
@@ -386,41 +499,52 @@ what the sugar derived.
 - **AC4** — Music is reachable from the launcher (idx 5), rendered as
   the fifth compass-ring satellite at the N-agnostic formula's next
   slot, with an updated, deterministic set of goldens (listed above).
-- **AC5** — `music.beat_count`/`bpm_estimate` never contribute to the
-  shell's render key; `music.loudness`/`source` contribute only while
-  Music is the active face, bucketed to exactly what the chrome draws
+- **AC5** — `music.beat_count`/`bpm_estimate`/`loudness` (S31 polish:
+  `loudness` joined the other two, unconditionally zeroed, once the
+  QUIET/LOUD word it used to bucket for was removed) never contribute
+  to the shell's render key; `music.source` contributes only while
+  Music is the active face, exactly matching what the chrome draws
   (`S16_render_key_churn_budget_music` ≤ 60/min;
-  `S31_music_loudness_keys_rendered_word_bucket_only` pins the
-  bucketing mechanism directly).
+  `S31_music_loudness_never_dirties_render_key` pins the zeroing
+  directly — a settled quiet baseline AND a swing all the way to a
+  sustained loud level both produce zero dirty ticks).
 - **AC6** — `ff_mic_start`/`stop` fire exactly on the
   enter/leave-Music (or DIM/OFF/takeover) edge, never continuously;
   `ff_shell_keep_awake` holds the puck awake only while
   `music.loudness > FF_BEAT_KEEPAWAKE_LOUDNESS`.
 - **AC7** — BACK/HOME rim gestures work unchanged on the Music face
-  (`test_gesture_glue.c`'s `S31_back_on_music_goes_home`).
-- **AC8** — The source chip always shows MIC, IMU, or NO SOURCE — never
+  (`test_gesture_glue.c`'s `S31_back_on_music_goes_home`, which
+  exercises a full Music screen build+teardown — the same test that
+  caught the 180-object LVGL-heap crash during the S31 polish pass).
+- **AC8** — The source chip (S31 polish: shown only while `source !=
+  FF_APP_MUSIC_SRC_MIC`) always shows IMU or NO SOURCE — never
   blended, never fabricated — matching whichever source
-  `ff_shell_set_beat_input` actually fed the detector.
+  `ff_shell_set_beat_input` actually fed the detector; with the mic
+  running, no chip is built at all.
 - **AC9** — clang and gcc-14 sim builds are warning-clean; `ctest`
-  passes in full (including the S16 churn budgets and the new
-  `test_beat`/`test_swarm` suites); all 102 goldens pass (98
-  pre-existing + 4 new Music fixtures), byte-identical across both
-  compilers; the ESP32-S3 device build (both the bench sdkconfig and
-  `sdkconfig.ci`) is warning-clean.
+  passes in full (including the S16 churn budgets and the
+  `test_beat`/`test_swarm` suites); all 102 goldens pass (98 untouched
+  by the S31 polish + the 4 regenerated Music fixtures listed above),
+  byte-identical across both compilers; the ESP32-S3 device build
+  (both the bench sdkconfig and `sdkconfig.ci`) is warning-clean.
 
 ## Bench acceptance protocol (for the coordinator)
 
 Run on the real puck, `CONFIG_FF_DEBUG_CONSOLE=y`:
 
 1. From the launcher, tap the MUSIC circle (top-left satellite). The
-   face opens; the chip reads `MIC` (or `IMU`/`NO SOURCE`, honestly,
-   depending on what's actually wired).
-2. Clap near the puck: a visible flare/lean pulse on the swarm, and
-   `music` on the console shows `beat`-driven `bpm` climbing toward a
-   plausible value within a few claps.
-3. Cover the mic port with a finger: the swarm calms and the QUIET word
-   shows within about 2 seconds (the auto-ranging floor/ceiling and the
-   fast/slow onset filters both settle well inside that window).
+   face opens; with the mic running (the normal case), no chip shows at
+   all — just the clock and the swarm (S31 polish). Pull the mic (or
+   otherwise force an IMU/no-source fallback) and the chip reads `IMU`
+   or `NO SOURCE`, honestly.
+2. Clap near the puck: a visible inward pull pulse on the swarm (every
+   firefly's radius snapping toward the shared pull target together),
+   and `music` on the console shows `beat`-driven `bpm` climbing toward
+   a plausible value within a few claps.
+3. Cover the mic port with a finger: the swarm calms to its idle
+   drift-and-twinkle within about 2 seconds (the auto-ranging
+   floor/ceiling and the fast/slow onset filters both settle well
+   inside that window) — fireflies keep wandering, never freeze.
 4. `mic` on the console (S30's own command) shows `running=1` only
    while the Music face is the one on screen — leave the face (BACK or
    HOME) and `mic` immediately after shows `running=0`.
