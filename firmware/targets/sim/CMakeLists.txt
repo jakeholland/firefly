@@ -338,6 +338,31 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_ctl_batt COMMAND test_ctl_batt)
 
+    # fix/diag-scroll-persist: the Settings -> DIAGNOSTICS page (PR #229)
+    # lost its scroll position on a routine device-stats refresh — a
+    # genuine ff_shell_set_device_stats push (the same call app_main.c
+    # makes every FF_DEVICE_STATS_SAMPLE_PERIOD_MS) legitimately dirties
+    # the render key and rebuilds the page, and the page's own build
+    # function used to reset scroll to 0 on EVERY build regardless.
+    # Driven through the same real ff-sim-ctl-loop session as the tests
+    # above, with a genuine multi-step drag on the live list.
+    add_executable(test_ctl_diag_scroll_persist
+        tests/test_ctl_diag_scroll_persist.c
+        screenshot.c
+    )
+    target_link_libraries(test_ctl_diag_scroll_persist PRIVATE
+        ff-sim-ctl-loop
+        ff-sim-ctl
+        ff-shell
+        ff-app-ui
+        ff-stb-image-write
+        lvgl::lvgl
+        unity
+    )
+    ff_apply_warnings(test_ctl_diag_scroll_persist)
+
+    add_test(NAME test_ctl_diag_scroll_persist COMMAND test_ctl_diag_scroll_persist)
+
     # S25 slice c, review fix: pins the pure pin-mV -> pack-mV conversion
     # arithmetic (ff_power_batt_conv.h, hoisted out of the esp32s3-only
     # ff_power.c specifically so this can run here) by literal, on the

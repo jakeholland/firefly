@@ -9796,6 +9796,54 @@ static void S_diag_pos_age_keys_rendered_bucket_only(void)
                              "a rendered DIAGNOSTICS pos-age bucket change did not repaint the page");
 }
 
+/* fix/diag-scroll-persist — root cause, pinned directly at the render-key
+ * layer (the screen-level scroll-persistence fix in scr_settings.c is a
+ * second, independent belt for the same page; this test does not depend
+ * on it). Same shape as flare_takeover_bearing_keys_the_rendered_octant
+ * (this file, above) and S_diag_pos_age_keys_rendered_bucket_only just
+ * above: `settings_build_diag_page` (scr_settings.c) renders
+ * `heading_deg` ONLY as "%.0f deg" — whole degrees — but the raw
+ * compass reading is re-sampled on a timer with no smoothing
+ * (FF_COMPASS_SAMPLE_PERIOD_MS, 100ms on device — app_main.c), so a
+ * stationary puck's reading still wobbles in the last bit or two from
+ * sensor/ADC noise on every sample. Left raw in the key, that 10 Hz
+ * noise dirtied the key ~10x/sec while DIAGNOSTICS was open — the
+ * measured cause of the page's slow ~50-60ms gesture-poll cadence (a
+ * normal 20ms tick, stretched by the lv_obj_clean()+~30-row rebuild
+ * each dirty tick triggers) and, compounding the scroll-to-0-on-every-
+ * build bug the screen-level fix addresses, why a drag never held. */
+static void S_diag_heading_keys_rendered_whole_degree_only(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    {
+        ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 4u}};
+        ff_shell_intent(&H.shell, &leave_launcher);
+    }
+    send_bare(FF_INTENT_SETTINGS_OPEN_DIAGNOSTICS);
+
+    ff_shell_set_heading(&H.shell, 45.0f);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* heading appears: dirty */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->settings.diag.heading_valid);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 45.0f, ff_shell_view(&H.shell)->settings.diag.heading_deg);
+
+    /* Sub-degree sensor noise, same rendered whole-degree bucket: MUST be
+     * clean — bites keying the raw float heading_deg, which a 100ms-cadence
+     * re-sample can change every tick even standing still. */
+    advance(100u);
+    ff_shell_set_heading(&H.shell, 45.4f);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a sub-degree DIAGNOSTICS heading tick rebuilt the frame - raw heading_deg "
+                              "leaked into the render key");
+
+    /* A real, rendered whole-degree-or-more move: dirty. */
+    advance(100u);
+    ff_shell_set_heading(&H.shell, 48.0f);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a rendered DIAGNOSTICS heading change did not repaint the page");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -10094,6 +10142,7 @@ int main(void)
     RUN_TEST(S_diag_all_unknown_when_nothing_observed);
     RUN_TEST(S_diag_reports_observed_facts);
     RUN_TEST(S_diag_pos_age_keys_rendered_bucket_only);
+    RUN_TEST(S_diag_heading_keys_rendered_whole_degree_only);
 
     return UNITY_END();
 }
