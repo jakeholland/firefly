@@ -673,6 +673,15 @@ typedef struct {
     ff_app_mag_kind_t device_mag_kind;
     ff_app_imu_state_t device_imu_state;
 
+    /* S30 mic bring-up — pushed by ff_shell_set_mic_status (see that
+     * function's own doc comment, ff_shell.h). Never written on the sim
+     * (no ff_mic hardware there) — mic_present stays false forever,
+     * DIAGNOSTICS' honest "MIC absent". */
+    bool  mic_present;
+    bool  mic_running;
+    bool  mic_has_level;
+    float mic_envelope_dbfs;
+
 #if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
     /* --dev-trust-all (S16 AC6), and its device-side mirror
      * CONFIG_FF_DEV_TRUST_CHANNEL (bench/field stopgap for the crew
@@ -3102,6 +3111,14 @@ static void shell_compute_diag(shell_t const *sh, uint32_t now_ms, ff_app_diag_t
     shell_copy_str(d->fw_build_date, sizeof(d->fw_build_date), FF_BUILD_DATE);
     d->has_free_heap = sh->has_device_stats;
     if (d->has_free_heap) d->free_heap_bytes = sh->device_free_heap_bytes;
+
+    /* 7. Mic (S30) — pushed by ff_shell_set_mic_status; never written on
+     * the sim, so mic_present stays at its false default there — the
+     * DIAGNOSTICS row's honest "MIC absent" (scr_settings.c). */
+    d->mic_present = sh->mic_present;
+    d->mic_running = sh->mic_present && sh->mic_running;
+    d->has_mic_level = sh->mic_present && sh->mic_running && sh->mic_has_level;
+    if (d->has_mic_level) d->mic_envelope_dbfs = sh->mic_envelope_dbfs;
 }
 
 /**
@@ -3726,6 +3743,19 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
     key->settings.diag.air_util_tx_pct = (float)(int32_t)(v->settings.diag.air_util_tx_pct + 0.5f); /* matches the page's "%.0f%%" */
     key->settings.diag.batt_mv = (uint16_t)(((v->settings.diag.batt_mv + 5u) / 10u) * 10u); /* 10 mV buckets, matches the page's (now-bucketed) "%u mV" */
     key->settings.diag.free_heap_bytes = (v->settings.diag.free_heap_bytes / 1024u) * 1024u; /* whole-KB buckets, matches the page's (now-KB) "%u KB" */
+    /* S30 mic bring-up — same "bucket to what the page actually prints"
+     * discipline as the four fields just above: settings_build_diag_page
+     * (scr_settings.c) prints the MIC row's dBFS as "%.0f dBFS" (whole
+     * dB), so a sub-dB envelope wobble (real mic noise, or the 300ms
+     * attack/release filter settling) must not dirty the key while
+     * DIAGNOSTICS is open — same churn-budget reasoning PR #237 applied
+     * to heading_deg/SNR/battery/heap. Already zeroed outside
+     * FF_SETTINGS_SUB_DIAGNOSTICS by shell_project_diag_page's own early
+     * return (out->diag never touched there), so — like the four fields
+     * above and unlike heading_deg/the five ages — no separate subview
+     * `?:` gate is needed here either: rounding an already-zero value
+     * still yields zero. */
+    key->settings.diag.mic_envelope_dbfs = (float)(int32_t)v->settings.diag.mic_envelope_dbfs; /* whole dB, matches the page's "%.0f dBFS" */
 
     /* On-glass report 2026-09-07 — the Map face's own heading, the exact
      * `arrow_deg` lesson one struct over. `shell_project_map` projects
@@ -7020,6 +7050,24 @@ void ff_shell_set_device_stats(ff_shell_t *sh_pub, bool ok, uint32_t free_heap_b
     sh->device_free_heap_bytes = free_heap_bytes;
     sh->device_mag_kind = mag_kind;
     sh->device_imu_state = imu_state;
+}
+
+void ff_shell_set_mic_status(ff_shell_t *sh_pub, bool present, bool running, bool has_level, float envelope_dbfs)
+{
+    if (sh_pub == NULL) return;
+    shell_t *sh = shell_of(sh_pub);
+    sh->mic_present = present;
+    if (!present) {
+        /* honest "nothing to report" — see this function's own doc
+         * comment, ff_shell.h: an absent mic cannot be running or have
+         * a level. */
+        sh->mic_running = false;
+        sh->mic_has_level = false;
+        return;
+    }
+    sh->mic_running = running;
+    sh->mic_has_level = running && has_level;
+    if (sh->mic_has_level) sh->mic_envelope_dbfs = envelope_dbfs;
 }
 
 ff_shell_link_t ff_shell_link(ff_shell_t const *sh_pub)

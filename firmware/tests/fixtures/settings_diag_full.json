@@ -52,7 +52,12 @@
       "uptime_s": 5025,
       "fw_git_sha": "a1b2c3d4e5f6",
       "fw_build_date": "2026-09-05",
-      "free_heap_bytes": 123456
+      "free_heap_bytes": 123456,
+
+      "mic_present": true,
+      "mic_running": true,
+      "has_mic_level": true,
+      "mic_envelope_dbfs": -42.3
     }
   }
 }

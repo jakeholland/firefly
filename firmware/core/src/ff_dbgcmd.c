@@ -53,6 +53,27 @@ static bool parse_node_hex(char const *tok, size_t tok_len, uint32_t *out)
     return true;
 }
 
+/* S30 — parse a bounded decimal token (1-3 digits, no sign, no leading
+ * '+', nothing else): "mic watch <secs>"'s own argument shape. Returns
+ * false (leaving *out unspecified) on an empty token, a non-digit
+ * character, or a token longer than 3 digits (comfortably wider than
+ * FF_DBGCMD_MIC_WATCH_MAX_S's own 2 digits, so a genuinely-too-large
+ * value like "999" still parses to a real number and gets rejected by
+ * the caller's own range check below, not silently truncated/overflowed
+ * by this helper first). Never reads past `tok_len`. */
+static bool parse_u32_dec(char const *tok, size_t tok_len, uint32_t *out)
+{
+    if (tok_len == 0u || tok_len > 3u) return false;
+    uint32_t v = 0u;
+    for (size_t i = 0; i < tok_len; ++i) {
+        char const c = tok[i];
+        if (c < '0' || c > '9') return false;
+        v = v * 10u + (uint32_t)(c - '0');
+    }
+    *out = v;
+    return true;
+}
+
 /* Find the end of the first whitespace-delimited token starting at
  * `start` (which must already be non-whitespace or == `end`). Returns
  * the index of the first whitespace char at/after `start`, or `end` if
@@ -264,6 +285,46 @@ ff_dbgcmd_status_t ff_dbgcmd_parse(char const *line, size_t line_len, ff_dbgcmd_
         out->kind = FF_DBGCMD_FIND;
         return FF_DBGCMD_ERR_OK;
     }
+    /* S30 — "mic" bare, "mic on", "mic off", "mic watch <secs>". Same
+     * bare-verb-plus-fixed-sub-verb shape as `cal`/`flare` above; "watch"
+     * additionally carries one decimal argument this parser itself range-
+     * checks into [FF_DBGCMD_MIC_WATCH_MIN_S, FF_DBGCMD_MIC_WATCH_MAX_S]
+     * (ff_dbgcmd.h's own doc comment on `mic`) — a caller can never see
+     * an in-vocabulary FF_DBGCMD_MIC_WATCH with an out-of-range duration. */
+    if (tok_eq(buf, start, cmd_end, "mic")) {
+        if (arg_start >= end) {
+            out->kind = FF_DBGCMD_MIC;
+            return FF_DBGCMD_ERR_OK;
+        }
+        size_t const sub_end = token_end(buf, arg_start, end);
+        if (tok_eq(buf, arg_start, sub_end, "on")) {
+            if (skip_space(buf, sub_end, end) < end) return FF_DBGCMD_ERR_BAD_ARGS;
+            out->kind = FF_DBGCMD_MIC_ON;
+            return FF_DBGCMD_ERR_OK;
+        }
+        if (tok_eq(buf, arg_start, sub_end, "off")) {
+            if (skip_space(buf, sub_end, end) < end) return FF_DBGCMD_ERR_BAD_ARGS;
+            out->kind = FF_DBGCMD_MIC_OFF;
+            return FF_DBGCMD_ERR_OK;
+        }
+        if (tok_eq(buf, arg_start, sub_end, "watch")) {
+            size_t const secs_start = skip_space(buf, sub_end, end);
+            if (secs_start >= end) return FF_DBGCMD_ERR_BAD_ARGS; /* no duration */
+            size_t const secs_end = token_end(buf, secs_start, end);
+            uint32_t secs = 0u;
+            if (!parse_u32_dec(buf + secs_start, secs_end - secs_start, &secs)) {
+                return FF_DBGCMD_ERR_BAD_ARGS;
+            }
+            if (skip_space(buf, secs_end, end) < end) return FF_DBGCMD_ERR_BAD_ARGS; /* trailing garbage */
+            if (secs < FF_DBGCMD_MIC_WATCH_MIN_S || secs > FF_DBGCMD_MIC_WATCH_MAX_S) {
+                return FF_DBGCMD_ERR_BAD_ARGS;
+            }
+            out->u.mic_watch_secs = secs;
+            out->kind = FF_DBGCMD_MIC_WATCH;
+            return FF_DBGCMD_ERR_OK;
+        }
+        return FF_DBGCMD_ERR_BAD_ARGS;
+    }
 
     return FF_DBGCMD_ERR_UNKNOWN_CMD;
 }
@@ -294,6 +355,10 @@ char const *ff_dbgcmd_kind_name(ff_dbgcmd_kind_t kind)
     case FF_DBGCMD_PING: return "PING";
     case FF_DBGCMD_FIND: return "FIND";
     case FF_DBGCMD_FIND_OFF: return "FIND_OFF";
+    case FF_DBGCMD_MIC: return "MIC";
+    case FF_DBGCMD_MIC_ON: return "MIC_ON";
+    case FF_DBGCMD_MIC_OFF: return "MIC_OFF";
+    case FF_DBGCMD_MIC_WATCH: return "MIC_WATCH";
     }
     return "?";
 }

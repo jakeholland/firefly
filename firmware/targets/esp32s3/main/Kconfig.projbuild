@@ -81,6 +81,32 @@ menu "Firefly bring-up (S15 slice b)"
             not a bring-up diagnostic to opt into. Turn off only to rule
             out this driver while debugging an unrelated I2C-bus issue.
 
+    config FF_MIC
+        bool "Mic — onboard I2S MEMS microphone (S30)"
+        default y
+        help
+            Brings up the onboard I2S MEMS microphone on its own I2S1
+            port (BCLK GPIO15, WS GPIO2, DIN GPIO39 — see
+            docs/specs/S30-audio-input.md) as an off-by-default HAL:
+            ff_mic_init allocates the channel but never starts reading
+            until something calls ff_mic_start (the bench console's
+            `mic on`, or a future S29/Music face — no product feature
+            reads the mic yet, this slice is bring-up only).
+
+            Honest by construction: init failure OR the driver's own
+            "all-zero/stuck data for 1 second" sentinel check both read
+            as "MIC absent" everywhere this is surfaced (bench console,
+            Settings -> DIAGNOSTICS) — a puck with no working mic still
+            boots and is fully usable, same degrade every other optional
+            sensor in this bring-up already follows (ff_compass, ff_audio).
+
+            Default ON: the mic is part of this board's onboard hardware,
+            not a bring-up diagnostic to opt into — mirrors FF_COMPASS's
+            own default-on reasoning above. Turn off only to rule this
+            driver out while debugging an unrelated I2S-peripheral issue
+            (it shares no pins, bus, or peripheral instance with
+            ff_audio's own I2S0 speaker path — see ff_mic.h).
+
     config FF_DEMO_MODE
         bool "Demo mode — boot into the fictional Firefly Fields world"
         default n

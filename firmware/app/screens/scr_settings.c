@@ -2310,6 +2310,26 @@ static void settings_build_diag_page(lv_obj_t *parent, ff_app_diag_t const *d)
         snprintf(buf, sizeof(buf), "--");
     }
     y = settings_diag_line(list, y, row_w, "FREE HEAP", buf);
+    /* S30 mic bring-up (docs/specs/S30-audio-input.md) — one more DEVICE
+     * row, same "append a new fact to the existing section" precedent
+     * this file already followed when DIAGNOSTICS itself was added as
+     * DEVICE's own last row. Four honest states, in priority order:
+     * absent (init failed, OR the driver's own "stuck/all-zero for 1s"
+     * sentinel tripped — this struct does not distinguish the two, and
+     * neither reads as a working mic) beats off beats "on, no data yet"
+     * (the brief window between `mic on` and the reader task's first
+     * frame) beats a real dBFS reading. Never a fabricated number for
+     * any state but the last. */
+    if (!d->mic_present) {
+        snprintf(buf, sizeof(buf), "absent");
+    } else if (!d->mic_running) {
+        snprintf(buf, sizeof(buf), "off");
+    } else if (!d->has_mic_level) {
+        snprintf(buf, sizeof(buf), "on");
+    } else {
+        snprintf(buf, sizeof(buf), "%.0f dBFS", (double)d->mic_envelope_dbfs);
+    }
+    y = settings_diag_line(list, y, row_w, "MIC", buf);
     (void)y; /* the final cursor value is only informative */
 
     /* fix/diag-scroll-persist — restore the offset the previous build left
