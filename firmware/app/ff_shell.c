@@ -3812,26 +3812,29 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * stale nonzero value from a PRIOR Music session would otherwise
      * carry straight through this function's top-of-function memcpy
      * exactly the way `heading_deg` needed its own explicit gate above
-     * for the identical reason. `beat_count`/`bpm_estimate` are zeroed
-     * UNCONDITIONALLY (like `send_expires_in_ms` at the top of this
-     * function): the particle sim reads `beat_count` itself, by diffing
-     * it every frame OUTSIDE this render key (scr_music.c's own LVGL
-     * timer, the same "outside the dirty path" mechanism the flare
-     * sender overlay's countdown chip uses — ff_beat.h's own top comment
-     * on why a diffed counter, not a per-tick edge flag), and
-     * `bpm_estimate` is console-only (the `music` bench command), never
-     * drawn on glass at all. `loudness` is bucketed to the QUIET/LOUD
-     * WORD threshold `scr_music.c`'s own chrome renders at
-     * (`FF_BEAT_LOUD_THRESHOLD`, ff_beat.h) — a single shared threshold
-     * constant, not a duplicated rounding formula, since this is a
-     * boolean-ish word compare rather than a printed-number bucket
-     * width. */
+     * for the identical reason.
+     *
+     * S31 polish (owner feedback on PR #245, 2026-09-08): the QUIET/LOUD
+     * word is gone from `scr_music.c`'s chrome entirely — Jake's own
+     * call ("Not sure we need the text QUIET and LOUD") — so `loudness`
+     * now joins `beat_count`/`bpm_estimate` as UNCONDITIONALLY zeroed:
+     * nothing the render key drives (a full `lv_obj_clean` + rebuild)
+     * reads it any more. The particle sim still reads the RAW
+     * `state->music.loudness` for real, every frame, straight off the
+     * live view — but that read happens in `scr_music.c`'s own LVGL
+     * timer, entirely OUTSIDE this render key (the same "outside the
+     * dirty path" mechanism `beat_count`'s own diffing already uses,
+     * and `bpm_estimate`'s console-only "never drawn on glass" reasoning
+     * already established) — so zeroing it here costs the live swarm
+     * nothing. `source` still earns its keep: the source CHIP's very
+     * presence and color depend on it (shown only while Music is active
+     * AND the source isn't the mic — scr_music.h's own "S31 polish"
+     * comment), a real rendered change the render key must still catch. */
     key->music.beat_count = 0u;
     key->music.bpm_estimate = 0.0f;
+    key->music.loudness = 0.0f;
     key->music.source =
         (v->active_face == FF_APP_FACE_MUSIC) ? v->music.source : FF_APP_MUSIC_SRC_NONE;
-    key->music.loudness =
-        (v->active_face == FF_APP_FACE_MUSIC && v->music.loudness >= FF_BEAT_LOUD_THRESHOLD) ? 1.0f : 0.0f;
 
     /* On-glass report 2026-09-07 — the Map face's own heading, the exact
      * `arrow_deg` lesson one struct over. `shell_project_map` projects
