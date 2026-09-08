@@ -95,7 +95,38 @@ PARAMS = {
     # so insert_comms_boards inserts ONLY the L76K for 'current' (skips
     # XIAO/Wio) when this is False -- trim overrides it True.
     'comms_stack3_full_height': False,
-    'fpc_relief': {'x': (-6.2, 7.02), 'y': (71.44, 73.12), 'z': (21.83, 22.93)},
+    # 2026-09-15 pass 15, item 1 (Jake's print: "the 20pin cable hole needs
+    # to be larger length-wise to fit the cable"): x widened from the old
+    # asymmetric (-6.2, 7.02) -- SPEC's own literal minimum box -- to a
+    # symmetric (-9.0, 9.0), live-measured against the ACTUAL inserted
+    # display occurrence (not just SPEC's text), per the coordinator's own
+    # instruction. Probed the real combined PCBA/shield/FPC body
+    # ('H0146Y003T001-V1') at the pocket's own z-band (trim: z 24.83-25.93,
+    # i.e. base 21.83-22.93 + display_z_offset) and across its y-span
+    # (71.44-73.12): real solid material reaches as far as x=+-8.0mm at
+    # y=71.44 (the widest slice, right at the PCB edge -- narrower,
+    # x+-6.2/7.0, toward y=73.0-73.12 near the connector) -- i.e. the old
+    # SPEC box (13.22mm wide) undershot the real part's own widest point
+    # by up to 1.8mm on one side with ZERO margin, not the >=1.0mm/side
+    # the brief asks for. (-9.0, 9.0) is symmetric (the real measured
+    # extent WAS effectively symmetric, +-8.0, once probed directly -- the
+    # old box's own asymmetry (-6.2 vs 7.02) wasn't measured off anything
+    # in this axis, just SPEC's own literal text) and clears the measured
+    # +-8.0mm envelope by 1.0mm on both sides. This widens the CORE box
+    # that add_fpc_relief cuts UNCLIPPED (not just the outer empirical
+    # margin, which the skin-safe tool can still shrink back near the true
+    # wall) -- see that function's own docstring for why the core box is
+    # cut in full regardless of the skin-safe clip, guaranteeing this
+    # margin is never silently clawed back the way the old, narrower core
+    # box left the widened OUTER margin (x up to +-14) exposed to exactly
+    # that risk. y/z UNCHANGED (Jake's own complaint, and the task's own
+    # clarification, both point at the cable's WIDTH axis specifically --
+    # x here, since the pocket already reaches the connector's own y-band
+    # with margin -- not its length/run axis). Re-verified live:
+    # verify_fpc_relief still 0 bad of 63 probes, both variants (see the
+    # pass-15 README section for the exact numbers and the live probe
+    # script/output).
+    'fpc_relief': {'x': (-9.0, 9.0), 'y': (71.44, 73.12), 'z': (21.83, 22.93)},
 
     # --- case screws (Bottom -> Top), M2 socket head ---
     'screw_head_dia': 3.8,
@@ -295,11 +326,68 @@ PARAMS = {
     # >= the 1.0mm minimum. Re-verified live via verify_post_walls
     # (pilot_wall/shell_skin, 8 rays x 3 z / 8 rays per post) after the
     # move -- see the pass-9g section.
+    # 2026-09-15 pass 15, item 3 (Jake: "the placement of the 4 holes...
+    # are all in the bottom left... doesn't give proper support... figure
+    # out how to fit those better across the top / left / right / bottom"):
+    # PROVED, before touching Fusion (pure-Python search against these
+    # exact PARAMS -- window_center/window_dia, the GPS patch box, and
+    # flat_rho -- reusing the same rho_at_z/true_wall_distance_along_ray
+    # relations this file's own live gates use), that a literal 4-quadrant
+    # (N/S/E/W) spread of CEILING-REACHING posts is geometrically
+    # impossible here, not just difficult:
+    #   - EAST is blocked outright: the GPS patch box (x -2.8..22.2,
+    #     y 2..27) and the window bore's own exclusion circle (radius
+    #     window_dia/2 + post_r + margin = 25.65mm from window_center)
+    #     together leave NO x at ANY y where both clear at once east of
+    #     x=0 -- their own boundaries meet at y~31.5 with zero margin
+    #     (computed exactly: window needs y<=31.47 at x=17 (near the GPS
+    #     box's own east edge and the plate's own edge), GPS needs
+    #     y>=31.50 there -- a real, provable dead zone, not a tuning
+    #     miss).
+    #   - NORTH is blocked outright too: within the domed +y end cap
+    #     (y > spine_b), the true outer wall is a circle of radius
+    #     rho_at_z(p, top_ceiling_underside_z) = outer_radius (24.14mm
+    #     trim at the ceiling) centred on spine_b, while the window bore
+    #     is a circle of radius 22.65mm centred just 1.8mm away (window_
+    #     center) -- the annular gap between them is only ~1.5mm wide,
+    #     nowhere near enough for a Ø5 post plus the 0.6mm/1.0mm margins
+    #     this file's own gates already require, at ANY angle.
+    #   - The plate's OWN area-weighted centroid (computed from
+    #     plate_outline + plate_south_extension - plate_header_cutout,
+    #     ~(-4.62, 44.69)) sits only 7.04mm from window_center (50.0) --
+    #     since no ceiling post can exist within 25.65mm of window_center,
+    #     EVERY viable post position is provably >= 25.65-7.04 = 18.61mm
+    #     from the plate's own centroid. The coordinator's brief's own
+    #     "centroid within 5mm" target is therefore unreachable by more
+    #     than 13mm for ANY arrangement of real, structural (ceiling-
+    #     anchored) posts -- not a tuning shortfall.
+    # Given this, `verify_plate_post_spread` (new gate, firefly_case.py)
+    # is DIAGNOSTIC ONLY (reported, not hard-asserted in verify()'s
+    # pass/fail) -- the same established pattern this file already uses
+    # for verify_skin_intact/verify_wall_integrity/verify_display_
+    # insertion_path, all of which over-fire on real, explained,
+    # non-defect geometry. What WAS achieved, within the one region that
+    # IS geometrically safe (west of the GPS patch, south of the window's
+    # own exclusion circle -- a real search, not a guess: 200k-sample
+    # random search maximizing angular spread subject to every live gate
+    # this file already enforces -- window/wall/GPS clearance >= 0.5mm,
+    # plate-edge pad >= ~3mm): the four posts now span a much larger,
+    # genuinely 2D footprint (x -20..-9, y 14..23.5, ~11x9.5mm bounding
+    # box on a diagonal, not a single 10x11mm axis-aligned rectangle in
+    # one corner) with 265.8 degrees of angular spread around their own
+    # centroid (was 264.5 degrees for the old 4-corner rectangle -- about
+    # the same raw number, since that number was already close to this
+    # region's own practical ceiling, but the NEW arrangement is not
+    # collinear/axis-aligned the way the old one was, and covers visibly
+    # more of the plate's own area -- see the pass-15 README section for
+    # the full derivation, live verify_post_walls numbers, and a render).
+    # P1's own position is UNCHANGED from pass 9g (already proven safe,
+    # both variants); P2-P4 are new.
     'top_posts': {
         'P1': (-20.0, 14.0),
-        'P2': (-10.0, 14.0),
-        'P3': (-20.0, 25.0),
-        'P4': (-10.0, 25.0),
+        'P2': (-9.0, 22.0),
+        'P3': (-11.0, 14.0),
+        'P4': (-18.0, 23.5),
     },
     'board_standoffs': {
         'S1': (-12.0, 65.0),
@@ -377,7 +465,38 @@ PARAMS = {
     # button's rib_plate/connector code was fixed against here. See
     # button_geometry's and add_button's own comments for both halves.
     'rib_inboard_offset': 6.0,   # rib's outboard face, mm inboard of the outer wall (nominal; see comment)
-    'plunger_travel': 0.62,      # rest-to-bottomed inward travel before the collar hits the rib
+    # 2026-09-15 pass 15, item 6 (Jake: "the back button needs to be
+    # longer it doesn't reach correctly"): FIRST attempt (dead-end, kept
+    # as a note) tried shrinking `plunger_pretravel` (the REST gap) 0.3 ->
+    # 0.1mm to physically lengthen the plunger -- a live `check_
+    # interference` run caught a real 14.28mm^3 Home Button x <switch
+    # reference body> overlap even at just 0.1mm shorter, confirming
+    # Home's real available room genuinely has no spare left at REST (see
+    # button_geometry's own docstring: Home's rib/collar already needs
+    # the `rib_actuator_shifted` dynamic clamp just to clear the real
+    # actuator at the EXISTING 0.3mm gap). Reverted `plunger_pretravel`
+    # to 0.3 (unchanged, proven safe).
+    #
+    # FIX: lengthen the PRESS STROKE instead of the REST position --
+    # `plunger_travel` (rest-to-bottomed collar travel) raised 0.62 ->
+    # 0.90mm. This is a REST-state-safe change: the built (as-modeled)
+    # geometry Fusion's own `check_interference` gate examines is always
+    # the REST state, and `plunger_travel` only affects the collar's own
+    # REST position relative to the rib (s_collar_outer = s_rib_inner -
+    # plunger_travel) -- a larger value shifts the collar further inboard
+    # at rest, which the EXISTING `rib_actuator_clearance` dynamic clamp
+    # in button_geometry already re-clears automatically (it shifts the
+    # whole rib+collar assembly outward, toward the wall, whenever the
+    # nominal collar position would come closer than 0.3mm to the real
+    # actuator -- unconditional on plunger_travel's own value). Live-
+    # confirmed clean (0 interference, both buttons, both variants) at
+    # 0.90mm. At full press this delivers a real actuation stroke of
+    # 0.60mm (0.90 - the unchanged 0.3mm pretravel) versus the old
+    # 0.32mm (0.62-0.3) -- a 87.5% increase, comfortably past a typical
+    # tactile dome's own ~0.25-0.3mm throw -- the direct, measurable fix
+    # for "doesn't reach", without touching the REST-position geometry
+    # that (per the dead-end above) has no spare margin left for Home.
+    'plunger_travel': 0.90,      # rest-to-bottomed inward travel before the collar hits the rib
     'collar': {'h': 0.8, 'len': 1.0},  # h = extra flange height beyond the plunger cross-section (Z); len = along travel axis
     # wall_x (the -x outer wall, where the buttons live) is derived at build
     # time as -PARAMS['outer_radius'] -- not duplicated here so it can never
@@ -385,11 +504,33 @@ PARAMS = {
 
     # --- USB-C tunnel ---
     'usb_receptacle': {'x': (-4.48, 4.48), 'z': (14.35, 18.43), 'y': 73.0},
-    'usb_tunnel_stadium': (13.0, 7.0),
-    'usb_tunnel_center_z': 16.4,
+    # 2026-09-15 pass 15, item 2 (Jake: "the power cable hole needs more
+    # room to actually plug in. needs more room towards the top"): grown
+    # 0.9mm taller (7.0 -> 7.9mm) and shifted +0.45mm in Z (16.4 -> 16.85)
+    # so the growth is biased UPWARD (toward the glass/+Z side, where
+    # Jake's complaint points) rather than symmetric -- the OLD bore's
+    # lower edge (12.9mm, current) is preserved almost exactly (new lower
+    # edge 12.9mm too, since center+0.45 and half-height+0.45 cancel at
+    # the bottom), all ~0.9mm of new headroom lands on the TOP edge
+    # (19.9mm -> 20.8mm current / 22.9mm -> 23.8mm trim -- see
+    # usb_tunnel_center_z's own +_DZ_TOP shift in params_trim.py). Checked
+    # against a standard USB-C plug overmold (~6.5x8.4mm body): the new
+    # 7.9mm bore height now exceeds the plug's own 6.5-8.4mm body range
+    # with real margin on both variants, cf. the old 7.0mm which was
+    # tight against the top of that range. Re-verified live (both
+    # variants): 0 real interference against the inserted display
+    # occurrence (the tunnel's own Combine-Intersect against the TRUE
+    # curved outer envelope, add_usb_tunnel, already prevents any breach
+    # of the outer skin regardless of how tall this is asked to be -- the
+    # display-body clearance is the one that needed a live check here,
+    # since the tunnel's own XY footprint sits close to the display's own
+    # y-extent near the dome tip). See the pass-15 README section for the
+    # exact clearance numbers.
+    'usb_tunnel_stadium': (13.0, 7.9),
+    'usb_tunnel_center_z': 16.85,
     'usb_tunnel_y_start': 73.5,
     'usb_liner_thickness': 1.6,
-    'usb_liner_outer_stadium': (16.2, 10.2),
+    'usb_liner_outer_stadium': (16.2, 11.1),
 
     # --- lanyard lug/ear (Bottom) ---
     # z = (0.0, 10.0) (pass-5 printability fix, 2026-09-05): the lug's
@@ -405,10 +546,59 @@ PARAMS = {
     # derived from the shell's TRUE curved surface (true_wall_distance_
     # along_ray), not a hand-picked constant, so it can never re-drift
     # into the cavity or float outside the true wall regardless of variant.
+    # 2026-09-15 pass 15, item 9 (Jake: "the bottom lanyard thing... I
+    # think that still needs work"): reviewed against the brief's own
+    # checklist --
+    #   - cord hole diameter for 4-5mm paracord: the old 4.0mm hole is
+    #     AT the tight end of that range with zero running clearance (a
+    #     real paracord this size would need to be forced through, and
+    #     a printed hole always comes out a touch undersized/rough vs.
+    #     nominal) -- widened to 5.0mm, a comfortable running fit for
+    #     4-5mm cord with margin for print tolerance.
+    #   - wall thickness around the hole (brief's own >= 2.4mm floor):
+    #     computed directly from the existing geometry -- the TIP-side
+    #     wall (hole_from_tip - hole_dia/2) was only 1.5mm at the old
+    #     3.5mm/4.0mm pair, well under 2.4mm (the side walls, (width-
+    #     hole_dia)/2 = 5.0mm, and the root-side wall, ~9mm ear length
+    #     minus hole_from_tip, were never the tight dimension). Fixed by
+    #     raising `hole_from_tip` 3.5 -> 5.0mm alongside the wider hole:
+    #     tip wall = 5.0 - 5.0/2 = 2.5mm (>= 2.4mm, the binding
+    #     dimension); side wall = (14.0-5.0)/2 = 4.5mm; root wall ~4mm
+    #     (the ear's own ~9mm nominal length minus hole_from_tip) -- all
+    #     four sides now clear the 2.4mm floor, not just three of them.
+    #   - print orientation: unaffected by either change -- the ear still
+    #     prints flush on the bed (z=(0.0,10.0), Bottom's own face-down
+    #     orientation, unchanged), and the hole is a plain vertical
+    #     though-cylinder (axis parallel to the print's own Z), needing
+    #     no support either before or after this pass.
+    #   - strength against a hard tug (rough hand calc, both variants
+    #     share this geometry): PETG has a tensile strength of roughly
+    #     50 MPa; the tip-wall cross-section resisting a straight pull
+    #     is roughly 2x(tip_wall x lug width) = 2 x 2.5mm x 14mm = 70mm^2
+    #     (the material on both sides of the hole, in the pull direction)
+    #     -- failure load ~70mm^2 x 50MPa = 3500N, wildly beyond any
+    #     plausible lanyard tug (a firm human yank is on the order of
+    #     50-150N) -- even derating heavily for a printed part's real
+    #     layer-adhesion strength (often 30-50% of bulk, and worse
+    #     across layer lines specifically), this leaves a very
+    #     comfortable margin. The old 1.5mm tip wall's own same estimate
+    #     (2 x 1.5 x 14 x 50 = 2100N) was ALSO nominally fine by this
+    #     same rough calculation -- the 2.4mm floor here is a
+    #     print-quality/consistency margin (thin printed walls are more
+    #     sensitive to under-extrusion, layer gaps, and stress
+    #     concentration at the hole's own edge than the bulk number
+    #     alone suggests), not a response to a marginal strength number.
+    #   - root fillets: see add_lug's own code, right after the ear
+    #     joins into Bottom -- a new best-effort 1.0mm fillet along the
+    #     ear's own top/bottom root edges (where the ear's cross-section
+    #     is at its widest, at the shell attachment) reduces the stress
+    #     concentration a hard tug puts right at that seam, the same
+    #     idiom (skip-on-failure) as every other cosmetic/reinforcement
+    #     fillet in this file.
     'lug': {
         'width': 14.0, 'protrusion': 6.0, 'z': (0.0, 10.0),
-        'hole_dia': 4.0, 'hole_from_tip': 3.5,
-        'fillet_r': 3.0, 'hole_chamfer': 0.6,
+        'hole_dia': 5.0, 'hole_from_tip': 5.0,
+        'fillet_r': 3.0, 'hole_chamfer': 0.6, 'root_fillet_r': 1.0,
     },
 
     # --- logos (debossed 0.4mm) ---

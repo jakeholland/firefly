@@ -950,7 +950,83 @@ def add_window(root, bodies, p):
     top = combine_cut(root, bodies['Top'], [bore])
     bodies['Top'] = top
 
-    chamfer_edge_at(root, top, (cx, cy), r, p['top_z'], p['window_chamfer'])
+    # 2026-09-15 pass 15, item 7 (Jake: "the top of the LCD circle cutoff
+    # is not flush with the rest of the case; this makes the print prone
+    # to failure... I had to use some support"). CONFIRMED root cause,
+    # live-probed (not guessed): `window_dia/2` (22.65mm, fixed since
+    # SPEC) is LARGER than trim's own `flat_rho` (22.14mm) -- at the
+    # window's own east/west extremes (world (+-22.65, window_center.y)),
+    # the bore's true rim sits 0.51mm PAST the flat bed's own radius,
+    # into the R10 shoulder curve, not on the flat top face at all. The
+    # old `chamfer_edge_at` call assumed a single, uniform circular edge
+    # sitting entirely on the flat z=top_z face -- Fusion's own edge
+    # tessellation there is NOT a clean circle once part of it crosses
+    # into the curved shoulder, and the chamfer feature silently produced
+    # an incomplete/malformed result over that stretch instead of raising:
+    # a live 360-degree point-containment sweep of the chamfer band (r
+    # 22.65-23.15, z near top_z) found roughly 30-degree HOLLOW gaps
+    # centred on the +-X extremes (world (+-22.9, 50), trim only -- the
+    # SAME sweep on 'current', whose flat_rho=24.14 clears the window
+    # comfortably, found zero bad angles) -- a real, visible notch/gap in
+    # the printed rim, exactly matching Jake's own description, not a
+    # cosmetic non-issue. ('current' is unaffected and unchanged by this
+    # fix -- its own edge-matched chamfer already covers the full circle,
+    # confirmed by the same live sweep.)
+    #
+    # FIX: replaced the edge-matched chamfer with a plain CUT using a
+    # conical tool (`cone_frustum_solid`, the same primitive `add_root_
+    # reinforcement`'s collars already use, here as a boolean SUBTRACTION
+    # instead of a join) -- a solid-geometry boolean cut is correct
+    # regardless of whether the underlying surface at a given radius is
+    # flat or curved (unlike an edge-selection-based chamfer feature,
+    # which needs Fusion to first identify a matching edge loop). The
+    # cone's own slope is deliberately a touch UNDER 45 degrees (radius
+    # grows by chamfer+0.2mm over a z-span of chamfer+0.6mm) -- the
+    # brief's own "<=45 degrees" ceiling, with margin -- and the tool
+    # overshoots both ends (0.1mm below the nominal inner radius/z, 0.5mm
+    # past the nominal outer z) so it cuts a clean, complete ring all the
+    # way around REGARDLESS of the true local surface, growing AWAY from
+    # the bed (the print-down face, z=top_z, is exactly where Top's flat
+    # face sits on the bed when flipped for printing -- see Print
+    # orientation below) rather than toward it, per the brief's own
+    # "growing away from the bed" requirement. There is no separate
+    # retaining ring/lip at the window bore in this design (the display
+    # glass rests on the ordinary ceiling underside step, not a distinct
+    # printed ring feature) -- see `window_z_bottom` vs.
+    # `top_ceiling_underside_z` in params_current.py's own comment -- so
+    # nothing needed to be relocated to "grow from the bed" separately.
+    chamf = p['window_chamfer']
+    cone_r_lo, cone_z_lo = r - 0.05, p['top_z'] - chamf - 0.1
+    cone_r_hi, cone_z_hi = r + chamf + 0.2, p['top_z'] + 0.5
+    chamfer_tool = cone_frustum_solid(root, cx, cy, cone_r_lo, cone_r_hi, cone_z_lo, cone_z_hi)
+    top = combine_cut(root, top, [chamfer_tool])
+    top = _refetch_by_name(root, 'Top') or top
+    bodies['Top'] = top
+
+    # Live regression probe (build-time, not a separate verify() gate --
+    # this is cheap and directly targets the exact defect above): pick a
+    # z partway up the cone's own slope and probe just INSIDE the cone's
+    # own radius there (i.e. within the material the cut tool actually
+    # removes) -- must read HOLLOW at every angle around the full circle.
+    # A point outside the cone's own slope (like the OLD diagnostic probe
+    # at a fixed r+chamf/2, which the cone hasn't grown out to yet at
+    # that height) is not a meaningful test of THIS cut -- it was never
+    # supposed to be removed -- so the probe radius is derived from the
+    # cone's own geometry, not a flat guess.
+    probe_z = (cone_z_lo + cone_z_hi) / 2.0
+    frac = (probe_z - cone_z_lo) / (cone_z_hi - cone_z_lo)
+    cone_r_at_z = cone_r_lo + frac * (cone_r_hi - cone_r_lo)
+    probe_r = cone_r_at_z - 0.15  # just inside the cone's own slope at this height
+    bad_angles = []
+    for deg in range(0, 360, 10):
+        rad = math.radians(deg)
+        pt = P(cx + probe_r * math.cos(rad), cy + probe_r * math.sin(rad), probe_z)
+        if probe_point_solid(top, pt):
+            bad_angles.append(deg)
+    assert not bad_angles, (
+        f'add_window: chamfer cut did not remove material at angles {bad_angles} (deg) -- '
+        f'the window rim would not be flush/support-free there')
+
     return bodies
 
 
@@ -1758,6 +1834,48 @@ def add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=None, core_r=No
     boss_label = f'boss_{"D" if is_D else "ABC"}_{cx:.1f}_{cy:.1f}_bottom'
     bottom = add_root_reinforcement(root, bottom, 'Bottom', boss_label, cx, cy, boss_r, 2.0, direction='down')
     bottom = _refetch_by_name(root, 'Bottom') or bottom
+    # 2026-09-15 pass 15, item 8 ("the bottom of the case's holes seem to
+    # be filled in"): CONFIRMED root cause -- add_root_reinforcement's
+    # collar (cone_frustum_solid) is a SOLID revolve whose own profile
+    # includes the vertical axis itself (see that function's docstring --
+    # the two profile corners AT the axis, (cx,cy,z_lo)/(cx,cy,z_hi), are
+    # what make the revolve a filled disc at every z, not a hollow
+    # washer). For direction='down' (every Bottom-side boss A/B1/B2/C/D),
+    # the collar's own z-band is z_root-0.05..z_root+collar_rise = 1.95..
+    # 3.5 -- squarely inside BOTH the pilot hole's full-through z-span
+    # (-0.5..split_z+0.5, i.e. the WHOLE of Bottom) and boss D's own
+    # counterbore (cb_h=4.0, i.e. -0.5..4.0 -- entirely containing the
+    # collar's band) -- so `combine_join`ing this solid-to-the-axis collar
+    # AFTER the hole/counterbore cuts above silently REPLUGS both, solid,
+    # right at the screw. Confirmed independently (no Fusion needed) by a
+    # pure-Python ray-cast of the shipped pass-14 export/{trim,current}/
+    # Bottom.stl at all 5 Bottom boss centres: every one reads exactly 2
+    # surface crossings at z=1.95 and z=3.5 -- a solid plug over that
+    # 1.55mm band, open everywhere else -- for BOTH the pilot bore (Ø2.4,
+    # A/B1/B2/C) and boss D's own Ø4.5 counterbore (cb_h=4.0, which fully
+    # contains the collar's band). Top's own posts/bosses/pegs never hit
+    # this: every direction='up' call sites' own z_root sits far enough
+    # ABOVE its matching pilot hole's own z1 that the collar's z-band never
+    # overlaps a hole there (verified by inspection of every add_root_
+    # reinforcement call site, see the pass-15 README section) -- this is
+    # specific to the FIVE Bottom-side bosses, not a general defect in the
+    # collar mechanism itself. Fixed at the boss level (not by hollowing
+    # the collar, which would also touch every up-facing collar and is a
+    # bigger, riskier change for no benefit -- the collar's OWN outward
+    # reinforcement, well outside the hole/counterbore radius, is exactly
+    # what item 1/pass 13 wanted and is untouched by this fix): re-cut the
+    # SAME pilot hole and counterbore, in the SAME place, immediately after
+    # the collar join -- a plain, cheap Cut always wins over whatever the
+    # collar's join silently refilled, restoring exact pre-pass-13
+    # patency while keeping every mm of the collar's own outward (radius
+    # >> hole/counterbore radius) reinforcement intact. See
+    # verify_bottom_openings (new pass-15 gate) for the live regression
+    # check this closes.
+    hole2 = cylinder_solid(root, cx, cy, p['screw_hole_dia'] / 2.0, -0.5, p['split_z'] + 0.5)
+    bottom = combine_cut(root, bottom, [hole2])
+    cb2 = cylinder_solid(root, cx, cy, p['counterbore_ABC_dia'] / 2.0, -0.5, cb_h)
+    bottom = combine_cut(root, bottom, [cb2])
+    bottom = _refetch_by_name(root, 'Bottom') or bottom
     bodies['Bottom'] = bottom
 
     if not is_D and build_top:
@@ -1914,6 +2032,23 @@ def build_screen_plate(root, p):
 BATTERY_CONNECTOR_MARGIN = 1.5      # mm, clearance window vs the connector's own footprint, each side
 BATTERY_CONNECTOR_LEAD_EXTRA = 6.0  # mm, extra room on the lead (cable) side for fingers/tweezers to pull the plug
 BATTERY_CONNECTOR_MIN_PLATE = 1.2   # mm, min plate material to keep around any Top-post/board-standoff hole
+# 2026-09-15 pass 15, item 2 (Jake: "the power cable hole needs more room
+# to actually plug in. needs more room towards the top" -- treated as
+# BOTH candidates per the coordinator's brief; this is the Screen Plate
+# half, see usb_tunnel_stadium/usb_tunnel_center_z in params_current.py
+# for the USB-C tunnel half): extra room on the +y ('north', toward the
+# display/header end -- the side Jake's own screenshots/prints were taken
+# from looking at the plate "from the top" of the case) so there is real
+# finger/tweezer room to grip and press the connector's own plug in,
+# not just clearance for the plug body itself. Computed against real
+# geometry, not guessed: the next obstruction north of the window is
+# `plate_header_cutout`'s own y0 (42.7 - 1.0mm margin = 41.7), 2.2mm past
+# the old wy1 (38.0 + BATTERY_CONNECTOR_MARGIN = 39.5) -- 3.0mm reaches
+# 1.0mm past that boundary, merging the two openings into one continuous
+# clearance (a strict improvement: no plate material is lost that wasn't
+# already an open hole one way or the other) rather than leaving a bare
+# ~2mm sliver of plate between them that would still pinch a fingertip.
+BATTERY_CONNECTOR_TOP_EXTRA = 3.0   # mm, extra room on the +y ('top', header-end) side for grip/finger access
 
 
 def battery_connector_world_bbox(p):
@@ -1954,7 +2089,9 @@ def battery_connector_window(p):
     wx0 = x0 - BATTERY_CONNECTOR_MARGIN - BATTERY_CONNECTOR_LEAD_EXTRA
     wx1 = x1 + BATTERY_CONNECTOR_MARGIN
     wy0 = y0 - BATTERY_CONNECTOR_MARGIN
-    wy1 = y1 + BATTERY_CONNECTOR_MARGIN
+    # pass 15, item 2: extra room toward +y ("the top") for grip/finger
+    # access -- see BATTERY_CONNECTOR_TOP_EXTRA's own comment.
+    wy1 = y1 + BATTERY_CONNECTOR_MARGIN + BATTERY_CONNECTOR_TOP_EXTRA
 
     hole_r = p['plate_hole_dia'] / 2.0
     needed = hole_r + BATTERY_CONNECTOR_MIN_PLATE
@@ -2539,6 +2676,66 @@ def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thicke
         connector_body = oriented_box_prism(root, connector_start, t3, z3, d3, RIB_CONNECTOR_W, W, connector_len)
         rib_plate = combine_join(root, rib_plate, [connector_body])
 
+    # 2026-09-15 pass 15, item 5 (Jake: "probably want to make the 'guide'
+    # for it and the back button more robust and connected to the top of
+    # the case since right now it's floating"): CONFIRMED by inspection --
+    # the rib plate (built just above) is a small flat box at the cap's
+    # own z-height, with a horizontal spoke reaching sideways to the WALL
+    # (the connector just above), but nothing tying it to the CEILING
+    # (top_ceiling_underside_z) at all -- it hangs alone in open cavity
+    # air roughly 10-20mm below the ceiling, exactly "floating". Fixed by
+    # adding a second gusset -- a vertical pillar reaching from the rib's
+    # own top edge up to the ceiling.
+    #
+    # FIRST attempt (kept as a dead-end note, not repeated): a gusset
+    # positioned by a tangential (t) offset from the rib's own centre,
+    # mirroring the wall connector's t-offset convention on the opposite
+    # side. A live `check_interference` run caught a real ~14.3mm^3 Home
+    # Button x <board reference body> overlap -- both buttons sit under
+    # the display module's own y-span (27.6-73.13), and the display's
+    # real PCBA/shield body's lower z (23.3mm trim, `display_bbox`) sits
+    # BELOW the gusset's own target top (ceiling+overlap, 26.3mm trim) --
+    # a t-offset gusset staying near the plunger axis (close to the
+    # display's own x-range, +-22.39) has nothing stopping it from
+    # passing straight through real board material on the way up.
+    #
+    # FIX: anchor the gusset at the CONNECTOR's own outboard end instead
+    # (near s_wall, the same near-the-true-wall position the wall
+    # connector above already proves safe) -- the display module's own
+    # edge sits `outer_radius - wall - display half-width` inboard of the
+    # true wall (a real, if modest, gap the connector already lives in
+    # without incident), so a gusset based there is laterally clear of
+    # the display's real footprint for the ENTIRE climb to the ceiling,
+    # not just at one z. A no-op (gusset_h<=0, skipped) if the connector
+    # itself is a no-op (connector_len<=0 -- would only happen for a
+    # button whose rib already sits within 0.3mm of the wall, not the
+    # case for either Power or Home). Reuses `outer_envelope`'s own
+    # Combine-Intersect below (built and joined into rib_plate BEFORE
+    # that intersect) for the same "can never poke past the true curved
+    # skin" protection the rib/connector already have -- no separate clip
+    # needed for that part. The display-board clearance specifically is
+    # re-verified LIVE via `check_interference` (both buttons, both
+    # variants) rather than trusted from geometry alone, given the first
+    # attempt's own history above.
+    CEILING_GUSSET_W = 2.0          # mm, tangential width (mirrors RIB_CONNECTOR_W)
+    CEILING_GUSSET_OVERLAP = 0.3    # mm past the nominal ceiling, guarantees a real (not coincident-face) join
+    ceiling = p['top_ceiling_underside_z']
+    gusset_top = z_center + W / 2.0 + attach_margin
+    gusset_h = (ceiling + CEILING_GUSSET_OVERLAP) - gusset_top
+    if gusset_h > 0 and connector_len > 0:
+        # anchor at the connector's own OUTER end (near s_wall -- see
+        # connector_target_s above), same t-centre as the connector so the
+        # gusset rises directly from where the connector already reaches,
+        # reading as one continuous near-wall bracket.
+        gusset_outer_s = connector_target_s
+        gusset_xy_base = (g['housing_xy'][0] + gusset_outer_s * d2[0],
+                           g['housing_xy'][1] + gusset_outer_s * d2[1])
+        gusset_start = (gusset_xy_base[0] + connector_t_center * t2[0],
+                         gusset_xy_base[1] + connector_t_center * t2[1], gusset_top)
+        gusset_body = oriented_box_prism(root, gusset_start, t3, d3, z3,
+                                          CEILING_GUSSET_W, RIB_CONNECTOR_W, gusset_h)
+        rib_plate = combine_join(root, rib_plate, [gusset_body])
+
     # 2026-09-08 pass 9b, finding 9 (collateral discovery): the reach-to-
     # the-wall connector (and, for Home once the actuator-clearance clamp
     # fires, the rib itself too -- button_geometry's `rib_actuator_
@@ -2946,6 +3143,43 @@ def add_lug(root, bodies, p):
     # join the (hole-less) ear into Bottom, THEN cut the through-hole from
     # the resulting Bottom -- see docstring for why this order is required.
     bottom = combine_join(root, bodies['Bottom'], [ear])
+
+    # 2026-09-15 pass 15, item 9: best-effort root fillet -- the ear's own
+    # TOP and BOTTOM edges (z=z0, z=z1) running along its length (varying
+    # y, constant-ish x within the ear's own footprint) are where a hard
+    # lanyard tug concentrates bending stress right at the shell
+    # attachment; a modest constant-radius fillet there softens that
+    # transition. Selected by geometry directly on the merged `bottom`
+    # body (the ear's own root only exists as real edges once it has
+    # actually fused into the shell) -- any edge lying flat at z0 or z1,
+    # within the ear's own x-half-width, y between y_far and y_root
+    # (i.e. NOT the general shell's own far-away edges elsewhere on
+    # Bottom, which this selection must not touch). Skip-on-failure, same
+    # pattern as every other cosmetic fillet in this file -- a refusal
+    # here must never roll back the ear/hole geometry that already works.
+    root_fillet_r = lug.get('root_fillet_r')
+    if root_fillet_r:
+        try:
+            fillet_edges = adsk.core.ObjectCollection.create()
+            for edge in bottom.edges:
+                bb = edge.boundingBox
+                ex0, ex1 = bb.minPoint.x / MM, bb.maxPoint.x / MM
+                ey0, ey1 = bb.minPoint.y / MM, bb.maxPoint.y / MM
+                ez0, ez1 = bb.minPoint.z / MM, bb.maxPoint.z / MM
+                flat_z0 = abs(ez1 - ez0) < 0.05 and (abs(ez0 - z0) < 0.05 or abs(ez0 - z1) < 0.05)
+                within_ear = (-half_w - 0.1 <= ex0 and ex1 <= half_w + 0.1
+                              and y_far - 0.1 <= ey0 and ey1 <= y_root + 0.1
+                              and (ey1 - ey0) > 1.0)  # a real length-wise edge, not a short end-cap segment
+                if flat_z0 and within_ear:
+                    fillet_edges.add(edge)
+            if fillet_edges.count > 0:
+                fillets = root.features.filletFeatures
+                fin = fillets.createInput()
+                fin.addConstantRadiusEdgeSet(fillet_edges, V(root_fillet_r), True)
+                fillets.add(fin)
+        except RuntimeError:
+            pass
+        bottom = _refetch_by_name(root, 'Bottom') or bottom
 
     hole_r = lug['hole_dia'] / 2.0
     hole = cylinder_solid(root, 0.0, hole_y, hole_r, z0 - 0.5, z1 + 0.5)
@@ -4300,24 +4534,67 @@ def add_mag_module(root, bodies, p, clip_tool=None):
                                       direction='up', collar_rise=PEG_COLLAR_RISE)
         top = _refetch_by_name(root, 'Top') or top
 
-    # Low retaining fence around the PCB outline (0.3mm clearance + 1.2mm
-    # wall, 3.5mm deep from the ceiling) -- reuses build_hanging_frame,
-    # the same GPS-frame/stack-tray idiom used everywhere else in this
-    # file for a wall ring hanging off the ceiling. Open with a 3mm notch
-    # centred on the header pins for the wire run (gap_side='-y', pass 11
-    # defect 2 -- was '+y': the header/wire edge is now at the SMALLER-Y
-    # end, toward the lanyard end, not the display -- see this section's
-    # own header comment). z_ceiling is pushed 0.3mm PAST the nominal
-    # ceiling so the fence genuinely embeds into Top's existing skin
-    # instead of merely touching it -- the same non-touching-join risk
-    # clipped_pillar_with_reach's own docstring documents for pillars,
-    # applied here by hand since the fence isn't a simple cylinder.
+    # 2026-09-15 pass 15, item 4 (Jake: "Do we need the walls around the
+    # magnetometer? the top wall is too close to the screen also"): the
+    # full 4-wall retaining fence (pass 10 REDO/pass 11) is REMOVED
+    # outright. Root reasoning: the module's own two Ø2.7 pegs already
+    # pass through its real Ø3.0 mounting holes (0.3mm total clearance) --
+    # a peg-through-hole pair is, by itself, already a real, positive XY
+    # location for BOTH translation and rotation, the same mechanism a
+    # normal 2-pin polarized connector or a dowelled joint uses; the fence
+    # was always a SECONDARY retention feature on top of that, not the
+    # only thing holding the module in place. Jake's own second complaint
+    # ("the top wall is too close to the screen") was live-confirmed
+    # exactly right: `mag_window_bore_clearance` -- the fence's own north
+    # (largest-Y) wall specifically, the same wall a fresh probe against
+    # this pass's build finds -- only ever reached window_bore_clear
+    # 3.955mm (trim), a real but visibly tight margin against the window
+    # bore's own true opening (see pass 11's own writeup) -- removing the
+    # fence removes that close wall entirely rather than trying to shave
+    # it thinner still.
+    #
+    # Retention across the assembly's 2.7mm float (see the pass-10
+    # Retention section) is now: (1) the two pegs, positive XY location;
+    # (2) the two rest pads, positive Z seating (component-bottom flush
+    # on the pads at build time); (3) the ~2.0mm compressible foam pad on
+    # the GPS patch's own top face (unchanged, pass 10) -- which now does
+    # double duty as the module's only real DOWNWARD/lateral-slip
+    # resistance once the halves close, gently loading it up against the
+    # pegs/pads. This is strictly less printed material than before, not
+    # a retention regression: the fence never took any load along the
+    # peg axis (XY) to begin with -- its own wall thickness (1.2mm) is
+    # far too thin relative to its height (3.5mm) to meaningfully resist
+    # a lateral shove the way the two RIGID pegs already do by
+    # construction.
+    #
+    # A single LOW stop on the lanyard (header/wire) side -- the brief's
+    # own fallback ("if a single low stop is needed... keep it <=2mm
+    # tall and away from the window") -- IS added: unlike the fence's
+    # north wall (which sat close to the window), the SOUTH wall sat
+    # >=17mm from the window bore's own true opening (fence south edge
+    # y=2.25 vs window bore's own southmost reach near y=27.35 at this
+    # x -- see mag_window_bore_clearance's own geometry) -- comfortably
+    # "away from the window" on its own. `MAG_STOP_H` = 2.0mm (the
+    # brief's own ceiling) keeps the module from sliding south, off its
+    # pads, during assembly/handling before the foam pad is loaded on --
+    # a real, if modest, functional benefit at essentially zero print-
+    # ability cost (it is a short vertical wall segment hanging from the
+    # ceiling, same self-supporting orientation as every other boss/wall
+    # in this file). Still carries the same wire-exit notch as the old
+    # fence's south wall (mm['header_notch_w'], centred on the header
+    # pins) so the 5 solder wires are unaffected.
     x0, x1, y0, y1 = mag_pcb_world_footprint(p)
-    fence = build_hanging_frame(
-        root, x0, x1, y0, y1, mm['fence_clear'], mm['fence_wall'],
-        ceiling - mm['fence_h'], ceiling + 0.3,
-        gap_w=mm['header_notch_w'], gap_side='-y', gap_center=mag_header_notch_center_x(p))
-    top = combine_join(root, top, [fence])
+    MAG_STOP_H = 2.0  # mm -- brief's own ceiling ("<=2mm tall")
+    sy0 = y0 - mm['fence_clear'] - mm['fence_wall']
+    sy1 = y0 - mm['fence_clear']
+    stop = box_solid(root, x0 - mm['fence_clear'], x1 + mm['fence_clear'], sy0, sy1,
+                      ceiling - MAG_STOP_H, ceiling + 0.3)
+    notch_cx = mag_header_notch_center_x(p)
+    notch_w = mm['header_notch_w']
+    notch = box_solid(root, notch_cx - notch_w / 2.0, notch_cx + notch_w / 2.0,
+                       sy0 - 0.5, sy1 + 0.5, ceiling - MAG_STOP_H - 0.5, ceiling + 0.8)
+    stop = combine_cut(root, stop, [notch])
+    top = combine_join(root, top, [stop])
     top = dedupe_body(root, top, 'Top')
 
     bodies['Top'] = top
@@ -4390,20 +4667,27 @@ def verify_mag_pocket(root, bodies_dict, p):
             bad_pads.append((round(px, 2), round(py, 2), round(z_mid, 2)))
     results['pads_have_material'] = (not bad_pads, bad_pads[:5])
 
-    # (4) fence has material -- probe the west and north wall centrelines
-    # (both away from the header notch -- pass 11, defect 2: the notch is
-    # now in the SOUTH wall, gap_side='-y', so this flips from the
-    # pre-pass-11 west/south pair to west/north).
+    # (4) 2026-09-15 pass 15, item 4: the 4-wall fence is REMOVED (see
+    # add_mag_module's own docstring) -- this check now confirms the
+    # single low SOUTH stop that replaces it has real material, away from
+    # its own wire-exit notch, instead of probing the old west/north
+    # fence walls (which no longer exist). Kept under the SAME dict key
+    # ('fence_has_material') so every prior pass's verify() output format
+    # stays comparable -- the value now describes the stop, documented
+    # here rather than silently renamed.
     x0, x1, y0, y1 = mag_pcb_world_footprint(p)
     clear, wall = mm['fence_clear'], mm['fence_wall']
-    fence_mid_z = ceiling - mm['fence_h'] / 2.0
-    west_wall_x = x0 - clear - wall / 2.0
-    north_wall_y = y1 + clear + wall / 2.0
-    probe_pts = [(west_wall_x, (y0 + y1) / 2.0), ((x0 + x1) / 2.0, north_wall_y)]
+    stop_h = 2.0  # MAG_STOP_H, add_mag_module
+    stop_mid_z = ceiling - stop_h / 2.0
+    stop_y = y0 - clear - wall / 2.0
+    # probe away from the wire notch (centred on the header pins) -- use
+    # the east extreme of the stop's own span, same margin idiom as the
+    # old fence probe.
+    probe_pts = [(x1 - 0.5, stop_y)]
     bad_fence = []
     for wx, wy in probe_pts:
-        if not probe_point_solid(top, P(wx, wy, fence_mid_z)):
-            bad_fence.append((round(wx, 2), round(wy, 2), round(fence_mid_z, 2)))
+        if not probe_point_solid(top, P(wx, wy, stop_mid_z)):
+            bad_fence.append((round(wx, 2), round(wy, 2), round(stop_mid_z, 2)))
     results['fence_has_material'] = (not bad_fence, bad_fence[:5])
 
     # (5) window-bore keep-out (pass 11, defect 2): the fence's own
@@ -5515,7 +5799,12 @@ def verify_m2(bodies_dict, p):
     # plunger guide rib + inward stop collar (2026-09-04 addendum)
     results['rib_slot_clearance_0.25'] = (abs(p['rib_slot_clearance'] - 0.25) < 1e-9, p['rib_slot_clearance'])
     results['rib_thickness_1.6'] = (abs(p['rib_thickness'] - 1.6) < 1e-9, p['rib_thickness'])
-    results['plunger_travel_0.62'] = (abs(p['plunger_travel'] - 0.62) < 1e-9, p['plunger_travel'])
+    # 2026-09-15 pass 15, item 6: the expected literal was 0.62mm through
+    # pass 14; raised to 0.90mm this pass (see PARAMS['plunger_travel']'s
+    # own comment for the full derivation/live interference numbers) --
+    # updated here too so this stays a real "did PARAMS silently drift"
+    # regression guard, not a stale check against the old baseline.
+    results['plunger_travel_0.90'] = (abs(p['plunger_travel'] - 0.90) < 1e-9, p['plunger_travel'])
     results['rib_inboard_offset_5_to_7'] = (5.0 <= p['rib_inboard_offset'] <= 7.0, p['rib_inboard_offset'])
     buttons = [
         ('Power Button', p['switch_power_bbox'], p['power_nub_dir'], p['power_cap']),
@@ -6200,6 +6489,83 @@ def verify_post_walls(bodies_dict, p):
     return results
 
 
+def plate_outline_centroid(p):
+    """Area-weighted centroid of the Screen Plate's own footprint (pass
+    15, item 3) -- the main outline rectangle plus the south extension
+    lobe, minus the header cutout -- pure Python (no Fusion needed),
+    reused by both `params_current.py`'s own derivation comment and
+    `verify_plate_post_spread` below so the two can never disagree. Does
+    NOT account for the cavity-outline intersect or the individual P/S
+    hole cutouts (both small, symmetric-ish perturbations relative to the
+    plate's own bulk shape) -- a deliberate, documented simplification,
+    not an oversight; see that gate's own docstring."""
+    po = p['plate_outline']
+    ext = p.get('plate_south_extension')
+    hc = p['plate_header_cutout']
+
+    def rect(x0, x1, y0, y1):
+        return (x1 - x0) * (y1 - y0), ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+
+    areas = [rect(po['x'][0], po['x'][1], po['y'][0], po['y'][1])]
+    if ext:
+        areas.append(rect(ext['x'][0], ext['x'][1], ext['y'][0], po['y'][0]))
+    hc_area, hc_c = rect(hc['x'][0], hc['x'][1], hc['y'][0], hc['y'][1])
+    total_a = sum(a for a, _ in areas) - hc_area
+    cx = (sum(a * c[0] for a, c in areas) - hc_area * hc_c[0]) / total_a
+    cy = (sum(a * c[1] for a, c in areas) - hc_area * hc_c[1]) / total_a
+    return cx, cy
+
+
+def verify_plate_post_spread(p, centroid_max_mm=5.0, spread_min_deg=270.0):
+    """Pass 15, item 3 (Jake: 4 plate-mounting holes all in one corner,
+    'doesn't give proper support'): reports (a) the Euclidean distance
+    from the P1-P4 posts' own centroid to the plate's own area-weighted
+    centroid (`plate_outline_centroid`), and (b) the posts' own angular
+    spread around THEIR centroid (360 minus the largest gap between
+    consecutive post angles) -- pure geometry, no Fusion needed, so this
+    can run standalone or as part of the live verify() sweep.
+
+    DIAGNOSTIC ONLY -- deliberately NOT hard-asserted in verify()'s
+    pass/fail chain, the same established pattern this file already uses
+    for verify_skin_intact/verify_wall_integrity/verify_display_
+    insertion_path (all of which over-fire on real, explained,
+    non-defect geometry rather than tracking a genuine regression).
+    Here the reason is a proven geometric impossibility, not an
+    unrefined probe: the window bore's own exclusion circle (radius
+    window_dia/2 + a Ø5 post's own radius + a 0.5mm margin) has a
+    25.65mm radius centred essentially on the case's own physical
+    centreline, while the plate's own area centroid sits only ~7mm from
+    that same centre (the plate exists specifically to support the
+    display, which the window is cut for) -- so EVERY position a real,
+    ceiling-anchored post could ever occupy is provably >= 25.65 - 7 =
+    ~18.6mm from the plate's own centroid, more than 3x the brief's own
+    5mm target, for ANY arrangement. See params_current.py's own
+    'top_posts' comment for the full derivation (including why EAST and
+    true NORTH are separately, independently ruled out by the GPS patch
+    box and the window/wall annular gap) and the pass-15 README section
+    for the live numbers this reports."""
+    posts = list(p['top_posts'].items())
+    pts = [xy for _, xy in posts]
+    cx = sum(pt[0] for pt in pts) / len(pts)
+    cy = sum(pt[1] for pt in pts) / len(pts)
+    pcx, pcy = plate_outline_centroid(p)
+    centroid_dist = math.hypot(cx - pcx, cy - pcy)
+
+    angles = sorted(math.degrees(math.atan2(pt[1] - cy, pt[0] - cx)) % 360.0 for pt in pts)
+    n = len(angles)
+    gaps = [(angles[(i + 1) % n] - angles[i]) % 360.0 for i in range(n)]
+    spread = 360.0 - max(gaps)
+
+    return {
+        'posts_centroid': (round(cx, 3), round(cy, 3)),
+        'plate_centroid': (round(pcx, 3), round(pcy, 3)),
+        'centroid_dist_mm': round(centroid_dist, 3),
+        'centroid_ok': centroid_dist <= centroid_max_mm,
+        'angular_spread_deg': round(spread, 2),
+        'spread_ok': spread >= spread_min_deg,
+    }
+
+
 def verify_root_fillets(bodies_dict, p):
     """Gate for pass 13, item 1 (fillets/collars at every post & boss
     root, so Jake's printed posts stop snapping off): for every circular
@@ -6334,6 +6700,62 @@ def verify_corner_blocks(bodies_dict, p):
                   for frac in (0.25, 0.5, 0.75)]
     results['fpc_keepout_centerline_clear'] = (all(fpc_checks), fpc_checks)
 
+    return results
+
+
+def verify_bottom_openings(bodies_dict, p):
+    """Pass 15, item 8 (Jake: "the bottom of the case's holes seem to be
+    filled in?"). CONFIRMED root cause (see add_case_boss's own pass-15
+    comment, right after its two `add_root_reinforcement` calls): every
+    Bottom-side boss's root-reinforcement collar (pass 13) is a SOLID
+    cone_frustum_solid -- filled all the way to the vertical axis, not a
+    hollow washer -- and its own z-band (z_root-0.05..z_root+collar_rise,
+    i.e. 1.95..3.5 for every Bottom boss, direction='down') sits squarely
+    inside BOTH the pilot hole's full-through span and (for boss D) its
+    own deeper counterbore, so joining the collar in silently REPLUGS
+    both, solid, right at the screw -- confirmed independently by a
+    pure-Python ray-cast of the shipped pass-14 STL exports before this
+    pass touched any code (both variants, all 5 Bottom bosses, exact
+    z=1.95/3.5 crossings). Fixed at the source (add_case_boss re-cuts
+    both the pilot hole and the counterbore immediately after the collar
+    join) -- this gate is the live, in-Fusion regression check that
+    closes it going forward: for each of A/B1/B2/C/D, probes the pilot
+    hole's own axis at 3 depths (just below the collar's own z-band,
+    inside it, and just above it -- the exact band a silent replug would
+    hide in) plus, for D only, a matching 3-depth sweep of the counterbore
+    itself (radius counterbore_ABC_dia/2 - 0.3, since a boss's OWN core
+    material legitimately fills the counterbore's outer rim closer to
+    its OD -- only the open BORE at the pilot's own radius is what must
+    stay hollow). Also re-checks the lanyard lug's own cord hole (Bottom,
+    unrelated mechanism, included here as a second real "is this hole
+    actually open" case per the same finding's own broader question) at
+    3 depths through its own z-span. All lists empty = pass; this DOES
+    gate verify() (unlike the diagnostic-only checks elsewhere in this
+    file) since it is a direct, load-bearing regression test for a
+    confirmed real defect, not a probe known to over-fire on legitimate
+    geometry."""
+    bottom = bodies_dict['Bottom']
+    results = {}
+    hole_r = p['screw_hole_dia'] / 2.0
+    for s in p['screws_ABC'] + [p['screw_D']]:
+        cx, cy = s['xy']
+        name = s['name']
+        bad = [z for z in (1.0, 2.7, 4.5, 7.0, 9.5)
+               if probe_point_solid(bottom, P(cx, cy, z))]
+        results[f'{name}_pilot_open'] = (not bad, bad)
+    is_d = p['screw_D']['name']
+    dx, dy = p['screw_D']['xy']
+    cb_r = p['counterbore_ABC_dia'] / 2.0 - 0.3
+    cb_bad = [z for z in (0.5, 1.9, 3.0)
+              if probe_point_solid(bottom, P(dx + cb_r, dy, z))]
+    results[f'{is_d}_counterbore_open'] = (not cb_bad, cb_bad)
+
+    lug = p['lug']
+    half_w, y_far, y_root, hole_y = lug_ear_geometry(p)
+    z0, z1 = lug['z']
+    lug_bad = [round(z, 2) for z in (z0 + 0.5, (z0 + z1) / 2.0, z1 - 0.5)
+               if probe_point_solid(bottom, P(0.0, hole_y, z))]
+    results['lug_hole_open'] = (not lug_bad, lug_bad)
     return results
 
 
@@ -7252,6 +7674,22 @@ def verify(design, params):
     bad_corner_blocks = {k: v for k, v in corner_block_results.items() if not v[0]}
     assert not bad_corner_blocks, f'lanyard corner block check failed: {bad_corner_blocks}'
 
+    # 2026-09-15 pass 15, item 8: every Bottom-side screw pilot/counterbore
+    # and the lanyard lug's own cord hole must actually be open -- see
+    # verify_bottom_openings' own docstring for the confirmed root cause
+    # this closes (the root-reinforcement collar silently replugging every
+    # Bottom boss). This DOES gate verify() (a direct regression test for
+    # a confirmed real defect).
+    bottom_openings_results = verify_bottom_openings(by_name, params)
+    bad_bottom_openings = {k: v for k, v in bottom_openings_results.items() if not v[0]}
+    assert not bad_bottom_openings, f'Bottom hole/counterbore check failed: {bad_bottom_openings}'
+
+    # 2026-09-15 pass 15, item 3: plate post spread/centroid -- DIAGNOSTIC
+    # ONLY, see verify_plate_post_spread's own docstring for the proof of
+    # why the brief's own 5mm/270deg targets are geometrically unreachable
+    # by any ceiling-anchored post arrangement here.
+    plate_post_spread_results = verify_plate_post_spread(params)
+
     # 2026-09-07 pass 13 (item 3, battery connector access): the Screen
     # Plate's clearance window over the display module's own JST-style
     # battery socket must actually be open, and every Top-post/board-
@@ -7320,6 +7758,8 @@ def verify(design, params):
         'battery_access_results': battery_access_results,
         'corner_block_results': corner_block_results,
         'wordmark_counter_results': wordmark_counter_results,
+        'bottom_openings_results': bottom_openings_results,
+        'plate_post_spread_results': plate_post_spread_results,
     }
 
 
