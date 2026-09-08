@@ -22,6 +22,7 @@ void ff_gesture_cfg_default(ff_gesture_cfg_t *cfg, int16_t cx, int16_t cy, int16
     cfg->long_ms         = 1200;
     cfg->long_slop_px    = 12;
     cfg->long_press_enabled = false; /* the glue arms this per active face */
+    cfg->stall_gap_ms   = 150; /* ff_gesture.h's "Stall tolerance" section */
 }
 
 void ff_gesture_init(ff_gesture_t *g, const ff_gesture_cfg_t *cfg)
@@ -73,6 +74,7 @@ ff_gesture_kind_t ff_gesture_feed(ff_gesture_t *g, bool down, int16_t x, int16_t
         g->last_y = y;
         g->back_threshold_evaluated = false;
         g->home_threshold_evaluated = false;
+        g->stall_checked = false;
 
         if (!gesture_in_circle(&g->cfg, x, y)) {
             /* S28_AC9 — a DOWN outside the glass circle can never
@@ -107,6 +109,25 @@ ff_gesture_kind_t ff_gesture_feed(ff_gesture_t *g, bool down, int16_t x, int16_t
         /* Already DONE (a gesture already fired this touch, S28_AC8) or
          * ABORTED (S28_AC9) — every further sample until UP is a no-op. */
         return FF_GESTURE_NONE;
+    }
+
+    /* Stall tolerance (ff_gesture.h's own section on this) — checked
+     * ONCE, on the very first sample fed after DOWN, never again for
+     * this touch. A gap this large proves the DEVICE, not the finger,
+     * was slow (a stalled poll loop — real bench evidence, see that
+     * header section), so the window's own clock is moved forward to
+     * this sample rather than charging the stall against `window_ms`.
+     * Only `t0` moves; `x0`/`y0` (the touch's real spatial origin) are
+     * untouched, so `dx`/`dy` below still measure genuine displacement
+     * from where the finger actually started (S28_AC11). A normal gap
+     * (<= stall_gap_ms) changes nothing (S28_AC12 — this is a stall
+     * exception, not a general timing relaxation). */
+    if (!g->stall_checked) {
+        g->stall_checked = true;
+        uint32_t const gap_ms = now_ms - g->t0; /* wraparound-safe: same subtraction convention ff_time_reached itself uses */
+        if (gap_ms > (uint32_t)g->cfg.stall_gap_ms) {
+            g->t0 = now_ms;
+        }
     }
 
     int32_t const dx  = (int32_t)x - (int32_t)g->x0;

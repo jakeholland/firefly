@@ -60,6 +60,7 @@ static void gesture_cfg_default_pins_spec_constants(void)
     TEST_ASSERT_EQUAL_UINT16(1200, cfg.long_ms);
     TEST_ASSERT_EQUAL_INT16(12, cfg.long_slop_px);
     TEST_ASSERT_FALSE(cfg.long_press_enabled);
+    TEST_ASSERT_EQUAL_UINT16(150, cfg.stall_gap_ms);
 }
 
 /* ------------------------------------------------------------------- */
@@ -126,6 +127,16 @@ static void S28_AC4_slow_swipe_over_window_is_none(void)
     gesture_new(&g, false);
 
     TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 20, 206, 0));
+    /* fix/map-back-gesture-stall amendment: a prompt (well under
+     * stall_gap_ms=150) first sample here establishes that nothing was
+     * stalled — see ff_gesture.h's "Stall tolerance" section — so the
+     * window's clock is NOT moved and the ORIGINAL DOWN time still
+     * governs. Without this sample, a single DOWN->600ms jump is
+     * genuinely indistinguishable from a stalled device (S28_AC11's own
+     * shape) and the amended FSM correctly, not wrongly, rescues it —
+     * this test is about a SLOW finger with a live, unstalled poll
+     * loop, so it must look like one. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 22, 206, 20));
     /* Same ratio as AC1 (dy=0), but 600ms > the 500ms window. */
     TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 80, 206, 600));
 }
@@ -282,6 +293,65 @@ static void S28_AC10_time_wrap_still_recognises_long_press(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* fix/map-back-gesture-stall (2026-09-07 dated amendment to S28's own  */
+/* spec) — AC11/AC12: a stalled poll loop must not eat the recognition  */
+/* window (bench evidence: a press on the Map face froze the device's   */
+/* touch-poll loop for ~520ms, making BACK/HOME unreachable there —     */
+/* see ff_gesture.h's "Stall tolerance" section for the full mechanism  */
+/* and docs/specs/S28-gestures.md's own dated amendment for the bench   */
+/* numbers). NOTE ON NUMBERING: slice b (test_gesture_glue.c) already   */
+/* uses S28_AC11..AC18 for its own (later, sim/glue-level) criteria —   */
+/* the coordinator's brief for THIS fix named the new core-level tests  */
+/* "AC11"/"AC12" too; kept literally as instructed since these live in  */
+/* a different file/module than slice b's AC11/AC12 and test different  */
+/* things, but flagged here (and in the PR body) as a real numbering    */
+/* collision in the spec's own AC space, not a copy-paste mistake.      */
+/* ------------------------------------------------------------------- */
+
+static void S28_AC11_stall_after_down_then_normal_swipe_recognises_back(void)
+{
+    ff_gesture_t g;
+    gesture_new(&g, false);
+
+    /* DOWN inside the left rim zone, at t=0. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 20, 206, 0));
+    /* The device's own poll loop stalls for 520ms (> stall_gap_ms=150)
+     * — this is the FIRST sample fed after DOWN, with no travel yet at
+     * this exact instant. The one-shot stall check fires here, moving
+     * the window's own clock (t0) forward to t=520. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 20, 206, 520));
+    /* A normal 56px swipe, well within 500ms of the FIRST sample
+     * (920 - 520 = 400ms) even though it lands 920ms after the real
+     * DOWN — which the un-amended FSM measured window_ms against and
+     * would have failed (S28_AC4's own rule, applied to a stall instead
+     * of a slow finger) — exactly the Map-face BACK-unreachable bug
+     * this amendment fixes. Mutation guard: deleting the stall check
+     * (or comparing against the ORIGINAL t0=0: 920-0=920 > 500) makes
+     * this assert fail instead. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_BACK, ff_gesture_feed(&g, true, 76, 206, 920));
+}
+
+static void S28_AC12_genuinely_slow_swipe_over_window_still_fails(void)
+{
+    ff_gesture_t g;
+    gesture_new(&g, false);
+
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 20, 206, 0));
+    /* THE PROXY, stated up front (AGENTS.md item 6): "a stall-tolerant
+     * window recognises a late swipe" is satisfied just as well by an
+     * FSM that simply doubled or dropped `window_ms` outright, which
+     * would wrongly let a slow, ordinary drag through too. The FIRST
+     * sample after DOWN arrives promptly here (20ms, well under
+     * stall_gap_ms=150) — nothing was stalled, so t0 is NOT moved, and
+     * a genuinely slow drag (56px only after 700ms, over the 500ms
+     * window, with every individual gap far under stall_gap_ms) must
+     * still read as NONE — the tolerance is for GAPS, not for slowness
+     * in general. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 21, 206, 20));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 76, 206, 700));
+}
+
+/* ------------------------------------------------------------------- */
 /* NULL safety                                                          */
 /* ------------------------------------------------------------------- */
 
@@ -314,6 +384,9 @@ int main(void)
     RUN_TEST(S28_AC9_down_outside_circle_never_starts_a_gesture);
     RUN_TEST(S28_AC10_time_wrap_still_recognises_back);
     RUN_TEST(S28_AC10_time_wrap_still_recognises_long_press);
+
+    RUN_TEST(S28_AC11_stall_after_down_then_normal_swipe_recognises_back);
+    RUN_TEST(S28_AC12_genuinely_slow_swipe_over_window_still_fails);
 
     RUN_TEST(gesture_null_safe);
 
