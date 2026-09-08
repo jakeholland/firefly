@@ -121,6 +121,20 @@ typedef int (*ff_dbgconsole_i2c_scan_fn)(void *user, char *out, size_t cap);
 typedef int (*ff_dbgconsole_compass_status_fn)(void *user, char *out, size_t cap);
 
 /**
+ * ff_dbgconsole_i2c_health_fn — the `i2c` command's THIRD platform hook
+ * (2026-09-08 QA hardening: the touch driver's own read-failure counter,
+ * "touch read failures per minute" per the hardening pass's own brief).
+ * Same shape/contract as the two hooks above: writes one line body (no
+ * "dbg: " prefix) into `out`, returns 0 on success. Unlike `i2c_scan`, a
+ * NULL `i2c_health` does not disable the rest of the `i2c` command — it
+ * simply omits this one line, honestly, the same way a NULL
+ * `compass_status` already does (see `ff_dbgconsole_handle_line`'s own
+ * doc comment). The esp32s3 target wires this to
+ * `ff_display_i2c_health()`; the sim passes NULL (no I2C bus at all).
+ */
+typedef int (*ff_dbgconsole_i2c_health_fn)(void *user, char *out, size_t cap);
+
+/**
  * ff_dbgconsole_handle_line — parse one raw line (via
  * `ff_dbgcmd_parse`) and dispatch it against `sh`, emitting zero or
  * more `"dbg: "`-prefixed reply lines through `reply`.
@@ -150,11 +164,13 @@ typedef int (*ff_dbgconsole_compass_status_fn)(void *user, char *out, size_t cap
  * there is nothing to scan, so there is nothing to follow up on
  * either). `compass_status == NULL` with `i2c_scan` present still
  * prints the scan line; it just omits the compass line, honestly,
- * rather than printing one with fields it cannot answer.
+ * rather than printing one with fields it cannot answer. `i2c_health`
+ * (2026-09-08) follows the identical NULL-is-honestly-omitted rule.
  */
 void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len, uint32_t now_ms,
                                 ff_dbgconsole_reply_fn reply, void *user, ff_dbgconsole_i2c_scan_fn i2c_scan,
-                                ff_dbgconsole_compass_status_fn compass_status);
+                                ff_dbgconsole_compass_status_fn compass_status,
+                                ff_dbgconsole_i2c_health_fn i2c_health);
 
 #endif /* FF_TARGET_SIM || CONFIG_FF_DEBUG_CONSOLE */
 

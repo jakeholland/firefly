@@ -140,6 +140,31 @@ bool ff_display_i2c_bus_lock(uint32_t timeout_ms);
 void ff_display_i2c_bus_unlock(void);
 
 /**
+ * [api] ff_display_i2c_health_tick — 2026-09-08 QA hardening. Call
+ * periodically (a few-second cadence; app_main.c's render loop) with the
+ * current monotonic ms. Watches the SPD2010 touch driver's own
+ * read-failure health counter (esp_lcd_touch_spd2010_touch_health) and,
+ * only when a whole tick period's worth of failures crosses a sustained-
+ * fault threshold (an ordinary intermittent NACK never does), attempts
+ * one `i2c_master_bus_reset()` — SCL bus recovery (clock SCL with SDA
+ * released, up to 9 cycles, freeing a slave stuck mid-ACK) plus an FSM
+ * reset — rate-limited by its own cooldown so a genuinely broken
+ * controller cannot make this hammer the bus forever. A no-op before the
+ * I2C bus is up. See the function's own doc comment (ff_display.c) for
+ * the full rationale and the touch-vs-bus-wide failure distinction.
+ */
+void ff_display_i2c_health_tick(uint32_t now_ms);
+
+/**
+ * [api] ff_display_i2c_health — Diagnostics page / bench `diag` console
+ * line: touch-read failures (lifetime total + the last closed ~60s
+ * window's per-minute rate) and how many bus-recovery attempts
+ * ff_display_i2c_health_tick has made. Any output pointer may be NULL.
+ */
+void ff_display_i2c_health(uint32_t *out_touch_fail_total, uint32_t *out_touch_fail_per_min,
+                            uint32_t *out_recovery_attempts);
+
+/**
  * ff_display_panel_init — bring up the SPD2010 over QSPI and turn the
  * backlight on. Requires ff_display_expander_init() to have released
  * LCD_RST first. On success the panel is initialised, oriented, and

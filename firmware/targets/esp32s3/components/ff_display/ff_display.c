@@ -30,6 +30,7 @@
 #include "ff_display.h"
 #include "ff_display_internal.h"
 
+#include <inttypes.h> /* PRIu32 — the I2C health-tick log lines below */
 #include <math.h> /* sqrtf — the boot splash's ray-unit-vector precompute, ff_display_draw_boot_splash */
 #include <string.h>
 
@@ -444,6 +445,103 @@ void ff_display_i2c_bus_unlock(void)
 {
     if (s_i2c_bus_mutex != NULL) {
         xSemaphoreGive(s_i2c_bus_mutex);
+    }
+}
+
+/* =====================================================================
+ * I2C health + bus recovery (2026-09-08 QA hardening).
+ *
+ * Cracked-panel bench finding: the SPD2010 touch controller can fail
+ * every multi-transaction read (NACK/timeout) roughly every 40 ms
+ * without ever fully WEDGING the bus (each transaction still times out
+ * and returns — see esp_lcd_touch_spd2010.c's own health counter for
+ * that ordinary-failure case, which needs no recovery, only quieter
+ * logging). This block covers the DIFFERENT, rarer failure: the bus
+ * itself sticks (a slave holding SDA low mid-transaction, e.g. a wedged
+ * touch controller that dies mid-ACK) so EVERY transaction on the shared
+ * bus — including the compass's — starts failing, not just touch's.
+ * `i2c_master_bus_reset()` (ESP-IDF's own `i2c_master.c`,
+ * `s_i2c_master_clear_bus`) performs the standard I2C recovery: clocks
+ * SCL up to 9 times with SDA released, which frees a slave stuck
+ * mid-ACK, then resets the peripheral's own FSM.
+ *
+ * `ff_display_i2c_health_tick`, called periodically (app_main.c's render
+ * loop, a few-second cadence — see that file's own call site) rather
+ * than from the touch poll itself: recovery is a comparatively heavy,
+ * bus-wide operation (it also resets the compass's in-flight state) and
+ * must not run on every failed poll — only when the FAILURE RATE stays
+ * high across an entire tick period, which is what a genuinely stuck bus
+ * looks like as opposed to an ordinary intermittent NACK. */
+static uint32_t s_i2c_last_touch_fail_total;
+static uint32_t s_i2c_recovery_attempts;
+static uint32_t s_i2c_recovery_last_ms;
+
+/* A tick period's worth of failures at or above this is "the bus looks
+ * stuck", not "an intermittent NACK" — the touch poll runs at LVGL's
+ * indev rate (~30 ms), so a healthy bus recovering on its own between
+ * failures would show far fewer than one failure per poll across a
+ * multi-second tick. */
+#define FF_I2C_RECOVERY_FAIL_THRESHOLD 20u
+/* Never attempt recovery more than once per this many ms — a genuinely
+ * broken (not merely stuck) controller would otherwise trigger a bus
+ * reset on every tick forever; one attempt per cooldown window is enough
+ * to recover a transient stick without hammering the peripheral. */
+#define FF_I2C_RECOVERY_COOLDOWN_MS 10000u
+
+void ff_display_i2c_health_tick(uint32_t now_ms)
+{
+    if (s_i2c_bus == NULL) {
+        return; /* bus not up yet — nothing to check or recover */
+    }
+
+    uint32_t total_fail = 0;
+    esp_lcd_touch_spd2010_touch_health(&total_fail, NULL);
+    uint32_t const new_fail = total_fail - s_i2c_last_touch_fail_total; /* wraps correctly if it ever wraps */
+    s_i2c_last_touch_fail_total = total_fail;
+
+    if (new_fail < FF_I2C_RECOVERY_FAIL_THRESHOLD) {
+        return; /* healthy, or an ordinary intermittent NACK — no recovery needed */
+    }
+    if (s_i2c_recovery_last_ms != 0 && (uint32_t)(now_ms - s_i2c_recovery_last_ms) < FF_I2C_RECOVERY_COOLDOWN_MS) {
+        return; /* already tried recently — give it time before trying again */
+    }
+
+    s_i2c_recovery_last_ms = now_ms;
+    s_i2c_recovery_attempts++;
+    ESP_LOGW(TAG, "I2C bus recovery: %" PRIu32 " touch read failures this tick (attempt #%" PRIu32 ") — clocking SCL",
+             new_fail, s_i2c_recovery_attempts);
+
+    /* Both callers of ff_display_i2c_bus_lock treat a failed lock as
+     * "skip this poll/sample" (see that function's doc comment), so a
+     * bounded wait here — rather than 0/forever — cannot itself hang the
+     * caller of THIS function (app_main's render loop) if a transaction
+     * happens to be genuinely in flight right now; it simply defers
+     * recovery to the next tick. */
+    if (!ff_display_i2c_bus_lock(50)) {
+        ESP_LOGW(TAG, "I2C bus recovery: could not get the bus lock this tick, will retry next tick");
+        return;
+    }
+    esp_err_t const err = i2c_master_bus_reset(s_i2c_bus);
+    ff_display_i2c_bus_unlock();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "i2c_master_bus_reset failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "I2C bus recovery: SCL clocked, bus FSM reset");
+    }
+}
+
+/**
+ * [api] I2C health, for the Diagnostics page / bench `diag` console line —
+ * touch-read failures (esp_lcd_touch_spd2010's own counter, this file's
+ * thin passthrough so callers need one include, not two) plus how many
+ * times THIS file has attempted a bus recovery.
+ */
+void ff_display_i2c_health(uint32_t *out_touch_fail_total, uint32_t *out_touch_fail_per_min,
+                            uint32_t *out_recovery_attempts)
+{
+    esp_lcd_touch_spd2010_touch_health(out_touch_fail_total, out_touch_fail_per_min);
+    if (out_recovery_attempts != NULL) {
+        *out_recovery_attempts = s_i2c_recovery_attempts;
     }
 }
 

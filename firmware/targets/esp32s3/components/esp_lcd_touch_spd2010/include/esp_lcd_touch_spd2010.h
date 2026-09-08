@@ -25,6 +25,22 @@ extern "C" {
 esp_err_t esp_lcd_touch_new_i2c_spd2010(const esp_lcd_panel_io_handle_t io, const esp_lcd_touch_config_t *config, esp_lcd_touch_handle_t *tp);
 
 /**
+ * @brief [api] Touch-read health counter (2026-09-08 QA hardening).
+ *
+ * A failing multi-transaction read (e.g. a cracked panel NACKing/timing
+ * out) is counted here instead of only flooding the console — see the
+ * FIREFLY PATCH #6 block in esp_lcd_touch_spd2010.c for the full story.
+ * Either output pointer may be NULL.
+ *
+ * @param out_total_fail   lifetime count of failed tp_read_data() calls, or NULL
+ * @param out_fail_per_min the most recently CLOSED ~60s window's failure
+ *                         count ("failures per minute"), or NULL — 0 both
+ *                         when nothing has failed and during the first
+ *                         still-open window after a failure starts
+ */
+void esp_lcd_touch_spd2010_touch_health(uint32_t *out_total_fail, uint32_t *out_fail_per_min);
+
+/**
  * @brief I2C address of the SPD2010 controller
  *
  */

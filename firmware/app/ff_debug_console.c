@@ -141,7 +141,7 @@ static void dbgconsole_help(ff_dbgconsole_reply_fn reply, void *user)
     reply_line(reply, user, "dbg: flare                    start a quick flare");
     reply_line(reply, user, "dbg: flare cancel             cancel a flare in progress");
     reply_line(reply, user, "dbg: wall                     wall-clock latch dump");
-    reply_line(reply, user, "dbg: i2c                      shared I2C bus scan + one-shot compass status");
+    reply_line(reply, user, "dbg: i2c                      shared I2C bus scan + compass status + touch health");
     reply_line(reply, user, "dbg: cal                      compass calibration ritual status");
     reply_line(reply, user, "dbg: cal start                begin a calibration session");
     reply_line(reply, user, "dbg: cal finish               end the session, persist if coverage is enough");
@@ -697,7 +697,8 @@ static void dbgconsole_wall(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *
  * succeeded: the compass driver's own state doesn't depend on this
  * particular bus sweep having worked. */
 static void dbgconsole_i2c(ff_dbgconsole_i2c_scan_fn i2c_scan, ff_dbgconsole_compass_status_fn compass_status,
-                            void *hook_user, ff_dbgconsole_reply_fn reply, void *user)
+                            ff_dbgconsole_i2c_health_fn i2c_health, void *hook_user, ff_dbgconsole_reply_fn reply,
+                            void *user)
 {
     /* `line` must fit the longest prefix ("dbg: compass ", 13 bytes)
      * plus a full `body` (up to DBGCONSOLE_LINE_BUF-1 non-NUL bytes)
@@ -724,11 +725,20 @@ static void dbgconsole_i2c(ff_dbgconsole_i2c_scan_fn i2c_scan, ff_dbgconsole_com
         snprintf(line, sizeof(line), "dbg: compass %s", body);
         reply_line(reply, user, line);
     }
+
+    /* 2026-09-08 QA hardening — touch read-failure health, honestly
+     * omitted (not a fabricated zero) when the target has no hook (the
+     * sim), same NULL convention as compass_status just above. */
+    if (i2c_health != NULL && i2c_health(hook_user, body, sizeof(body)) >= 0) {
+        snprintf(line, sizeof(line), "dbg: touch %s", body);
+        reply_line(reply, user, line);
+    }
 }
 
 void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len, uint32_t now_ms,
                                 ff_dbgconsole_reply_fn reply, void *user, ff_dbgconsole_i2c_scan_fn i2c_scan,
-                                ff_dbgconsole_compass_status_fn compass_status)
+                                ff_dbgconsole_compass_status_fn compass_status,
+                                ff_dbgconsole_i2c_health_fn i2c_health)
 {
     (void)now_ms; /* every command below reaches "now" via a shell getter, not this parameter */
     if (sh == NULL || reply == NULL) return;
@@ -752,7 +762,7 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
     case FF_DBGCMD_FLARE: dbgconsole_flare(sh, reply, user); return;
     case FF_DBGCMD_FLARE_CANCEL: dbgconsole_flare_cancel(sh, reply, user); return;
     case FF_DBGCMD_WALL: dbgconsole_wall(sh, reply, user); return;
-    case FF_DBGCMD_I2C: dbgconsole_i2c(i2c_scan, compass_status, user, reply, user); return;
+    case FF_DBGCMD_I2C: dbgconsole_i2c(i2c_scan, compass_status, i2c_health, user, reply, user); return;
     case FF_DBGCMD_CAL: dbgconsole_cal_status(sh, reply, user); return;
     case FF_DBGCMD_CAL_START: dbgconsole_cal_start(sh, reply, user); return;
     case FF_DBGCMD_CAL_FINISH: dbgconsole_cal_finish(sh, reply, user); return;

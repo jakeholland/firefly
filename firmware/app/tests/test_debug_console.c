@@ -113,6 +113,7 @@ static harness_t H;
  * pointing one at a fake below. */
 static ff_dbgconsole_i2c_scan_fn s_i2c_hook;
 static ff_dbgconsole_compass_status_fn s_compass_hook;
+static ff_dbgconsole_i2c_health_fn s_i2c_health_hook;
 
 #define MY_ID 0x00001000u
 #define DANA 0x0000DA1Au
@@ -123,6 +124,7 @@ static void harness_init(uint32_t t0_ms)
     memset(&H, 0, sizeof(H));
     s_i2c_hook = NULL;
     s_compass_hook = NULL;
+    s_i2c_health_hook = NULL;
     H.clk.t = t0_ms;
     H.clock.now_ms = fake_now;
     H.clock.user = &H.clk;
@@ -263,7 +265,7 @@ static void dispatch(char const *line, capture_t *out)
 {
     capture_reset(out);
     ff_dbgconsole_handle_line(&H.shell, line, strlen(line), ff_shell_now_ms(&H.shell), capture_reply, out,
-                               s_i2c_hook, s_compass_hook);
+                               s_i2c_hook, s_compass_hook, s_i2c_health_hook);
 }
 
 /* ------------------------------------------------------------------- */
@@ -564,6 +566,13 @@ static int fake_compass_status_ok(void *user, char *out, size_t cap)
     return 0;
 }
 
+static int fake_i2c_health_ok(void *user, char *out, size_t cap)
+{
+    (void)user;
+    snprintf(out, cap, "read_fail_total=3 read_fail_per_min=0 bus_recoveries=0");
+    return 0;
+}
+
 static void dbgconsole_i2c_unavailable_without_a_scan_hook(void)
 {
     /* No scan hook (the sim target's own reality: no I2C bus at all) —
@@ -631,6 +640,42 @@ static void dbgconsole_i2c_omits_compass_line_without_a_compass_hook(void)
 
     TEST_ASSERT_EQUAL_INT(1, cap.n);
     TEST_ASSERT_EQUAL_STRING("dbg: i2c 0x20 io-expander, 0x53 touch", cap.lines[0]);
+}
+
+static void dbgconsole_i2c_reports_touch_health_when_the_hook_is_present(void)
+{
+    /* 2026-09-08 QA hardening — the third hook, same forwarding contract
+     * as compass_status: present, its line follows the compass line
+     * verbatim behind "dbg: touch ". */
+    harness_init(1000);
+    s_i2c_hook = fake_i2c_scan_ok;
+    s_compass_hook = fake_compass_status_ok;
+    s_i2c_health_hook = fake_i2c_health_ok;
+
+    capture_t cap;
+    dispatch("i2c", &cap);
+
+    TEST_ASSERT_EQUAL_INT(3, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: i2c 0x20 io-expander, 0x53 touch", cap.lines[0]);
+    TEST_ASSERT_EQUAL_STRING("dbg: compass mag=absent imu=found heading=? cal=identity", cap.lines[1]);
+    TEST_ASSERT_EQUAL_STRING("dbg: touch read_fail_total=3 read_fail_per_min=0 bus_recoveries=0", cap.lines[2]);
+}
+
+static void dbgconsole_i2c_omits_touch_line_without_a_health_hook(void)
+{
+    /* NULL health hook (e.g. a build predating this feature, or the sim)
+     * — the scan + compass lines still print; the touch line is omitted
+     * entirely, same honest-omission rule as the compass hook above. */
+    harness_init(1000);
+    s_i2c_hook = fake_i2c_scan_ok;
+    s_compass_hook = fake_compass_status_ok;
+
+    capture_t cap;
+    dispatch("i2c", &cap);
+
+    TEST_ASSERT_EQUAL_INT(2, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: i2c 0x20 io-expander, 0x53 touch", cap.lines[0]);
+    TEST_ASSERT_EQUAL_STRING("dbg: compass mag=absent imu=found heading=? cal=identity", cap.lines[1]);
 }
 
 /* ------------------------------------------------------------------- */
@@ -991,6 +1036,8 @@ int main(void)
     RUN_TEST(dbgconsole_i2c_reports_scan_and_compass_status_verbatim);
     RUN_TEST(dbgconsole_i2c_scan_failure_still_reports_compass);
     RUN_TEST(dbgconsole_i2c_omits_compass_line_without_a_compass_hook);
+    RUN_TEST(dbgconsole_i2c_reports_touch_health_when_the_hook_is_present);
+    RUN_TEST(dbgconsole_i2c_omits_touch_line_without_a_health_hook);
 
     RUN_TEST(dbgconsole_cal_status_reports_identity_when_uncalibrated_and_inactive);
     RUN_TEST(dbgconsole_cal_start_then_status_reports_live_progress);

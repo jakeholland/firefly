@@ -32,6 +32,7 @@
  * see the git history of this file / the S15a PR body. NVS store and UART
  * transport remain later slices (c/d/e).
  */
+#include <inttypes.h> /* PRIu32 — the I2C/watchdog/perf health lines below */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h> /* S26 slice f — snprintf, ff_wakeup_cause_str's fallback branch */
@@ -685,6 +686,14 @@ static ff_idle_t s_idle;
  * so this deliberately does not run at that faster cadence. */
 #define FF_DEVICE_STATS_SAMPLE_PERIOD_MS ((uint32_t)2000u)
 
+/* 2026-09-08 QA hardening — I2C health-tick period
+ * (ff_display_i2c_health_tick). 3 s: slower than the touch poll's own
+ * ~30 ms cadence on purpose — the tick's whole job is to look at a
+ * multi-second WINDOW of failures and decide whether the bus looks
+ * genuinely stuck (see that function's own doc comment for the
+ * threshold/cooldown reasoning), not to react to a single failed poll. */
+#define FF_I2C_HEALTH_TICK_PERIOD_MS ((uint32_t)3000u)
+
 /* Human-readable wake cause, for the on-glass log line the spec's AC1
  * asks for ("log sleep entry + wake cause ... so the maintainer can read
  * it on glass"). Deliberately NOT a full switch over every
@@ -1013,6 +1022,19 @@ static int dbgconsole_compass_status(void *user, char *out, size_t cap)
     return 0;
 }
 
+/* `ff_dbgconsole_i2c_health_fn` (ff_debug_console.h, 2026-09-08 QA
+ * hardening) — thin passthrough onto ff_display_i2c_health(): touch
+ * read-failure total/per-minute rate + bus-recovery attempt count. */
+static int dbgconsole_i2c_health(void *user, char *out, size_t cap)
+{
+    (void)user;
+    uint32_t total_fail = 0, fail_per_min = 0, recoveries = 0;
+    ff_display_i2c_health(&total_fail, &fail_per_min, &recoveries);
+    snprintf(out, cap, "read_fail_total=%" PRIu32 " read_fail_per_min=%" PRIu32 " bus_recoveries=%" PRIu32,
+             total_fail, fail_per_min, recoveries);
+    return 0;
+}
+
 /* Drain whatever the USB host has sent since the last frame (non-
  * blocking: ticks_to_wait=0) into the line accumulator, dispatching on
  * every '\n' and tolerating a preceding '\r' (ff_dbgcmd_parse's own CRLF
@@ -1039,7 +1061,7 @@ static void dbgconsole_poll(ff_shell_t *sh, uint32_t now_ms)
                 if (!s_dbgconsole_discarding) {
                     ff_dbgconsole_handle_line(sh, s_dbgconsole_line, s_dbgconsole_line_len, now_ms,
                                                dbgconsole_reply_write, NULL, dbgconsole_i2c_scan,
-                                               dbgconsole_compass_status);
+                                               dbgconsole_compass_status, dbgconsole_i2c_health);
                 }
                 s_dbgconsole_line_len = 0u;
                 s_dbgconsole_discarding = false;
@@ -1839,6 +1861,11 @@ void app_main(void)
      * facts, not a live sensor reading a wearer would watch tick. */
     uint32_t last_device_stats_ms = ff_bringup_now_ms();
 
+    /* 2026-09-08 QA hardening — same periodic-sample seeding shape as the
+     * three above: the render loop's own I2C health tick (below) waits a
+     * full FF_I2C_HEALTH_TICK_PERIOD_MS before its first check. */
+    uint32_t last_i2c_health_ms = ff_bringup_now_ms();
+
     /* S26 slice f — arm the light-sleep wake sources once, right before
      * the render loop can first reach SLEEP. See
      * ff_configure_light_sleep_wake's own doc comment above for the wake
@@ -2148,6 +2175,16 @@ void app_main(void)
          * comment). Without CONFIG_FF_COMPASS compiled in at all, this
          * honestly reports "no compass" (FF_APP_MAG_NONE/FF_APP_IMU_ABSENT)
          * rather than a stale or fabricated reading. */
+        /* 2026-09-08 QA hardening — watch the touch driver's own read-
+         * failure health counter and attempt SCL bus recovery if a whole
+         * tick period looks genuinely stuck (ff_display_i2c_health_tick's
+         * own doc comment has the threshold/cooldown reasoning and the
+         * "why not react to a single failed poll" rationale). */
+        if (ff_time_reached(now_ms, last_i2c_health_ms + FF_I2C_HEALTH_TICK_PERIOD_MS)) {
+            last_i2c_health_ms = now_ms;
+            ff_display_i2c_health_tick(now_ms);
+        }
+
         if (ff_time_reached(now_ms, last_device_stats_ms + FF_DEVICE_STATS_SAMPLE_PERIOD_MS)) {
             last_device_stats_ms = now_ms;
             size_t const free_heap = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);

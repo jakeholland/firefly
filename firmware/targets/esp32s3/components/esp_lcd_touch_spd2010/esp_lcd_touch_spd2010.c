@@ -45,6 +45,24 @@
  * (2)-(4) are the read-side twins of the same new-i2c_master zero-length-
  * transfer rejection that (1) fixes on the init path. Everything else is
  * byte-for-byte upstream.
+ *
+ *   6. `read_data`: a failed `tp_read_data()` now also counts toward a
+ *      running touch-read-failure health counter (per-minute rate +
+ *      lifetime total, `esp_lcd_touch_spd2010_touch_health()`) and emits
+ *      ITS OWN rate-limited (>= 1/s) summary line instead of letting a
+ *      failing bus (cracked panel, bench-observed 2026-09-08 — a failed
+ *      multi-transaction read roughly every 40 ms) flood the console with
+ *      four raw ESP_LOGE lines per failure (two from this file's own
+ *      ESP_RETURN_ON_ERROR chain, TAG "SPD2010"; two more from ESP-IDF's
+ *      i2c_master/lcd_panel.io.i2c layers underneath). The three
+ *      underlying tags are muted to ESP_LOG_NONE once, at the end of a
+ *      successful `esp_lcd_touch_new_i2c_spd2010()` (so an INIT-time
+ *      failure still logs normally) — see that function's own comment for
+ *      why NONE, not WARN, is required to actually silence an ESP_LOGE
+ *      call, and for the one real tradeoff (a *different* device sharing
+ *      the bus loses the generic i2c.master line too; ff_compass.c logs
+ *      its own failures under its own tag regardless, so no signal is
+ *      actually lost — see this component's QA-hardening PR body).
  */
 
 #include <inttypes.h>
@@ -60,10 +78,55 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_timer.h" /* FIREFLY PATCH #6 — esp_timer_get_time() for the health-counter window/log rate-limit */
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_touch.h"
 
 static const char *TAG = "SPD2010";
+/* FIREFLY PATCH #6 — a separate tag for this driver's OWN rate-limited
+ * summary line, deliberately NOT "SPD2010": esp_lcd_touch_new_i2c_spd2010
+ * mutes "SPD2010" to ESP_LOG_NONE once init succeeds (see that function),
+ * and a summary log sharing that tag would silence itself along with the
+ * raw per-call spam it exists to replace. */
+static const char *HEALTH_TAG = "spd2010_health";
+
+/* FIREFLY PATCH #6 — touch-read health counter (S15/QA-hardening).
+ * `window_fail`/`window_start_ms` track the CURRENTLY OPEN ~60 s window;
+ * `last_rate_per_min` is the count from the last window that actually
+ * CLOSED — reporting the open window instead would understate an ongoing
+ * flood that hasn't reached 60 s yet. Not a true sliding window (a fixed
+ * fixed-size bucket that rolls over every 60 s), which is an honest
+ * approximation good enough for a bench "how bad is it" reading, not a
+ * precision rate meter. */
+typedef struct {
+    uint32_t total_fail;        /* lifetime failed tp_read_data() calls */
+    uint32_t window_fail;       /* failures counted in the still-open window */
+    uint32_t window_start_ms;   /* esp_timer ms this window started (0 == never started) */
+    uint32_t last_rate_per_min; /* the most recently CLOSED window's failure count */
+} spd2010_touch_health_t;
+
+static spd2010_touch_health_t s_touch_health;
+static int64_t s_touch_fail_log_last_us;
+
+#define SPD2010_HEALTH_WINDOW_MS ((uint32_t)60u * 1000u)
+#define SPD2010_FAIL_LOG_MIN_GAP_MS ((int64_t)1000) /* our own summary: at most 1/s, vs. the ~40ms raw flood */
+
+/**
+ * [api] Touch-read health, for the Diagnostics page / bench `diag` console
+ * line (2026-09-08 QA-hardening ask: "touch read failures per minute").
+ * Either output pointer may be NULL. `*out_fail_per_min` is honestly 0
+ * both when nothing has ever failed AND for the first (still-open) ~60 s
+ * after a failure starts — see the struct's own doc comment.
+ */
+void esp_lcd_touch_spd2010_touch_health(uint32_t *out_total_fail, uint32_t *out_fail_per_min)
+{
+    if (out_total_fail != NULL) {
+        *out_total_fail = s_touch_health.total_fail;
+    }
+    if (out_fail_per_min != NULL) {
+        *out_fail_per_min = s_touch_health.last_rate_per_min;
+    }
+}
 
 typedef struct {
     uint8_t none0;
@@ -184,6 +247,21 @@ esp_err_t esp_lcd_touch_new_i2c_spd2010(const esp_lcd_panel_io_handle_t io, cons
     ESP_LOGI(TAG, "Touch panel create success, version: %d.%d.%d", ESP_LCD_TOUCH_SPD2010_VER_MAJOR,
              ESP_LCD_TOUCH_SPD2010_VER_MINOR, ESP_LCD_TOUCH_SPD2010_VER_PATCH);
 
+    /* FIREFLY PATCH #6 — mute the raw per-transaction error logs a failing
+     * bus would otherwise flood every ~40 ms (see this file's top comment
+     * and read_data()'s own health-counter block). Deliberately AFTER the
+     * success log above and only on this success path: an INIT-time
+     * failure (reset/read_fw_version above) still logs normally via the
+     * `err:` label's ESP_LOGE, which runs before this line is ever
+     * reached. ESP_LOG_NONE, not ESP_LOG_WARN — esp_log_level_set filters
+     * AT OR BELOW the given level (NONE < ERROR < WARN < ...), so nothing
+     * short of NONE silences an ESP_LOGE call. Idempotent / safe to set
+     * more than once (there is only ever one touch controller on this
+     * board, so this runs once in practice). */
+    esp_log_level_set(TAG, ESP_LOG_NONE);
+    esp_log_level_set("i2c.master", ESP_LOG_NONE);
+    esp_log_level_set("lcd_panel.io.i2c", ESP_LOG_NONE);
+
     *tp = spd2010;
 
     return ESP_OK;
@@ -213,6 +291,30 @@ static esp_err_t read_data(esp_lcd_touch_handle_t tp)
      * "no touch". A real press still fills touch.touch_num below. */
     if (tp_read_data(tp, &touch) != ESP_OK) {
         touch.touch_num = 0;
+
+        /* FIREFLY PATCH #6 — health counter + our own rate-limited
+         * summary, replacing the raw per-call ESP_LOGE flood (silenced
+         * below, once, at the end of esp_lcd_touch_new_i2c_spd2010). */
+        uint32_t const now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        if (s_touch_health.window_start_ms == 0u) {
+            s_touch_health.window_start_ms = now_ms; /* first failure ever */
+        } else if ((uint32_t)(now_ms - s_touch_health.window_start_ms) >= SPD2010_HEALTH_WINDOW_MS) {
+            s_touch_health.last_rate_per_min = s_touch_health.window_fail;
+            s_touch_health.window_fail = 0u;
+            s_touch_health.window_start_ms = now_ms;
+        }
+        s_touch_health.window_fail++;
+        s_touch_health.total_fail++;
+
+        int64_t const fail_now_us = esp_timer_get_time();
+        if (s_touch_fail_log_last_us == 0 ||
+            (fail_now_us - s_touch_fail_log_last_us) >= SPD2010_FAIL_LOG_MIN_GAP_MS * 1000) {
+            s_touch_fail_log_last_us = fail_now_us;
+            ESP_LOGW(HEALTH_TAG,
+                     "touch read failing (bus fault or panel damage?) - %" PRIu32 " total, ~%" PRIu32
+                     "/min last window (raw i2c/SPD2010 error logs suppressed below ERROR to avoid flooding)",
+                     s_touch_health.total_fail, s_touch_health.last_rate_per_min);
+        }
     }
 
     portENTER_CRITICAL(&tp->data.lock);
