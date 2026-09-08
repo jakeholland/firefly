@@ -1,0 +1,13 @@
+{
+  "fixture": "music_swarm_nosource",
+  "face": "music",
+  "radar": {
+    "clock_str": "9:49 pm",
+    "batt_pct": 18
+  },
+  "music": {
+    "seed": 424242,
+    "source": "none",
+    "loudness": 0.0
+  }
+}

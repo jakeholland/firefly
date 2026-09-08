@@ -62,7 +62,7 @@ unrelated-looking golden diff.)
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `fixture` | string | `""` | Debug-only provenance name. The S13 placeholder debug face renders this verbatim as its title — real S06+ screens ignore it. Conventionally matches the filename stem. |
-| `face` | string enum: `radar` \| `now` \| `signals` \| `settings` \| `compose` \| `map` \| `power_menu` \| `launcher` | `radar` (when the key is **absent** — an unrecognized string fails the load, see the fail-loud note above) | Which `ff_app_state_t.active_face` this snapshot represents; selects which section the S13 placeholder debug face's body renders. `power_menu` (S26 slice b) has no section of its own below — the face renders fixed content, so `"face": "power_menu"` is the entire fixture (see `power_menu.json`). `launcher` (S26 slice e) is the BOOT-button launcher — it DOES read the existing `signals` section (its Signals circle's unread badge is `ff_scr_inbox_unread_count`), so a launcher fixture that wants the badge supplies `signals` like any Signals-face fixture (see `launcher.json` / `launcher_unread.json`). |
+| `face` | string enum: `radar` \| `now` \| `signals` \| `settings` \| `compose` \| `map` \| `power_menu` \| `launcher` \| `music` | `radar` (when the key is **absent** — an unrecognized string fails the load, see the fail-loud note above) | Which `ff_app_state_t.active_face` this snapshot represents; selects which section the S13 placeholder debug face's body renders. `power_menu` (S26 slice b) has no section of its own below — the face renders fixed content, so `"face": "power_menu"` is the entire fixture (see `power_menu.json`). `launcher` (S26 slice e) is the BOOT-button launcher — it DOES read the existing `signals` section (its Signals circle's unread badge is `ff_scr_inbox_unread_count`), so a launcher fixture that wants the badge supplies `signals` like any Signals-face fixture (see `launcher.json` / `launcher_unread.json`). `music` (S31 — Music/Swarm) reads the `music` section below, and (like every face) `radar.clock_str`/`radar.batt_pct` for its own centred wall clock and frame-rate throttle. |
 | `ui_settings_scroll_y` | integer | `0` | **Sim/golden render hint only (#bug5a), same category as `fixture`.** Scrolls the Settings list to this vertical offset (device points, clamped by LVGL to the scrollable range) before the screenshot, so a golden can capture a non-zero scroll position. Applied only to the `settings` face; `0` (the default, and the only value the live shell carries) is a no-op. See `settings_scrolled_bottom.json` / `settings_scrolled_mid.json`. |
 
 ## `radar` (mirrors `ff_radar_view_t`, `core/include/ff_radar.h`)
@@ -420,6 +420,48 @@ renders instead). All four are synthetic (no mockup artboards in-tree
 for this agent to consult — see `ff_theme.h`'s top comment); real traced
 geometry for Lost Lands is being surveyed in a separate, parallel effort
 (fest-almanac) and was deliberately not blocked on here.
+
+## `music` (S31 — Music/Swarm, `ff_app_music_t`)
+
+```json
+"music": {
+  "seed": 424242,
+  "mic_stream": {"kind": "click", "bpm": 128, "loud": 0.85}
+}
+```
+
+Mirrors `ff_app_music_t` (`ff_app_state.h`), NOT the 60-particle swarm
+itself — that simulation is core state `scr_music.c` owns privately
+(`firmware/core/ff_swarm.h`'s own doc comment, "Ownership") and re-seeds
+deterministically from `music.seed` at build time; this section is only
+the handful of facts the CHROME and the swarm's INITIAL settle step
+read. `beat_count != 0` (whether set directly or via
+`mic_stream.kind: "click"`) makes `scr_music.c`'s build-time settle step
+render as if a beat had just landed (a mid-flare frame); `0` (the
+default) renders a resting one — see that file's own top comment,
+"Golden determinism", for why a fixture never needs the (never-run, in
+a one-shot headless render) per-frame timer for this.
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `seed` | integer | `0` | The swarm's PRNG seed. `0` is remapped to `FF_SWARM_DEFAULT_SEED` by `ff_swarm_init` (never a degenerate all-particles-at-one-point seed) — set explicitly here so a golden stays stable even if that core default ever changes. |
+| `source` | string enum: `none` \| `mic` \| `imu` | `none` (or `mic`, if `mic_stream` is present and this key is absent — see below) | The source chip. Parsed AFTER `mic_stream`, so an explicit `source` here always wins over what the stream implied. |
+| `loudness` | number, `[0,1]` | `0.0` (or whatever `mic_stream` derived) | Parsed AFTER `mic_stream` — an explicit value here always wins. Bucketed at `FF_BEAT_LOUD_THRESHOLD` (`ff_beat.h`) for the QUIET/LOUD word. |
+| `beat_count` | integer | `0` (or `1`, if `mic_stream.kind` is `"click"`) | Parsed AFTER `mic_stream` — an explicit value here always wins. Any nonzero value reads as "a beat has landed" for the build-time settle step; the exact count has no other meaning to a fixture (a live shell's own count is a real monotonic beat tally, but a fixture is a single frame). |
+| `mic_stream` | object or omitted | omitted | Convenience sugar, applied BEFORE the direct keys above (so they can still override it). `kind: "static"` (default) + `level` sets `loudness` directly with no beat. `kind: "click"` + `loud` (+ `bpm`, accepted for fixture-authoring documentation only — nothing currently consumes it beyond that intent, since this format renders one static frame, not a running click train) sets `loudness` and `beat_count: 1` — a mid-flare capture. Either form sets `source: mic` unless overridden by an explicit `source` key. |
+
+### Music/Swarm fixtures (S31)
+
+Four fixtures, one per honesty/loudness state the concept sheet names:
+`music_swarm_quiet.json` (a steady, quiet MIC reading — QUIET word, calm
+idle glow), `music_swarm_loud.json` (a 128 BPM click train, captured
+mid-beat — LOUD word, the swarm mid-flare/lean), `music_swarm_imu.json`
+(the IMU fallback source, a moderate loudness), and
+`music_swarm_nosource.json` (honestly `source: none`, `loudness: 0` —
+the calm "NO SOURCE" state, never an alarm). All four share the same
+`seed` so their particle LAYOUTS are directly comparable frame to frame;
+only the chrome/glow/lean differ. No mockup artboard is in-tree for this
+face (`ff_theme.h`'s top comment) — flagged per AGENTS.md.
 
 ## Current fixtures
 

@@ -60,4 +60,5 @@ set(FF_APP_UI_SOURCES
     screens/scr_power_menu.c # S26 slice b — the PWR-button power menu modal
     screens/scr_banner.c    # S26 slice d — the ff_notify message banner overlay
     screens/scr_launcher.c  # S26 slice e — the BOOT-button launcher, carousel retired
+    screens/scr_music.c     # S31 — Music/Swarm, the fifth launcher app
 )

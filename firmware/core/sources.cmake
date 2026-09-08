@@ -57,4 +57,6 @@ set(FF_CORE_SOURCES
     src/ff_meshname.c        # NAME in Settings — charset sanitize + Meshtastic short-name derivation
     src/ff_find.c             # S29 PR2 — FIND mode session state machine (active pings)
     src/ff_miclevel.c        # S30 — mic level math (RMS/peak dBFS, DC-block HPF, attack/release envelope)
+    src/ff_beat.c             # S31 — Music/Swarm beat/loudness detector (auto-ranging + onset)
+    src/ff_swarm.c            # S31 — Music/Swarm 60-particle deterministic simulation
 )

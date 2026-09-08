@@ -606,6 +606,29 @@ static void S28_AC18_back_on_settings_and_lineup_goes_home(void)
     lv_deinit();
 }
 
+/* S31 — Music gets the identical BACK-goes-home treatment: BACK/HOME
+ * gesture recognition reads raw indev points independent of which
+ * screen is built (ff_gesture_glue.c never touches scr_music.c or its
+ * own per-frame timer), so this is a plain regression pin, not new
+ * behavior to build. */
+static void S31_back_on_music_goes_home(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+    ff_ctl_handlers_t h;
+    open_session(&shell, &pack, &ctx, &h);
+
+    goto_face(&ctx, 5 /* Music */);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_MUSIC, ctx.state.active_face);
+    gg_drag(&ctx, GG_LEFT_RIM_X, GG_CENTER_Y, GG_LEFT_RIM_X + 70, GG_CENTER_Y, 5);
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_LAUNCHER, ctx.state.active_face, "BACK on Music did not go home");
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
 /* Permanent regression guard for the tearDown fix above (debt/test-
  * harness PR), same pin test_wakeonly_touch.c carries. */
 static void tearDown_is_idempotent_after_lv_init(void)
@@ -630,6 +653,7 @@ int main(void)
     RUN_TEST(S28_AC16_long_press_on_a_radar_button_does_not_flare);
     RUN_TEST(S28_AC17_bottom_rim_swipe_during_flare_countdown_does_nothing);
     RUN_TEST(S28_AC18_back_on_settings_and_lineup_goes_home);
+    RUN_TEST(S31_back_on_music_goes_home);
     RUN_TEST(tearDown_is_idempotent_after_lv_init);
     return UNITY_END();
 }

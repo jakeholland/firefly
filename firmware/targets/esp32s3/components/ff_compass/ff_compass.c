@@ -450,6 +450,21 @@ static float s_last_heading_deg = -1.0f;
  * present" early-return, which never touches this variable at all. */
 static ff_vec3_t s_last_mag_board = {0.0f, 0.0f, 0.0f};
 
+/* S31 Music/Swarm — the board-frame ACCELEROMETER vector (post
+ * axis-remap, the same `accel_board` `ff_geo_heading_deg` was handed)
+ * from the most recent `ff_compass_read()` call, for
+ * `ff_compass_last_accel_board()` — the small accessor S31's own spec
+ * asked for ("ff_compass for the IMU accel access — add a small
+ * accessor if there is none"; there was none before this). Same
+ * "most recent, not a fresh transaction" / "honest zero before any
+ * real reading" contract as `s_last_mag_board` above, and the same
+ * assumed-level fallback ((0,0,1) — see this file's own "Honesty
+ * contract" top-of-header comment) when the IMU never identified or
+ * has no trustworthy data yet: this accessor mirrors whatever
+ * `ff_compass_read()` actually fed the heading math, never a second,
+ * independently-sourced reading. */
+static ff_vec3_t s_last_accel_board = {0.0f, 0.0f, 0.0f};
+
 /* ff_compass_read() runs at 10 Hz (app_main.c's own
  * FF_COMPASS_SAMPLE_PERIOD_MS) from the main render-loop task — a bus
  * fault (NACK/timeout) on that path can repeat every tick for as long
@@ -1019,6 +1034,7 @@ float ff_compass_read(void)
                             FF_MAG_BOARD_Y_SIGN, FF_MAG_BOARD_Z_SRC, FF_MAG_BOARD_Z_SIGN);
 
     s_last_mag_board = mag_board; /* S12 step 3 — see ff_compass_last_mag_board()'s doc comment */
+    s_last_accel_board = accel_board; /* S31 Music/Swarm — see ff_compass_last_accel_board()'s doc comment */
 
     float const heading = ff_geo_heading_deg(mag_board, accel_board, s_cal_valid ? &s_cal : NULL);
     s_last_heading_deg = heading;
@@ -1041,4 +1057,9 @@ ff_compass_status_t ff_compass_status(void)
 ff_vec3_t ff_compass_last_mag_board(void)
 {
     return s_last_mag_board;
+}
+
+ff_vec3_t ff_compass_last_accel_board(void)
+{
+    return s_last_accel_board;
 }

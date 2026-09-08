@@ -1396,6 +1396,71 @@ void ff_shell_set_device_stats(ff_shell_t *sh, bool ok, uint32_t free_heap_bytes
  */
 void ff_shell_set_mic_status(ff_shell_t *sh, bool present, bool running, bool has_level, float envelope_dbfs);
 
+/**
+ * ff_shell_set_beat_input — [api] S31 Music/Swarm: feed one sample into
+ * the shell's own `ff_beat_t` detector (`firmware/core/ff_beat.h`). Same
+ * boundary-crossing shape as `ff_shell_set_mic_status`/`ff_shell_set_
+ * device_stats` above (esp32s3-only sensor data pushed in by the
+ * caller, this header never depends on `ff_mic.h`/`ff_compass.h`
+ * directly) — but unlike those two, the CALLER decides WHEN to call
+ * this at all: app_main.c calls it only while `ff_shell_view(sh)->
+ * active_face == FF_APP_FACE_MUSIC` (docs/specs/S31-music-swarm.md's
+ * power policy — the mic/IMU are read for beat detection ONLY while
+ * the Music face actually needs them), at whatever cadence its own
+ * main loop runs (no fixed-50Hz requirement on the CALLER — `ff_beat_
+ * update`'s own `dt_ms` parameter integrates correctly regardless of
+ * the polling rate; the mic's own 50Hz frame rate is what the spec's
+ * "50 Hz stream" describes, not this call's cadence).
+ *
+ * Source selection is this function's own job, mirroring the same
+ * "honesty: the source shown is the source used" rule S31's spec
+ * states: `mic_present` wins whenever true (MIC); otherwise
+ * `imu_present` (IMU fallback); otherwise NONE — never both, never
+ * blended. `mic_rms_dbfs`/`mic_env_dbfs` are meaningful only when
+ * `mic_present`; `accel_z_g` (board-frame Z, GRAVITY-INCLUSIVE — this
+ * function subtracts the assumed 1g baseline itself, see `ff_compass_
+ * last_accel_board`'s own doc comment for the board-frame convention)
+ * only when `imu_present`. `now_ms` is the shell's own clock reading
+ * (`ff_shell_now_ms`'s convention), used for the onset detector's
+ * refractory window and BPM estimate.
+ *
+ * `sh == NULL` is a safe no-op.
+ */
+void ff_shell_set_beat_input(ff_shell_t *sh, bool mic_present, float mic_rms_dbfs, float mic_env_dbfs,
+                              bool imu_present, float accel_z_g, uint32_t now_ms);
+
+/**
+ * ff_shell_music_debug_t / ff_shell_music_debug — [api] S31: a one-shot
+ * snapshot of the beat detector's own state for the bench console's
+ * `music` command (mirrors `ff_shell_wall_debug`'s "a getter this file
+ * never otherwise exposes, purely for the console" role,
+ * ff_debug_console.h's own doc comment on why every read-only command
+ * uses a named getter rather than reaching into `ff_shell_view()`'s
+ * whole projected struct). `sh == NULL` returns every field at its
+ * least-claiming default (source NONE, 0 loudness, 0 bpm — no beats
+ * seen yet).
+ */
+typedef struct {
+    ff_app_music_src_t source;
+    float loudness;
+    float bpm_estimate;
+} ff_shell_music_debug_t;
+
+ff_shell_music_debug_t ff_shell_music_debug(ff_shell_t const *sh);
+
+/**
+ * ff_shell_set_music_seed — [api] S31: the bench console's `music seed
+ * <n>` — reseeds the value `ff_app_music_t.seed` projects (read by
+ * `scr_music.c`'s build function to re-seed its own `ff_swarm_t`
+ * deterministically, docs/specs/S31-music-swarm.md's "Sim" section).
+ * Takes effect on the Music face's NEXT build (a seed change dirties
+ * the render key like any other verbatim-compared field — see
+ * `shell_render_key`'s own comment on `music.seed`), not mid-session:
+ * this is a bench-determinism knob, not a live visual reset control.
+ * `sh == NULL` is a safe no-op.
+ */
+void ff_shell_set_music_seed(ff_shell_t *sh, uint32_t seed);
+
 /* ---------------------------------------------------------------------
  * Read-only accessors (status bar, pairing UI, tests)
  * ------------------------------------------------------------------- */

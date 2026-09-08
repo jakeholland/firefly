@@ -688,6 +688,13 @@ static ff_idle_t s_idle;
  * so this deliberately does not run at that faster cadence. */
 #define FF_DEVICE_STATS_SAMPLE_PERIOD_MS ((uint32_t)2000u)
 
+/* S31 Music/Swarm — ff_shell_set_beat_input push period, matching
+ * ff_miclevel.h's own documented 20ms/50Hz mic frame cadence
+ * (docs/specs/S31-music-swarm.md's own "50 Hz stream" wording) — no
+ * value in polling faster than the mic reader task itself produces new
+ * frames. */
+#define FF_MUSIC_INPUT_PERIOD_MS ((uint32_t)20u)
+
 /* 2026-09-08 QA hardening — I2C health-tick period
  * (ff_display_i2c_health_tick). 3 s: slower than the touch poll's own
  * ~30 ms cadence on purpose — the tick's whole job is to look at a
@@ -2240,6 +2247,23 @@ void app_main(void)
      * facts, not a live sensor reading a wearer would watch tick. */
     uint32_t last_device_stats_ms = ff_bringup_now_ms();
 
+    /* S31 Music/Swarm — power policy (docs/specs/S31-music-swarm.md):
+     * ff_mic_start()/stop() ONLY while the Music face is the genuinely
+     * visible one (active_face == MUSIC, no flare takeover currently
+     * covering it, idle state ACTIVE — DIM/OFF/SLEEP all withhold it,
+     * same "don't keep a silent room awake/listening forever" posture
+     * ff_shell_keep_awake's own Music branch already applies to the
+     * KEEP-AWAKE side of this same fact). `s_music_wants_mic_prev`
+     * detects the edge so start/stop are called exactly once per
+     * transition, not every loop iteration (both are idempotent per
+     * their own doc comments, but calling ff_mic_start() every frame
+     * would also re-reset its DC-blocking/envelope filters every frame,
+     * defeating the point of that filter). `last_music_input_ms` is
+     * this file's own periodic-sample seed for the beat-input push
+     * below, mirroring every other `last_*_ms` seed in this block. */
+    bool s_music_wants_mic_prev = false;
+    uint32_t last_music_input_ms = ff_bringup_now_ms();
+
     /* 2026-09-08 QA hardening — same periodic-sample seeding shape as the
      * three above: the render loop's own I2C health tick (below) waits a
      * full FF_I2C_HEALTH_TICK_PERIOD_MS before its first check. */
@@ -2657,6 +2681,46 @@ void app_main(void)
         bool const keep_awake = ff_shell_keep_awake(v, false);
         bool const sleep_inhibit = usb_connected || ff_audio_busy() || ff_mic_status().running;
         ff_idle_state_t const idle_state = ff_idle_tick(&s_idle, now_ms, keep_awake, sleep_inhibit);
+
+        /* S31 Music/Swarm — power policy (docs/specs/S31-music-swarm.md,
+         * "Power policy": start on entering the face, stop on leaving
+         * it, on DIM/OFF, and on the flare takeover; never running while
+         * another face is active). `music_wants_mic` is re-derived every
+         * iteration from facts this file already has in scope this
+         * frame (`v`, `idle_state`) — `s_music_wants_mic_prev` is only
+         * so `ff_mic_start`/`ff_mic_stop` (both idempotent, but each
+         * resets internal filter state on start — see ff_mic.h's own
+         * doc comment) are called exactly on the edge, not every
+         * iteration. IMU fallback (`ff_compass_last_accel_board`)
+         * engages automatically inside `ff_shell_set_beat_input`
+         * whenever `mic_present` reads false — this file just supplies
+         * BOTH honestly and lets that function pick, per its own doc
+         * comment (ff_shell.h). */
+        {
+            bool const music_wants_mic = (v->active_face == FF_APP_FACE_MUSIC) && !v->flare.takeover_active &&
+                                          (idle_state == FF_IDLE_STATE_ACTIVE);
+            if (music_wants_mic && !s_music_wants_mic_prev) {
+                ff_mic_start();
+            } else if (!music_wants_mic && s_music_wants_mic_prev) {
+                ff_mic_stop();
+            }
+            s_music_wants_mic_prev = music_wants_mic;
+
+            if (music_wants_mic && ff_time_reached(now_ms, last_music_input_ms + FF_MUSIC_INPUT_PERIOD_MS)) {
+                last_music_input_ms = now_ms;
+                ff_mic_status_t const mst = ff_mic_status();
+                ff_mic_level_t const mlvl = ff_mic_level();
+#if CONFIG_FF_COMPASS
+                ff_vec3_t const accel = ff_compass_last_accel_board();
+                bool const imu_present = ff_compass_imu_present();
+#else
+                ff_vec3_t const accel = (ff_vec3_t){0.0f, 0.0f, 1.0f};
+                bool const imu_present = false;
+#endif
+                ff_shell_set_beat_input(&s_shell, mst.present, mlvl.rms_dbfs, mlvl.envelope_dbfs, imu_present,
+                                         accel.z, now_ms);
+            }
+        }
 
         /* Backlight enact — the VALUE is core's decision
          * (ff_idle_brightness_pct: stored_pct unchanged for ACTIVE —
