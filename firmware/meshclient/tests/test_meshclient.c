@@ -865,6 +865,144 @@ static void S03_want_ack_mc_send_private_false_leaves_meshpacket_want_ack_unset(
 }
 
 /* -------------------------------------------------------------------- */
+/* S14 hardening pass, item 5 (test-gap sweep) — mc_send_position() had
+ * ZERO direct test coverage anywhere in this tree (confirmed by cross-
+ * referencing every public core/meshclient function's declared name
+ * against every *.c test file's call sites — the only one of 192 with
+ * no hit). Its siblings (mc_send_text/mc_send_private/mc_send_set_owner)
+ * all have direct byte-level coverage above and in this file's other
+ * sections; this closes the one real gap the sweep found.
+ * -------------------------------------------------------------------- */
+
+/* Decode a single outbound ToRadio frame (mirrors decode_tx_want_ack's
+ * own framing-strip logic just above) and return its decoded
+ * MeshPacket — the fuller sibling that test needed only a single bit
+ * from; this one hands back the whole packet so a caller can check
+ * dest/portnum/want_ack AND decode the Data.payload as a Position in
+ * one place. */
+static meshtastic_MeshPacket decode_tx_packet(mock_io_t const *io)
+{
+    TEST_ASSERT_GREATER_OR_EQUAL_size_t(5u, io->tx_len);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC1, io->tx_buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC2, io->tx_buf[1]);
+    uint16_t flen = (uint16_t)((io->tx_buf[2] << 8) | io->tx_buf[3]);
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(io->tx_len - 4u, flen);
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(io->tx_buf + 4, flen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL_INT(meshtastic_ToRadio_packet_tag, tr.which_payload_variant);
+    return tr.payload_variant.packet;
+}
+
+/* Not READY: rejected outright, exactly like every other mc_send_*
+ * function's documented "not READY" failure — and, just as importantly,
+ * nothing at all reaches the transport (a caller that ignores the
+ * negative return must never have leaked a partial/stale position onto
+ * the wire). */
+static void S14_mc_send_position_not_ready_returns_error_writes_nothing(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    /* c.state left at mc_init's own default (MC_STATE_DISCONNECTED) — deliberately never set READY. */
+
+    ff_latlon_t const p = {.lat = 41.1234567, .lon = -84.7654321};
+    int rc = mc_send_position(&c, p);
+
+    TEST_ASSERT_EQUAL_INT(-1, rc);
+    TEST_ASSERT_EQUAL_UINT(0, io.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(0, io.write_calls);
+}
+
+/* Success path: broadcast, POSITION_APP, no ack, and — the part a bare
+ * "rc == 0" assertion would never catch — the actual encoded
+ * latitude_i/longitude_i survive the real i1e7 round-trip
+ * (mc_send_position's own `p.lat * 1e7 + 0.5` rounding, decoded back
+ * here via nanopb, the same asymmetric encoder mc_position_from_pb's
+ * OWN i1e7_to_deg on the receive side would decode) to within one
+ * fixed-point unit (~1.1 cm) of the original double. */
+static void S14_mc_send_position_encodes_broadcast_position_app_no_ack(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    ff_latlon_t const p = {.lat = 41.1234567, .lon = -84.7654321};
+    int rc = mc_send_position(&c, p);
+    TEST_ASSERT_EQUAL_INT(0, rc);
+
+    meshtastic_MeshPacket pkt = decode_tx_packet(&io);
+    TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, pkt.to);
+    TEST_ASSERT_FALSE(pkt.want_ack);
+    TEST_ASSERT_EQUAL_INT(meshtastic_MeshPacket_decoded_tag, pkt.which_payload_variant);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)meshtastic_PortNum_POSITION_APP, (uint32_t)pkt.payload_variant.decoded.portnum);
+
+    meshtastic_Position pos = meshtastic_Position_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(pkt.payload_variant.decoded.payload.bytes,
+                                              pkt.payload_variant.decoded.payload.size);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_Position_fields, &pos));
+    TEST_ASSERT_TRUE(pos.has_latitude_i);
+    TEST_ASSERT_TRUE(pos.has_longitude_i);
+    TEST_ASSERT_INT32_WITHIN(1, (int32_t)(41.1234567 * 1e7), pos.latitude_i);
+    TEST_ASSERT_INT32_WITHIN(1, (int32_t)(-84.7654321 * 1e7), pos.longitude_i);
+}
+
+/* Negative-coordinate rounding: mc_send_position's `p.lat >= 0.0 ? 0.5 :
+ * -0.5` ternary only ever takes its `-0.5` arm for a negative value
+ * (southern-hemisphere lat / western-hemisphere lon) — a "forgot the
+ * sign, always +0.5" bug would silently round every such coordinate 1
+ * unit (~1.1 cm) toward zero instead of to the nearest unit. -12.0 is
+ * exactly representable in a double (a small integer) and so is
+ * -12.0 * 1e7 = -120000000.0 — no fractional part at all, so this
+ * isn't testing rounding-to-nearest at a tie (which floating-point
+ * representation noise could make non-deterministic across platforms —
+ * deliberately avoided), it is testing which of two ADJACENT, exactly-
+ * representable integers a "no fractional remainder" input still lands
+ * on: correctly-signed rounding keeps it at exactly -120000000; the
+ * "always +0.5" bug would instead produce -119999999 (0.5 truncated
+ * toward zero) — the two disagree by exactly the encoded value this
+ * test asserts, not a fuzzy tolerance. */
+static void S14_mc_send_position_rounds_negative_coordinates_away_from_zero(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    ff_latlon_t const p = {.lat = -12.0, .lon = -12.0};
+    int rc = mc_send_position(&c, p);
+    TEST_ASSERT_EQUAL_INT(0, rc);
+
+    meshtastic_MeshPacket pkt = decode_tx_packet(&io);
+    meshtastic_Position pos = meshtastic_Position_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(pkt.payload_variant.decoded.payload.bytes,
+                                              pkt.payload_variant.decoded.payload.size);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_Position_fields, &pos));
+    TEST_ASSERT_EQUAL_INT32(-120000000, pos.latitude_i);
+    TEST_ASSERT_EQUAL_INT32(-120000000, pos.longitude_i);
+}
+
+/* -------------------------------------------------------------------- */
 /* fix/meshclient-packet-id-seed — outgoing packet-id generator          */
 /* -------------------------------------------------------------------- */
 
@@ -3553,6 +3691,10 @@ int main(void)
     RUN_TEST(feat_send_text_fails_when_not_ready_leaves_out_packet_id_untouched);
     RUN_TEST(S03_want_ack_mc_send_private_true_sets_meshpacket_want_ack);
     RUN_TEST(S03_want_ack_mc_send_private_false_leaves_meshpacket_want_ack_unset);
+
+    RUN_TEST(S14_mc_send_position_not_ready_returns_error_writes_nothing);
+    RUN_TEST(S14_mc_send_position_encodes_broadcast_position_app_no_ack);
+    RUN_TEST(S14_mc_send_position_rounds_negative_coordinates_away_from_zero);
 
     RUN_TEST(S03_packet_id_unseeded_matches_legacy_sequence);
     RUN_TEST(S03_packet_id_seed_sets_starting_point_and_increments);

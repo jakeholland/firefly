@@ -5804,6 +5804,48 @@ static void S26_AC3_unpaired_rally_pushes_no_banner(void)
  * this test used to be S26_flare_and_pulse_do_not_push_banners, injecting
  * a real PULSE; PULSE is retired end to end, see ff_proto.h's RESERVED_01
  * section). */
+
+/* S14 hardening pass (bounds/wraparound audit): shell_notify_push_banner
+ * used to build its FF_NOTIFY_TEXT_MAX-bounded preview with
+ * `snprintf("%.*s", ...)`, whose precision is a BYTE count — a real
+ * inbound message can be up to MC_TEXT_MAX (237) sender-authored UTF-8
+ * bytes, far more than the 64-byte banner preview, so that cut could
+ * land mid-code-point. This message is engineered so the cut boundary
+ * sits exactly inside a 3-byte EURO SIGN (U+20AC, 0xE2 0x82 0xAC): 61
+ * 'x' bytes then the euro sign = 64 raw bytes, one more than the field
+ * can hold alongside its own NUL. Observed end to end (through
+ * ff_shell_intent/ff_shell_tick, not by calling the static
+ * shell_notify_push_banner directly) — the correct behavior is to drop
+ * the whole euro sign, never emit a truncated/invalid trailing byte in
+ * the rendered banner. */
+static void S14_banner_text_overlong_utf8_truncates_at_codepoint_boundary(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    char msg[65];
+    memset(msg, 'x', 61u);
+    msg[61] = '\xE2';
+    msg[62] = '\x82';
+    msg[63] = '\xAC';
+    msg[64] = '\0';
+
+    inject_text(DANA, msg);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    char const *banner_text = ff_shell_view(&H.shell)->banner.text;
+    char expected[62];
+    memset(expected, 'x', 61u);
+    expected[61] = '\0';
+    TEST_ASSERT_EQUAL_STRING(expected, banner_text);
+
+    size_t n = strlen(banner_text);
+    if (n > 0u) {
+        TEST_ASSERT_FALSE(((unsigned char)banner_text[n - 1u] & 0xC0u) == 0x80u);
+    }
+}
+
 static void S26_flare_and_reserved01_do_not_push_banners(void)
 {
     harness_init(100000u, false);
@@ -11044,6 +11086,7 @@ int main(void)
     RUN_TEST(S26_AC3_unpaired_message_pushes_no_banner);
     RUN_TEST(S26_AC3_paired_rally_pushes_banner);
     RUN_TEST(S26_AC3_unpaired_rally_pushes_no_banner);
+    RUN_TEST(S14_banner_text_overlong_utf8_truncates_at_codepoint_boundary);
     RUN_TEST(S26_flare_and_reserved01_do_not_push_banners);
     RUN_TEST(S26_coalesce_within_2s_updates_head_in_place);
     RUN_TEST(S26_AC1_banner_auto_expires_after_6s);

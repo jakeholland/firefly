@@ -384,6 +384,54 @@ static void S26_text_overlong_is_truncated_safely(void)
     TEST_ASSERT_EQUAL_UINT32(FF_NOTIFY_TEXT_MAX - 1u, (uint32_t)strlen(h->text));
 }
 
+/* S14 hardening pass (bounds/wraparound audit): the ASCII-only case just
+ * above cannot exercise the actual failure mode — inbound message text is
+ * real sender-authored UTF-8 (S26_text_overlong_is_truncated_safely's
+ * "long_text" of repeated 'x' truncates cleanly no matter where the cut
+ * lands). Here the byte at the truncation boundary is the FIRST byte of a
+ * 3-byte EURO SIGN (U+20AC, 0xE2 0x82 0xAC): 61 'x' bytes (indices 0-60)
+ * then the euro sign (indices 61-63) — 64 raw bytes total, i.e. exactly
+ * FF_NOTIFY_TEXT_MAX, one more than the 64-byte field can hold alongside
+ * its own NUL. Before this fix, a plain `n = sizeof(e->text) - 1` cut
+ * kept the euro sign's lead byte (0xE2) with neither of its two
+ * continuation bytes — an invalid dangling UTF-8 lead byte at the very
+ * end of the stored text. */
+static void S26_text_overlong_utf8_truncates_at_codepoint_boundary(void)
+{
+    ff_notify_t q;
+    ff_notify_init(&q);
+
+    char text[FF_NOTIFY_TEXT_MAX];
+    memset(text, 'x', 61u);
+    text[61] = '\xE2';
+    text[62] = '\x82';
+    text[63] = '\xAC';
+    /* Not NUL-terminated within `text` itself — ff_notify_push() takes a
+     * NUL-terminated C string via strlen(), so append the terminator one
+     * past the crafted 64 bytes, in a separate buffer, matching the
+     * real-world shape (a longer live message truncated by an earlier
+     * caller stage, e.g. shell_notify_push_banner's own preview[]). */
+    char long_text[FF_NOTIFY_TEXT_MAX + 1u];
+    memcpy(long_text, text, sizeof(text));
+    long_text[sizeof(text)] = '\0';
+
+    ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 1, FF_NOTIFY_CONV_DIRECT, long_text, NOW);
+    ff_notify_entry_t const *h = ff_notify_head(&q);
+    TEST_ASSERT_NOT_NULL(h);
+
+    /* The whole euro sign must be dropped, not split — 61 'x's is the
+     * entire, exact, valid result. */
+    char expected[62];
+    memset(expected, 'x', 61u);
+    expected[61] = '\0';
+    TEST_ASSERT_EQUAL_STRING(expected, h->text);
+
+    size_t n = strlen(h->text);
+    if (n > 0u) {
+        TEST_ASSERT_FALSE(((unsigned char)h->text[n - 1u] & 0xC0u) == 0x80u);
+    }
+}
+
 /* ------------------------------------------------------------------- */
 /* NULL guards                                                          */
 /* ------------------------------------------------------------------- */
@@ -424,6 +472,7 @@ int main(void)
     RUN_TEST(S26_same_sender_same_conv_still_coalesces);
     RUN_TEST(S27_push_result_new_vs_coalesced_vs_overflow);
     RUN_TEST(S26_text_overlong_is_truncated_safely);
+    RUN_TEST(S26_text_overlong_utf8_truncates_at_codepoint_boundary);
     RUN_TEST(S26_null_guards);
 
     return UNITY_END();

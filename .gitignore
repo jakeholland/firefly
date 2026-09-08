@@ -9,6 +9,10 @@ build/
 # S04: the golden bytes fixture is committed too — see
 # docs/specs/S04-firefly-protocol.md AC5.
 !firmware/core/tests/fixtures/*.bin
+# S14 hardening pass: fuzz-crash regression corpus (see
+# firmware/tests/fuzz/README.md) — committed .bin fixtures, not build
+# output, same as the two exceptions above.
+!firmware/tests/fuzz/regressions/*.bin
 firmware/out/
 # S13b: tests/run_goldens.sh's scratch diff-artifact output (regenerated
 # on every failing run; only the committed tests/golden/*.png goldens
@@ -21,6 +25,11 @@ __pycache__/
 # Python venv for the dev tools (firmware/tests/e2e/requirements.txt)
 .venv/
 build-gcc/
+# S14 hardening pass: additional local sim build trees (ASan/UBSan-only,
+# and the FF_BUILD_FUZZERS=ON coverage-guided fuzz tree) — see
+# firmware/tests/fuzz/README.md.
+build-asan/
+build-fuzz/
 firmware/build
 firmware/build
 

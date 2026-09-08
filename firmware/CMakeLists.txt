@@ -230,3 +230,9 @@ add_subdirectory(targets/sim)
 
 # S13b
 add_subdirectory(tools) # compare_png — golden-screenshot pixel diff (S14 slice b)
+
+# S14 hardening pass — fuzz harnesses (UART framer, FromRadio/MeshPacket
+# decode, ff_proto, festpack, T9 prediction). Must come after
+# core/meshclient/festpack so their libraries already exist to link
+# against. See tests/fuzz/README.md and tests/fuzz/CMakeLists.txt.
+add_subdirectory(tests/fuzz)

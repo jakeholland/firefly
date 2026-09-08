@@ -16,6 +16,35 @@ static uint32_t wiring_now_ms(ff_wiring_ctx_t const *w)
     return (w->clock != NULL && w->clock->now_ms != NULL) ? w->clock->now_ms(w->clock->user) : 0;
 }
 
+/* S14 hardening pass (bounds/wraparound audit): the largest prefix
+ * length <= `cap` bytes of `s` that does not split a UTF-8 code point.
+ * `wiring_push_if_paired` below is the ONE place an inbound
+ * TEXT_MESSAGE_APP body (up to MC_TEXT_MAX == 237 real sender-authored
+ * UTF-8 bytes, mc_client.h) lands in the feed's much smaller
+ * FF_FEED_TEXT_LEN (64, ff_feed.h) `text` field — a plain byte-offset
+ * cut there can land mid-sequence and leave a dangling lead byte or
+ * orphaned continuation byte(s) at the end of the stored message, which
+ * is exactly what every screen that renders `ff_feed_item_t.text`
+ * (Signals/Inbox) then has to cope with. Standard trailing-continuation-
+ * byte backup: a continuation byte always matches `(byte & 0xC0) ==
+ * 0x80`, which no lead byte (ASCII included) ever does, so backing up
+ * over continuation bytes always stops exactly at the start of whatever
+ * code point straddles `cap` — excluded entirely rather than ever
+ * emitted partially. Already-malformed input degrades to an empty/
+ * shorter-than-expected prefix, never past `cap`, never a crash. Local
+ * copy — same algorithm as firmware/festpack/src/fp_pack.c's
+ * fp_utf8_truncate_len and firmware/core/src/ff_notify.c's
+ * notify_utf8_truncate_len (see either's fuller comment); this file has
+ * no shared dependency to hang one copy off of. */
+static size_t wiring_utf8_truncate_len(char const *s, size_t cap)
+{
+    size_t end = cap;
+    while (end > 0 && ((unsigned char)s[end] & 0xC0u) == 0x80u) {
+        end--;
+    }
+    return end;
+}
+
 static void wiring_push_if_paired(ff_wiring_ctx_t *w, uint32_t from, ff_feed_kind_t kind, ff_feed_dir_t dir,
                                    char const *text, size_t text_len)
 {
@@ -49,7 +78,7 @@ static void wiring_push_if_paired(ff_wiring_ctx_t *w, uint32_t from, ff_feed_kin
     it.at_ms = (w->clock != NULL && w->clock->now_ms != NULL) ? w->clock->now_ms(w->clock->user) : 0;
     if (text != NULL && text_len > 0) {
         size_t n = text_len;
-        if (n >= sizeof(it.text)) n = sizeof(it.text) - 1;
+        if (n >= sizeof(it.text)) n = wiring_utf8_truncate_len(text, sizeof(it.text) - 1);
         memcpy(it.text, text, n);
         it.text[n] = '\0';
     }

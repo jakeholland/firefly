@@ -459,6 +459,45 @@ static void S08_AC4_text_from_paired_node_pushes_feed_text_item(void)
     TEST_ASSERT_EQUAL_INT(1, r.haptic.count);
 }
 
+/* S14 hardening pass (bounds/wraparound audit): a real Meshtastic
+ * TEXT_MESSAGE_APP body can be up to MC_TEXT_MAX (237) sender-authored
+ * UTF-8 bytes — far more than ff_feed_item_t.text's FF_FEED_TEXT_LEN
+ * (64) budget. wiring_push_if_paired's old plain byte-offset cut could
+ * land mid-code-point; this pins the fix (wiring_utf8_truncate_len in
+ * ff_wiring.c) with a message engineered so the cut boundary sits
+ * exactly inside a 3-byte EURO SIGN (U+20AC, 0xE2 0x82 0xAC): 61 'x'
+ * bytes then the euro sign = 64 raw bytes, one more than the field can
+ * hold alongside its own NUL. The correct behavior is to drop the whole
+ * euro sign (61 'x's), never emit a truncated/invalid trailing byte. */
+static void S14_text_overlong_utf8_truncates_at_codepoint_boundary(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+    rig_pair(&r, PAIRED_NODE);
+
+    char msg[64];
+    memset(msg, 'x', 61u);
+    msg[61] = '\xE2';
+    msg[62] = '\x82';
+    msg[63] = '\xAC';
+
+    ff_wiring_on_text(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, msg, sizeof(msg));
+
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
+    ff_feed_item_t const *it = ff_feed_at(&r.feed, 0);
+    TEST_ASSERT_EQUAL(FEED_TEXT, it->kind);
+
+    char expected[62];
+    memset(expected, 'x', 61u);
+    expected[61] = '\0';
+    TEST_ASSERT_EQUAL_STRING(expected, it->text);
+
+    size_t n = strlen(it->text);
+    if (n > 0u) {
+        TEST_ASSERT_FALSE(((unsigned char)it->text[n - 1u] & 0xC0u) == 0x80u);
+    }
+}
+
 static void S08_AC4_text_from_unpaired_node_is_dropped(void)
 {
     test_rig_t r;
@@ -872,6 +911,7 @@ int main(void)
     RUN_TEST(S08_AC4_rally_clear_is_not_fed);
 
     RUN_TEST(S08_AC4_text_from_paired_node_pushes_feed_text_item);
+    RUN_TEST(S14_text_overlong_utf8_truncates_at_codepoint_boundary);
     RUN_TEST(S08_AC4_text_from_unpaired_node_is_dropped);
 
     RUN_TEST(S08_AC6_canned_omw_from_flare_context_sends_to_that_sender);
