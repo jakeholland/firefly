@@ -809,23 +809,29 @@ static int mc_send_data_packet_ex(mc_client_t *c, uint32_t dest, uint32_t portnu
 static int mc_send_data_packet(mc_client_t *c, uint32_t dest, uint32_t portnum, uint8_t const *payload,
                                 size_t len, bool want_ack)
 {
-    /* None of this wrapper's callers (text/private/position) are asking a
+    /* None of this wrapper's callers (private/position) are asking a
      * get_*_request question — want_response stays false. See
      * mc_send_data_packet_ex's own doc comment. mc_send_get_owner_request
-     * needs want_response == true, so it calls mc_send_data_packet_ex
-     * directly instead of through here. */
+     * needs want_response == true, and mc_send_text needs its own
+     * out_packet_id, so both call mc_send_data_packet_ex directly
+     * instead of through here. */
     return mc_send_data_packet_ex(c, dest, portnum, payload, len, want_ack, false, NULL);
 }
 
-int mc_send_text(mc_client_t *c, uint32_t dest, char const *utf8)
+int mc_send_text(mc_client_t *c, uint32_t dest, char const *utf8, uint32_t *out_packet_id)
 {
     if (utf8 == NULL) {
         return -1;
     }
     size_t len = strlen(utf8);
     bool want_ack = (dest != MC_ADDR_BROADCAST);
-    return mc_send_data_packet(c, dest, (uint32_t)meshtastic_PortNum_TEXT_MESSAGE_APP,
-                                (uint8_t const *)utf8, len, want_ack);
+    /* Calls mc_send_data_packet_ex directly (not the mc_send_data_packet
+     * wrapper above) — outbox delivery status feature (2026-09-07) needs
+     * out_packet_id, which the wrapper doesn't carry. want_response
+     * stays false: a text send is never asking a get_*_request
+     * question. */
+    return mc_send_data_packet_ex(c, dest, (uint32_t)meshtastic_PortNum_TEXT_MESSAGE_APP, (uint8_t const *)utf8, len,
+                                   want_ack, /*want_response=*/false, out_packet_id);
 }
 
 int mc_send_private(mc_client_t *c, uint32_t dest, uint32_t portnum, uint8_t const *payload,

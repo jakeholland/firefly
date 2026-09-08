@@ -693,13 +693,111 @@ static void S03_AC4_send_text_matches_byte_golden(void)
      * golden fixture's assumption that `from` is omitted. */
     c.state = MC_STATE_READY;
 
-    int rc = mc_send_text(&c, 0x0A0A0A0Au, "hi");
+    int rc = mc_send_text(&c, 0x0A0A0A0Au, "hi", NULL);
 
     TEST_ASSERT_EQUAL_INT(0, rc);
     TEST_ASSERT_EQUAL_UINT(golden_len, io.tx_len);
     TEST_ASSERT_EQUAL_MEMORY(golden, io.tx_buf, golden_len);
 
     free(golden);
+}
+
+/* Forward declaration — defined below (feat/s10-flare-want-ack section),
+ * needed here first: decodes a single outbound ToRadio frame's
+ * MeshPacket.want_ack bit. See that definition's own doc comment. */
+static bool decode_tx_want_ack(mock_io_t const *io);
+
+/* -------------------------------------------------------------------- */
+/* Outbox delivery status feature (2026-09-07) — mc_send_text's new      */
+/* out_packet_id, and the want_ack-by-destination rule it now lets a     */
+/* caller correlate an ack against.                                     */
+/* -------------------------------------------------------------------- */
+
+static void feat_send_text_direct_returns_packet_id_and_wants_ack(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    uint32_t packet_id = 0xDEADBEEFu; /* poisoned — must be overwritten on success */
+    int rc = mc_send_text(&c, 0x0A0A0A0Au, "hi", &packet_id);
+
+    TEST_ASSERT_EQUAL_INT(0, rc);
+    /* mc_init's default seed is 1 and nothing else has sent yet. */
+    TEST_ASSERT_EQUAL_UINT32(1u, packet_id);
+    TEST_ASSERT_TRUE_MESSAGE(decode_tx_want_ack(&io),
+                              "a direct (non-broadcast) text must request a routing ack to correlate against");
+}
+
+static void feat_send_text_broadcast_returns_packet_id_but_no_ack_requested(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    uint32_t packet_id = 0;
+    int rc = mc_send_text(&c, MC_ADDR_BROADCAST, "hi", &packet_id);
+
+    TEST_ASSERT_EQUAL_INT(0, rc);
+    /* out_packet_id is still populated for a broadcast — harmless, the
+     * mesh just never sends an ack back for the caller to match it
+     * against — see mc_send_text's own doc comment. */
+    TEST_ASSERT_EQUAL_UINT32(1u, packet_id);
+    TEST_ASSERT_FALSE_MESSAGE(decode_tx_want_ack(&io),
+                               "a broadcast never requests a routing ack — the mesh gives it none");
+}
+
+static void feat_send_text_out_packet_id_is_optional(void)
+{
+    /* NULL out_packet_id must not crash — every pre-existing caller in
+     * the tree before this feature passed none (mirrors
+     * feat_set_owner_out_packet_id_is_optional's own test). */
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, 1u, "hi", NULL));
+}
+
+static void feat_send_text_fails_when_not_ready_leaves_out_packet_id_untouched(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    /* c.state left at its mc_init default (DISCONNECTED) — not READY. */
+
+    uint32_t packet_id = 0xDEADBEEFu;
+    int rc = mc_send_text(&c, 1u, "hi", &packet_id);
+
+    TEST_ASSERT_TRUE(rc < 0);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0xDEADBEEFu, packet_id, "a failed send must not touch the caller's out param");
 }
 
 /* -------------------------------------------------------------------- */
@@ -812,9 +910,9 @@ static void S03_packet_id_unseeded_matches_legacy_sequence(void)
     mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
     c.state = MC_STATE_READY;
 
-    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "a"));
-    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "b"));
-    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "c"));
+    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "a", NULL));
+    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "b", NULL));
+    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "c", NULL));
 
     size_t off = 0;
     TEST_ASSERT_EQUAL_UINT32(1u, decode_tx_packet_id_advance(&io, &off));
@@ -842,9 +940,9 @@ static void S03_packet_id_seed_sets_starting_point_and_increments(void)
     c.state = MC_STATE_READY;
 
     uint8_t const payload[2] = {0xAB, 0xCD};
-    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "hi"));
+    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "hi", NULL));
     TEST_ASSERT_EQUAL_INT(0, mc_send_private(&c, MC_ADDR_BROADCAST, 269u, payload, sizeof(payload), false));
-    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "again"));
+    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "again", NULL));
 
     size_t off = 0;
     TEST_ASSERT_EQUAL_UINT32(1000u, decode_tx_packet_id_advance(&io, &off));
@@ -875,8 +973,8 @@ static void S03_packet_id_skips_zero_on_wrap_and_on_zero_seed(void)
         mc_seed_packet_ids(&c, 0xFFFFFFFFu);
         c.state = MC_STATE_READY;
 
-        TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "x"));
-        TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "y"));
+        TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "x", NULL));
+        TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "y", NULL));
 
         size_t off = 0;
         TEST_ASSERT_EQUAL_UINT32(0xFFFFFFFFu, decode_tx_packet_id_advance(&io, &off));
@@ -899,7 +997,7 @@ static void S03_packet_id_skips_zero_on_wrap_and_on_zero_seed(void)
         mc_seed_packet_ids(&c, 0u);
         c.state = MC_STATE_READY;
 
-        TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "z"));
+        TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "z", NULL));
 
         size_t off = 0;
         TEST_ASSERT_EQUAL_UINT32(1u, decode_tx_packet_id_advance(&io, &off));
@@ -941,8 +1039,8 @@ static void S03_packet_id_different_seeds_produce_disjoint_ids(void)
 
     uint32_t ids_a[3], ids_b[3];
     for (int i = 0; i < 3; i++) {
-        TEST_ASSERT_EQUAL_INT(0, mc_send_text(&a, MC_ADDR_BROADCAST, "a"));
-        TEST_ASSERT_EQUAL_INT(0, mc_send_text(&b, MC_ADDR_BROADCAST, "b"));
+        TEST_ASSERT_EQUAL_INT(0, mc_send_text(&a, MC_ADDR_BROADCAST, "a", NULL));
+        TEST_ASSERT_EQUAL_INT(0, mc_send_text(&b, MC_ADDR_BROADCAST, "b", NULL));
     }
     size_t off_a = 0, off_b = 0;
     for (int i = 0; i < 3; i++) {
@@ -3306,6 +3404,44 @@ static void feat_routing_nak_reports_not_ok(void)
     TEST_ASSERT_FALSE(cap.routing_acks[0].ok);
 }
 
+/* Outbox delivery status feature (2026-09-07) — a routing ACK for a
+ * direct text's own packet id reaches on_routing_ack exactly like the
+ * pre-existing set_owner case (this is mc_client's existing dispatch,
+ * unchanged by this feature); the new fact this feature adds is only
+ * that mc_send_text now HANDS OUT a packet id for a caller (ff_shell.c)
+ * to match one against. End-to-end ff_shell-layer behavior (feed status
+ * transitions to DELIVERED/NO_ACK) is covered in test_shell.c; this one
+ * test pins that the meshclient-level plumbing itself needs no
+ * feature-specific change beyond the out_packet_id parameter. */
+static void feat_send_text_direct_packet_id_matches_a_later_routing_ack(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    uint32_t packet_id = 0;
+    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, 0x0A0A0A0Au, "hi", &packet_id));
+
+    uint8_t frame[400];
+    uint16_t flen = build_routing_ack_frame(packet_id, /*nak=*/false, frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+    io.rx_data = frame;
+    io.rx_len = flen;
+    io.rx_pos = 0;
+    mc_tick(&c, 0);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.routing_ack_count);
+    TEST_ASSERT_EQUAL_UINT32(packet_id, cap.routing_acks[0].request_id);
+    TEST_ASSERT_TRUE(cap.routing_acks[0].ok);
+}
+
 /**
  * Bench finding (2026-09-06, real puck + Meshtastic 2.7.26 comms brain,
  * AFTER commit eb1cb06): the FIRST NAME push after boot confirmed
@@ -3411,6 +3547,10 @@ int main(void)
     RUN_TEST(S03_AC3_position_packet_decodes_with_1e7_conversion_and_rx_time);
 
     RUN_TEST(S03_AC4_send_text_matches_byte_golden);
+    RUN_TEST(feat_send_text_direct_returns_packet_id_and_wants_ack);
+    RUN_TEST(feat_send_text_broadcast_returns_packet_id_but_no_ack_requested);
+    RUN_TEST(feat_send_text_out_packet_id_is_optional);
+    RUN_TEST(feat_send_text_fails_when_not_ready_leaves_out_packet_id_untouched);
     RUN_TEST(S03_want_ack_mc_send_private_true_sets_meshpacket_want_ack);
     RUN_TEST(S03_want_ack_mc_send_private_false_leaves_meshpacket_want_ack_unset);
 
@@ -3509,6 +3649,7 @@ int main(void)
     RUN_TEST(feat_admin_other_variant_is_silently_ignored);
     RUN_TEST(feat_routing_ack_none_reports_ok);
     RUN_TEST(feat_routing_nak_reports_not_ok);
+    RUN_TEST(feat_send_text_direct_packet_id_matches_a_later_routing_ack);
     RUN_TEST(feat_two_consecutive_set_owner_round_trips_in_one_session_both_confirm);
 
     return UNITY_END();

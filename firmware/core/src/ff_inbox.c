@@ -239,10 +239,11 @@ void ff_inbox_thread_build(ff_inbox_thread_t *t, ff_feed_t const *feed, ff_crew_
             continue;
         }
         ff_inbox_msg_t *msg = &t->msgs[t->msg_count++];
-        msg->kind   = it->kind;
-        msg->dir    = it->dir; /* preserved verbatim — UNKNOWN stays UNKNOWN */
-        msg->age_ms = now_ms - it->at_ms;
-        msg->unread = it->unread;
+        msg->kind        = it->kind;
+        msg->dir         = it->dir; /* preserved verbatim — UNKNOWN stays UNKNOWN */
+        msg->age_ms      = now_ms - it->at_ms;
+        msg->unread      = it->unread;
+        msg->send_status = it->send_status; /* outbox delivery status (2026-09-07) — joined verbatim */
         memcpy(msg->text, it->text, sizeof(msg->text));
 
         /* Identity join — inbound items only, PAIRED members only (the

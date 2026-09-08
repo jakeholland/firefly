@@ -1,0 +1,32 @@
+{
+  "fixture": "signals_thread_outbox_states",
+  "face": "signals",
+  "signals": {
+    "subview": "thread",
+    "thread_node": 111,
+    "thread_name": "DANA",
+    "thread_color_idx": 0,
+    "target_kind": "member",
+    "target_node": 111,
+    "convs": [
+      {"conv": "crew", "unread": 0, "item_count": 0},
+      {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
+       "unread": 0, "item_count": 5,
+       "preview_kind": "text", "preview_dir": "out", "preview_text": "queue is full, oldest dropped",
+       "preview_age_ms": 5000,
+       "presence": "seen", "presence_age_ms": 5000}
+    ],
+    "msgs": [
+      {"kind": "text", "dir": "out", "text": "on my way, hang tight", "age_ms": 300000,
+       "send_status": "waiting"},
+      {"kind": "text", "dir": "out", "text": "left the tent, heading over", "age_ms": 240000,
+       "send_status": "sent"},
+      {"kind": "text", "dir": "out", "text": "at the tower, come find us", "age_ms": 180000,
+       "send_status": "delivered"},
+      {"kind": "text", "dir": "out", "text": "you still there?", "age_ms": 60000,
+       "send_status": "no_ack"},
+      {"kind": "text", "dir": "out", "text": "queue is full, oldest dropped", "age_ms": 5000,
+       "send_status": "dropped"}
+    ]
+  }
+}

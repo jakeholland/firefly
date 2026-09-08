@@ -31,8 +31,23 @@
 /* Input-size / token-arena budget. Fixtures are small, hand-authored
  * dev/test data (not attacker-controlled RF bytes like festpack's input),
  * but the same zero-alloc fixed-arena discipline applies per
- * docs/ARCHITECTURE.md ("no allocation surprises"). */
-#define FIX_MAX_JSON_LEN (16u * 1024u)
+ * docs/ARCHITECTURE.md ("no allocation surprises").
+ *
+ * RAISED FIX_MAX_JSON_LEN 16 KB -> 20 KB for the outbox delivery status
+ * feature (2026-09-07): `msgs[]` gained one optional key
+ * (`"send_status":"delivered"`, ~26 bytes) per message, worst case
+ * `FF_INBOX_MAX_MSGS` (32) messages = ~832 more bytes on an already-big
+ * dump. Measured, not estimated:
+ * `dump_maximally_populated_state_fits_budget`'s (tests/test_fixture.c)
+ * own worst-case round-trip probe dumps 16,530 B — past the old 16,384 B
+ * (16 KB) `FIX_MAX_JSON_LEN`, so its own reload leg started failing with
+ * `FF_FIXTURE_ERR_TOO_BIG` (byte-length gate, not the token-arena one
+ * below — jsmn's default 2,048-token arena already had headroom and
+ * needed no change). 20 KB matches `FF_FIXTURE_DUMP_MAX` (fixture.h) —
+ * the dump side's own budget — so the two stay aligned: nothing this
+ * writer can legally dump can now fail to reload purely on byte length.
+ */
+#define FIX_MAX_JSON_LEN (20u * 1024u)
 #define FIX_MAX_TOKENS 2048
 
 typedef struct {
@@ -596,6 +611,19 @@ static const fx_enum_entry_t fx_target_kind_table[] = {
     {"member", FF_TARGET_MEMBER},
 };
 
+/* Outbox delivery status feature (2026-09-07) — `ff_feed_send_status_t`
+ * (ff_feed.h), joined verbatim onto `ff_inbox_msg_t.send_status`; a
+ * fixture author's honest way to pin every row state (WAITING/SENT/
+ * DELIVERED/NO ACK/DROPPED) for a golden without driving the real
+ * shell/mc_client send+ack machinery end to end. "none" is the explicit
+ * spelling of FF_SEND_NONE (the zero default already applies to any
+ * `msgs[]` entry that omits this key at all — inbound items in
+ * particular should simply omit it, never write "none"). */
+static const fx_enum_entry_t fx_send_status_table[] = {
+    {"none", FF_SEND_NONE},           {"waiting", FF_SEND_WAITING}, {"sent", FF_SEND_SENT},
+    {"delivered", FF_SEND_DELIVERED}, {"no_ack", FF_SEND_NO_ACK},   {"dropped", FF_SEND_DROPPED},
+};
+
 /* fx_parse_inbox — same fail-loud-on-oversized-array treatment as
  * fx_parse_radar_dots above, for the `convs` array (cap
  * FF_INBOX_MAX_CONVS). Derived-but-not-independent facts follow the
@@ -757,6 +785,18 @@ static ff_fixture_result_t fx_parse_inbox(fx_ctx_t const *c, int obj_i, ff_app_i
             if (fx_obj_get(c, msg_i, "text", &kt)) fx_copy_str(c, kt, m->text, sizeof(m->text));
             if (fx_obj_get(c, msg_i, "age_ms", &kt)) m->age_ms = (uint32_t)fx_num(c, kt, 0.0);
             if (fx_obj_get(c, msg_i, "unread", &kt)) m->unread = fx_bool(c, kt, false);
+            /* Outbox delivery status feature (2026-09-07) — omitted key
+             * leaves m->send_status at its memset zero (FF_SEND_NONE),
+             * same "no claim unless authored" default every other
+             * optional msgs[] field above already follows. */
+            if (fx_obj_get(c, msg_i, "send_status", &kt)) {
+                int v;
+                ff_fixture_result_t rc = fx_enum(c, kt, fx_send_status_table,
+                                                  sizeof(fx_send_status_table) / sizeof(fx_send_status_table[0]),
+                                                  "signals.msgs[].send_status", &v);
+                if (rc != FF_FIXTURE_OK) return rc;
+                m->send_status = (ff_feed_send_status_t)v;
+            }
 
             sig->thread.msg_count++;
             idx = fx_skip(c, msg_i);
@@ -2099,7 +2139,15 @@ static void fw_msg(fw_cur_t *w, ff_inbox_msg_t const *m)
     fw_raw(w, ",\"text\":");
     fw_json_str(w, m->text);
     fw_fmt(w, ",\"age_ms\":%u", (unsigned)m->age_ms);
-    fw_raw(w, m->unread ? ",\"unread\":true}" : ",\"unread\":false}");
+    fw_raw(w, m->unread ? ",\"unread\":true" : ",\"unread\":false");
+    /* Outbox delivery status feature (2026-09-07) — always written
+     * (even "none"), same round-trip-lossless convention `kind`/`dir`
+     * already follow, so a capture of a live shell's outbound items
+     * replays with their delivery state intact. */
+    fw_raw(w, ",\"send_status\":\"");
+    fw_raw(w, fx_enum_name(fx_send_status_table, sizeof(fx_send_status_table) / sizeof(fx_send_status_table[0]),
+                            m->send_status, "none"));
+    fw_raw(w, "\"}");
 }
 
 int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)

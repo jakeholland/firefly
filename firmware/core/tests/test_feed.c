@@ -382,6 +382,275 @@ static void S08_AC3_null_guards_are_no_ops_not_crashes(void)
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&f));
 }
 
+/* ------------------------------------------------------------------- */
+/* Outbox delivery status feature (2026-09-07) — ff_feed_set_send_status_
+ * by_outbox_id / ff_feed_mark_sent_by_outbox_id / ff_feed_set_ack_by_
+ * packet_id / ff_feed_expire_pending_acks. See ff_feed.h's own doc
+ * comments for the full contract each one keeps.
+ * ------------------------------------------------------------------- */
+
+/* An OUTGOING item as this feature's callers (ff_wiring_push_outgoing_
+ * pending / shell_send_or_queue_text) actually push one: FEED_DIR_OUT,
+ * WAITING, and a nonzero outbox_id — everything else (packet_id,
+ * want_ack, status_at_ms) still at its push-time default until a
+ * later transition sets it. */
+static ff_feed_item_t make_out_item(uint32_t at_ms, char const *text, uint32_t outbox_id)
+{
+    ff_feed_item_t it = make_item(FEED_TEXT, 0, at_ms, text, false);
+    it.dir = FEED_DIR_OUT;
+    it.send_status = FF_SEND_WAITING;
+    it.outbox_id = outbox_id;
+    it.status_at_ms = at_ms;
+    return it;
+}
+
+static void feat_mark_sent_by_outbox_id_transitions_waiting_to_sent_and_stamps_fields(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_feed_item_t it = make_out_item(1000u, "hi", 7u);
+    ff_feed_push(&f, &it);
+
+    ff_feed_mark_sent_by_outbox_id(&f, 7u, /*packet_id=*/42u, /*want_ack=*/true, 1500u);
+
+    ff_feed_item_t const *got = ff_feed_at(&f, 0);
+    TEST_ASSERT_EQUAL(FF_SEND_SENT, got->send_status);
+    TEST_ASSERT_EQUAL_UINT32(42u, got->packet_id);
+    TEST_ASSERT_TRUE(got->want_ack);
+    TEST_ASSERT_EQUAL_UINT32(1500u, got->status_at_ms);
+}
+
+static void feat_mark_sent_by_outbox_id_no_match_is_a_silent_noop(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_feed_item_t it = make_out_item(1000u, "hi", 7u);
+    ff_feed_push(&f, &it);
+
+    ff_feed_mark_sent_by_outbox_id(&f, 999u, 42u, true, 1500u); /* no item has outbox_id 999 */
+
+    ff_feed_item_t const *got = ff_feed_at(&f, 0);
+    TEST_ASSERT_EQUAL(FF_SEND_WAITING, got->send_status); /* untouched */
+}
+
+static void feat_mark_sent_by_outbox_id_zero_never_matches(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    /* An item that predates this feature: outbox_id left at its zero
+     * default (never assigned one). */
+    ff_feed_item_t legacy = make_item(FEED_TEXT, 0, 1000u, "old", false);
+    legacy.dir = FEED_DIR_OUT;
+    ff_feed_push(&f, &legacy);
+
+    ff_feed_mark_sent_by_outbox_id(&f, 0u, 42u, true, 1500u); /* 0 must never match */
+
+    TEST_ASSERT_EQUAL(FF_SEND_NONE, ff_feed_at(&f, 0)->send_status); /* untouched */
+}
+
+static void feat_set_send_status_by_outbox_id_sets_arbitrary_status(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_feed_item_t it = make_out_item(1000u, "queue full behind me", 3u);
+    ff_feed_push(&f, &it);
+
+    /* shell_outbox_push's own use: a dropped-for-space entry marked
+     * DROPPED directly, no SENT step in between. */
+    ff_feed_set_send_status_by_outbox_id(&f, 3u, FF_SEND_DROPPED, 2000u);
+
+    ff_feed_item_t const *got = ff_feed_at(&f, 0);
+    TEST_ASSERT_EQUAL(FF_SEND_DROPPED, got->send_status);
+    TEST_ASSERT_EQUAL_UINT32(2000u, got->status_at_ms);
+}
+
+static void feat_set_send_status_ignores_inbound_items_even_with_a_matching_id(void)
+{
+    /* An inbound item's outbox_id is always 0 in real use (only outgoing
+     * pushes ever assign one), but this pins the DIRECTION guard itself:
+     * even a (synthetic, never-real) inbound item carrying the same
+     * outbox_id as an outgoing one must not be matched — only
+     * dir == FEED_DIR_OUT is eligible. */
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_feed_item_t inbound = make_item(FEED_TEXT, 111u, 1000u, "hey", false);
+    inbound.dir = FEED_DIR_DIRECT;
+    inbound.outbox_id = 9u; /* synthetic — never true in real use */
+    ff_feed_push(&f, &inbound);
+
+    ff_feed_set_send_status_by_outbox_id(&f, 9u, FF_SEND_DROPPED, 2000u);
+
+    TEST_ASSERT_EQUAL(FF_SEND_NONE, ff_feed_at(&f, 0)->send_status); /* untouched — wrong direction */
+}
+
+static void feat_set_ack_by_packet_id_ok_true_marks_delivered(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_feed_item_t it = make_out_item(1000u, "hi", 7u);
+    ff_feed_push(&f, &it);
+    ff_feed_mark_sent_by_outbox_id(&f, 7u, 42u, true, 1200u);
+
+    bool matched = ff_feed_set_ack_by_packet_id(&f, 42u, /*ok=*/true, 1800u);
+
+    TEST_ASSERT_TRUE(matched);
+    ff_feed_item_t const *got = ff_feed_at(&f, 0);
+    TEST_ASSERT_EQUAL(FF_SEND_DELIVERED, got->send_status);
+    TEST_ASSERT_EQUAL_UINT32(1800u, got->status_at_ms);
+}
+
+static void feat_set_ack_by_packet_id_ok_false_marks_no_ack(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_feed_item_t it = make_out_item(1000u, "hi", 7u);
+    ff_feed_push(&f, &it);
+    ff_feed_mark_sent_by_outbox_id(&f, 7u, 42u, true, 1200u);
+
+    bool matched = ff_feed_set_ack_by_packet_id(&f, 42u, /*ok=*/false, 1800u);
+
+    TEST_ASSERT_TRUE(matched);
+    TEST_ASSERT_EQUAL(FF_SEND_NO_ACK, ff_feed_at(&f, 0)->send_status);
+}
+
+static void feat_set_ack_by_packet_id_no_match_returns_false_and_touches_nothing(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_feed_item_t it = make_out_item(1000u, "hi", 7u);
+    ff_feed_push(&f, &it);
+    ff_feed_mark_sent_by_outbox_id(&f, 7u, 42u, true, 1200u);
+
+    bool matched = ff_feed_set_ack_by_packet_id(&f, 999u, true, 1800u); /* unrelated packet id */
+
+    TEST_ASSERT_FALSE(matched);
+    TEST_ASSERT_EQUAL(FF_SEND_SENT, ff_feed_at(&f, 0)->send_status); /* untouched */
+}
+
+static void feat_set_ack_by_packet_id_ignores_broadcast_items_with_want_ack_false(void)
+{
+    /* A broadcast send never requests an ack (want_ack == false); even
+     * if a request_id numerically matched its packet_id (never happens
+     * in real use — mc_client never asks the radio for one), this must
+     * not claim a delivery fact a broadcast can never actually have. */
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_feed_item_t it = make_out_item(1000u, "hi crew", 7u);
+    ff_feed_push(&f, &it);
+    ff_feed_mark_sent_by_outbox_id(&f, 7u, 42u, /*want_ack=*/false, 1200u);
+
+    bool matched = ff_feed_set_ack_by_packet_id(&f, 42u, true, 1800u);
+
+    TEST_ASSERT_FALSE(matched);
+    TEST_ASSERT_EQUAL(FF_SEND_SENT, ff_feed_at(&f, 0)->send_status); /* still SENT, never DELIVERED */
+}
+
+static void feat_set_ack_by_packet_id_ignores_an_already_resolved_item(void)
+{
+    /* Once DELIVERED/NO_ACK, a second ack for the same packet id (a late
+     * duplicate) must not re-fire — set_ack_by_packet_id only matches
+     * send_status == FF_SEND_SENT. */
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_feed_item_t it = make_out_item(1000u, "hi", 7u);
+    ff_feed_push(&f, &it);
+    ff_feed_mark_sent_by_outbox_id(&f, 7u, 42u, true, 1200u);
+    TEST_ASSERT_TRUE(ff_feed_set_ack_by_packet_id(&f, 42u, true, 1800u)); /* first ack: DELIVERED */
+
+    bool matched_again = ff_feed_set_ack_by_packet_id(&f, 42u, false, 2000u); /* late duplicate NAK */
+
+    TEST_ASSERT_FALSE(matched_again);
+    TEST_ASSERT_EQUAL(FF_SEND_DELIVERED, ff_feed_at(&f, 0)->send_status); /* still DELIVERED, not clobbered */
+}
+
+static void feat_expire_pending_acks_demotes_sent_past_the_timeout_to_no_ack(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_feed_item_t it = make_out_item(1000u, "hi", 7u);
+    ff_feed_push(&f, &it);
+    ff_feed_mark_sent_by_outbox_id(&f, 7u, 42u, true, 1000u); /* SENT stamped at 1000 */
+
+    ff_feed_expire_pending_acks(&f, /*now_ms=*/1000u + 45000u, /*timeout_ms=*/45000u); /* exactly at deadline */
+
+    ff_feed_item_t const *got = ff_feed_at(&f, 0);
+    TEST_ASSERT_EQUAL(FF_SEND_NO_ACK, got->send_status);
+    TEST_ASSERT_EQUAL_UINT32(1000u + 45000u, got->status_at_ms);
+}
+
+static void feat_expire_pending_acks_leaves_a_still_fresh_send_alone(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_feed_item_t it = make_out_item(1000u, "hi", 7u);
+    ff_feed_push(&f, &it);
+    ff_feed_mark_sent_by_outbox_id(&f, 7u, 42u, true, 1000u);
+
+    ff_feed_expire_pending_acks(&f, /*now_ms=*/1000u + 44999u, /*timeout_ms=*/45000u); /* 1 ms short */
+
+    TEST_ASSERT_EQUAL(FF_SEND_SENT, ff_feed_at(&f, 0)->send_status); /* not yet */
+}
+
+static void feat_expire_pending_acks_leaves_a_broadcast_sent_item_alone(void)
+{
+    /* want_ack == false (a broadcast) is terminal at SENT — never
+     * eligible for the ack timeout at all, however old it gets. */
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_feed_item_t it = make_out_item(1000u, "hi crew", 7u);
+    ff_feed_push(&f, &it);
+    ff_feed_mark_sent_by_outbox_id(&f, 7u, 42u, /*want_ack=*/false, 1000u);
+
+    ff_feed_expire_pending_acks(&f, 1000u + 999999u, 45000u); /* far past any timeout */
+
+    TEST_ASSERT_EQUAL(FF_SEND_SENT, ff_feed_at(&f, 0)->send_status);
+}
+
+static void feat_expire_pending_acks_leaves_already_resolved_items_alone(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_feed_item_t it = make_out_item(1000u, "hi", 7u);
+    ff_feed_push(&f, &it);
+    ff_feed_mark_sent_by_outbox_id(&f, 7u, 42u, true, 1000u);
+    TEST_ASSERT_TRUE(ff_feed_set_ack_by_packet_id(&f, 42u, true, 1100u)); /* DELIVERED before the timeout */
+
+    ff_feed_expire_pending_acks(&f, 1000u + 999999u, 45000u);
+
+    TEST_ASSERT_EQUAL(FF_SEND_DELIVERED, ff_feed_at(&f, 0)->send_status); /* never demoted */
+}
+
+static void feat_expire_pending_acks_only_touches_matching_items_among_several(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_feed_item_t waiting = make_out_item(500u, "still queued", 1u); /* WAITING, not SENT — ineligible */
+    ff_feed_item_t fresh_sent = make_out_item(2000u, "just sent", 2u);
+    ff_feed_item_t stale_sent = make_out_item(1000u, "old send", 3u);
+    ff_feed_push(&f, &waiting);
+    ff_feed_push(&f, &fresh_sent);
+    ff_feed_push(&f, &stale_sent);
+    ff_feed_mark_sent_by_outbox_id(&f, 2u, 102u, true, 9000u);  /* SENT at 9000 — still fresh */
+    ff_feed_mark_sent_by_outbox_id(&f, 3u, 103u, true, 1000u);  /* SENT at 1000 — will expire */
+
+    ff_feed_expire_pending_acks(&f, /*now_ms=*/46000u, /*timeout_ms=*/45000u);
+
+    /* newest-first: index 0 = stale_sent (pushed last), 1 = fresh_sent, 2 = waiting */
+    TEST_ASSERT_EQUAL(FF_SEND_NO_ACK, ff_feed_at(&f, 0)->send_status);
+    TEST_ASSERT_EQUAL(FF_SEND_SENT, ff_feed_at(&f, 1)->send_status);
+    TEST_ASSERT_EQUAL(FF_SEND_WAITING, ff_feed_at(&f, 2)->send_status);
+}
+
+static void feat_outbox_status_null_feed_guards_are_no_ops_not_crashes(void)
+{
+    ff_feed_set_send_status_by_outbox_id(NULL, 1u, FF_SEND_DROPPED, 0u);
+    ff_feed_mark_sent_by_outbox_id(NULL, 1u, 1u, true, 0u);
+    TEST_ASSERT_FALSE(ff_feed_set_ack_by_packet_id(NULL, 1u, true, 0u));
+    ff_feed_expire_pending_acks(NULL, 0u, 0u);
+    /* Reaching here without a crash is the assertion. */
+    TEST_PASS();
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -405,6 +674,23 @@ int main(void)
     RUN_TEST(S24_AC1_mark_read_at_maps_through_a_wrapped_ring);
 
     RUN_TEST(S08_AC3_null_guards_are_no_ops_not_crashes);
+
+    RUN_TEST(feat_mark_sent_by_outbox_id_transitions_waiting_to_sent_and_stamps_fields);
+    RUN_TEST(feat_mark_sent_by_outbox_id_no_match_is_a_silent_noop);
+    RUN_TEST(feat_mark_sent_by_outbox_id_zero_never_matches);
+    RUN_TEST(feat_set_send_status_by_outbox_id_sets_arbitrary_status);
+    RUN_TEST(feat_set_send_status_ignores_inbound_items_even_with_a_matching_id);
+    RUN_TEST(feat_set_ack_by_packet_id_ok_true_marks_delivered);
+    RUN_TEST(feat_set_ack_by_packet_id_ok_false_marks_no_ack);
+    RUN_TEST(feat_set_ack_by_packet_id_no_match_returns_false_and_touches_nothing);
+    RUN_TEST(feat_set_ack_by_packet_id_ignores_broadcast_items_with_want_ack_false);
+    RUN_TEST(feat_set_ack_by_packet_id_ignores_an_already_resolved_item);
+    RUN_TEST(feat_expire_pending_acks_demotes_sent_past_the_timeout_to_no_ack);
+    RUN_TEST(feat_expire_pending_acks_leaves_a_still_fresh_send_alone);
+    RUN_TEST(feat_expire_pending_acks_leaves_a_broadcast_sent_item_alone);
+    RUN_TEST(feat_expire_pending_acks_leaves_already_resolved_items_alone);
+    RUN_TEST(feat_expire_pending_acks_only_touches_matching_items_among_several);
+    RUN_TEST(feat_outbox_status_null_feed_guards_are_no_ops_not_crashes);
 
     return UNITY_END();
 }

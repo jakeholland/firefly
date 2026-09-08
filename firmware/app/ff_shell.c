@@ -93,6 +93,19 @@ _Static_assert(FF_COMPOSE_EXTRA_MAX == 280,
 _Static_assert(FF_APP_RALLY_MAX_PLACES >= FP_MAX_LANDMARKS,
                "FF_APP_RALLY_MAX_PLACES must hold every festpack landmark");
 
+/* Outbox delivery status feature (2026-09-07) — one queued-for-retry
+ * text. A named type (not an anonymous struct repeated at each use
+ * site) specifically so shell_t's own `outbox` array and
+ * shell_outbox_push/flush's local pointers are provably the SAME type,
+ * not merely identically-shaped ones. See shell_t's own `outbox` field
+ * doc comment for why this is a plain array (oldest at index 0), not a
+ * ring buffer. */
+typedef struct {
+    uint32_t dest;
+    char     text[MC_TEXT_MAX + 1u]; /* full fidelity — NOT the feed's own 64-byte display truncation */
+    uint32_t outbox_id;
+} shell_outbox_entry_t;
+
 typedef struct {
     /* --- injected config --------------------------------------------- */
     ff_clock_t const *clock;
@@ -184,6 +197,26 @@ typedef struct {
         char     name[16]; /* ff_crew_member_t.name's own capacity/convention */
     } heard_names[FF_HEARD_MAX];
     ff_feed_t feed;
+
+    /* Outbox delivery status feature (2026-09-07, docs/specs/
+     * S24-signals-inbox.md's Amendments — "sending when lost doesn't
+     * work" bench finding) — a bounded (FF_SHELL_OUTBOX_CAP, ff_shell.h)
+     * FIFO of texts `shell_send_or_queue_text` could not hand to
+     * mc_client right away (link not READY, or a genuine transport
+     * failure), retried automatically on the link's next not-ready ->
+     * ready edge (`shell_outbox_flush`, called from `ff_shell_tick`).
+     * Held as a plain array + count (oldest at index 0), not a ring
+     * buffer: FF_SHELL_OUTBOX_CAP is tiny (8) so an O(n) memmove on
+     * push/drain costs nothing, and this shape needs no wraparound
+     * index math to REMOVE an arbitrary entry (a successful flush of a
+     * middle entry), unlike ff_feed_t's ring (which only ever removes
+     * from one end). RAM-only, never persisted (ff_store carries no
+     * feed/outbox state today — see this feature's spec amendment for
+     * the disclosed "queue does not survive a reboot" limit). */
+    shell_outbox_entry_t outbox[FF_SHELL_OUTBOX_CAP];
+    uint8_t  outbox_count;    /* oldest at outbox[0], newest at outbox[outbox_count-1] */
+    uint32_t outbox_next_id;  /* monotonic, skips 0 — mirrors mc_next_packet_id's own convention */
+
     ff_flare_t flare;
     /* S10 quick flare (docs/specs/S10-flare.md's Amendments, 2026-09-03;
      * timing/robustness pass fix/quick-flare-detection, 2026-09-03): the
@@ -1782,12 +1815,10 @@ static void shell_ev_owner(void *u, char const *long_name, char const *short_nam
 /**
  * shell_ev_routing_ack — confirmation-fix follow-up: `mc_events_t.
  * on_routing_ack`, the mesh-delivery outcome (ACK/NAK) of an earlier
- * `want_ack` send. Only acted on when `request_id` matches THIS shell's
- * own in-flight `set_owner` push (`name_push_has_packet_id` /
- * `name_push_packet_id`, set by `shell_apply_name_commit` from
- * `mc_send_set_owner`'s `out_packet_id`) — a routing reply for anything
- * else this device happens to have sent (a text, a flare) is simply not
- * this feature's concern and is ignored here.
+ * `want_ack` send. First checked against THIS shell's own in-flight
+ * `set_owner` push (`name_push_has_packet_id` / `name_push_packet_id`,
+ * set by `shell_apply_name_commit` from `mc_send_set_owner`'s
+ * `out_packet_id`) — unchanged from before the outbox feature below.
  *
  * `ff_shell.h`'s `ff_mesh_name_ack_t` doc comment has the full
  * three-state rationale (NONE is "no reply yet", not "failed"); this
@@ -1799,14 +1830,25 @@ static void shell_ev_owner(void *u, char const *long_name, char const *short_nam
  * bench info surfaced immediately via `ack=nak`/the pill's "!", but only
  * a `get_owner_response`/self NodeInfo match is ever allowed to claim
  * the name itself was accepted).
+ *
+ * Outbox delivery status feature (2026-09-07): a `request_id` that
+ * ISN'T the in-flight name push is now also tried against the feed's
+ * own outgoing direct texts (`ff_feed_set_ack_by_packet_id`) — a
+ * routing ACK/NAK for one of THIS shell's own `mc_send_text` direct
+ * sends, which now requests one for every non-broadcast destination. A
+ * `request_id` matching neither is simply not this device's concern (or
+ * already resolved/expired) and is silently ignored, exactly as before
+ * this feature existed.
  */
 static void shell_ev_routing_ack(void *u, uint32_t request_id, bool ok)
 {
     shell_t *sh = (shell_t *)u;
     if (sh == NULL) return;
-    if (!sh->name_push_has_packet_id || request_id != sh->name_push_packet_id) return;
-
-    sh->name_push_ack = ok ? FF_MESH_NAME_ACK_OK : FF_MESH_NAME_ACK_NAK;
+    if (sh->name_push_has_packet_id && request_id == sh->name_push_packet_id) {
+        sh->name_push_ack = ok ? FF_MESH_NAME_ACK_OK : FF_MESH_NAME_ACK_NAK;
+        return;
+    }
+    (void)ff_feed_set_ack_by_packet_id(&sh->feed, request_id, ok, sh->now_ms);
 }
 
 static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
@@ -3875,6 +3917,126 @@ int ff_shell_load_pack(ff_shell_t *sh_pub, char const *json, size_t len)
     return 0;
 }
 
+/* ---------------------------------------------------------------------
+ * Outbox delivery status feature (2026-09-07) — see shell_t's own
+ * "outbox" field doc comment and docs/specs/S24-signals-inbox.md's
+ * Amendments for the full design. This cluster is used by both
+ * FF_INTENT_SEND_TEXT (below) and ff_shell_debug_send_text (bottom of
+ * this file, the bench-console send/dm path), so it lives here, ahead
+ * of both, rather than file-local to either.
+ * ------------------------------------------------------------------- */
+
+/* Next monotonic outbox_id — skips 0 (never a valid tracked id, see
+ * ff_feed.h's own doc comment on outbox_id), mirroring mc_client's own
+ * mc_next_packet_id wrap rule. */
+static uint32_t shell_next_outbox_id(shell_t *sh)
+{
+    sh->outbox_next_id++;
+    if (sh->outbox_next_id == 0u) {
+        sh->outbox_next_id = 1u;
+    }
+    return sh->outbox_next_id;
+}
+
+/* Queue one text the sender just refused (link down / transport
+ * failure). Bounded FIFO: a full queue drops the OLDEST entry to make
+ * room — and that drop is made visible by marking the dropped entry's
+ * OWN feed item FF_SEND_DROPPED before the entry is overwritten (its
+ * outbox_id is the only handle back to that feed slot). */
+static void shell_outbox_push(shell_t *sh, uint32_t dest, char const *text, uint32_t outbox_id)
+{
+    if (sh->outbox_count == FF_SHELL_OUTBOX_CAP) {
+        ff_feed_set_send_status_by_outbox_id(&sh->feed, sh->outbox[0].outbox_id, FF_SEND_DROPPED, sh->now_ms);
+        memmove(&sh->outbox[0], &sh->outbox[1], sizeof(sh->outbox[0]) * (FF_SHELL_OUTBOX_CAP - 1u));
+        sh->outbox_count--;
+    }
+    shell_outbox_entry_t *e = &sh->outbox[sh->outbox_count++];
+    e->dest = dest;
+    shell_copy_str(e->text, sizeof(e->text), text);
+    e->outbox_id = outbox_id;
+}
+
+/* Drain the outbox: attempt every still-queued entry, oldest first.
+ * Called on the link's not-ready -> ready edge (ff_shell_tick, below).
+ * A successful send marks its feed item SENT (and starts the ACK clock
+ * for a direct destination) and is removed from the queue; a failure
+ * (rare right after a ready edge, but not impossible — a genuine
+ * transport error) is left queued for the NEXT ready edge, and the
+ * drain moves on to the next entry rather than giving up on the whole
+ * queue over one stubborn item. */
+static void shell_outbox_flush(shell_t *sh, uint32_t now_ms)
+{
+    uint8_t i = 0;
+    while (i < sh->outbox_count) {
+        uint32_t pkt_id = 0;
+        int const rc = (sh->wiring.sender.send_text != NULL)
+                           ? sh->wiring.sender.send_text(sh->wiring.sender.ctx, sh->outbox[i].dest,
+                                                          sh->outbox[i].text, &pkt_id)
+                           : -1;
+        if (rc == 0) {
+            bool const want_ack = (sh->outbox[i].dest != MC_ADDR_BROADCAST);
+            ff_feed_mark_sent_by_outbox_id(&sh->feed, sh->outbox[i].outbox_id, pkt_id, want_ack, now_ms);
+            memmove(&sh->outbox[i], &sh->outbox[i + 1], sizeof(sh->outbox[0]) * (size_t)(sh->outbox_count - i - 1u));
+            sh->outbox_count--;
+            /* Do not advance i — the next entry just shifted into slot i. */
+        } else {
+            i++;
+        }
+    }
+}
+
+/**
+ * shell_send_or_queue_text — outbox delivery status feature (2026-09-07,
+ * bench finding "sending when lost doesn't work — we should try to
+ * send, right?"): the ONE place FF_INTENT_SEND_TEXT and
+ * ff_shell_debug_send_text (the composer's SEND button and the bench
+ * console's send/dm commands — S24's "keep the console command
+ * behaviour consistent" rule) push an outgoing text through.
+ *
+ * Always pushes a FEED_TEXT/FEED_DIR_OUT feed item FIRST, via
+ * `ff_wiring_push_outgoing_pending` (FF_SEND_WAITING), BEFORE attempting
+ * the send — honest-data / no-silent-drop made concrete: the item is
+ * visible in its thread the instant SEND is pressed, whatever happens
+ * next. Then:
+ *  - if the sender accepts it (rc == 0), the item is marked SENT (and,
+ *    for a non-broadcast destination, starts tracking the routing ACK
+ *    via its packet id — `ff_feed_mark_sent_by_outbox_id`);
+ *  - otherwise (link down, or a genuine transport failure), the item
+ *    stays WAITING and is queued (`shell_outbox_push`), flushed
+ *    automatically on the link's next ready edge (`shell_outbox_flush`,
+ *    `ff_shell_tick`).
+ *
+ * Returns 0 whenever the item was accepted into this pipeline (sent OR
+ * queued) — the mesh outcome is no longer carried through this return
+ * value at all; read it from the feed item's `send_status` instead,
+ * exactly as the glass does. Returns -1 without pushing anything if
+ * `sh` is NULL, `text` is NULL/empty (an untouched composer / an empty
+ * console arg is a no-op, not a broadcast of "" — the pre-existing
+ * rule both call sites already enforced), or no sender is wired up at
+ * all (`sh->wiring.sender.send_text == NULL` — a configuration gap, not
+ * a network one: nothing to ever flush this against, so nothing is
+ * queued either).
+ */
+static int shell_send_or_queue_text(shell_t *sh, uint32_t dest, char const *text)
+{
+    if (sh == NULL || text == NULL || text[0] == '\0') return -1;
+    if (sh->wiring.sender.send_text == NULL) return -1;
+
+    uint32_t const now_ms = sh->now_ms;
+    uint32_t const outbox_id = shell_next_outbox_id(sh);
+    ff_wiring_push_outgoing_pending(&sh->wiring, dest, text, outbox_id);
+
+    uint32_t pkt_id = 0;
+    int const rc = sh->wiring.sender.send_text(sh->wiring.sender.ctx, dest, text, &pkt_id);
+    if (rc == 0) {
+        bool const want_ack = (dest != MC_ADDR_BROADCAST);
+        ff_feed_mark_sent_by_outbox_id(&sh->feed, outbox_id, pkt_id, want_ack, now_ms);
+    } else {
+        shell_outbox_push(sh, dest, text, outbox_id);
+    }
+    return 0;
+}
+
 /* Forward declaration: shell_flare_wire is defined further down (next to
  * shell_flare_to_scope, its sibling wire-send helper), but ff_shell_tick's
  * auto-end/retry handling below needs it — see that function's own doc
@@ -3923,8 +4085,19 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
          * live event from here on sounds normally. See sh->
          * sound_muted_for_seed's own doc comment (shell_t). */
         sh->sound_muted_for_seed = false;
+        /* Outbox delivery status feature (2026-09-07): the SAME
+         * not-ready->ready edge is "the link just became able to send
+         * again" — flush every text that queued while it couldn't. */
+        shell_outbox_flush(sh, now_ms);
     }
     sh->was_ready = ready;
+
+    /* Outbox delivery status feature (2026-09-07) — the ACK-timeout half
+     * of NO_ACK, checked every tick regardless of link state (a direct
+     * send's ack clock keeps running through a reconnect exactly as it
+     * would on a live, quiet mesh — this device cannot tell the two
+     * apart, and does not pretend to). */
+    ff_feed_expire_pending_acks(&sh->feed, now_ms, FF_OUTBOX_ACK_TIMEOUT_MS);
 
     /* All three flare deadlines in one call; takeover_active can clear
      * here with no route involved, which is why ff_route_visible takes
@@ -5271,22 +5444,21 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             if (text != NULL && text[0] != '\0') {
                 /* The sender seam ff_wiring already owns (ff_wiring.h's
                  * `ff_wiring_sender_t`) — same vtable the canned replies
-                 * send through, reused rather than a second `mc_send_text`
-                 * call site. `compose_to_node == 0` is "no explicit
+                 * send through. `compose_to_node == 0` is "no explicit
                  * destination", resolved to broadcast the same way every
                  * other send in this file resolves it (MC_ADDR_BROADCAST,
-                 * not the literal 0 mc_send_text would misread). */
+                 * not the literal 0 mc_send_text would misread).
+                 *
+                 * Outbox delivery status feature (2026-09-07):
+                 * `shell_send_or_queue_text` (above ff_shell_tick in this
+                 * file) is now the ONE place this send happens — it
+                 * always pushes the FEED_TEXT/FEED_DIR_OUT feed item
+                 * (WAITING, then SENT/queued), never conditionally on
+                 * `rc == 0` the way this call site used to: a link-down
+                 * send used to vanish silently here; now it is queued
+                 * and shown WAITING instead of dropped. */
                 uint32_t const dest = (sh->compose_to_node != 0u) ? sh->compose_to_node : MC_ADDR_BROADCAST;
-                if (sh->wiring.sender.send_text != NULL) {
-                    int const rc = sh->wiring.sender.send_text(sh->wiring.sender.ctx, dest, text);
-                    if (rc == 0) {
-                        /* S24 — the composer's sent text lands in the feed
-                         * as FEED_DIR_OUT (S08's long-promised "sent item
-                         * appears in feed", now with an honest direction so
-                         * ff_inbox can side it). Accepted sends only. */
-                        ff_wiring_push_outgoing(&sh->wiring, FEED_TEXT, dest, text);
-                    }
-                }
+                (void)shell_send_or_queue_text(sh, dest, text);
                 /* A sent message ends the compose session — S08's "sent
                  * item appears in feed... " reads as returning to Signals
                  * to see it, not staying on an emptied composer. Draft
@@ -6465,6 +6637,11 @@ ff_feed_t const *ff_shell_feed(ff_shell_t const *sh_pub)
     return (sh_pub == NULL) ? NULL : &shell_of_const(sh_pub)->feed;
 }
 
+uint8_t ff_shell_outbox_pending_count(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? 0u : shell_of_const(sh_pub)->outbox_count;
+}
+
 uint32_t ff_shell_retired_frame_count(ff_shell_t const *sh_pub)
 {
     return (sh_pub == NULL) ? 0u : ff_wiring_retired_frame_count(&shell_of_const(sh_pub)->wiring);
@@ -6668,17 +6845,17 @@ int ff_shell_debug_send_text(ff_shell_t *sh_pub, uint32_t dest_node, char const 
 {
     if (sh_pub == NULL || text == NULL || text[0] == '\0') return -1;
     shell_t *sh = shell_of(sh_pub);
-    if (sh->wiring.sender.send_text == NULL) return -1;
 
+    /* Outbox delivery status feature (2026-09-07): the console's send/dm
+     * commands go through the EXACT SAME `shell_send_or_queue_text` path
+     * FF_INTENT_SEND_TEXT uses (S24's "keep the console command
+     * behaviour consistent" rule) — no separate send mechanism to drift
+     * out of sync. See that function's own doc comment for the full
+     * WAITING/SENT/queued behavior and its return-value contract, which
+     * this function now inherits: 0 means "accepted into the pipeline",
+     * not "the mesh already has it". */
     uint32_t const dest = (dest_node != 0u) ? dest_node : MC_ADDR_BROADCAST;
-    int const rc = sh->wiring.sender.send_text(sh->wiring.sender.ctx, dest, text);
-    if (rc == 0) {
-        /* Mirrors FF_INTENT_SEND_TEXT's own feed push exactly (S24 —
-         * "sent item appears in feed... with an honest direction"):
-         * accepted sends only, same FEED_TEXT kind. */
-        ff_wiring_push_outgoing(&sh->wiring, FEED_TEXT, dest, text);
-    }
-    return rc;
+    return shell_send_or_queue_text(sh, dest, text);
 }
 
 void ff_shell_debug_set_name(ff_shell_t *sh_pub, char const *text)

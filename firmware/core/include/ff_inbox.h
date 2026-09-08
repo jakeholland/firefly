@@ -185,6 +185,12 @@ typedef struct {
     char     text[FF_FEED_TEXT_LEN];
     uint32_t age_ms; /* now_ms - item.at_ms */
     bool     unread;
+
+    /* [api] outbox delivery status (2026-09-07) — joined verbatim from
+     * the feed item's own `send_status` (ff_feed.h); meaningless
+     * (FF_SEND_NONE) for anything but an OUT message. The screen renders
+     * this, never re-derives it. */
+    ff_feed_send_status_t send_status;
 } ff_inbox_msg_t;
 
 /** ff_inbox_thread_t — one conversation's messages, OLDEST first (index

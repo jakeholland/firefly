@@ -1328,12 +1328,66 @@ static void inbox_msg_sender_line(lv_obj_t *row, ff_inbox_msg_t const *m, char c
     lv_obj_set_pos(age_l, x, 1);
 }
 
-/* The mono age line under a bubble (rows with no sender line above). */
-static void inbox_msg_age_below(lv_obj_t *row, char const *age, int32_t y, bool out, int32_t row_w)
+/**
+ * inbox_send_status_text / inbox_send_status_color — outbox delivery
+ * status feature (2026-09-07, docs/specs/S24-signals-inbox.md's
+ * Amendments): the honest, short label for an OUT item's mesh delivery
+ * fate (`ff_feed_send_status_t`, ff_feed.h joined onto `ff_inbox_msg_t`
+ * verbatim). NULL/no render for `FF_SEND_NONE` — an inbound item, or an
+ * OUT item that predates this feature, claims no delivery fact at all,
+ * not even a neutral placeholder. No checkmark glyph anywhere: the
+ * WORD is the whole affordance, deliberately plain text even for
+ * DELIVERED — a routing ACK is a real fact worth a distinct (green)
+ * color, but still just a label, never a symbol that could be mistaken
+ * for more certainty than "this exact packet id got one ACK back". */
+static char const *inbox_send_status_text(ff_feed_send_status_t s)
 {
+    switch (s) {
+    case FF_SEND_NONE: return NULL;
+    case FF_SEND_WAITING: return "WAITING";
+    case FF_SEND_SENT: return "SENT";
+    case FF_SEND_DELIVERED: return "DELIVERED";
+    case FF_SEND_NO_ACK: return "NO ACK";
+    case FF_SEND_DROPPED: return "DROPPED";
+    }
+    return NULL; /* -Wswitch already flags a missing case above */
+}
+
+static uint32_t inbox_send_status_color(ff_feed_send_status_t s)
+{
+    switch (s) {
+    case FF_SEND_DELIVERED: return FF_THEME_COLOR_LIVE_GREEN; /* the one state a mesh reply actually confirmed */
+    case FF_SEND_NO_ACK:
+    case FF_SEND_DROPPED: return FF_THEME_COLOR_STALE_AMBER; /* honest "this didn't land" warning tint */
+    case FF_SEND_WAITING:
+    case FF_SEND_SENT:
+    case FF_SEND_NONE:
+    default: return FF_THEME_COLOR_DIM; /* neutral in-progress / nothing to report */
+    }
+}
+
+/* The mono age line under a bubble (rows with no sender line above) —
+ * and, for an OUT item only (`m->dir == FEED_DIR_OUT`), the outbox
+ * delivery status label immediately to its left on the same line (both
+ * right-aligned together as one unit for `out`, so the pair reads as
+ * "<STATUS> <age>" hugging the bubble's own edge; an inbound 1:1 row
+ * has no status to show — `m->send_status` is FF_SEND_NONE for those —
+ * so nothing changes there). */
+static void inbox_msg_age_below(lv_obj_t *row, ff_inbox_msg_t const *m, char const *age, int32_t y, int32_t row_w)
+{
+    bool const out = (m->dir == FEED_DIR_OUT);
+    char const *status_text = out ? inbox_send_status_text(m->send_status) : NULL;
+
     lv_obj_t *l = inbox_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
     lv_obj_update_layout(l);
-    lv_obj_set_pos(l, out ? (row_w - lv_obj_get_width(l) - 4) : 4, y);
+    int32_t const age_x = out ? (row_w - lv_obj_get_width(l) - 4) : 4;
+    lv_obj_set_pos(l, age_x, y);
+
+    if (status_text != NULL) {
+        lv_obj_t *sl = inbox_mk_label(row, status_text, FF_THEME_FONT_CHIP, inbox_send_status_color(m->send_status));
+        lv_obj_update_layout(sl);
+        lv_obj_set_pos(sl, age_x - lv_obj_get_width(sl) - 6, y);
+    }
 }
 
 /* A one-line bubble (TEXT / STATUS / the 1:1 flare callout / an OUT
@@ -1558,7 +1612,7 @@ static int32_t inbox_build_msg(lv_obj_t *list, ff_inbox_msg_t const *m, int32_t 
     }
 
     if (!sender_line) {
-        inbox_msg_age_below(row, age, head_h + content_h + 2, out, row_w);
+        inbox_msg_age_below(row, m, age, head_h + content_h + 2, row_w);
     }
     return row_h + FF_INBOX_MSG_GAP;
 }
