@@ -176,11 +176,22 @@ bool ff_idle_touch_gate(ff_idle_t *idle, ff_idle_touch_gate_t *gate, uint32_t no
     if (begin) {
         /* The decision is made ONCE, right here, at press-begin — never
          * re-evaluated for the rest of this gesture (see ff_idle.h's
-         * "state matters only at press START" note). */
-        gate->swallowing = (ff_idle_state(idle) != FF_IDLE_STATE_ACTIVE);
-        if (gate->swallowing) {
+         * "state matters only at press START" note).
+         *
+         * 2026-09-07 amendment (see ff_idle.h's "Wake-only touch/button
+         * gate" section): DIM is the odd one out among the three
+         * not-ACTIVE states — the screen is still fully readable there
+         * (minimum backlight, not dark), so a press beginning at DIM has
+         * nothing to protect against and is delivered normally, same as
+         * ACTIVE. OFF and SLEEP (screen dark) are unchanged: wake-only,
+         * the whole gesture withheld. */
+        ff_idle_state_t const state_at_begin = ff_idle_state(idle);
+        gate->swallowing = (state_at_begin == FF_IDLE_STATE_OFF || state_at_begin == FF_IDLE_STATE_SLEEP);
+        if (state_at_begin != FF_IDLE_STATE_ACTIVE) {
             /* The wake itself — same call every other input source on
-             * this device makes (ff_idle_input's own doc comment). */
+             * this device makes (ff_idle_input's own doc comment). Fires
+             * for DIM too: the press still wakes (restores brightness),
+             * it just ALSO gets delivered this time. */
             ff_idle_input(idle, now_ms);
         }
     }

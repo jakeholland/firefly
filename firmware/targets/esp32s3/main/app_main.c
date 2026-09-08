@@ -498,14 +498,19 @@ static ff_power_fsm_t s_power_fsm;
  * (CLAUDE.md's house rule).
  *
  * `s_boot_gate` (S26 wake-only-touch amendment, 2026-09-02 maintainer
- * decision) is BOOT's own `ff_idle_touch_gate_t` instance — a SEPARATE
- * one from `ff_display.c`'s touch gate (ff_idle_touch_gate_t's own doc
- * comment: one instance per physical input source), since BOOT and
- * touch are independent gestures that must never share a latch. A BOOT
- * press that begins while the screen is not ACTIVE wakes it but is
- * never forwarded as FF_INTENT_HOME — same rule as touch, applied to
- * this repo's other physical input (docs/specs/S26-device-lifecycle.md
- * "(c)" amendment: "a touch OR BUTTON press...").
+ * decision, amended 2026-09-07) is BOOT's own `ff_idle_touch_gate_t`
+ * instance — a SEPARATE one from `ff_display.c`'s touch gate
+ * (ff_idle_touch_gate_t's own doc comment: one instance per physical
+ * input source), since BOOT and touch are independent gestures that
+ * must never share a latch. A BOOT press that begins while the screen
+ * is OFF or SLEEP (dark) wakes it but is never forwarded as
+ * FF_INTENT_HOME — same rule as touch, applied to this repo's other
+ * physical input (docs/specs/S26-device-lifecycle.md "(c)" amendment:
+ * "a touch OR BUTTON press..."). Per the 2026-09-07 amendment, a BOOT
+ * press that begins at DIM (screen visible) IS forwarded as
+ * FF_INTENT_HOME, same as touch's own DIM case — no reason for BOOT to
+ * differ, since the amendment's whole premise ("nothing to protect
+ * against on a readable screen") applies equally to a physical button.
  * ------------------------------------------------------------------- */
 static ff_button_t s_boot_button;
 static ff_idle_touch_gate_t s_boot_gate;
@@ -1932,11 +1937,15 @@ void app_main(void)
          * sim mirror (targets/sim/ctl_loop.c) caught and fixed the same
          * way. `boot_deliver` is passed straight through to
          * `ff_shell_home_press` as `deliver` — a BOOT press that woke the
-         * screen is wake-only for NAVIGATION, same rule as touch, per the
-         * amendment's own text ("a touch OR BUTTON press that begins
-         * while the screen is not ACTIVE..."); it still COUNTS toward
-         * the quick-flare gesture regardless (S10's own "the first tap
-         * wakes and counts" requirement) — as of fix/quick-flare-
+         * screen from OFF or SLEEP (dark) is wake-only for NAVIGATION,
+         * same rule as touch, per the amendment's own text ("a touch OR
+         * BUTTON press that begins while the screen is not ACTIVE...");
+         * per the 2026-09-07 amendment, a BOOT press that begins at DIM
+         * (screen visible) IS delivered — `ff_idle_touch_gate` itself
+         * makes that call, so nothing here branches on idle state. It
+         * still COUNTS toward the quick-flare gesture regardless (S10's
+         * own "the first tap wakes and counts" requirement) — as of
+         * fix/quick-flare-
          * detection (2026-09-03), that counting no longer runs through
          * THIS debounced/tick-sampled path at all (see
          * `ff_shell_home_press`'s own doc comment for why): it is driven
