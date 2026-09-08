@@ -2303,6 +2303,33 @@ static char const *shell_name_of(shell_t const *sh, uint32_t node_id)
     return (m != NULL) ? m->name : "";
 }
 
+/* S14 hardening pass (bounds/wraparound audit): the largest prefix
+ * length <= `cap` bytes of `s` that does not split a UTF-8 code point.
+ * shell_notify_push_banner below is the one caller — `body`/`body_len`
+ * there is a live inbound MESSAGE/RALLY body (up to MC_TEXT_MAX == 237
+ * real sender-authored UTF-8 bytes) landing in the banner's much smaller
+ * FF_NOTIFY_TEXT_MAX (64) preview; `snprintf("%.*s", ...)`'s precision
+ * is a BYTE count, not a code-point count, so it used to cut wherever
+ * that landed. Standard trailing-continuation-byte backup: a
+ * continuation byte always matches `(byte & 0xC0) == 0x80`, which no
+ * lead byte (ASCII included) ever does, so backing up over continuation
+ * bytes always stops exactly at the start of whatever code point
+ * straddles `cap` — excluded entirely rather than ever emitted
+ * partially. Local copy — same algorithm as
+ * firmware/festpack/src/fp_pack.c's fp_utf8_truncate_len,
+ * firmware/core/src/ff_notify.c's notify_utf8_truncate_len, and
+ * firmware/app/ff_wiring.c's wiring_utf8_truncate_len (see any of their
+ * fuller comments); this file has no shared dependency to hang one copy
+ * off of. */
+static size_t shell_utf8_truncate_len(char const *s, size_t cap)
+{
+    size_t end = cap;
+    while (end > 0 && ((unsigned char)s[end] & 0xC0u) == 0x80u) {
+        end--;
+    }
+    return end;
+}
+
 /**
  * shell_notify_push_banner — S26 slice d: event WIRING, not projection
  * (textually here only because it needs shell_name_of's sibling helpers
@@ -2349,9 +2376,15 @@ static void shell_notify_push_banner(shell_t *sh, ff_notify_kind_t kind, uint32_
 {
     if (!shell_is_paired(sh, from)) return; /* S22 stranger rule / S26 AC3 */
 
+    /* Bounded, UTF-8-code-point-safe copy — NOT snprintf("%.*s", ...):
+     * that precision is a byte count, and `body` is live inbound text
+     * that can be far longer than sizeof(preview) (see
+     * shell_utf8_truncate_len's doc comment just above). */
     char preview[FF_NOTIFY_TEXT_MAX];
-    int n = snprintf(preview, sizeof(preview), "%.*s", (int)body_len, (body != NULL) ? body : "");
-    if (n < 0) preview[0] = '\0'; /* snprintf failure: an honestly empty preview, never garbage */
+    size_t n = (body != NULL) ? body_len : 0u;
+    if (n >= sizeof(preview)) n = shell_utf8_truncate_len(body, sizeof(preview) - 1u);
+    if (n > 0u) memcpy(preview, body, n);
+    preview[n] = '\0';
 
     ff_feed_dir_t const dir = ff_wiring_classify_dir(&sh->wiring, to);
     ff_notify_conv_t const conv = (dir == FEED_DIR_DIRECT) ? FF_NOTIFY_CONV_DIRECT : FF_NOTIFY_CONV_CREW;

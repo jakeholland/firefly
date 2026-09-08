@@ -131,10 +131,48 @@ static bool fp_tok_eq(fp_ctx_t const *c, int i, char const *s)
            memcmp(c->js + t->start, s, slen) == 0;
 }
 
+/* S14 hardening pass (bounds/wraparound audit): the largest prefix
+ * length <= `cap` bytes of `s` (which need not be NUL-terminated at
+ * `cap`) that does not split a UTF-8 code point. `n` is `s`'s actual
+ * length; only called when `n > cap` (an actual truncation is
+ * happening). A festpack string field is real festival-authored text —
+ * artist/stage/landmark names routinely carry non-ASCII (accents,
+ * emoji) — so a plain byte-offset cut like the old `n = dst_sz - 1` can
+ * land mid-sequence and leave a dangling lead byte or orphaned
+ * continuation byte(s) at the end of the field, which is not valid
+ * UTF-8 and can render as a replacement glyph or worse depending on the
+ * consumer. Standard trailing-continuation-byte backup: a UTF-8
+ * continuation byte always matches the bit pattern 10xxxxxx
+ * (`(byte & 0xC0) == 0x80`), which a UTF-8 lead byte (0xxxxxxx ASCII,
+ * 110xxxxx, 1110xxxx, 11110xxx) never does — so backing up over
+ * continuation bytes always stops exactly at the start of whatever code
+ * point we're sitting inside, ASCII included (an ASCII byte never
+ * matches the continuation pattern, so the loop is a no-op whenever
+ * `cap` already lands on a clean boundary). The code point found at
+ * that stopping point is then excluded entirely, even if it's a lead
+ * byte with no room left for its own continuation bytes, rather than
+ * ever emitting a partial one. Already-malformed input (a stray
+ * continuation byte with no preceding lead byte, e.g. non-UTF-8 bytes)
+ * degrades safely to an empty/shorter-than-expected prefix, never past
+ * `cap` and never a crash — this function has no opinion on whether `s`
+ * was valid UTF-8 to begin with, only on not making a valid prefix
+ * invalid. */
+static size_t fp_utf8_truncate_len(char const *s, size_t cap)
+{
+    size_t end = cap;
+    while (end > 0 && ((unsigned char)s[end] & 0xC0u) == 0x80u) {
+        end--;
+    }
+    return end;
+}
+
 /* Bounded copy, always NUL-terminated. Oversized field VALUES (as
  * opposed to oversized ARRAYS) are truncated, not treated as
  * FP_ERR_TOO_BIG — only the counted collections (stages/sets/features/
- * landmarks/polygon points) are overflow-checked per the spec. */
+ * landmarks/polygon points) are overflow-checked per the spec. The
+ * truncation point itself is UTF-8-code-point-safe (fp_utf8_truncate_len
+ * above) — never shorter than necessary, but also never splitting a
+ * multi-byte character. */
 static void fp_copy_str(fp_ctx_t const *c, int i, char *dst, size_t dst_sz)
 {
     dst[0] = '\0';
@@ -142,7 +180,7 @@ static void fp_copy_str(fp_ctx_t const *c, int i, char *dst, size_t dst_sz)
     jsmntok_t const *t = &c->toks[i];
     if (t->type != JSMN_STRING) return;
     size_t n = (size_t)(t->end - t->start);
-    if (n >= dst_sz) n = dst_sz - 1;
+    if (n >= dst_sz) n = fp_utf8_truncate_len(c->js + t->start, dst_sz - 1);
     memcpy(dst, c->js + t->start, n);
     dst[n] = '\0';
 }

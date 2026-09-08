@@ -19,6 +19,35 @@ static void notify_remove_at(ff_notify_t *q, uint8_t idx)
     q->count--;
 }
 
+/* S14 hardening pass (bounds/wraparound audit): the largest prefix
+ * length <= `cap` bytes of `s` that does not split a UTF-8 code point.
+ * `text` here is a live message/rally-name/status body straight off the
+ * wire (see `ff_notify_push`'s two truncation sites below) — real
+ * sender-authored UTF-8, not ASCII-only by contract the way T9-composed
+ * text is (`ff_t9_insert_text`'s own runtime-enforced ASCII contract does
+ * NOT apply to anything arriving over RF). A plain byte-offset cut can
+ * land mid-sequence and leave a dangling lead byte or orphaned
+ * continuation byte(s) at the end of the field. Standard trailing-
+ * continuation-byte backup: a continuation byte always matches
+ * `(byte & 0xC0) == 0x80`, which no lead byte (ASCII included) ever
+ * does, so backing up over continuation bytes always stops exactly at
+ * the start of whatever code point straddles `cap` — which is then
+ * excluded entirely (even a lead byte with no room left for its
+ * continuation bytes), rather than ever emitting a partial one.
+ * Already-malformed input degrades to an empty/shorter-than-expected
+ * prefix, never past `cap`, never a crash. Local copy — this module
+ * intentionally has no dependency to share it from (mirrors
+ * firmware/festpack/src/fp_pack.c's fp_utf8_truncate_len, which this is
+ * the same algorithm as; see that function's fuller comment). */
+static size_t notify_utf8_truncate_len(char const *s, size_t cap)
+{
+    size_t end = cap;
+    while (end > 0 && ((unsigned char)s[end] & 0xC0u) == 0x80u) {
+        end--;
+    }
+    return end;
+}
+
 void ff_notify_init(ff_notify_t *q)
 {
     if (q == NULL) return;
@@ -61,7 +90,7 @@ ff_notify_push_result_t ff_notify_push(ff_notify_t *q, ff_notify_kind_t kind, ff
         e->text[0] = '\0';
         if (text != NULL) {
             size_t n = strlen(text);
-            if (n >= sizeof(e->text)) n = sizeof(e->text) - 1u;
+            if (n >= sizeof(e->text)) n = notify_utf8_truncate_len(text, sizeof(e->text) - 1u);
             memcpy(e->text, text, n);
             e->text[n] = '\0';
         }
@@ -84,7 +113,7 @@ ff_notify_push_result_t ff_notify_push(ff_notify_t *q, ff_notify_kind_t kind, ff
     e->expiry_ms = expiry_ms;
     if (text != NULL) {
         size_t n = strlen(text);
-        if (n >= sizeof(e->text)) n = sizeof(e->text) - 1u;
+        if (n >= sizeof(e->text)) n = notify_utf8_truncate_len(text, sizeof(e->text) - 1u);
         memcpy(e->text, text, n);
         e->text[n] = '\0';
     }

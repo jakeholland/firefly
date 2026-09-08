@@ -701,6 +701,46 @@ static void S26_AC1_distinct_caller_buffers_parse_independently(void)
     TEST_ASSERT_EQUAL_UINT16(pack_a.n_sets, pack_b.n_sets);
 }
 
+/* S14 hardening pass (bounds/wraparound audit): a landmark name whose
+ * source JSON text is exactly one UTF-8 multi-byte code point too long
+ * for fp_landmark_t.name[28] (26 ASCII 'A's + a 3-byte "\u20ac" EURO
+ * SIGN = 29 raw bytes, one more than the 28-byte field can ever hold
+ * including its NUL). fp_copy_str() must truncate at a code-point
+ * boundary (fp_utf8_truncate_len()), not a raw byte offset — before this
+ * fix, a plain `n = dst_sz - 1` cut kept the euro sign's lead byte
+ * (0xE2) with neither of its two continuation bytes, leaving an invalid
+ * dangling UTF-8 lead byte at the very end of the field. The fixture's
+ * exact byte layout is asserted in this file's own comment/fixture
+ * pair; see festpack/tests/fixtures/utf8_boundary_landmark.festpack.json. */
+static void S14_utf8_truncate_does_not_split_landmark_name_codepoint(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("utf8_boundary_landmark.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_UINT8(1, pack.n_landmarks);
+
+    char const *name = pack.landmarks[0].name;
+    /* The whole euro sign (all 3 of its bytes) must be dropped, not
+     * split — the 26 ASCII 'A's it couldn't make room for are the
+     * entire, exact, valid result. */
+    TEST_ASSERT_EQUAL_STRING("AAAAAAAAAAAAAAAAAAAAAAAAAA", name);
+    TEST_ASSERT_EQUAL_size_t(26u, strlen(name));
+
+    /* Belt-and-suspenders, independent of the exact-string assertion
+     * above: the last byte actually stored must never be a UTF-8
+     * continuation byte (0x80-0xBF, i.e. (byte & 0xC0) == 0x80) — that
+     * bit pattern can only appear as the 2nd+ byte of a multi-byte
+     * sequence, so seeing it as the LAST byte of a supposedly-complete
+     * string is exactly the "split code point" failure mode this test
+     * guards against, regardless of which field/fixture hits it. */
+    size_t n = strlen(name);
+    if (n > 0) {
+        TEST_ASSERT_FALSE(((unsigned char)name[n - 1] & 0xC0u) == 0x80u);
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -751,6 +791,8 @@ int main(void)
     RUN_TEST(S26_AC2_too_small_ntoks_returns_err_too_big_no_overrun);
     RUN_TEST(S26_AC2_null_or_nonpositive_toks_returns_err_too_big_no_crash);
     RUN_TEST(S26_AC1_distinct_caller_buffers_parse_independently);
+
+    RUN_TEST(S14_utf8_truncate_does_not_split_landmark_name_codepoint);
 
     return UNITY_END();
 }
