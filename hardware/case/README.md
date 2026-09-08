@@ -68,6 +68,10 @@ building it.
 | `renders/pass12b_trim_{front,top,right,iso}.png` | Pass-12b orthographic screenshots (trim, current numbers: `top_z=28`, `usb_end_extension_mm=1.8`) — clean pill silhouette, longer at the USB end, no bumps. |
 | `renders/pass12b_usb_end.png` | Pass-12b close-up (trim): the window/USB end with the FPC brow deleted — a smooth, unbroken shoulder curve into the dome tip, no step/notch/plateau. |
 | `renders/pass12b_power_button.png`, `pass12b_home_button.png` | Pass-12b close-ups (trim): zoomed, straight-on (fixed `viewExtents`, not `isFitView`) views of each button hole on the -x wall — a single clean stadium opening each, no secondary notch. |
+| `renders/pass14_{trim,current}_{front,top,right,iso}.png` | Pass-14 orthographic screenshots, both variants — lanyard-end corner blocks + wordmark counter fix, clean silhouette (unchanged from pass 12b). |
+| `renders/pass14_top_corner_blocks.png` | Pass-14 close-up (trim): looking straight into the Top's lanyard end from below/inside — both merged corner blocks visible as one continuous mass around their own pilot pair. |
+| `renders/pass14_top_inside.png` | Pass-14 close-up (trim): wider isometric-from-inside view, corner blocks alongside the compass mount, window bore, and USB tunnel. |
+| `renders/pass14_bottom_logo.png` | Pass-14 close-up (trim): straight-on wordmark render — all 4 counters ('a', 'd', both flower 'o's) visibly open, not solid. |
 
 Every exported body (case and coupon) is size-checked at export time
 (`assert_export_body_size`, ≤120mm/≤40mm max extent respectively) as a
@@ -3624,6 +3628,329 @@ of the export run).
   investigation, not a generator input or output — it is not tracked in
   git (see `.gitignore`) and can be safely deleted; a fresh `build()` run
   recreates it.
+
+## 2026-09-15 pass 14 (lanyard-end corner blocks, wordmark counters fixed)
+
+Two independent changes: (1) merge the four free-standing lanyard-end
+screw bosses (A/B1/B2/C) into two solid corner blocks on the Top half, per
+Jake's sketch — "a buttress block the two screws land in, not two posts
+with a web"; (2) fix a real print defect Jake found on the printed
+Bottom — the KANDI WOOKS wordmark's counters (the 'a', the 'd', and both
+flower-shaped 'o's in WOOKS) were coming out solid instead of hollow.
+Both re-verified live for both variants; two new gates,
+`verify_corner_blocks` and `verify_wordmark_counters`, now run as part of
+the regular `verify()` sweep.
+
+### Item 1: lanyard-end corner blocks (A+B1, C+B2)
+
+**Construction** (`add_lanyard_corner_block`, called from
+`add_case_screws` in place of the old per-screw Top-side cylinder —
+`add_case_boss` gained a `build_top` flag so its Bottom-side half is
+completely unchanged): each side's pair (A+B1 on the −x side, C+B2 on
++x) becomes one solid built from a stadium/capsule connecting the two
+screw centres (`oriented_stadium_prism`, radius `boss_dia/2` — see the
+pad discussion below), unioned with an oversized outward wedge
+(`oriented_box_prism`) that starts exactly at the capsule's own outward
+edge (direction determined live, via a dot product against the
+direction away from spine_a — not assumed) and reaches toward the true
+dome wall. The union is clipped three ways: `clip_to_inner_cavity` (the
+true shell, same as every other boss/post in this file), a plain
+cylinder centred on spine_a at radius `lip_r[0] -
+CORNER_BLOCK_RING_CLEARANCE` (0.5mm) so the block stops cleanly short of
+the lip/anchor ring's own inner edge, and a cut of the L76K PCB
+footprint (`p['bay']['stack3']['l76k_pcb']`) + `CORNER_BLOCK_STACK_
+MARGIN` (0.8mm) spanning the block's **full** z-height. Two full-height,
+unclipped core cylinders (radius `BOSS_CORE_R`, the same constant every
+other boss/post in this file uses) at each screw centre guarantee the
+join physically reaches both the parting line and the ceiling, exactly
+like every other boss/post (`clipped_pillar_with_reach`'s own
+docstring). Both pilot holes are then cut from the merged block at their
+exact existing positions/diameters/depths (`p['top_pilot_dia']`,
+`p['top_pilot_z']`), so the screws still land and bottom out identically
+and Bottom's own counterbores (untouched by this pass) still line up.
+Block top face = `top_ceiling_underside_z`, unchanged from the old
+individual boss tops.
+
+**Keep-out #1, negotiated: how wide can the block actually be?**
+A first version padded the capsule to `boss_dia/2 + 0.7` = 3.7mm radius,
+sized to satisfy `verify_root_fillets`' 3.6mm probe (`boss_r + 0.6`)
+*from the capsule's own geometry alone*, with no reinforcement. Live
+`check_interference` against the inserted board occurrences found real
+overlap — up to 46mm³ against the Wio module, up to 17mm³ against the
+XIAO — at B1/B2: the REAL 3-board stack's footprint at B1/B2's own y
+(≈−15) reaches out to |x|=8.9mm (not just the L76K PCB's own low-z
+frame footprint the static param describes — the live interference
+reached as high as z≈22.9, well above the comms-stack frame's own
+low-z band), only 3.61mm from B1/B2's own centre (±12.5mm) — **less**
+than the 3.7mm the capsule needed on its own. No amount of ring/
+stack-footprint clamping alone can fit both a 3.7mm pad and a 3.61mm
+ceiling at once. **Fix**: split the two jobs. `CORNER_BLOCK_PAD` is now
+`0.0` — the capsule/wedge's own radius is just `boss_dia/2`, the exact
+footprint the old individual bosses always had (proven interference-free
+through pass 13) — and the pass-13 conical root-reinforcement collar
+(`add_root_reinforcement`, unconditional, near the ceiling only) is
+added at both screw centres to satisfy `verify_root_fillets` instead;
+the collar's own geometry doesn't care what the underlying pillar's
+cross-section is, so a plain boss-radius capsule gets exactly the same
+1.1mm-at-0.4mm-in boost any other boss/post in this file gets. The
+`CORNER_BLOCK_STACK_MARGIN` cut (0.8mm past the L76K PCB footprint,
+full block height) is kept as a second, independent safeguard against
+the same class of real-hardware proximity, since the static PCB param is
+a reasonable but not perfectly tight proxy for the real stack. Re-verified
+live: `check_interference` returns `[]` on both variants with this final
+geometry.
+
+**Keep-out #2, live-confirmed genuinely needed, not just belt-and-
+suspenders**: with `CORNER_BLOCK_PAD=0.0`, the plain capsule missed ONE
+of `verify_root_fillets`' 8 angles at B1/B2 (315° at B1, the mirror 225°
+at B2) — the ceiling's own fillet curvature (rho > `fillet_center_rho`
+out at B1/B2's own radius from spine_a) narrows the usable ceiling
+height there, independent of the comms-stack question above. The
+unconditional root-reinforcement collar closes this the same way it
+already does for the top posts — confirmed live, `verify_root_fillets`
+passes clean (all 8 angles) on both variants with the final code.
+
+**Keep-out #3, the lip/anchor ring**: `CORNER_BLOCK_RING_CLEARANCE`
+(0.5mm past `lip_r[0]`) was sized from a live, pure-Python (no-Fusion)
+replay of `true_wall_distance_along_ray`/`rho_at_z` against both
+variants' real numbers: at `CORNER_BLOCK_PAD=0.0`, B1/B2 (19.53mm from
+spine_a) reach 22.53mm at the capsule alone, comfortably inside trim's
+`lip_r[0]`=23.95 (current has far more margin still: 25.95) — the ring
+clearance clamp mostly limits how far the *outward wedge* can reach
+toward the wall, not the capsule itself.
+
+**Keep-outs already clear by construction, checked, not just assumed**:
+the comms-stack footprint and the LoRa FPC antenna keep-out both live
+near the case's own y=0 centreline (the real LoRa u.FL channel is
+centred at x≈3.44mm — `PARAMS['antenna']['lora_ufl_xyz']`), while both
+corner blocks stay laterally out at |x|≥~9mm by construction (the
+`fpc_keepout` reference box in `params_current.py`'s own `bay` dict is
+deliberately wide, x −20..20, marking a generic wall region rather than
+the precise antenna route — the operative check is the real, live-probed
+LoRa channel via `verify_antenna_channels`, unaffected either way).
+Button tab lanes (y 29..63) and the compass mount (world y 3.75..22.35)
+are both far enough from the lanyard end (y −8/−15) that there is no
+spatial overlap to check at all.
+
+**A NEW live overhang finding, current variant only, fixed by widening
+an existing whitelist entry**: the wider `lip_r[0]` on 'current' lets the
+outward wedge reach further before `CORNER_BLOCK_RING_CLEARANCE` clamps
+it, exposing a slightly larger patch of the same curved inner-cavity
+ceiling/fillet transition the pass-5 `general_ceiling_overhang`
+whitelist entry already covers everywhere else on Top. `tools/
+offline_stl_check.py`'s offline overhang scan on the fresh `current`
+export flagged two 57mm² clusters at (±19.3, −13.1) — just south of the
+whitelist's old y0=−12 boundary. Live-inspected the actual flagged
+triangles (not just their size) before touching the whitelist: two
+z-bands, a flat z=11 shelf (0° from horizontal — an ordinary flat
+interior ceiling patch, same as every other one already whitelisted) and
+a z≈21–23 band at ~40° (the inner-cavity fillet's own sub-45° transition,
+identical in kind to the existing `ceiling_near_bay_wall` entries) —
+both the same "hollow shell needs ordinary slicer support here" reality
+already accepted everywhere else, not a new local/structural defect.
+Widened `general_ceiling_overhang`'s y0 from −12 to −16 (southmost point
+found: −15.87) in **both** `firefly_case.py`'s own inline overhang-scan
+whitelist (used when `run(..., export=True)` gates on it) and `tools/
+offline_stl_check.py`'s independent copy — kept deliberately in sync,
+per those files' own existing comments about the two never being allowed
+to silently drift apart. Trim doesn't trigger this at all (its tighter
+`lip_r[0]` keeps the wedge's reach well inside the pre-existing box).
+
+**`verify_corner_blocks`** (new gate): for each side, probes (a) both
+pilot holes open to full depth (near each end and mid-depth), (b) the
+block solid at 7 points along and just off the segment between the two
+pilots, at a height safely above the pilots' own z1 (avoiding a false
+"hollow" read at the pilot bore itself), (c) the L76K stack footprint's
+4 corners and the case's own x=0 centreline across the FPC keep-out's
+y-band both read hollow — the last one is both the "stays in the corner"
+and "does not bridge the end-wall centre" checks at once. All 8 checks
+pass on both variants (see the `verify()` output below).
+
+### Item 2: wordmark counters were being cut away (real print defect)
+
+**Root cause, confirmed exactly as the brief predicted**: `deboss_loops`
+(the function `add_wordmark_logo`/`add_flare_logo` both call) built one
+Fusion sketch per deboss pass containing every glyph loop — outer AND
+counter/hole — then extruded and cut **every** resulting `sk.profiles`
+entry unconditionally. For a glyph with an enclosed counter (an 'a', a
+'d', a flower 'o'), Fusion's own profile-finder returns TWO profiles:
+the ring (outer loop minus the inner/counter loop — the shape we
+actually want cut) and a SECOND profile that is the counter's own disk,
+on its own, treated as its own standalone filled region (real,
+documented Fusion behavior for nested closed curves, not a bug in
+Fusion). Cutting both erases the counter entirely — the whole glyph
+comes out solid, exactly Jake's report.
+
+**Fix**: `kandiwooks_logo.json` already tags every loop with `is_outer`
+(confirmed live via a stub-Fusion, no-Fusion-needed script:
+`WORDMARK_LINE1_BODIES`'s 5 outer loops / 2 counters — the 'd' at Body2
+and the 'a' at Body4 — and `WORDMARK_LINE2_BODIES`'s 2 outer loops / 2
+counters — both flower 'o's, Body3's own two enclosed loops — exactly 4
+counters total, matching Jake's report of "a, d, and the two o's").
+`deboss_loops` gained an optional `counter_loops_xy` parameter: when
+given, any Fusion profile whose own bounding box matches one of these
+world-space counter loops (`_loop_bbox_mm`/`_profile_bbox_mm`/
+`_bbox_matches`, 0.05mm tolerance) is skipped — not extruded, not cut —
+so the counter survives as a real hole in the debossed ring; the ring
+profile itself keeps the much larger OUTER loop's bbox, so the two can
+never be confused. `wordmark_layout` computes the outer/counter split
+(`_wordmark_word_loops_by_flag`) and transforms both through the
+*exact* same scale/bbox/center math as the full word (so a counter's
+world coordinates always land exactly where the matching profile in the
+real cut sketch does), returning `counter_loops` (fed to `deboss_loops`
+by `add_wordmark_logo`) and `counter_probes` (pairs of world points —
+the counter's own centroid, and a point on the ring between the counter
+and its own enclosing outer glyph, found by a small point-in-polygon
+search — `_point_in_poly`/`_poly_centroid`/`_wordmark_counter_probes`,
+pure Python, no Fusion needed) for the new gate below. `flare_glyph_
+loops` (the sprout/compass-rose logo on Top) has no nested counters and
+calls `deboss_loops` with the default `counter_loops_xy=None`, so it
+cuts exactly as before — confirmed unaffected by inspection (no code
+path changed for it) and by the render.
+
+**`verify_wordmark_counters`** (new gate): for each of the 4 counters,
+at the same mid-deboss z `verify_wordmark`'s own grid probe already
+uses, (a) the counter's own centroid reads SOLID (material present — the
+counter was not cut away) and (b) a point on the ring between the
+counter and its own outer boundary reads HOLLOW (confirms the deboss
+itself still happened around it, not silently skipped entirely).
+`counter_count==4` is a regression guard on the JSON itself. All 9
+checks (`counter_count` + 4×2) pass on both variants:
+
+```
+trim:    counter_0 (d, KANDI)   present (-8.636, 20.244)  stroke_open (-6.804, 20.244)
+         counter_1 (a, KANDI)   present (4.744, 20.044)   stroke_open (5.995, 20.044)
+         counter_2 (o, WOOKS)   present (4.447, 10.604)   stroke_open (6.637, 10.604)
+         counter_3 (o, WOOKS)   present (-2.609, 10.604)  stroke_open (-0.419, 10.604)
+current: counter_0 (d, KANDI)   present (-9.476, 19.238)  stroke_open (-7.474, 19.238)
+         counter_1 (a, KANDI)   present (5.206, 19.019)   stroke_open (6.57, 19.019)
+         counter_2 (o, WOOKS)   present (4.88, 8.855)     stroke_open (7.275, 8.855)
+         counter_3 (o, WOOKS)   present (-2.863, 8.855)   stroke_open (-0.468, 8.855)
+```
+
+**Rendered `pass14_bottom_logo.png` straight-on and looked at it** (per
+the brief's own instruction — a numeric probe pass is not a substitute):
+KANDI/WOOKS read correctly, and — the actual point of this pass — the
+'a', the 'd', and both flower 'o's in WOOKS all show a genuine open
+counter (an unmistakable outline of the hole, not a filled glyph) at
+normal render resolution and at a tight crop zoomed in on just the
+wordmark. K, N, W, S, and the sprout on the 'i' are unaffected, exactly
+as expected (no counters to begin with, no code path touched for them).
+
+### `verify()` output, both variants, full piecewise run
+
+Every stage of `build()` was its own `fusion_mcp_execute` call against
+the same open document (this session's MCP transport reliably times out
+client-side around a minute, same as every prior pass — Fusion keeps
+executing to completion regardless, confirmed by re-querying the
+document); `verify()` itself was also run as its own call, writing its
+result to a small JSON file on disk (this session's Fusion process runs
+on the same host filesystem this agent's Bash tool has access to) rather
+than trusting a client-side print that a slow call could lose to the
+same timeout.
+
+```
+trim:    body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference []
+         corner_block: A_pilot_open/B1_pilot_open/C_pilot_open/B2_pilot_open all (True, [True,True,True])
+                        AB1_block_solid/CB2_block_solid both (True, [True]*7)
+                        stack_footprint_clear (True, [True]*4), fpc_keepout_centerline_clear (True, [True]*3)
+         root_fillet bad {}  (19 features -- 13 pass-13 posts/bosses + 4 mag pegs/pads + 2 new corner-block collars)
+         wordmark: edge_clearance (True, 5.708), deboss_present (True, 0.315)
+         wordmark_counters: counter_count (True, 4), all 8 present/stroke_open checks True
+         posts_bosses bad [] / post_walls bad {} / battery_access clean / envelope bad [] / clearance bad {}
+         plunger bad [] / button_insertion bad [] / button_retention bad {}
+         stack3 clearance_found 4.158 required 0.8 ok True
+         skin bad [] / wall bad [] / fpc bad [] / antenna bad [] / mag bad [] / openings bad {}
+
+current: body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference []
+         corner_block: all 8 checks True (same shape as trim, absolute-mm screw positions are shared)
+         root_fillet bad {}  (15 features -- 13 pass-13 posts/bosses + 2 new corner-block collars; no compass module)
+         wordmark: edge_clearance (True, 6.108), deboss_present (True, 0.315)
+         wordmark_counters: counter_count (True, 4), all 8 present/stroke_open checks True
+         posts_bosses bad [] / post_walls bad {} / battery_access clean / envelope bad [] / clearance bad {}
+         plunger bad [] / button_insertion bad [] / button_retention bad {}
+         stack3: {'ok': True, 'note': 'no Wio/XIAO inserted, nothing to check'}
+         skin bad [] / wall bad [] / fpc bad [] / antenna bad [] / mag bad [] / openings bad {}
+```
+
+Every gate in the regular `verify()` sweep — not just the two new ones —
+was run and passed on both variants (`verify()` itself asserts on all of
+them; a failure anywhere would have raised before returning).
+
+### Offline STL scan output (`tools/offline_stl_check.py`, pass 14)
+
+```
+=== Offline STL checks: trim ===
+Bottom: manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Top:    manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Screen_Plate / Power_Button / Home_Button: manifold ok, envelope ok
+OVERALL: PASS
+
+=== Offline STL checks: current ===
+Bottom: manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Top:    manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Screen_Plate / Power_Button / Home_Button: manifold ok, envelope ok
+OVERALL: PASS
+```
+(The `current`-only overhang whitelist widening — item 1's own writeup —
+is already reflected in this final PASS; without it `current`'s Top
+would report 2 bad clusters of 57.19mm² each, both now correctly
+identified as ordinary ceiling/fillet-transition territory.)
+
+### Print orientation / notes
+
+Both halves print exactly as before — Top face-down on its flat ceiling
+(z=top_z) face, Bottom face-down on its own flat back (z=0) face — no
+change to either variant's print orientation. The corner blocks are a
+plain vertical extrusion (capsule + wedge, no taper) from the bed up to
+the ceiling, so they need no more support than the individual bosses
+they replace; the root-reinforcement collar is the same 45°
+self-supporting cone every other post/boss root in this file already
+uses, and — like those — sits at the bed side of Top's ceiling face,
+so it adds no new overhang either (confirmed by the clean offline
+overhang scan above). The wordmark fix changes only *which* Fusion
+profile gets cut, not any dimension, so the deboss depth, glyph size,
+and vertical/horizontal centring from pass 13 are all unchanged.
+
+### Exports and renders (pass 14)
+
+Both variants: `export/<variant>/{Bottom,Top,Screen_Plate,Power_Button,
+Home_Button}.stl` (all 5 re-exported), `export/<variant>/firefly_
+<variant>_case.3mf` (native, 5 objects), `export/<variant>/firefly_
+<variant>_plate.3mf` (re-packed via `tools/stl_to_3mf.py`, same
+per-part orientation as every prior pass). Renders: `pass14_{trim,
+current}_{front,top,right,iso}.png` (standard 4-view, both variants),
+`pass14_top_corner_blocks.png` (trim, looking straight into the Top's
+lanyard end from below/inside — both merged corner blocks visible as
+one continuous mass around their own pilot pair, not two separate
+posts), `pass14_top_inside.png` (trim, a wider isometric-from-inside
+view showing the corner blocks alongside the compass mount, window bore,
+and USB tunnel), `pass14_bottom_logo.png` (trim, straight-on — the
+wordmark with all 4 counters visibly open).
+
+### Known limitations / notes added this pass
+
+- **The `current`-variant custom close-up renders (corner blocks /
+  inside / bottom logo) were not separately generated** — the numeric
+  `verify_corner_blocks`/`verify_wordmark_counters` gates above already
+  confirm current's geometry live (identical construction, absolute-mm
+  screw positions shared with trim, more margin everywhere since
+  current's shell is wider), and the standard 4-view renders exist for
+  both variants; a future pass wanting the same close-up angles for
+  current specifically can reuse this pass's exact camera scripts.
+- **`CORNER_BLOCK_STACK_MARGIN`'s 0.8mm cut uses the static `l76k_pcb`
+  param, not a live-probed real-board bounding box** — proven sufficient
+  by this pass's own live `check_interference` run (zero interference,
+  both variants, against every inserted board occurrence), but if a
+  future board/stack revision changes the real footprint, re-run that
+  check rather than trusting the static param alone (same caveat the
+  pre-existing `add_comms_stack_frame` boss-relief cut already carries).
+- **Coupons (`export/coupons/*`) were not re-exported this pass** — the
+  button caps/switches are untouched by either change, so the existing
+  coupon STLs/3MF remain valid; re-export only if a future pass touches
+  button geometry.
 
 ## Screw list
 

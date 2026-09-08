@@ -218,7 +218,24 @@ def scan_stl_overhangs(tris, down_z, bed_z, angle_tol_deg=1.0, min_cluster_mm2=3
 
 TOP_WL = [
     (-8.0, 8.0, 65.0, 81.0, 'usb_tunnel_floor'),
-    (-32.0, 32.0, -12.0, 79.0, 'general_ceiling_overhang'),
+    # 2026-09-14 pass 14: y0 widened -12 -> -16 (current variant only
+    # exposes this) -- the new lanyard-end corner blocks' own outward
+    # wedge (add_lanyard_corner_block) reaches further out toward the
+    # true wall than the old individual bosses did (current's wider
+    # lip_r[0] gives it more room before CORNER_BLOCK_RING_CLEARANCE
+    # clamps it), so it clips against a slightly larger patch of the same
+    # curved inner-cavity ceiling/fillet transition this whitelist entry
+    # already covers everywhere else. Live-inspected the actual flagged
+    # triangles (not just their size) before widening: two z-bands, a
+    # flat z=11 shelf (down_component angle 0 degrees -- ordinary flat
+    # interior ceiling, same as every other flat ceiling patch here) and
+    # a z~21-23 band at ~40 degrees (the inner-cavity fillet's own
+    # sub-45-degree transition, identical in kind to the existing
+    # ceiling_near_bay_wall entries below) -- both the same "hollow shell
+    # needs ordinary slicer support here" reality this whitelist already
+    # accepts, not a new local/structural defect. Southmost point found:
+    # y=-15.87; margin to -16.
+    (-32.0, 32.0, -16.0, 79.0, 'general_ceiling_overhang'),
 ]
 BOTTOM_WL = [
     (-15.0, 15.0, -26.0, -15.0, 'l76k_frame_ceiling'),
