@@ -49,7 +49,7 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings);
 
 /**
  * ff_scr_settings_reset_scroll — [api] discard the remembered scroll
- * offset so the NEXT ff_scr_settings_build() renders from the top.
+ * offset(s) so the NEXT ff_scr_settings_build() renders from the top.
  *
  * The Settings list preserves its scroll position across the in-place
  * rebuild a settings-change intent triggers (toggling a row must not jump
@@ -59,7 +59,15 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings);
  * dispatcher (targets/sim/face_dispatch.c, targets/esp32s3/main/ff_face.c)
  * calls this on the not-Settings -> Settings transition, so a fresh entry
  * resets while a same-face rebuild preserves. A no-op cost when called
- * redundantly (it only clears a file-static int).
+ * redundantly (it only clears two file-static ints).
+ *
+ * Covers BOTH of this file's independently-tracked offsets: the plain
+ * list's and (fix/diag-scroll-persist) the DIAGNOSTICS page's own — a
+ * fresh arrival at Settings must land at the top of whichever subview it
+ * opens on, not wherever a previous visit to that subview left it, while
+ * a routine in-place rebuild of either (a settings toggle for the plain
+ * list; a live stats/link/time tick for DIAGNOSTICS, ff_shell.c's
+ * shell_render_key) preserves its own list's position.
  */
 void ff_scr_settings_reset_scroll(void);
 

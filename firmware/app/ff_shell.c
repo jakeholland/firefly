@@ -3306,6 +3306,28 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
     key->settings.diag.pos_broadcast_age_ms =
         v->settings.diag.has_pos_broadcast_age ? shell_coarsen_age_ms(v->settings.diag.pos_broadcast_age_ms) : 0u;
 
+    /* fix/diag-scroll-persist — the same arrow_deg/bearing_deg lesson two
+     * structs above, applied to the DIAGNOSTICS page's own compass
+     * reading. `heading_deg` is a raw sensor value re-sampled on a timer
+     * (FF_COMPASS_SAMPLE_PERIOD_MS, 100ms on device — see app_main.c),
+     * not smoothed the way the radar arrow is, so a stationary puck's
+     * reading still wobbles in the last bit or two from sensor/ADC noise
+     * on every sample. `settings_build_diag_page` (scr_settings.c) renders
+     * it through "%.0f deg" — whole degrees only — so any sub-degree
+     * change is invisible on glass. Left raw in the key, that 10 Hz noise
+     * dirtied the key ~10x/sec while DIAGNOSTICS was open, each answered
+     * by a full lv_obj_clean()+rebuild of the page's ~30-row list — the
+     * measured cause of the page's slow ~50-60ms gesture-poll cadence
+     * (a normal 20ms tick, stretched by that rebuild cost landing on it)
+     * and, combined with the page's own scroll-to-0-on-every-build (see
+     * settings_build_diag_page's own fix in scr_settings.c), why a drag
+     * never held: the page could rebuild several times inside one
+     * gesture. Coarsened to whole degrees here, matching what actually
+     * reaches the screen — a real heading change (a whole degree or
+     * more) still dirties and rebuilds correctly. */
+    key->settings.diag.heading_deg =
+        v->settings.diag.heading_valid ? (float)(int32_t)v->settings.diag.heading_deg : 0.0f;
+
     /* S26 slice d — the banner's age, same coarsened-age discipline as
      * every preview/presence age above: scr_banner.c renders it only
      * through ff_fmt_age (whole-second-under-a-minute buckets, all of

@@ -326,6 +326,20 @@ static ff_app_settings_t s_settings;
 static lv_obj_t *s_list;      /* the live scroll list (NULL before first build / after teardown) */
 static int32_t s_scroll_y;    /* last observed vertical scroll offset, restored on rebuild */
 
+/* fix/diag-scroll-persist — the SAME #bug4 preservation, a separate
+ * offset for the DIAGNOSTICS page's OWN list. Not folded into
+ * `s_scroll_y`/`s_list` above even though `settings_build_diag_page`
+ * also points `s_list` at its own list (a harmless share — see that
+ * assignment's own comment, it only feeds the sim scroll-hint hook):
+ * `s_scroll_y` is restored by the PLAIN list's build only (this file's
+ * final `lv_obj_t *puck = ...` branch), so if Diagnostics wrote into it
+ * too, leaving Diagnostics scrolled and returning to the plain list (a
+ * shorter, differently-laid-out list) would restore the WRONG list's
+ * offset the moment the user backs out — a cross-page bleed neither
+ * page's content has anything to do with the other's. A page of its
+ * own offset avoids that by construction. */
+static int32_t s_diag_scroll_y;
+
 /* ---------------------------------------------------------------------
  * Brightness stepper (#bug2). Brightness is a −/+ stepper, NOT a slider: a
  * draggable control inside a vertical scroll list fights the list's own scroll
@@ -373,6 +387,22 @@ static void settings_scroll_end_cb(lv_event_t *e)
 {
     (void)e;
     lv_obj_invalidate(lv_screen_active());
+}
+
+/* fix/diag-scroll-persist — the DIAGNOSTICS page's own LV_EVENT_SCROLL
+ * handler, into `s_diag_scroll_y` rather than `settings_scroll_cb`'s
+ * `s_scroll_y` (see that variable's own doc comment for why the two
+ * pages need separate offsets). No per-frame band invalidate here: that
+ * repaint in `settings_scroll_cb` exists ONLY to cover moving amber
+ * decorations (brightness fill, active pill, the Calibrate border)
+ * bleeding past their row edges (#bug5) — Diagnostics renders nothing
+ * but plain clipped label text (`settings_diag_line`, LV_LABEL_LONG_DOT,
+ * SCROLLABLE cleared on every row), so LVGL's own scroll-invalidate
+ * already repaints it correctly with no residue to chase. */
+static void settings_diag_scroll_cb(lv_event_t *e)
+{
+    lv_obj_t *list = lv_event_get_target(e);
+    s_diag_scroll_y = lv_obj_get_scroll_y(list);
 }
 
 /* ---------------------------------------------------------------------
@@ -2067,6 +2097,12 @@ static void settings_build_diag_page(lv_obj_t *parent, ff_app_diag_t const *d)
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
     s_list = list; /* shares the plain list's scroll-hint hook — only one of these lists is ever built at a time per subview */
+    /* fix/diag-scroll-persist — observe this list's own scroll offset
+     * (settings_diag_scroll_cb, into s_diag_scroll_y) the same #bug4 shape
+     * the plain list already uses for s_scroll_y; restored at the end of
+     * this function below instead of the old hardcoded scroll-to-0. */
+    lv_obj_add_event_cb(list, settings_diag_scroll_cb, LV_EVENT_SCROLL, NULL);
+    lv_obj_add_event_cb(list, settings_scroll_end_cb, LV_EVENT_SCROLL_END, NULL);
 
     char buf[64];
     int32_t y = 0;
@@ -2236,8 +2272,17 @@ static void settings_build_diag_page(lv_obj_t *parent, ff_app_diag_t const *d)
     y = settings_diag_line(list, y, row_w, "FREE HEAP", buf);
     (void)y; /* the final cursor value is only informative */
 
+    /* fix/diag-scroll-persist — restore the offset the previous build left
+     * (0 on a fresh entry — s_diag_scroll_y is a zero-initialized static,
+     * and ff_scr_settings_reset_scroll below clears it same as s_scroll_y
+     * on a fresh Settings-face entry), instead of the old unconditional
+     * scroll-to-0 that reset every in-place rebuild — including the
+     * routine ones a live stats/link/time tick causes (shell_render_key,
+     * ff_shell.c) — back to the top mid-read, and mid-drag. The layout
+     * must be resolved first so LVGL knows the scrollable range to clamp
+     * against (same ordering the plain list's own #bug4 restore uses). */
     lv_obj_update_layout(list);
-    lv_obj_scroll_to_y(list, 0, LV_ANIM_OFF);
+    lv_obj_scroll_to_y(list, s_diag_scroll_y, LV_ANIM_OFF);
 }
 
 /* ---------------------------------------------------------------------
@@ -2492,10 +2537,14 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
 
 /* #bug4 — see scr_settings.h. Clear the remembered offset so the next build
  * renders from the top; the face dispatcher calls this on a FRESH entry into
- * Settings (a not-Settings -> Settings face transition). */
+ * Settings (a not-Settings -> Settings face transition). Clears
+ * s_diag_scroll_y too (fix/diag-scroll-persist) — a fresh arrival at
+ * Settings must land at the top of whichever subview it opens on, DIAGNOSTICS
+ * included, not wherever a previous visit to that subview left it. */
 void ff_scr_settings_reset_scroll(void)
 {
     s_scroll_y = 0;
+    s_diag_scroll_y = 0;
 }
 
 /* Sim golden-harness hook — see scr_settings.h. Scrolls the live list to
