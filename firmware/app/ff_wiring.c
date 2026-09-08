@@ -164,9 +164,9 @@ void ff_wiring_set_self_node(ff_wiring_ctx_t *w, uint32_t self_node)
  * Init.
  * ------------------------------------------------------------------- */
 
-static int wiring_mc_send_text(void *ctx, uint32_t dest, char const *utf8)
+static int wiring_mc_send_text(void *ctx, uint32_t dest, char const *utf8, uint32_t *out_packet_id)
 {
-    return mc_send_text((mc_client_t *)ctx, dest, utf8);
+    return mc_send_text((mc_client_t *)ctx, dest, utf8, out_packet_id);
 }
 
 /* `[api]`: `flags` (FF_WIRE_WANT_ACK — see ff_wiring.h) reaches
@@ -226,29 +226,56 @@ void ff_wiring_init(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_hea
  * Canned replies.
  * ------------------------------------------------------------------- */
 
+/* Shared builder — ff_wiring_push_outgoing and
+ * ff_wiring_push_outgoing_pending (outbox delivery status feature,
+ * 2026-09-07) both push the SAME outgoing-item shape; only the latter
+ * additionally stamps the send-tracking fields (which it does itself,
+ * after this returns). Caller supplies `w`/`kind` already validated. */
+static void wiring_build_outgoing_item(ff_wiring_ctx_t *w, ff_feed_item_t *it, ff_feed_kind_t kind, uint32_t dest,
+                                        char const *text)
+{
+    memset(it, 0, sizeof(*it));
+    it->kind = kind;
+    it->from_node = 0; /* self-originated: no node id (ff_feed.h's existing sentinel) */
+    it->dir = FEED_DIR_OUT;
+    /* Core stays mesh-agnostic: the broadcast address maps to the
+     * "whole crew" sentinel 0 (ff_feed.h's to_node contract). */
+    it->to_node = (dest == MC_ADDR_BROADCAST) ? 0u : dest;
+    it->at_ms = wiring_now_ms(w);
+    if (text != NULL && text[0] != '\0') {
+        size_t n = strlen(text);
+        if (n >= sizeof(it->text)) n = sizeof(it->text) - 1;
+        memcpy(it->text, text, n);
+        it->text[n] = '\0';
+    }
+    it->unread = false; /* my own send is never "unread" — no badge, no haptic */
+}
+
 void ff_wiring_push_outgoing(ff_wiring_ctx_t *w, ff_feed_kind_t kind, uint32_t dest, char const *text)
 {
     if (w == NULL || w->feed == NULL) return;
 
     ff_feed_item_t it;
-    memset(&it, 0, sizeof(it));
-    it.kind = kind;
-    it.from_node = 0; /* self-originated: no node id (ff_feed.h's existing sentinel) */
-    it.dir = FEED_DIR_OUT;
-    /* Core stays mesh-agnostic: the broadcast address maps to the
-     * "whole crew" sentinel 0 (ff_feed.h's to_node contract). */
-    it.to_node = (dest == MC_ADDR_BROADCAST) ? 0u : dest;
-    it.at_ms = wiring_now_ms(w);
-    if (text != NULL && text[0] != '\0') {
-        size_t n = strlen(text);
-        if (n >= sizeof(it.text)) n = sizeof(it.text) - 1;
-        memcpy(it.text, text, n);
-        it.text[n] = '\0';
-    }
-    it.unread = false; /* my own send is never "unread" — no badge, no haptic */
+    wiring_build_outgoing_item(w, &it, kind, dest, text);
+    /* send_status/want_ack/packet_id/outbox_id/status_at_ms all stay at
+     * their memset zero (FF_SEND_NONE, 0, 0, 0, 0) — this entry point
+     * tracks no delivery fate, unchanged by the outbox feature. */
 
     ff_feed_push(w->feed, &it);
     /* Deliberately no haptic: the buzz is an inbound-event cue. */
+}
+
+void ff_wiring_push_outgoing_pending(ff_wiring_ctx_t *w, uint32_t dest, char const *text, uint32_t outbox_id)
+{
+    if (w == NULL || w->feed == NULL || outbox_id == 0u) return;
+
+    ff_feed_item_t it;
+    wiring_build_outgoing_item(w, &it, FEED_TEXT, dest, text);
+    it.send_status = FF_SEND_WAITING;
+    it.outbox_id = outbox_id;
+    it.status_at_ms = it.at_ms;
+
+    ff_feed_push(w->feed, &it);
 }
 
 int ff_wiring_send_canned_reply(ff_wiring_ctx_t *w, ff_wiring_canned_reply_t which, ff_feed_item_t const *reply_ctx)
@@ -271,11 +298,16 @@ int ff_wiring_send_canned_reply_to(ff_wiring_ctx_t *w, ff_wiring_canned_reply_t 
     switch (which) {
     case FF_WIRING_REPLY_OMW:
         text = "omw";
-        rc = w->sender.send_text(w->sender.ctx, dest, text);
+        /* Canned replies are outside the outbox delivery-status feature's
+         * scope (2026-09-07 — see docs/specs/S24-signals-inbox.md's
+         * Amendments, "judgment call: canned replies"): no packet id is
+         * tracked, so a link-down tap here still fails outright exactly
+         * like before this feature, rather than being queued. */
+        rc = w->sender.send_text(w->sender.ctx, dest, text, NULL);
         break;
     case FF_WIRING_REPLY_5MIN:
         text = "5 min";
-        rc = w->sender.send_text(w->sender.ctx, dest, text);
+        rc = w->sender.send_text(w->sender.ctx, dest, text, NULL);
         break;
     }
     /* No default: -Wswitch flags any new ff_wiring_canned_reply_t member

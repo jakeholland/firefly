@@ -115,6 +115,54 @@ typedef enum {
     FEED_DIR_OUT,
 } ff_feed_dir_t;
 
+/**
+ * ff_feed_send_status_t — [api] outbox delivery status (2026-09-07,
+ * docs/specs/S24-signals-inbox.md's Amendments — "sending when lost
+ * doesn't work" bench finding). The honest, evolving fate of ONE
+ * outgoing (`dir == FEED_DIR_OUT`) item; meaningless for an inbound
+ * item, which always stays FF_SEND_NONE (the zero value — a
+ * zero-initialized/legacy item never accidentally claims a delivery
+ * fact it doesn't have).
+ *
+ *  - FF_SEND_NONE      — not an outgoing item, or predates this feature.
+ *  - FF_SEND_WAITING   — the shell has not yet handed this to the mesh
+ *                        (link down / mc_client not READY): sitting in
+ *                        the shell's bounded outbox retry queue,
+ *                        flushed automatically the next time the link
+ *                        reaches MC_STATE_READY.
+ *  - FF_SEND_SENT      — accepted by mc_client (a MeshPacket left this
+ *                        device). Terminal for a BROADCAST send — the
+ *                        mesh gives no delivery receipt for one. For a
+ *                        DIRECT send this is a transient "awaiting the
+ *                        routing ACK" state that resolves to DELIVERED
+ *                        or NO_ACK.
+ *  - FF_SEND_DELIVERED — a routing ACK (Routing.error_reason == NONE)
+ *                        came back for this exact packet id. DIRECT
+ *                        sends only.
+ *  - FF_SEND_NO_ACK    — either a routing NAK came back, or no ACK
+ *                        arrived within the shell's ACK timeout
+ *                        (`FF_OUTBOX_ACK_TIMEOUT_MS`, ff_shell.h) of the
+ *                        send. Both reasons collapse to the one honest
+ *                        label — this device cannot tell "the peer said
+ *                        no" from "nobody ever replied," and does not
+ *                        pretend otherwise.
+ *  - FF_SEND_DROPPED   — never even reached the mesh: the shell's
+ *                        bounded outbox was already full (its FIFO
+ *                        drop-oldest rule) when this item's turn to be
+ *                        attempted would have come. Kept distinct from
+ *                        NO_ACK so the UI can say why honestly ("outbox
+ *                        full") instead of implying a send was ever
+ *                        attempted.
+ */
+typedef enum {
+    FF_SEND_NONE = 0,
+    FF_SEND_WAITING,
+    FF_SEND_SENT,
+    FF_SEND_DELIVERED,
+    FF_SEND_NO_ACK,
+    FF_SEND_DROPPED,
+} ff_feed_send_status_t;
+
 typedef struct {
     ff_feed_kind_t kind;
     uint32_t       from_node; /* Meshtastic node num; 0 for self-originated (no node id) */
@@ -131,6 +179,40 @@ typedef struct {
      * push site's job). Zeroed and meaningless for inbound items (their
      * addressing lives in `dir` itself; `from_node` names the peer). */
     uint32_t to_node;
+
+    /* [api] outbox delivery status (2026-09-07) — see
+     * ff_feed_send_status_t's own doc comment. All four fields below are
+     * meaningful only when `dir == FEED_DIR_OUT`; every inbound item
+     * leaves them at their zero defaults (send_status == FF_SEND_NONE,
+     * the honest "nothing to report" state). Mutated only through the
+     * dedicated setters below — never written directly — so the
+     * ring-buffer's "may already be evicted" and "may already be
+     * resolved" edge cases stay centralized in one place. */
+    ff_feed_send_status_t send_status;
+    /* Whether this send requested (and, once SENT, is awaiting) a mesh
+     * routing ACK — true for a DIRECT text, false for a broadcast (the
+     * mesh gives broadcasts no ACK — S24's Amendments) or any item this
+     * feature doesn't track. */
+    bool want_ack;
+    /* The outgoing MeshPacket.id once send_status has reached SENT — the
+     * mc_events_t.on_routing_ack correlation key. 0 while WAITING/
+     * DROPPED (no packet was ever formed for those) or FF_SEND_NONE. */
+    uint32_t packet_id;
+    /* The shell-assigned identity of this OUTGOING send, stamped at push
+     * time (before a packet id can exist). This is the ONLY way the
+     * shell's outbox retry queue can find its way back to THIS exact
+     * feed slot later — the feed is a ring buffer, so an item's logical
+     * index shifts as newer items arrive, unlike its identity. 0 = not
+     * tracked (every inbound item, and any outgoing item that predates
+     * this feature). Assigned from a monotonic counter that skips 0,
+     * mirroring mc_client's own packet-id generator convention. */
+    uint32_t outbox_id;
+    /* Clock (caller's `at_ms`/`now_ms`) of the most recent send_status
+     * transition — drives the ACK timeout
+     * (`ff_feed_expire_pending_acks`) and is otherwise not rendered
+     * directly: no countdown UI (honest-data — this repo doesn't
+     * fabricate precision the product doesn't need). */
+    uint32_t status_at_ms;
 } ff_feed_item_t;
 
 /**
@@ -208,6 +290,60 @@ void ff_feed_mark_all_read(ff_feed_t *f);
  * `ff_feed_mark_all_read`, which is the whole-feed "face viewed" clear.
  */
 void ff_feed_mark_read_at(ff_feed_t *f, uint8_t idx);
+
+/**
+ * ff_feed_set_send_status_by_outbox_id — outbox delivery status feature:
+ * find the `dir == FEED_DIR_OUT` item whose `outbox_id` matches (0 never
+ * matches — see that field's own doc comment) and set its
+ * `send_status`/`status_at_ms` to (`status`, `at_ms`). No-op if `f` is
+ * NULL, `outbox_id` is 0, or no item matches — the item may already have
+ * scrolled out of the ring, the same honest "can't update what's gone"
+ * default `ff_feed_mark_read_at`'s own out-of-range no-op already sets.
+ */
+void ff_feed_set_send_status_by_outbox_id(ff_feed_t *f, uint32_t outbox_id, ff_feed_send_status_t status,
+                                           uint32_t at_ms);
+
+/**
+ * ff_feed_mark_sent_by_outbox_id — the WAITING -> SENT transition
+ * specifically: also stamps `packet_id`/`want_ack` (which
+ * `ff_feed_set_send_status_by_outbox_id` alone can't — only the send
+ * attempt itself knows either), so a later `ff_feed_set_ack_by_packet_id`
+ * / `ff_feed_expire_pending_acks` call has what it needs to find this
+ * item again. Same no-op rules as `ff_feed_set_send_status_by_outbox_id`.
+ */
+void ff_feed_mark_sent_by_outbox_id(ff_feed_t *f, uint32_t outbox_id, uint32_t packet_id, bool want_ack,
+                                     uint32_t at_ms);
+
+/**
+ * ff_feed_set_ack_by_packet_id — the mesh's routing-ACK answer for a
+ * DIRECT send: finds the `dir == FEED_DIR_OUT` item with `send_status ==
+ * FF_SEND_SENT`, `want_ack == true` and a matching `packet_id` (0 never
+ * matches), and sets it to DELIVERED (`ok == true`) or NO_ACK (`ok ==
+ * false`), stamping `status_at_ms`. Returns true iff a matching item was
+ * found and updated — the caller (`shell_ev_routing_ack`, ff_shell.c)
+ * uses this to tell "this ack was for one of my own outbox items" from
+ * "for something else this device sent" (e.g. a NAME set_owner push,
+ * which correlates its own `request_id` separately). A `packet_id` that
+ * matches nothing currently in the feed (already resolved by an earlier
+ * ack, expired by `ff_feed_expire_pending_acks`, or scrolled out of the
+ * ring) is a safe, silent no-op — returns false, nothing changed.
+ */
+bool ff_feed_set_ack_by_packet_id(ff_feed_t *f, uint32_t packet_id, bool ok, uint32_t at_ms);
+
+/**
+ * ff_feed_expire_pending_acks — the ACK-TIMEOUT half of NO_ACK: sweeps
+ * every `dir == FEED_DIR_OUT` item still `send_status == FF_SEND_SENT`
+ * with `want_ack == true` and demotes it to NO_ACK once `now_ms` has
+ * reached (wraparound-safe, `ff_time_reached`) `status_at_ms +
+ * timeout_ms`. Intended to be called once per `ff_shell_tick`
+ * (`FF_OUTBOX_ACK_TIMEOUT_MS`, ff_shell.h, is the timeout this repo
+ * picked). A routing ACK that genuinely arrives after this already fired
+ * is simply too late for this library to distinguish from one that never
+ * would have arrived — the same honest limit `ff_feed_set_ack_by_packet_id`
+ * already accepts (an unmatched request_id is ignored, never guessed
+ * at). No-op if `f` is NULL.
+ */
+void ff_feed_expire_pending_acks(ff_feed_t *f, uint32_t now_ms, uint32_t timeout_ms);
 
 #ifdef __cplusplus
 }

@@ -285,11 +285,12 @@ typedef struct {
 
 static qf_wire_spy_t QS;
 
-static int qf_wire_spy_send_text(void *ctx, uint32_t dest, char const *utf8)
+static int qf_wire_spy_send_text(void *ctx, uint32_t dest, char const *utf8, uint32_t *out_packet_id)
 {
     (void)ctx;
     (void)dest;
     (void)utf8;
+    if (out_packet_id != NULL) *out_packet_id = 1u;
     return 0;
 }
 

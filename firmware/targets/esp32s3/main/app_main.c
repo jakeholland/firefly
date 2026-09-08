@@ -140,11 +140,20 @@ extern const uint8_t firefly_pack_end[] asm("_binary_firefly_fields_festpack_jso
  * the thread. Kept INSIDE this CONFIG_FF_DEMO_MODE block precisely so a field
  * build never compiles it (see the install site + ff_demo.h note). It echoes
  * the user's REAL outbound and reaches no radio; it fabricates nothing. */
-static int demo_loopback_send_text(void *ctx, uint32_t dest, const char *utf8)
+static int demo_loopback_send_text(void *ctx, uint32_t dest, const char *utf8, uint32_t *out_packet_id)
 {
     (void)ctx;
     (void)dest;
     (void)utf8;
+    /* Demo mode has no real mesh transport to hand out a routing-ack-
+     * correlated packet id from, but it must still populate a nonzero
+     * one on this "successful send" (0 return) — an outbox delivery
+     * status feature caller (shell_send_or_queue_text, ff_shell.c) reads
+     * packet_id == 0 as "no packet id was ever formed" (ff_feed.h). A
+     * demo-mode direct text is marked SENT immediately and never
+     * receives an ack either way (no radio to reply), so any nonzero
+     * placeholder is harmless. */
+    if (out_packet_id != NULL) *out_packet_id = 1u;
     return 0;
 }
 static int demo_loopback_send_private(void *ctx, uint32_t dest, const uint8_t *payload, size_t len, uint32_t flags)

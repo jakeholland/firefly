@@ -278,3 +278,176 @@ positions/times anywhere (rally rules above).
   `tests/golden/inbox_thread_short.png`): `git status --porcelain
   firmware/tests/golden/` showed only the new file as untracked, every
   other golden byte-identical on disk.
+
+- **2026-09-07, maintainer decision — outbox with delivery status**
+  (bench finding: "sending when lost doesn't work" — the maintainer's
+  own question, "we should try to send, right?", answered **yes,
+  always, and never silently drop**). Before this amendment,
+  `FF_INTENT_SEND_TEXT` (`ff_shell.c`) recorded the sent text in the
+  feed only when the mesh send itself returned 0 — `mc_send_data_packet`
+  (`mc_client.c`) returns negative whenever the link isn't
+  `MC_STATE_READY` (boot, a comms-brain reboot, the routine 30 s
+  reconnect watchdog), so a text typed during any of those windows
+  vanished with zero feedback: no feed item, no error, nothing. Routing
+  ACKs already existed (`mc_events_t.on_routing_ack`, `mc_send_private`'s
+  `want_ack`) but were wired to only one feature (the NAME
+  confirmation flow) — never to a text send's own fate.
+
+  **What changed, end to end:**
+
+  1. **A bounded outbox retry queue** (`shell_t.outbox`,
+     `FF_SHELL_OUTBOX_CAP` = 8, `ff_shell.h`): `shell_send_or_queue_text`
+     (`ff_shell.c`) is now the ONE place a text send happens — for both
+     the composer's SEND (`FF_INTENT_SEND_TEXT`) and the bench console's
+     `send`/`dm` commands (`ff_shell_debug_send_text`), so the two never
+     drift out of sync. It ALWAYS pushes the feed item first (via the
+     new `ff_wiring_push_outgoing_pending`, `ff_wiring.h`), marked
+     WAITING, **before** attempting the send — the item is visible in
+     its thread the instant SEND is pressed, whatever the link is doing.
+     If the mesh accepts the send immediately, the item flips to SENT
+     (and, for a non-broadcast destination, starts tracking a routing
+     ack). If the mesh refuses (link down, or a genuine transport
+     error), the text is queued (`shell_outbox_push`) instead of
+     dropped, and flushed automatically on the link's next not-ready ->
+     ready edge (`shell_outbox_flush`, called from the same edge
+     `ff_shell_tick` already uses for the settle-replay pass). The
+     queue is a plain bounded FIFO (oldest at index 0); a 9th queued
+     entry with the queue already full evicts the OLDEST one to make
+     room — and that eviction is made VISIBLE, never silent: the
+     dropped entry's own feed item flips to `FF_SEND_DROPPED`
+     (`ff_feed.h`), kept distinct from `NO_ACK` so the UI can say
+     honestly "this never even reached the mesh" instead of implying a
+     send was attempted. 8 is a judgment call — generous enough that a
+     brief reconnect never loses a message someone is actively typing
+     during, without holding unbounded unsent text in RAM.
+
+     **The queue does NOT survive a reboot.** It is `shell_t` RAM state
+     only; `ff_store` (the settings/pack persistence layer) carries no
+     feed or outbox state today, and this amendment does not add any.
+     A device power-cycle with texts still queued loses them, same as
+     it already loses the rest of the in-RAM feed. Persisting the
+     outbox (and the feed generally) is out of scope here — a
+     maintainer call for a future amendment if wanted.
+
+  2. **Per-message delivery state** — `ff_feed_send_status_t`
+     (`ff_feed.h`), a new field on `ff_feed_item_t` (meaningful only for
+     `dir == FEED_DIR_OUT`; every inbound item stays the zero default,
+     `FF_SEND_NONE`, honestly claiming nothing):
+     - **WAITING** — queued in the shell's outbox, not yet handed to the
+       mesh.
+     - **SENT** — `mc_client` accepted it (a `MeshPacket` left the
+       device). **Terminal for a broadcast** — the mesh gives a
+       broadcast no delivery receipt of any kind, so SENT is the whole
+       story for one; the spec's Screen 2/3 wording above ("Pulse sends
+       immediately") already implied this asymmetry without stating it,
+       this amendment makes it explicit and honest in the UI. For a
+       DIRECT send, SENT is transient: "awaiting the routing ack,"
+       resolving to DELIVERED or NO ACK.
+     - **DELIVERED** — a routing ack came back OK for that exact packet
+       id (`shell_ev_routing_ack` -> `ff_feed_set_ack_by_packet_id`).
+       Direct sends only.
+     - **NO ACK** — either a routing NAK came back, or no ack arrived
+       within `FF_OUTBOX_ACK_TIMEOUT_MS` (45 s, `ff_shell.h`) of the
+       send (`ff_feed_expire_pending_acks`, polled once per
+       `ff_shell_tick`). Both collapse to the SAME honest label — this
+       device cannot tell "the peer said no" from "nobody ever
+       replied," and does not pretend otherwise by inventing two
+       different-sounding failure states for one fact it doesn't have.
+       45 s is a disclosed judgment call: Meshtastic's own documented
+       direct-message retransmission window is roughly 30-60 s (the
+       mesh-layer router keeps retrying that long before giving up),
+       and Meshtastic does not publish one single authoritative number
+       — 45 s is the midpoint, not either edge.
+     - **DROPPED** — never reached the mesh at all: evicted from the
+       bounded outbox queue (full) before its turn came.
+
+     `mc_send_text` (`mc_client.h`/`.c`) gained an optional
+     `out_packet_id` — NULL-safe, mirroring `mc_send_set_owner`'s own
+     precedent — and now requests a routing ack (`want_ack = true`) for
+     every non-broadcast destination (previously the field this
+     function's callers left implicitly false). Every implementer of
+     `ff_wiring_sender_t.send_text` in the tree (the ESP32-S3 demo
+     loopback, every test spy) was updated in the same change to carry
+     the new parameter — `[api]`, no old 3-parameter shape survives.
+
+  3. **UI — honest labels, no fake checkmarks.** A thread row for one of
+     my own OUT texts now carries a short plain-text status label
+     (`scr_inbox.c`'s `inbox_send_status_text`/`inbox_send_status_color`)
+     beside its age, right-aligned as one unit: WAITING / SENT /
+     DELIVERED / NO ACK / DROPPED. DELIVERED renders in the existing
+     "confirmed good" green (`FF_THEME_COLOR_LIVE_GREEN`); NO ACK and
+     DROPPED render in the existing stale-amber warning tint
+     (`FF_THEME_COLOR_STALE_AMBER`); WAITING/SENT/NONE render neutral
+     dim gray. No checkmark glyph anywhere, DELIVERED included — the
+     word is the whole affordance, deliberately plain text so it never
+     reads as more certainty than "one routing ack came back for this
+     exact packet id" actually is. An item with `FF_SEND_NONE` (every
+     inbound message, and any OUT item that predates this feature)
+     renders no label at all — not even a neutral placeholder — which
+     is why every pre-existing thread golden is byte-identical after
+     this change (see Fixture/golden note below). **Scoped out:** the
+     inbox conversation-list preview line ("YOU: ...") does not show
+     per-message status — that would need `ff_inbox_conv_t` to carry
+     its own preview-status field, a larger core change judged not
+     worth it for a summary line that already truncates to one kind
+     word; the full state is one tap away in the thread itself. The
+     bench console's `send`/`dm` replies also went honest: `dbg: send
+     ok` now means "handed straight to the mesh," `dbg: send queued`
+     means "queued, link not ready" (previously indistinguishable from
+     failure, or worse, silently swallowed), and `dbg: send failed`
+     is now reserved for the true configuration-gap case (empty text,
+     or literally no `send_text` function wired at all) —
+     `dbgconsole_send_outcome`, `ff_debug_console.c`.
+
+  4. **Canned replies (OMW / IN 5 MIN) are explicitly OUT of this
+     feature's scope** — a disclosed judgment call, not an oversight.
+     They still call `send_text` with no `out_packet_id` and no outbox
+     tracking; a link-down tap on one still fails outright exactly as
+     it did before this amendment (`ff_wiring_send_canned_reply`/`_to`,
+     `ff_wiring.c`). Rationale: a canned reply is a single fixed
+     one-tap phrase sent in the heat of the moment (Screen 3's chip
+     row) — queuing it risks a stale "omw"/"5 min" firing minutes later
+     once the link recovers, which is a worse UX than the tap simply
+     failing visibly today. A free-typed COMPOSE text has no such
+     staleness problem (the sender chose the exact words, and honestly
+     expects them to still apply whenever they land), which is why it
+     gets the queue and canned replies don't. Flare/Rally sends are
+     likewise unchanged by this amendment — only `FEED_TEXT` sends
+     (composer + console `send`/`dm`) go through the outbox.
+
+  **Fixture/golden note:** a new fixture,
+  `tests/fixtures/inbox_thread_outbox_states.json`, and its golden
+  (`tests/golden/inbox_thread_outbox_states.png`) pin all five row
+  states rendering distinctly in one 1:1 thread (via the fixture
+  loader's new optional `msgs[].send_status` key — `"waiting"` /
+  `"sent"` / `"delivered"` / `"no_ack"` / `"dropped"`, defaulting to
+  `FF_SEND_NONE`/no key at all when omitted, so no existing fixture
+  needed a single edit). `run_goldens.sh` confirmed every pre-existing
+  golden byte-identical before this new one was generated. Two build
+  budgets needed a deliberate, documented raise to fit the new state
+  (see each constant's own comment for the measured numbers, same
+  "measure, don't estimate" discipline as every prior `FF_SHELL_BYTES`
+  raise in `ff_shell.h`): `FF_SHELL_BYTES` 38 KB -> 40.5 KB (the outbox
+  queue + the feed/thread's new per-item fields), and the sim fixture
+  tool's `FIX_MAX_JSON_LEN` 16 KB -> 20 KB (`firmware/targets/sim/
+  fixture.c` — the worst-case round-trip probe's dump grew past the old
+  byte cap once every message could carry a `send_status` key).
+
+  **Tests:** `firmware/core/tests/test_feed.c` (the four new
+  `ff_feed_*` functions — mark-sent, set-status, set-ack, expire —
+  including direction/want_ack/zero-id guard and multi-item-among-
+  several coverage), `firmware/app/tests/test_wiring.c`
+  (`ff_wiring_push_outgoing_pending`), and `firmware/app/tests/
+  test_shell.c` (`feat_outbox_*` — queue-instead-of-drop when the link
+  isn't ready, flush-on-ready, direct-wants-ack/broadcast-doesn't,
+  queue-full drops-oldest-and-marks-DROPPED, routing ack ok/nak,
+  ack-timeout, broadcast-never-times-out, unrelated-ack-id-ignored).
+  `firmware/app/tests/test_debug_console.c`'s `dbgconsole_send_with_
+  no_sender_reports_failed` (which pinned the exact silent-drop bug
+  this amendment fixes) is replaced by `dbgconsole_send_when_link_not_
+  ready_queues_and_shows_waiting` plus a new `..._with_no_send_text_fn_
+  reports_failed` for the true config-gap case; `test_shell.c`'s
+  `S24_AC1_composer_send_refused_pushes_no_item` is similarly replaced
+  by `S24_AC1_composer_send_when_link_down_is_queued_not_dropped`. Both
+  renames are deliberate rewrites of tests that pinned the OLD (bad)
+  behavior, not incidental churn.

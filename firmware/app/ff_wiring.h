@@ -176,9 +176,19 @@ extern "C" {
  * compiles unchanged, with this field implicitly zero-initialized. May
  * be NULL: the retry/poll logic in `ff_shell.c` checks before calling
  * through it, so a target/test with nothing bound here simply never
- * polls for confirmation (the set_owner push itself is unaffected). */
+ * polls for confirmation (the set_owner push itself is unaffected).
+ *
+ * `send_text`'s `out_packet_id` — outbox delivery status feature
+ * (2026-09-07) — mirrors `mc_send_text`'s own new parameter exactly
+ * (mc_client.h): OPTIONAL (NULL-safe), and on a successful send (return
+ * 0 only) receives the outgoing packet id so `ff_shell.c`'s outbox can
+ * correlate a later `on_routing_ack` against THIS specific text. `[api]`:
+ * every implementer in the tree was updated in the same change — same
+ * "no old N-parameter shape survives" precedent `send_admin_set_owner`'s
+ * own doc comment already set for its own out_packet_id addition.
+ */
 typedef struct {
-    int (*send_text)(void *ctx, uint32_t dest, char const *utf8);
+    int (*send_text)(void *ctx, uint32_t dest, char const *utf8, uint32_t *out_packet_id);
     int (*send_private)(void *ctx, uint32_t dest, uint8_t const *payload, size_t len, uint32_t flags);
     void *ctx;
     int (*send_admin_set_owner)(void *ctx, uint32_t dest, char const *long_name, char const *short_name,
@@ -304,6 +314,27 @@ void ff_wiring_set_self_node(ff_wiring_ctx_t *w, uint32_t self_node);
  * refused send. No-op if `w` or `w->feed` is NULL.
  */
 void ff_wiring_push_outgoing(ff_wiring_ctx_t *w, ff_feed_kind_t kind, uint32_t dest, char const *text);
+
+/**
+ * ff_wiring_push_outgoing_pending — outbox delivery status feature
+ * (2026-09-07): identical item shape to `ff_wiring_push_outgoing(w,
+ * FEED_TEXT, dest, text)`, but additionally stamps the feed item's
+ * outbox-tracking fields: `send_status = FF_SEND_WAITING`, `outbox_id`
+ * (the shell's own nonzero identity for this send — see ff_feed.h's own
+ * doc comment on why 0 is reserved as "not tracked"), and `status_at_ms`
+ * at push time. This is the ONLY entry point into the feed for a text
+ * whose eventual fate (SENT/DELIVERED/NO_ACK/DROPPED) still needs
+ * tracking, called BEFORE the send is even attempted (CLAUDE.md's
+ * honest-data / no-silent-drop rule: the item is visible in its thread
+ * the instant the send is requested, whatever the link happens to be
+ * doing). `ff_wiring_push_outgoing` itself is unchanged for every other
+ * caller (RALLY/FLARE/canned replies) — those items keep send_status
+ * FF_SEND_NONE, exactly as before this feature.
+ *
+ * No-op if `w`/`w->feed` is NULL, or `outbox_id == 0` (never a valid
+ * tracked id — see ff_feed.h).
+ */
+void ff_wiring_push_outgoing_pending(ff_wiring_ctx_t *w, uint32_t dest, char const *text, uint32_t outbox_id);
 
 /* `ff_wiring_canned_reply_t` (OMW / 5MIN) is still this module's
  * vocabulary, but its DEFINITION lives in app/include/ff_intent.h as of

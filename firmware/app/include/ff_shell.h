@@ -594,8 +594,33 @@ typedef struct {
  * growing across the tests/goldens that follow it. A ~38 KB static
  * shell remains comfortable in the S3's 512 KB SRAM; this stays a
  * runaway-growth tripwire, not a hardware limit.
+ *
+ * RAISED 38 KB -> 40.5 KB for the outbox delivery status feature
+ * (`[api]`, 2026-09-07 — docs/specs/S24-signals-inbox.md's Amendments,
+ * "sending when lost doesn't work" bench finding), deliberately, per
+ * this comment's own instruction. Three additions: (1) `shell_t.outbox`
+ * — `FF_SHELL_OUTBOX_CAP` (8) `shell_outbox_entry_t` entries, each
+ * carrying a FULL-FIDELITY `char text[MC_TEXT_MAX + 1]` (238 B, not the
+ * feed's own 64-byte display truncation) plus `dest`/`outbox_id` (8 B) —
+ * one copy, not doubled (RAM-only retry queue, not view-model state);
+ * (2) `ff_feed_item_t` (ff_feed.h) gained
+ * `send_status`/`want_ack`/`packet_id`/`outbox_id`/`status_at_ms`,
+ * landing once per `sh->feed`'s `FF_FEED_CAP` (32) slots (`sh->feed`
+ * itself is a single copy, not doubled by `view`/`prev_key`); (3)
+ * `ff_inbox_msg_t` (ff_inbox.h) gained the joined `send_status` field,
+ * landing in `ff_inbox_thread_t` (`FF_INBOX_MAX_MSGS` = `FF_FEED_CAP` =
+ * 32 messages) which IS doubled via the `view`/`prev_key` render-key
+ * pair (the S24 slice c precedent above). Measured, not estimated:
+ * sizeof(shell_t) is 40,416 B against the old 38,912 B budget (a hard
+ * compile failure). 40.5 KB (41,472 B) clears it with ~1 KB headroom —
+ * back in the earlier raises' tighter ~600 B-1 KB range, since this
+ * feature's data shapes are now fixed (a bounded retry queue and five
+ * small per-item fields, not something expected to keep growing the way
+ * DIAGNOSTICS' page did). A ~40.5 KB static shell remains comfortable in
+ * the S3's 512 KB SRAM; this stays a runaway-growth tripwire, not a
+ * hardware limit.
  */
-#define FF_SHELL_BYTES 38912u
+#define FF_SHELL_BYTES 41472u
 
 /** Alignment of the opaque payload. 8 covers every member the shell
  *  holds today (the widest are `double` inside `ff_latlon_t` and
@@ -1356,6 +1381,15 @@ ff_heard_t const *ff_shell_heard(ff_shell_t const *sh);
 /** ff_shell_feed — the Signals feed ring, read-only. NULL if `sh` is NULL. */
 ff_feed_t const *ff_shell_feed(ff_shell_t const *sh);
 
+/** ff_shell_outbox_pending_count — outbox delivery status feature
+ *  (`[api]`, 2026-09-07): how many texts currently sit in the shell's
+ *  bounded outbox retry queue (`FF_SHELL_OUTBOX_CAP`), i.e. how many
+ *  feed items currently read FF_SEND_WAITING and are still waiting for
+ *  the link's next ready edge — never more than FF_SHELL_OUTBOX_CAP. 0
+ *  if `sh` is NULL. Exists for tests (and any future "N queued" glass
+ *  affordance) rather than reaching into the shell's private struct. */
+uint8_t ff_shell_outbox_pending_count(ff_shell_t const *sh);
+
 /** ff_shell_retired_frame_count — [api] 2026-09-02: forwards
  *  `ff_wiring_retired_frame_count` (ff_wiring.h) for the shell's own
  *  wiring context — how many RESERVED_01 (retired PULSE) frames have
@@ -1425,6 +1459,42 @@ ff_shell_compass_cal_status_t ff_shell_compass_cal_status(ff_shell_t const *sh);
  */
 #define FF_NAME_OWNER_REQ_TIMEOUT_MS  10000u
 #define FF_NAME_OWNER_REQ_MAX_RETRIES 3u
+
+/**
+ * FF_SHELL_OUTBOX_CAP / FF_OUTBOX_ACK_TIMEOUT_MS — outbox delivery
+ * status feature (`[api]`, 2026-09-07 bench finding: "sending when lost
+ * doesn't work — we should try to send, right?"). Public (not
+ * file-static) so tests can pin the exact schedule instead of
+ * hardcoding a duplicate number that could silently drift from the real
+ * one — same reasoning `FF_NAME_OWNER_REQ_TIMEOUT_MS` above states for
+ * itself.
+ *
+ * `FF_SHELL_OUTBOX_CAP` — the bounded FIFO of texts queued because
+ * `mc_client` was not READY when `shell_send_or_queue_text` (ff_shell.c)
+ * tried to send them, retried automatically on the link's next
+ * not-ready -> ready edge (`shell_outbox_flush`). A full queue drops the
+ * OLDEST entry (FIFO) to make room for a new one — and that drop is
+ * itself made visible: the dropped entry's own feed item is marked
+ * `FF_SEND_DROPPED` (ff_feed.h), never a silent discard. 8 is a
+ * judgment call: generous enough that a brief reconnect (the common
+ * case — a comms-brain reboot after a `set_owner` push, or a routine
+ * 30s-watchdog reconnect) never loses a message a person is actively
+ * typing during, without holding an unbounded amount of unsent text in
+ * RAM.
+ *
+ * `FF_OUTBOX_ACK_TIMEOUT_MS` — how long a DIRECT text send (`want_ack ==
+ * true`) may sit at `FF_SEND_SENT` awaiting a routing ACK
+ * (`mc_events_t.on_routing_ack`) before `ff_feed_expire_pending_acks`
+ * (ff_feed.h, polled once per `ff_shell_tick`) honestly demotes it to
+ * `FF_SEND_NO_ACK`. 45 s sits inside Meshtastic's own documented direct-
+ * message retransmission window (~30-60 s: the router itself keeps
+ * retrying at the mesh layer for roughly that long before giving up) —
+ * picked as the midpoint rather than either edge, a disclosed judgment
+ * call (docs/specs/S24-signals-inbox.md's Amendments) since Meshtastic
+ * does not publish one single authoritative number here.
+ */
+#define FF_SHELL_OUTBOX_CAP        8u
+#define FF_OUTBOX_ACK_TIMEOUT_MS   45000u
 
 /**
  * ff_mesh_name_ack_t — confirmation-fix follow-up: the routing-level
@@ -1810,10 +1880,11 @@ bool ff_shell_dev_wall_observe(ff_shell_t *sh, int64_t unix_now_s);
  * `dest_node` (0 or MC_ADDR_BROADCAST both mean the crew broadcast —
  * the same "no explicit destination" convention `FF_INTENT_SEND_TEXT`
  * uses) through the exact same mechanism the composer's SEND button
- * uses: `sh->wiring.sender.send_text`, then — on a 0 return —
- * `ff_wiring_push_outgoing` so the sent text lands in the feed as
- * FEED_DIR_OUT exactly like a real send (S24's "sent item appears in
- * feed").
+ * uses: `shell_send_or_queue_text` (ff_shell.c) — outbox delivery status
+ * feature, 2026-09-07, S24's "keep the console command behaviour
+ * consistent" rule. The text lands in the feed as FEED_DIR_OUT
+ * immediately, marked WAITING, then SENT (mesh accepted it) or still
+ * WAITING-and-queued (link down) — never silently dropped either way.
  *
  * DELIBERATELY BYPASSES `ff_shell_intent(FF_INTENT_SEND_TEXT)` and the
  * whole Compose flow: that path is real UI NAVIGATION (pushes/pops the
@@ -1828,17 +1899,23 @@ bool ff_shell_dev_wall_observe(ff_shell_t *sh, int64_t unix_now_s);
  *
  * `text` is borrowed for the duration of this call only (the same "not
  * owned; copied" convention every `ff_intent_t` pointer payload uses,
- * app/include/ff_intent.h) — both `send_text` and
- * `ff_wiring_push_outgoing` copy whatever they keep before returning.
+ * app/include/ff_intent.h) — everything downstream copies whatever it
+ * keeps before returning.
  *
- * Returns 0 on an accepted send (mirrors `ff_wiring_sender_t.send_text`'s
- * own convention). Returns -1 without calling the sender at all if
- * `sh == NULL`, `text == NULL`, or `text` is empty — a debug command
- * with nothing typed must not broadcast "", the same rule
- * `FF_INTENT_SEND_TEXT` enforces for an untouched composer — and also if
- * no sender is wired up (no mesh link: `sh->wiring.sender.send_text ==
- * NULL`). Otherwise returns whatever `send_text` itself returned; the
- * feed push happens only on that call's own 0.
+ * Returns 0 whenever the text was accepted into the send pipeline —
+ * SENT to the mesh right now, OR queued in the outbox for the link's
+ * next ready edge (`[api]` behavior change, 2026-09-07: previously this
+ * returned the mesh send's own rc, so a link-down call returned
+ * negative and pushed nothing at all; the feature this function now
+ * exists partly to close is exactly that silent drop). Returns -1
+ * without touching the feed or the outbox at all if `sh == NULL`, `text
+ * == NULL`, or `text` is empty — a debug command with nothing typed
+ * must not broadcast "", the same rule `FF_INTENT_SEND_TEXT` enforces
+ * for an untouched composer — and also if no sender is wired up at all
+ * (`sh->wiring.sender.send_text == NULL`: a configuration gap, not a
+ * network one — see `shell_send_or_queue_text`'s own doc comment).
+ * Query the mesh outcome from the feed's `send_status`
+ * (`ff_shell_feed`), not from this return value.
  */
 int ff_shell_debug_send_text(ff_shell_t *sh, uint32_t dest_node, char const *text);
 

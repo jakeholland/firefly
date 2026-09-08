@@ -574,11 +574,12 @@ static void S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives(v
 /* Accepting sender spy — see this file's own S27 test's comment below for
  * why FLARE_SENT needs one (review round 2, 2026-09-03). Mirrors
  * test_shell.c's flare_wire_spy_t shape, minimal: only needs to accept. */
-static int s27_ctl_sound_send_text(void *ctx, uint32_t dest, char const *utf8)
+static int s27_ctl_sound_send_text(void *ctx, uint32_t dest, char const *utf8, uint32_t *out_packet_id)
 {
     (void)ctx;
     (void)dest;
     (void)utf8;
+    if (out_packet_id != NULL) *out_packet_id = 1u;
     return 0;
 }
 static int s27_ctl_sound_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len, uint32_t flags)

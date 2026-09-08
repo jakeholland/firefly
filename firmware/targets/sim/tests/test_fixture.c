@@ -1386,6 +1386,11 @@ static void dump_maximally_populated_state_fits_budget(void)
                        "Exactly sixty three characters of preview text stress ballast!!");
         m->age_ms = 0xFFFFFFFFu;
         m->unread = true;
+        /* Outbox delivery status feature (2026-09-07) — DELIVERED is the
+         * longest of fx_send_status_table's names, so it's the worst
+         * case for this bound, same "every string at its budget" rule
+         * this loop's own comment already states. */
+        m->send_status = FF_SEND_DELIVERED;
     }
 
     char json[FF_FIXTURE_DUMP_MAX];

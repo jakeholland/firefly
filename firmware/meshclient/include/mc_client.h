@@ -673,10 +673,32 @@ void mc_tick(mc_client_t *c, uint32_t now_ms);
 /** Start (or restart) the want_config handshake. */
 void mc_connect(mc_client_t *c);
 
-/** Broadcast or direct-message plain UTF-8 text. dest = MC_ADDR_BROADCAST
- * for the primary channel. Returns 0 on success, negative on failure
- * (not READY, utf8 too long for MC_TEXT_MAX, encode/write failure). */
-int mc_send_text(mc_client_t *c, uint32_t dest, char const *utf8);
+/**
+ * Broadcast or direct-message plain UTF-8 text. dest = MC_ADDR_BROADCAST
+ * for the primary channel, which sends with `want_ack == false` (the
+ * mesh gives a broadcast no delivery receipt at all); any other `dest`
+ * sends with `want_ack == true` — a direct text is worth the mesh
+ * stack's own retries and a routing ACK/NAK reply
+ * (`mc_events_t.on_routing_ack`), unlike a best-effort broadcast.
+ *
+ * Returns 0 on success, negative on failure (not READY, utf8 too long
+ * for MC_TEXT_MAX, encode/write failure).
+ *
+ * `out_packet_id` — outbox delivery status feature (2026-09-07 bench
+ * finding: "sending when lost doesn't work" surfaced that a text send
+ * had no way to correlate its own `on_routing_ack` reply, the same gap
+ * `mc_send_set_owner`'s own `out_packet_id` closed for the NAME feature)
+ * — is OPTIONAL (NULL-safe) and, on a successful send (return 0 only),
+ * receives the outgoing `MeshPacket.id` this call used, so the caller
+ * can match a later `on_routing_ack` to THIS specific text. Left
+ * untouched on failure (return negative) — there is no in-flight packet
+ * id to hand back. Set (harmlessly) even for a broadcast send, which
+ * will never receive an ack for it to correlate against; callers that
+ * don't need it may pass NULL. `[api]`: every implementer of
+ * `ff_wiring_sender_t.send_text` (ff_wiring.h) in the tree was updated
+ * in the same change to carry this parameter through.
+ */
+int mc_send_text(mc_client_t *c, uint32_t dest, char const *utf8, uint32_t *out_packet_id);
 
 /** Send arbitrary bytes on a private/experimental portnum (the firefly
  * protocol, spec S04, rides here). Returns 0 on success, negative on

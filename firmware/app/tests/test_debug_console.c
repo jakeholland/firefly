@@ -82,12 +82,15 @@ static int spy_send_get_owner_request(void *ctx, uint32_t dest)
     return s->owner_req_rc;
 }
 
-static int spy_send_text(void *ctx, uint32_t dest, char const *utf8)
+static int spy_send_text(void *ctx, uint32_t dest, char const *utf8, uint32_t *out_packet_id)
 {
     sender_spy_t *s = (sender_spy_t *)ctx;
     s->calls++;
     s->last_dest = dest;
     snprintf(s->last_text, sizeof(s->last_text), "%s", utf8);
+    if (s->rc == 0 && out_packet_id != NULL) {
+        *out_packet_id = (uint32_t)s->calls; /* nonzero, distinct per call — plenty for this file's seam tests */
+    }
     return s->rc;
 }
 
@@ -393,15 +396,48 @@ static void dbgconsole_send_calls_sender_broadcast_and_updates_feed(void)
     TEST_ASSERT_EQUAL_STRING("hello crew", it->text);
 }
 
-static void dbgconsole_send_with_no_sender_reports_failed(void)
+/* Outbox delivery status feature (2026-09-07): with NO explicit sender
+ * wired, `ff_shell_init` still leaves the shell's real default sender in
+ * place (`ff_wiring_init` wires `mc_send_text` over the shell's own,
+ * unconnected `mc_client_t` — see ff_wiring.c) — this is "no mesh link",
+ * NOT "no sender configured", and per this feature's whole point a
+ * send the radio can't take right now must be QUEUED and shown, never
+ * silently dropped (docs/specs/S24-signals-inbox.md's Amendments). This
+ * replaces the old `..._reports_failed` test, which pinned exactly the
+ * silent-drop bug this feature exists to fix. */
+static void dbgconsole_send_when_link_not_ready_queues_and_shows_waiting(void)
 {
-    harness_init(1000); /* no sender wired */
+    harness_init(1000); /* no explicit sender wired — falls back to the real (disconnected) mc_client path */
+    capture_t cap;
+    dispatch("send hi", &cap);
+
+    TEST_ASSERT_EQUAL_STRING("dbg: send queued dest=broadcast", cap.lines[0]);
+    ff_feed_t const *feed = ff_shell_feed(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(feed)); /* queued, not dropped — the item is visible right away */
+    ff_feed_item_t const *it = ff_feed_at(feed, 0);
+    TEST_ASSERT_NOT_NULL(it);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_STRING("hi", it->text);
+    TEST_ASSERT_EQUAL(FF_SEND_WAITING, it->send_status);
+}
+
+/* The TRUE "no sender at all" case (a config gap, not a network one —
+ * see `shell_send_or_queue_text`'s own doc comment, ff_shell.c): with
+ * the sender vtable's `send_text` explicitly NULLed out, nothing is
+ * queued either — there is nothing that could ever flush it. */
+static void dbgconsole_send_with_no_send_text_fn_reports_failed(void)
+{
+    harness_init(1000);
+    ff_wiring_sender_t sender;
+    memset(&sender, 0, sizeof(sender)); /* send_text == NULL */
+    ff_shell_set_sender(&H.shell, sender);
+
     capture_t cap;
     dispatch("send hi", &cap);
 
     TEST_ASSERT_EQUAL_STRING("dbg: send failed dest=broadcast", cap.lines[0]);
     ff_feed_t const *feed = ff_shell_feed(&H.shell);
-    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(feed)); /* a refused send fabricates no feed item */
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(feed)); /* nothing to flush against — fabricates no feed item */
 }
 
 static void dbgconsole_dm_calls_sender_with_parsed_dest(void)
@@ -942,7 +978,8 @@ int main(void)
     RUN_TEST(dbgconsole_heard_lists_unpaired_sender);
 
     RUN_TEST(dbgconsole_send_calls_sender_broadcast_and_updates_feed);
-    RUN_TEST(dbgconsole_send_with_no_sender_reports_failed);
+    RUN_TEST(dbgconsole_send_when_link_not_ready_queues_and_shows_waiting);
+    RUN_TEST(dbgconsole_send_with_no_send_text_fn_reports_failed);
     RUN_TEST(dbgconsole_dm_calls_sender_with_parsed_dest);
     RUN_TEST(dbgconsole_dm_zero_dest_rejected_without_sending);
 

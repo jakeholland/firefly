@@ -61,7 +61,7 @@ typedef struct {
     uint32_t last_flags;
 } mock_sender_state_t;
 
-static int mock_send_text(void *ctx, uint32_t dest, char const *utf8)
+static int mock_send_text(void *ctx, uint32_t dest, char const *utf8, uint32_t *out_packet_id)
 {
     mock_sender_state_t *s = (mock_sender_state_t *)ctx;
     s->calls++;
@@ -69,6 +69,7 @@ static int mock_send_text(void *ctx, uint32_t dest, char const *utf8)
     s->used_send_text = true;
     strncpy(s->last_text, utf8, sizeof(s->last_text) - 1);
     s->last_text[sizeof(s->last_text) - 1] = '\0';
+    if (out_packet_id != NULL) *out_packet_id = 1u;
     return 0;
 }
 
@@ -710,11 +711,12 @@ static void S24_AC1_canned_reply_pushes_outgoing_item(void)
 
 /* A REFUSED send (sender returns nonzero) fabricates nothing: no
  * outgoing feed item for a message that never went anywhere. */
-static int refusing_send_text(void *ctx, uint32_t dest, char const *utf8)
+static int refusing_send_text(void *ctx, uint32_t dest, char const *utf8, uint32_t *out_packet_id)
 {
     (void)ctx;
     (void)dest;
     (void)utf8;
+    (void)out_packet_id;
     return -1;
 }
 
@@ -778,6 +780,76 @@ static void S24_AC4_canned_reply_to_refused_pushes_no_item(void)
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
 }
 
+/* ------------------------------------------------------------------- */
+/* Outbox delivery status feature (2026-09-07) — ff_wiring_push_outgoing_
+ * pending: the shell's own entry point for a text whose eventual fate
+ * still needs tracking (ff_shell.h's own doc comment). This file never
+ * drives the shell, so these tests call it directly, same convention
+ * every other ff_wiring_* entry point in this file uses.
+ * ------------------------------------------------------------------- */
+
+static void feat_push_outgoing_pending_pushes_a_waiting_item_with_the_given_outbox_id(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+    r.fc.t = 5000u;
+
+    ff_wiring_push_outgoing_pending(&r.w, 0xDA1Au, "on my way", 7u);
+
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
+    ff_feed_item_t const *it = ff_feed_at(&r.feed, 0);
+    TEST_ASSERT_EQUAL(FEED_TEXT, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(0xDA1Au, it->to_node);
+    TEST_ASSERT_EQUAL_STRING("on my way", it->text);
+    TEST_ASSERT_EQUAL(FF_SEND_WAITING, it->send_status);
+    TEST_ASSERT_EQUAL_UINT32(7u, it->outbox_id);
+    TEST_ASSERT_EQUAL_UINT32(5000u, it->status_at_ms);
+    TEST_ASSERT_EQUAL_UINT32(5000u, it->at_ms);
+    TEST_ASSERT_FALSE(it->unread); /* my own send is never "unread" */
+    TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(&r.feed));
+    /* This entry point never touches the sender — no mesh call at all
+     * (the send attempt itself is the shell's own job, after the push). */
+    TEST_ASSERT_EQUAL_INT(0, r.sender_state.calls);
+}
+
+/* A broadcast dest maps to the core-side whole-crew sentinel to_node ==
+ * 0, same convention ff_wiring_push_outgoing's own broadcast case uses. */
+static void feat_push_outgoing_pending_broadcast_dest_maps_to_to_node_zero(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+
+    ff_wiring_push_outgoing_pending(&r.w, MC_ADDR_BROADCAST, "hi crew", 3u);
+
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_feed_at(&r.feed, 0)->to_node);
+}
+
+/* outbox_id == 0 is never a valid tracked id (ff_feed.h) — the whole
+ * point of reserving it is that a caller that forgot to assign one
+ * fails LOUDLY (no item at all) rather than silently landing an
+ * untrackable WAITING item no ack/flush machinery could ever find
+ * again. */
+static void feat_push_outgoing_pending_zero_outbox_id_is_a_noop(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+
+    ff_wiring_push_outgoing_pending(&r.w, 0xDA1Au, "hi", 0u);
+
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
+}
+
+static void feat_push_outgoing_pending_null_guards_are_no_ops_not_crashes(void)
+{
+    ff_wiring_push_outgoing_pending(NULL, 0xDA1Au, "hi", 1u);
+
+    test_rig_t r;
+    rig_init(&r);
+    r.w.feed = NULL;
+    ff_wiring_push_outgoing_pending(&r.w, 0xDA1Au, "hi", 1u); /* no crash despite the dangling feed pointer */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -818,6 +890,11 @@ int main(void)
     RUN_TEST(S24_AC1_refused_send_pushes_no_outgoing_item);
     RUN_TEST(S24_AC4_canned_reply_to_sends_to_explicit_dest);
     RUN_TEST(S24_AC4_canned_reply_to_refused_pushes_no_item);
+
+    RUN_TEST(feat_push_outgoing_pending_pushes_a_waiting_item_with_the_given_outbox_id);
+    RUN_TEST(feat_push_outgoing_pending_broadcast_dest_maps_to_to_node_zero);
+    RUN_TEST(feat_push_outgoing_pending_zero_outbox_id_is_a_noop);
+    RUN_TEST(feat_push_outgoing_pending_null_guards_are_no_ops_not_crashes);
 
     return UNITY_END();
 }

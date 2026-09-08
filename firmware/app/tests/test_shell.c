@@ -4540,15 +4540,19 @@ static void S24_AC1_composer_send_pushes_outgoing_item(void)
     TEST_ASSERT_FALSE(it->unread);
 }
 
-/* A REFUSED composer send pushes nothing: with no transport the shell's
- * mc_client is never READY, so send_text returns negative — the rc == 0
- * gate at the SEND_TEXT site must fabricate no "sent" item. (The other
- * send-site rc gates are pinned by S24_AC1_refused_rally_pushes_no_
- * outgoing_item and test_wiring's refusing-sender test; this closes the
- * composer's.) */
-static void S24_AC1_composer_send_refused_pushes_no_item(void)
+/* Outbox delivery status feature (2026-09-07): a composer SEND with no
+ * transport (mc_client never READY) used to fabricate NOTHING — the
+ * exact silent-drop bug docs/specs/S24-signals-inbox.md's Amendments
+ * ("sending when lost doesn't work") exists to close. It is now QUEUED
+ * (WAITING) instead of dropped, visible in the feed immediately, and
+ * counted in the shell's own outbox. (The other send-site rc gates —
+ * canned replies / RALLY — are unaffected by this feature and keep
+ * their own "refused -> no item" coverage: S24_AC1_refused_rally_
+ * pushes_no_outgoing_item and test_wiring's refusing-sender test. Only
+ * a text send goes through the outbox queue.) */
+static void S24_AC1_composer_send_when_link_down_is_queued_not_dropped(void)
 {
-    harness_init(100000u, false); /* documented no-transport shell: sends refuse */
+    harness_init(100000u, false); /* documented no-transport shell: mc_client is never READY */
 
     ff_intent_t open = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
     ff_shell_intent(&H.shell, &open);
@@ -4562,8 +4566,15 @@ static void S24_AC1_composer_send_refused_pushes_no_item(void)
     ff_intent_t send = {.kind = FF_INTENT_SEND_TEXT, .u = {0}};
     ff_shell_intent(&H.shell, &send); /* draft non-empty: the send IS attempted */
 
-    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
-    TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(ff_shell_feed(&H.shell)));
+    ff_feed_t const *feed = ff_shell_feed(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(feed)); /* queued, not dropped — visible right away */
+    ff_feed_item_t const *it = ff_feed_at(feed, 0);
+    TEST_ASSERT_EQUAL(FEED_TEXT, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_STRING("j ", it->text);
+    TEST_ASSERT_EQUAL(FF_SEND_WAITING, it->send_status);
+    TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(feed)); /* still my own send — no badge */
+    TEST_ASSERT_EQUAL_UINT8(1, ff_shell_outbox_pending_count(&H.shell));
 }
 
 /* =================================================================== */
@@ -6807,11 +6818,12 @@ static void S26_AC2_banner_from_other_paired_conv_dirties_popup_overlay_exactly_
  * does on device. (2026-09-02: this used to send a PULSE — retired, see
  * ff_intent.h's header note — FLARE is the only outbound quick signal
  * left.) */
-static int s24d_loop_send_text(void *c, uint32_t d, char const *u)
+static int s24d_loop_send_text(void *c, uint32_t d, char const *u, uint32_t *out_packet_id)
 {
     (void)c;
     (void)d;
     (void)u;
+    if (out_packet_id != NULL) *out_packet_id = 1u;
     return 0;
 }
 static int s24d_loop_send_private(void *c, uint32_t d, uint8_t const *p, size_t n, uint32_t flags)
@@ -6839,6 +6851,234 @@ static void S24_demo_loopback_seam_makes_out_items_appear(void)
     ff_feed_item_t const *it = ff_feed_at(ff_shell_feed(&H.shell), 0);
     TEST_ASSERT_EQUAL(FEED_FLARE, it->kind);
     TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+}
+
+/* ---------------------------------------------------------------------
+ * Outbox delivery status feature (2026-09-07) —
+ * docs/specs/S24-signals-inbox.md's Amendments, "sending when lost
+ * doesn't work" bench finding. shell_send_or_queue_text / shell_outbox_
+ * push / shell_outbox_flush (ff_shell.c) driven end to end through
+ * `ff_shell_debug_send_text` (the same path FF_INTENT_SEND_TEXT and the
+ * bench console's send/dm commands use — S24's "keep the console command
+ * behaviour consistent" rule; test_debug_console.c covers the console
+ * reply-line wording specifically). A dedicated controllable sender spy
+ * (unlike flare_wire_spy_t / name_wire_spy_t above, which only ever
+ * accept) — `accept` toggles to simulate the link going down and coming
+ * back READY, and a successful send hands back an incrementing packet
+ * id so ack/timeout tests have something real to correlate against.
+ * ------------------------------------------------------------------- */
+
+/* Forward declaration — defined below (confirmation-fix follow-up
+ * section): injects a synthetic mc_events_t.on_routing_ack event. */
+static void inject_routing_ack(uint32_t request_id, bool ok);
+
+typedef struct {
+    bool     accept;         /* false = "link not READY" (mc_send_text's own refusal) */
+    int      n_calls;        /* every ATTEMPT, accepted or refused */
+    uint32_t last_dest;
+    char     last_text[MC_TEXT_MAX + 1u];
+    uint32_t next_packet_id; /* pre-increment on each accepted call — first id handed out is 1 */
+} outbox_wire_spy_t;
+
+static outbox_wire_spy_t OBS;
+
+static int outbox_wire_spy_send_text(void *ctx, uint32_t dest, char const *utf8, uint32_t *out_packet_id)
+{
+    outbox_wire_spy_t *s = (outbox_wire_spy_t *)ctx;
+    s->n_calls++;
+    s->last_dest = dest;
+    (void)snprintf(s->last_text, sizeof(s->last_text), "%s", utf8);
+    if (!s->accept) return -1;
+    if (out_packet_id != NULL) *out_packet_id = ++s->next_packet_id;
+    return 0;
+}
+
+static void outbox_wire_spy_install(bool accept)
+{
+    memset(&OBS, 0, sizeof(OBS));
+    OBS.accept = accept;
+    ff_wiring_sender_t sender;
+    memset(&sender, 0, sizeof(sender));
+    sender.send_text = outbox_wire_spy_send_text;
+    sender.ctx = &OBS;
+    ff_shell_set_sender(&H.shell, sender);
+}
+
+/* A send with NO sender able to take it right now is QUEUED, not
+ * dropped: the feed item appears immediately as WAITING, and the
+ * shell's own outbox counts it. */
+static void feat_outbox_queues_when_link_down_shows_waiting(void)
+{
+    harness_init(100000u, false);
+    outbox_wire_spy_install(/*accept=*/false);
+
+    int const rc = ff_shell_debug_send_text(&H.shell, 0u, "on my way");
+
+    TEST_ASSERT_EQUAL_INT(0, rc); /* accepted into the pipeline, even though refused by the sender */
+    TEST_ASSERT_EQUAL_INT(1, OBS.n_calls); /* the send WAS attempted, not skipped */
+    ff_feed_t const *feed = ff_shell_feed(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(feed));
+    ff_feed_item_t const *it = ff_feed_at(feed, 0);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_STRING("on my way", it->text);
+    TEST_ASSERT_EQUAL(FF_SEND_WAITING, it->send_status);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_shell_outbox_pending_count(&H.shell));
+}
+
+/* The link's not-ready -> ready edge flushes the whole queue: a
+ * previously-queued WAITING text is retried and (once the sender now
+ * accepts) transitions to SENT, and the outbox count drops back to 0. */
+static void feat_outbox_flushes_on_ready_edge_and_marks_sent(void)
+{
+    harness_init(100000u, false);
+    outbox_wire_spy_install(/*accept=*/false);
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_debug_send_text(&H.shell, 0xDA1Au, "hi dana"));
+    TEST_ASSERT_EQUAL_UINT8(1, ff_shell_outbox_pending_count(&H.shell));
+
+    OBS.accept = true; /* the link recovers */
+    OBS.n_calls = 0;
+    H.ev.on_state(H.ev.user, MC_STATE_READY); /* sh->link -> CONNECTED */
+    advance(1000u);
+    ff_shell_tick(&H.shell, H.clk.t); /* not-ready -> ready edge: shell_outbox_flush runs */
+
+    TEST_ASSERT_EQUAL_INT(1, OBS.n_calls); /* the queued entry was retried exactly once */
+    TEST_ASSERT_EQUAL_UINT32(0xDA1Au, OBS.last_dest);
+    TEST_ASSERT_EQUAL_STRING("hi dana", OBS.last_text);
+    TEST_ASSERT_EQUAL_UINT8(0, ff_shell_outbox_pending_count(&H.shell)); /* drained */
+
+    ff_feed_item_t const *it = ff_feed_at(ff_shell_feed(&H.shell), 0);
+    TEST_ASSERT_EQUAL(FF_SEND_SENT, it->send_status);
+    TEST_ASSERT_EQUAL_UINT32(1u, it->packet_id); /* the spy's first handed-out id */
+}
+
+/* A DIRECT send (non-broadcast dest) marks want_ack true when SENT — a
+ * BROADCAST send marks it false. Both matter: only the direct one is
+ * eligible for the ACK-timeout sweep / a routing ack at all. */
+static void feat_outbox_direct_send_wants_ack_broadcast_does_not(void)
+{
+    harness_init(100000u, false);
+    outbox_wire_spy_install(/*accept=*/true);
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_debug_send_text(&H.shell, 0xDA1Au, "direct"));
+    ff_feed_item_t const *direct_it = ff_feed_at(ff_shell_feed(&H.shell), 0);
+    TEST_ASSERT_EQUAL(FF_SEND_SENT, direct_it->send_status);
+    TEST_ASSERT_TRUE(direct_it->want_ack);
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_debug_send_text(&H.shell, 0u, "broadcast"));
+    ff_feed_item_t const *bcast_it = ff_feed_at(ff_shell_feed(&H.shell), 0);
+    TEST_ASSERT_EQUAL(FF_SEND_SENT, bcast_it->send_status);
+    TEST_ASSERT_FALSE(bcast_it->want_ack);
+}
+
+/* The outbox is bounded (FF_SHELL_OUTBOX_CAP, ff_shell.h): a 9th queued
+ * text (with the cap at 8) evicts the OLDEST queued entry to make room,
+ * and that eviction is made VISIBLE — the dropped entry's own feed item
+ * flips to FF_SEND_DROPPED, never silently vanishing. The 8 that stay
+ * queued are untouched. */
+static void feat_outbox_queue_full_drops_oldest_and_marks_dropped(void)
+{
+    harness_init(100000u, false);
+    outbox_wire_spy_install(/*accept=*/false); /* every send refuses -> every text queues */
+
+    char text[16];
+    for (int i = 0; i < 9; i++) {
+        snprintf(text, sizeof(text), "msg%d", i);
+        TEST_ASSERT_EQUAL_INT(0, ff_shell_debug_send_text(&H.shell, 0u, text));
+    }
+
+    TEST_ASSERT_EQUAL_UINT8(FF_SHELL_OUTBOX_CAP, ff_shell_outbox_pending_count(&H.shell));
+
+    ff_feed_t const *feed = ff_shell_feed(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(9, ff_feed_count(feed)); /* every SEND attempt still lands a feed item */
+
+    /* Newest-first: index 8 is "msg0", the very first send — evicted
+     * from the QUEUE (not the feed) to make room for "msg8". */
+    ff_feed_item_t const *oldest = ff_feed_at(feed, 8);
+    TEST_ASSERT_EQUAL_STRING("msg0", oldest->text);
+    TEST_ASSERT_EQUAL(FF_SEND_DROPPED, oldest->send_status);
+
+    /* "msg1".."msg8" (indices 7..0) are still queued, untouched. */
+    for (int idx = 0; idx <= 7; idx++) {
+        TEST_ASSERT_EQUAL(FF_SEND_WAITING, ff_feed_at(feed, (uint8_t)idx)->send_status);
+    }
+}
+
+/* A routing ACK (ok == true) for a DIRECT send's own packet id resolves
+ * it to DELIVERED. */
+static void feat_outbox_routing_ack_ok_marks_delivered(void)
+{
+    harness_init(100000u, false);
+    outbox_wire_spy_install(/*accept=*/true);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_debug_send_text(&H.shell, 0xDA1Au, "hi"));
+    ff_feed_item_t const *it = ff_feed_at(ff_shell_feed(&H.shell), 0);
+    TEST_ASSERT_EQUAL_UINT32(1u, it->packet_id);
+
+    inject_routing_ack(1u, /*ok=*/true);
+
+    TEST_ASSERT_EQUAL(FF_SEND_DELIVERED, ff_feed_at(ff_shell_feed(&H.shell), 0)->send_status);
+}
+
+/* A routing NAK (ok == false) resolves it to NO_ACK — collapsed to the
+ * same honest label a plain timeout uses (ff_feed.h's own doc comment:
+ * this device cannot tell "peer said no" from "nobody ever replied"). */
+static void feat_outbox_routing_ack_nak_marks_no_ack(void)
+{
+    harness_init(100000u, false);
+    outbox_wire_spy_install(/*accept=*/true);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_debug_send_text(&H.shell, 0xDA1Au, "hi"));
+
+    inject_routing_ack(1u, /*ok=*/false);
+
+    TEST_ASSERT_EQUAL(FF_SEND_NO_ACK, ff_feed_at(ff_shell_feed(&H.shell), 0)->send_status);
+}
+
+/* No ack ever arrives: once FF_OUTBOX_ACK_TIMEOUT_MS has elapsed since
+ * SENT, the next tick demotes it to NO_ACK on its own — no reply
+ * required to reach an honest terminal state. */
+static void feat_outbox_ack_timeout_marks_no_ack(void)
+{
+    harness_init(100000u, false);
+    outbox_wire_spy_install(/*accept=*/true);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_debug_send_text(&H.shell, 0xDA1Au, "hi"));
+    TEST_ASSERT_EQUAL(FF_SEND_SENT, ff_feed_at(ff_shell_feed(&H.shell), 0)->send_status);
+
+    advance(FF_OUTBOX_ACK_TIMEOUT_MS);
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    TEST_ASSERT_EQUAL(FF_SEND_NO_ACK, ff_feed_at(ff_shell_feed(&H.shell), 0)->send_status);
+}
+
+/* A BROADCAST send is never eligible for the ack timeout — it stays
+ * SENT (terminal) no matter how much time passes, since a broadcast was
+ * never waiting on an ack to begin with. */
+static void feat_outbox_broadcast_send_stays_sent_even_past_ack_timeout(void)
+{
+    harness_init(100000u, false);
+    outbox_wire_spy_install(/*accept=*/true);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_debug_send_text(&H.shell, 0u, "hi crew"));
+    TEST_ASSERT_FALSE(ff_feed_at(ff_shell_feed(&H.shell), 0)->want_ack);
+
+    advance(FF_OUTBOX_ACK_TIMEOUT_MS * 10u);
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    TEST_ASSERT_EQUAL(FF_SEND_SENT, ff_feed_at(ff_shell_feed(&H.shell), 0)->send_status);
+}
+
+/* A routing ack that arrives for someone else's request_id (not this
+ * shell's own outbox items, not the in-flight NAME push either) is a
+ * safe, silent no-op — the pre-existing NAME-push routing-ack tests
+ * (S_name_routing_ack_ignores_an_unrelated_request_id) pin the NAME
+ * half of this; this pins the outbox half. */
+static void feat_outbox_routing_ack_unrelated_id_is_ignored(void)
+{
+    harness_init(100000u, false);
+    outbox_wire_spy_install(/*accept=*/true);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_debug_send_text(&H.shell, 0xDA1Au, "hi"));
+
+    inject_routing_ack(0xFFFFu, true); /* not this item's packet id (1) */
+
+    TEST_ASSERT_EQUAL(FF_SEND_SENT, ff_feed_at(ff_shell_feed(&H.shell), 0)->send_status); /* untouched */
 }
 
 /* ---------------------------------------------------------------------
@@ -7255,11 +7495,12 @@ typedef struct {
 
 static flare_wire_spy_t S;
 
-static int flare_wire_spy_send_text(void *ctx, uint32_t dest, char const *utf8)
+static int flare_wire_spy_send_text(void *ctx, uint32_t dest, char const *utf8, uint32_t *out_packet_id)
 {
     (void)ctx;
     (void)dest;
     (void)utf8;
+    if (out_packet_id != NULL) *out_packet_id = 1u;
     return 0; /* unused by these tests; present only because the vtable requires it */
 }
 
@@ -9969,7 +10210,7 @@ int main(void)
     RUN_TEST(S24_AC1_shell_classifies_inbound_text_direction_via_my_info);
     RUN_TEST(S24_AC1_reply_context_skips_my_own_outgoing_item);
     RUN_TEST(S24_AC1_composer_send_pushes_outgoing_item);
-    RUN_TEST(S24_AC1_composer_send_refused_pushes_no_item);
+    RUN_TEST(S24_AC1_composer_send_when_link_down_is_queued_not_dropped);
 
     RUN_TEST(S24_AC4_open_thread_marks_only_that_thread_read);
     RUN_TEST(S24_AC3_fab_pick_and_back_navigate_subviews);
@@ -9997,6 +10238,16 @@ int main(void)
     RUN_TEST(S24_AC6_crew_rally_arms_then_sends);
     RUN_TEST(S24_AC8_popup_and_rally_opaque_to_feed_churn);
     RUN_TEST(S24_demo_loopback_seam_makes_out_items_appear);
+
+    RUN_TEST(feat_outbox_queues_when_link_down_shows_waiting);
+    RUN_TEST(feat_outbox_flushes_on_ready_edge_and_marks_sent);
+    RUN_TEST(feat_outbox_direct_send_wants_ack_broadcast_does_not);
+    RUN_TEST(feat_outbox_queue_full_drops_oldest_and_marks_dropped);
+    RUN_TEST(feat_outbox_routing_ack_ok_marks_delivered);
+    RUN_TEST(feat_outbox_routing_ack_nak_marks_no_ack);
+    RUN_TEST(feat_outbox_ack_timeout_marks_no_ack);
+    RUN_TEST(feat_outbox_broadcast_send_stays_sent_even_past_ack_timeout);
+    RUN_TEST(feat_outbox_routing_ack_unrelated_id_is_ignored);
 
     RUN_TEST(S24c_AC4_thread_projection_builds_messages_both_ways);
     RUN_TEST(S24c_AC4_live_arrival_into_open_thread_marks_read_only_when_visible);

@@ -235,11 +235,36 @@ static void dbgconsole_heard(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void 
     }
 }
 
+/**
+ * dbgconsole_send_outcome — outbox delivery status feature (2026-09-07):
+ * the console's own honest word for what `ff_shell_debug_send_text` just
+ * did. `rc != 0` is still "failed" (nothing was pushed at all — empty
+ * text, or no sender wired: see that function's own doc comment). But
+ * `rc == 0` no longer means "the mesh has it" — it means "accepted into
+ * the send pipeline", which per that same doc comment can be either an
+ * immediate SENT or a queued WAITING (link not READY right now). This
+ * console reply distinguishes them honestly by reading the item it just
+ * pushed straight back off the feed (`ff_shell_feed`, newest-first —
+ * see ff_feed.h — so index 0 IS the item this very call just pushed)
+ * rather than trusting the return code alone. Never claims DELIVERED/
+ * NO_ACK here — those only resolve later, asynchronously, and the
+ * console command has already returned by the time they do; the thread
+ * view (scr_inbox.c's inbox_send_status_text) is where that later fate
+ * is shown. */
+static char const *dbgconsole_send_outcome(ff_shell_t *sh, int rc)
+{
+    if (rc != 0) return "failed";
+    ff_feed_t const *feed = ff_shell_feed(sh);
+    ff_feed_item_t const *it = (feed != NULL && ff_feed_count(feed) > 0u) ? ff_feed_at(feed, 0) : NULL;
+    if (it != NULL && it->send_status == FF_SEND_WAITING) return "queued"; /* link not READY — outbox retry */
+    return "ok"; /* handed straight to mc_client (or this feature doesn't apply — e.g. no packet id tracked) */
+}
+
 static void dbgconsole_send(ff_shell_t *sh, char const *text, ff_dbgconsole_reply_fn reply, void *user)
 {
     int const rc = ff_shell_debug_send_text(sh, 0u, text); /* 0 = crew broadcast */
     char line[DBGCONSOLE_LINE_BUF];
-    snprintf(line, sizeof(line), "dbg: send %s dest=broadcast", (rc == 0) ? "ok" : "failed");
+    snprintf(line, sizeof(line), "dbg: send %s dest=broadcast", dbgconsole_send_outcome(sh, rc));
     reply_line(reply, user, line);
 }
 
@@ -261,7 +286,7 @@ static void dbgconsole_dm(ff_shell_t *sh, uint32_t dest, char const *text, ff_db
     }
     int const rc = ff_shell_debug_send_text(sh, dest, text);
     char line[DBGCONSOLE_LINE_BUF];
-    snprintf(line, sizeof(line), "dbg: dm %s dest=!%08x", (rc == 0) ? "ok" : "failed", (unsigned)dest);
+    snprintf(line, sizeof(line), "dbg: dm %s dest=!%08x", dbgconsole_send_outcome(sh, rc), (unsigned)dest);
     reply_line(reply, user, line);
 }
 
