@@ -1168,6 +1168,27 @@ static void dump_then_reload_round_trips_signal_fixture(void)
     TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
 }
 
+/* S29 PR2 — same round-trip contract, exercised against the FIND golden
+ * fixture (radar_find_active.json) so the new `find` top-level section
+ * (fx_parse_find/fw_find in fixture.c) is covered too. */
+static void dump_then_reload_round_trips_find_fixture(void)
+{
+    ff_app_state_t original;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_find_active.json"), &original));
+    TEST_ASSERT_TRUE(original.find.active);
+    TEST_ASSERT_TRUE(original.find.has_their_reading);
+
+    char json[FF_FIXTURE_DUMP_MAX];
+    int n = ff_fixture_dump_json(&original, json, sizeof(json));
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)strlen(json), (uint32_t)n);
+
+    ff_app_state_t reloaded;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
+
+    TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
+}
+
 /* S10b merge: ff_fixture_dump_json's flare section was rewritten to match
  * the new three-independent-groups ff_app_flare_t shape (S10 slice b,
  * [api], replacing the old single-`state`-enum scaffolding) — this
@@ -1609,6 +1630,7 @@ int main(void)
 
     RUN_TEST(dump_then_reload_round_trips_committed_fixture);
     RUN_TEST(dump_then_reload_round_trips_signal_fixture);
+    RUN_TEST(dump_then_reload_round_trips_find_fixture);
     RUN_TEST(dump_then_reload_round_trips_settings_default_fixture);
     RUN_TEST(bug5a_ui_settings_scroll_y_parses_and_round_trips);
     RUN_TEST(dump_then_reload_round_trips_flare_takeover_locked_fixture);

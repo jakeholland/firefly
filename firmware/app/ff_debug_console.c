@@ -151,6 +151,9 @@ static void dbgconsole_help(ff_dbgconsole_reply_fn reply, void *user)
     reply_line(reply, user, "dbg: name <text>              set + push the Meshtastic owner update");
     reply_line(reply, user, "dbg: diag                     DIAGNOSTICS: link/position/mesh/time/compass/device");
     reply_line(reply, user, "dbg: perf                     frame/LVGL/flush timing, heap, per-task stack high-water");
+    reply_line(reply, user, "dbg: ping <node_hex>          S29: one immediate bench PING, outside FIND");
+    reply_line(reply, user, "dbg: find <node_hex>          S29: start a FIND session on that node");
+    reply_line(reply, user, "dbg: find off                 S29: cancel the active FIND session");
 }
 
 static void dbgconsole_me(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
@@ -289,6 +292,41 @@ static void dbgconsole_dm(ff_shell_t *sh, uint32_t dest, char const *text, ff_db
     char line[DBGCONSOLE_LINE_BUF];
     snprintf(line, sizeof(line), "dbg: dm %s dest=!%08x", dbgconsole_send_outcome(sh, rc), (unsigned)dest);
     reply_line(reply, user, line);
+}
+
+/* S29 PR2 — `ping <node_hex>` / `find <node_hex>` / `find off`. The
+ * parser (`ff_dbgcmd.c`) already rejects a hex token of all zeros the
+ * same way it accepts one for `dm` — mirrors `dbgconsole_dm`'s own
+ * dest==0 guard rather than trusting the parser alone, same
+ * belt-and-suspenders reasoning that guard's own comment gives. */
+static void dbgconsole_ping(ff_shell_t *sh, uint32_t node, ff_dbgconsole_reply_fn reply, void *user)
+{
+    if (node == 0u) {
+        reply_line(reply, user, "dbg: ? ping needs a non-zero node id");
+        return;
+    }
+    int const rc = ff_shell_debug_ping(sh, node);
+    char line[DBGCONSOLE_LINE_BUF];
+    snprintf(line, sizeof(line), "dbg: ping %s dest=!%08x", (rc == 0) ? "ok" : "failed", (unsigned)node);
+    reply_line(reply, user, line);
+}
+
+static void dbgconsole_find(ff_shell_t *sh, uint32_t node, ff_dbgconsole_reply_fn reply, void *user)
+{
+    if (node == 0u) {
+        reply_line(reply, user, "dbg: ? find needs a non-zero node id");
+        return;
+    }
+    ff_shell_debug_find_start(sh, node);
+    char line[DBGCONSOLE_LINE_BUF];
+    snprintf(line, sizeof(line), "dbg: find started target=!%08x", (unsigned)node);
+    reply_line(reply, user, line);
+}
+
+static void dbgconsole_find_off(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+{
+    ff_shell_debug_find_stop(sh);
+    reply_line(reply, user, "dbg: find off");
 }
 
 static void dbgconsole_flare(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
@@ -786,6 +824,9 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
     case FF_DBGCMD_NAME_SET: dbgconsole_name_set(sh, cmd.u.text, reply, user); return;
     case FF_DBGCMD_DIAG: dbgconsole_diag(sh, reply, user); return;
     case FF_DBGCMD_PERF: dbgconsole_perf(perf, user, reply, user); return;
+    case FF_DBGCMD_PING: dbgconsole_ping(sh, cmd.u.node, reply, user); return;
+    case FF_DBGCMD_FIND: dbgconsole_find(sh, cmd.u.node, reply, user); return;
+    case FF_DBGCMD_FIND_OFF: dbgconsole_find_off(sh, reply, user); return;
     case FF_DBGCMD_NONE: break; /* ff_dbgcmd_parse never returns OK with NONE — unreachable */
     }
     reply_line(reply, user, "dbg: ? try help");

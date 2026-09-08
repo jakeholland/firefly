@@ -1196,9 +1196,24 @@ static void radar_render_nohdg(lv_obj_t *parent, ff_radar_view_t const *r, bool 
  *
  * Signal is NEVER rendered as distance — every chip/label here says
  * "signal", never implies metres (CLAUDE.md's "never fake... positions"
- * extended to never dressing up a dBm reading as a place). */
+ * extended to never dressing up a dBm reading as a place).
+ *
+ * S29 PR2 — `find`: when `find->active && find->has_their_reading`, an
+ * additional "THEY HEAR YOU" chip shows the OTHER direction of the link
+ * (`find->their_rssi_of_us`, classified through the SAME
+ * `ff_radar_signal_tier` this file already uses for our own reading —
+ * a signal-strength classification is general enough to reuse regardless
+ * of whose reading it is). SCOPE CUT (flagged per AGENTS.md): only drawn
+ * in the non-ghost branch — the ghost branch's own stack already reaches
+ * `RADAR_LAYOUT_SIGNAL_LASTKNOWN_DY`, leaving no honestly-uncrowded row
+ * for a fourth chip, and FIND's own UI entry point only ever starts from
+ * a live (non-ghost) SIGNAL selection in practice (the ghost+FIND
+ * combination is reachable only via the bench `find <node_hex>` console
+ * command targeting a member whose position later goes LOST/NEVER mid-
+ * session — a real but rare edge case, not the product's primary path).
+ */
 static void radar_render_signal(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg,
-                                 bool locked)
+                                 bool locked, ff_find_t const *find)
 {
     radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_SIGNAL_NAME_DY,
                             (int32_t)RADAR_LAYOUT_SIGNAL_NAME_W);
@@ -1271,6 +1286,26 @@ static void radar_render_signal(lv_obj_t *parent, ff_radar_view_t const *r, rada
         }
         radar_make_chip(parent, chip_text, FF_THEME_COLOR_DIM, FF_THEME_COLOR_INK,
                          (int32_t)RADAR_LAYOUT_SIGNAL_LASTKNOWN_DY);
+    } else if (find != NULL && find->active && find->has_their_reading) {
+        /* S29 PR2 — see this function's own doc comment for the
+         * ghost-branch scope cut. No age text (S29's own render-key
+         * churn lesson, ff_shell.c's shell_render_key: a formatted
+         * elapsed-time string here would reproduce the exact class of
+         * bug signal_age_str's own exclusion fixed) — just the reading
+         * itself, a discrete fact that only changes on a real PONG. */
+        ff_signal_tier_t const their_tier = ff_radar_signal_tier(find->their_rssi_of_us);
+        char chip_text[32];
+        char const *tier_word = "SIGNAL";
+        switch (their_tier) {
+        case FF_SIGNAL_STRONG: tier_word = "STRONG"; break;
+        case FF_SIGNAL_GOOD: tier_word = "GOOD"; break;
+        case FF_SIGNAL_WEAK: tier_word = "WEAK"; break;
+        case FF_SIGNAL_FAINT: tier_word = "FAINT"; break;
+        case FF_SIGNAL_NONE: default: break;
+        }
+        snprintf(chip_text, sizeof(chip_text), "THEY HEAR YOU: %s", tier_word);
+        radar_make_chip(parent, chip_text, radar_signal_tier_color(their_tier), FF_THEME_COLOR_BG,
+                         (int32_t)RADAR_LAYOUT_SIGNAL_FIND_DY);
     }
 }
 
@@ -1294,7 +1329,7 @@ static void radar_render_nosel(lv_obj_t *parent)
  * ------------------------------------------------------------------- */
 
 void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool colorblind, bool screen_flip,
-                        bool locked)
+                        bool locked, ff_find_t const *find)
 {
     if (parent == NULL || radar == NULL) {
         return;
@@ -1351,7 +1386,7 @@ void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool col
         radar_render_nohdg(parent, radar, screen_flip);
         break;
     case RADAR_SIGNAL:
-        radar_render_signal(parent, radar, &reg, locked);
+        radar_render_signal(parent, radar, &reg, locked, find);
         break;
     case RADAR_NOSEL:
     default:

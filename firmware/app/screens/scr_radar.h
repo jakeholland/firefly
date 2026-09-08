@@ -11,6 +11,7 @@
 
 #include <stdbool.h>
 
+#include "ff_find.h" /* S29 PR2 — ff_find_t, the FIND-active overlay's own state */
 #include "ff_radar.h"
 #include "lvgl.h"
 
@@ -81,9 +82,19 @@ extern "C" {
  * even for a narrow bearing cone — docs/specs/S10-flare.md's Amendments
  * has the full account). Ignored by CLOSE (no compass arrow — a
  * proximity ring instead) and NOFIX/NOSEL (no arrow drawn at all).
+ *
+ * `find` (S29 PR2, [api]): the active FIND session, or NULL/`!find->active`
+ * for "no overlay". When active, an additional "THEY HEAR YOU" chip is
+ * drawn in RADAR_SIGNAL's non-ghost headline (see radar_render_signal's
+ * own doc comment for the scope cut on ghost+FIND combined — a bench-only
+ * edge case, not the UI-driven path, which only ever starts FIND from a
+ * live SIGNAL selection). `scr_nav.c` passes `&state->find` directly —
+ * the same struct the console's `find`/`find off` commands and the tick
+ * loop's own 10s cadence all read/write, so the overlay can never show
+ * a session that isn't actually the live one.
  */
 void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool colorblind, bool screen_flip,
-                        bool locked);
+                        bool locked, ff_find_t const *find);
 
 #ifdef __cplusplus
 }

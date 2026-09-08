@@ -67,6 +67,11 @@
  *   diag                    — DIAGNOSTICS: link/position/mesh/time/compass/
  *                             device facts, the same ones the Settings
  *                             DIAGNOSTICS page shows
+ *   ping <node_hex>         — S29 PR2: one immediate bench PING, outside
+ *                             the 10s/5min FIND session machinery
+ *   find <node_hex>         — S29 PR2: start an ordinary FIND session on
+ *                             that node, exactly as the UI gesture would
+ *   find off                — S29 PR2: cancel the active FIND session
  * Anything else is `FF_DBGCMD_ERR_UNKNOWN` — the dispatcher's reply for
  * that is the fixed string `"dbg: ? try help"` (S16-style "the shell
  * decides", except here the deciding is this table).
@@ -180,6 +185,9 @@ typedef enum {
     FF_DBGCMD_NAME_SET,     /* "name <text>": u.text — commit + mesh push */
     FF_DBGCMD_DIAG,         /* DIAGNOSTICS: link/position/mesh/time/compass/device dump */
     FF_DBGCMD_PERF,         /* 2026-09-08 QA hardening — frame/flush timing, heap, stack high-water dump */
+    FF_DBGCMD_PING,         /* S29 PR2: "ping <node_hex>" — u.node: one immediate bench PING */
+    FF_DBGCMD_FIND,         /* S29 PR2: "find <node_hex>" — u.node: start a FIND session */
+    FF_DBGCMD_FIND_OFF,     /* S29 PR2: "find off" — cancel the active FIND session */
 } ff_dbgcmd_kind_t;
 
 /** Why a line failed to become a command. `FF_DBGCMD_ERR_EMPTY` is not
@@ -200,8 +208,10 @@ typedef enum {
  * convention (app/include/ff_intent.h) — `u.text` is meaningful for
  * `FF_DBGCMD_SEND` AND `FF_DBGCMD_NAME_SET` (the same field, reused —
  * both are "the rest of the line is a text body" shapes with nothing
- * else to disambiguate on), `u.dm` only for `FF_DBGCMD_DM`; every other
- * kind carries no payload at all.
+ * else to disambiguate on), `u.dm` only for `FF_DBGCMD_DM`, `u.node`
+ * only for `FF_DBGCMD_PING`/`FF_DBGCMD_FIND` (S29 PR2 — a bare hex node
+ * id, `parse_node_hex`'s exact shape, no text body); every other kind
+ * (including `FF_DBGCMD_FIND_OFF`) carries no payload at all.
  */
 typedef struct {
     ff_dbgcmd_kind_t kind;
@@ -211,6 +221,7 @@ typedef struct {
             uint32_t dest_node;
             char     text[FF_DBGCMD_TEXT_MAX + 1]; /* NUL-terminated body */
         } dm;
+        uint32_t node; /* S29 PR2: PING/FIND target node id */
     } u;
 } ff_dbgcmd_t;
 

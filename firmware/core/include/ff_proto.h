@@ -56,10 +56,25 @@
  *    it (so a v1 puck that somehow receives one doesn't misparse it as
  *    unknown-type), but no `ff_proto_encode_ack_ping` is provided — nothing
  *    sends it yet, per spec.
+ *
+ * ## PING / PONG (0x08 / 0x09) — S29 FIND mode (docs/specs/S29-radio-only.md)
+ * Two new types, deliberately NOT a reuse of the existing reserved 0x07
+ * ACK_PING — that type's documented shape/semantics ("delivery UX v1.5")
+ * is a different feature; reusing it here would retroactively redefine a
+ * wire value S04 already reserved for something else. PING is "how do
+ * you hear me" — a direct-addressed, unicast probe, `want_ack = false`
+ * (silence after several missed pings is itself the answer, not a
+ * routing failure to retry). PONG is the receiver's reply, carrying the
+ * RSSI/SNR *the replier's own radio* measured on the PING that prompted
+ * it — "they hear us at -xx dBm," the one fact FIND cannot get any other
+ * way (our own reading of THEM already flows through the ordinary
+ * `mc_rx_meta_t`/`ff_crew_on_rssi` path for any direct packet, PONG
+ * included — no new plumbing needed for that half).
  */
 #ifndef FF_PROTO_H
 #define FF_PROTO_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -100,6 +115,9 @@ typedef enum {
     FF_PROTO_TYPE_RALLY_CLEAR = 0x05, /* no body */
     FF_PROTO_TYPE_STATUS = 0x06,      /* [status_len:1][status] */
     FF_PROTO_TYPE_ACK_PING = 0x07,    /* reserved, v1.5: [nonce:4] */
+    /* S29 FIND mode — see this header's "PING / PONG" section above. */
+    FF_PROTO_TYPE_PING = 0x08,        /* [nonce:4] */
+    FF_PROTO_TYPE_PONG = 0x09,        /* [nonce:4][rssi:2 i16][has_snr:1][snr_x10:2 i16] */
 } ff_proto_type_t;
 
 /** FLARE body: come-find-me duration. */
@@ -125,10 +143,40 @@ typedef struct {
     uint32_t nonce;
 } ff_proto_ack_ping_t;
 
+/** PING body (S29): the nonce a PONG echoes back, correlating a reply to
+ * the probe that triggered it (a peer may see pings from more than one
+ * sender in a session). */
+typedef struct {
+    uint32_t nonce;
+} ff_proto_ping_t;
+
+/** PONG body (S29): the echoed nonce, plus the RSSI/SNR the REPLIER's own
+ * radio measured on the PING packet that prompted this reply — "they
+ * hear us at -xx dBm". `snr_x10` is SNR*10 as a signed i16 (one decimal
+ * place, matches `mc_rx_meta_t.snr_db`'s own float without shipping a
+ * float on the wire); `has_snr` mirrors `mc_rx_meta_t.has_snr`'s own
+ * presence rule (proto3 float 0.0 is indistinguishable from absent, so
+ * this body carries its own explicit flag rather than re-deriving one —
+ * see mc_client.h's `has_snr` doc comment for the full reasoning this
+ * mirrors). `rssi_dbm` has no presence flag of its own: unlike SNR,
+ * every PONG sender has SOME rssi reading for the PING it just decoded
+ * (mc_rx_meta_t.has_rssi is false only for implausible/malformed radio
+ * data — see mc_client.h's MC_RSSI_MIN/MAX_DBM plausibility gate — and a
+ * replier that can't even trust its own RSSI reading for the packet it
+ * is actively replying to has nothing honest to report; ff_shell.c's
+ * PING auto-reply handler simply does not send a PONG in that case,
+ * rather than encode a body claiming a reading that doesn't exist). */
+typedef struct {
+    uint32_t nonce;
+    int16_t  rssi_dbm;
+    bool     has_snr;
+    int16_t  snr_x10;
+} ff_proto_pong_t;
+
 /** Decoded message: `type` is one of ff_proto_type_t (mirrors
  * ff_proto_decode's return value); `body` is valid per `type` for
- * FLARE/RALLY/STATUS/ACK_PING and unused (zeroed) for the empty-body
- * types (RESERVED_01/FLARE_END/RALLY_CLEAR). */
+ * FLARE/RALLY/STATUS/ACK_PING/PING/PONG and unused (zeroed) for the
+ * empty-body types (RESERVED_01/FLARE_END/RALLY_CLEAR). */
 typedef struct {
     uint8_t type;
     union {
@@ -136,6 +184,8 @@ typedef struct {
         ff_proto_rally_t rally;
         ff_proto_status_t status;
         ff_proto_ack_ping_t ack_ping;
+        ff_proto_ping_t ping;   /* S29 */
+        ff_proto_pong_t pong;   /* S29 */
     } body;
 } ff_proto_msg_t;
 
@@ -156,6 +206,12 @@ int ff_proto_encode_flare_end(uint8_t *buf, size_t n);
 int ff_proto_encode_rally(uint8_t *buf, size_t n, ff_latlon_t p, char const *name);
 int ff_proto_encode_rally_clear(uint8_t *buf, size_t n);
 int ff_proto_encode_status(uint8_t *buf, size_t n, char const *status);
+/** S29 — see this header's "PING / PONG" section. */
+int ff_proto_encode_ping(uint8_t *buf, size_t n, uint32_t nonce);
+/** `has_snr` false writes `snr_x10` as 0 on the wire (never a fabricated
+ * reading — the decoder honors `has_snr`, not the raw zero, exactly
+ * like `mc_rx_meta_t`'s own has_snr/snr_db pair). */
+int ff_proto_encode_pong(uint8_t *buf, size_t n, uint32_t nonce, int16_t rssi_dbm, bool has_snr, int16_t snr_x10);
 
 /**
  * ff_proto_decode — parse `[ver:1][type:1][body...]` from `buf` (`n` bytes).

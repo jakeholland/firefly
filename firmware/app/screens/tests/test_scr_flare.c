@@ -340,7 +340,7 @@ static void S10_lock_chip_clears_the_status_bar(void)
      * passes the SAME boolean to both calls (see scr_radar.h's doc comment
      * on the `locked` parameter), so this test mirrors that invariant
      * rather than building an unrealistic combination. */
-    ff_scr_radar_build(puck, &radar, /*colorblind=*/false, /*screen_flip=*/false, /*locked=*/true);
+    ff_scr_radar_build(puck, &radar, /*colorblind=*/false, /*screen_flip=*/false, /*locked=*/true, NULL);
     ff_scr_flare_build_lock_chip(puck, &flare);
     lv_obj_update_layout(lv_screen_active());
 

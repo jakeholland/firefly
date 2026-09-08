@@ -55,4 +55,5 @@ set(FF_CORE_SOURCES
     src/ff_gesture.c         # S28 slice a — on-glass BACK/HOME swipe + long-press flare recognition FSM
     src/ff_dbgcmd.c          # bench/debug console — line-command parser (command policy, no I/O)
     src/ff_meshname.c        # NAME in Settings — charset sanitize + Meshtastic short-name derivation
+    src/ff_find.c             # S29 PR2 — FIND mode session state machine (active pings)
 )

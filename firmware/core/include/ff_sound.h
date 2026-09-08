@@ -143,6 +143,21 @@ typedef enum {
      *  for why this event is ALSO exempt from quiet hours, alongside the
      *  two FLARE events. */
     FF_SOUND_MULTITAP_TICK,
+    /** S29 PR2 (docs/specs/S29-radio-only.md): FIND mode's own PONG-
+     *  driven trend crossing — a peer's reported reading of us improved
+     *  by >= 3 dB over the trailing window (`ff_find_on_pong`,
+     *  `ff_find.h`). Plays alongside (not instead of) the same event's
+     *  haptic pulse, per S27's "sound plays through the same event"
+     *  policy. Ordinary sounds-on/quiet-hours gating (no exemption —
+     *  unlike FLARE_INCOMING/MULTITAP_TICK, a signal-quality nudge is
+     *  not a safety-critical alert). Short rising two-note, distinct
+     *  from RALLY's own rising interval by pitch. */
+    FF_SOUND_FIND_WARMER,
+    /** S29 PR2 — the worsening counterpart: a peer's reading of us
+     *  dropped by >= 3 dB. Short falling two-note, distinct from
+     *  BATT_LOW's own falling interval by pitch (a signal getting
+     *  fainter must not sound identical to the battery alarm). */
+    FF_SOUND_FIND_COLDER,
     FF_SOUND_COUNT, /* not a real event; the vocabulary's size, for range checks/tests */
 } ff_sound_event_t;
 
@@ -233,13 +248,16 @@ bool ff_sound_should_play(ff_sound_event_t ev, bool sounds_on, bool quiet_now);
  *     makes"; preempts anything, including a currently-playing
  *     FLARE_INCOMING of its own — "newest wins", `ff_flare.h`'s rule).
  *   - 10: FF_SOUND_FLARE_SENT, FF_SOUND_RALLY, FF_SOUND_BATT_LOW (NORMAL).
- *   -  0: FF_SOUND_MESSAGE, FF_SOUND_TAP, FF_SOUND_MULTITAP_TICK (LOW —
+ *   -  0: FF_SOUND_MESSAGE, FF_SOUND_TAP, FF_SOUND_MULTITAP_TICK,
+ *     FF_SOUND_FIND_WARMER, FF_SOUND_FIND_COLDER (LOW —
  *     spec: "a MESSAGE never interrupts a FLARE_*"; TAP and
  *     MULTITAP_TICK join MESSAGE at the bottom tier as short,
  *     easily-dropped utility sounds — a MULTITAP_TICK that got dropped
  *     because something else was playing costs nothing: it is pure
  *     progress feedback, never the thing that decides whether the
- *     gesture itself fired).
+ *     gesture itself fired. FIND_WARMER/COLDER, S29 PR2, join them for
+ *     the same reason — a signal-quality nudge during an active FIND
+ *     session, easily dropped without costing anything decisive).
  * An `ev` outside `[0, FF_SOUND_COUNT)` returns 0 (the lowest tier, never
  * preempts anything — the safe default for an unrecognised event).
  */

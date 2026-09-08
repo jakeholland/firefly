@@ -450,3 +450,15 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_meshname COMMAND test_meshname)
 endif()
+
+# S29 PR2 — core/find: the FIND-mode session state machine (active pings).
+# Pure C11, no I/O. See ff_find.h.
+if(FF_BUILD_TESTS)
+    add_executable(test_find
+        tests/test_find.c
+    )
+    target_link_libraries(test_find PRIVATE ff-core unity)
+    ff_apply_warnings(test_find)
+
+    add_test(NAME test_find COMMAND test_find)
+endif()

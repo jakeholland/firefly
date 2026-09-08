@@ -451,6 +451,24 @@ static void inject_reserved01(uint32_t from)
     H.ev.on_private(H.ev.user, from, MC_ADDR_BROADCAST, FF_PORTNUM, buf, sizeof(buf));
 }
 
+/* S29 PR2 — PING/PONG, both direct-addressed to MY_ID (never broadcast;
+ * see ff_proto.h's own "PING / PONG" section). */
+static void inject_ping(uint32_t from, uint32_t nonce)
+{
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int n = ff_proto_encode_ping(buf, sizeof(buf), nonce);
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    H.ev.on_private(H.ev.user, from, MY_ID, FF_PORTNUM, buf, (size_t)n);
+}
+
+static void inject_pong(uint32_t from, uint32_t nonce, int16_t rssi_dbm, bool has_snr, int16_t snr_x10)
+{
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int n = ff_proto_encode_pong(buf, sizeof(buf), nonce, rssi_dbm, has_snr, snr_x10);
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    H.ev.on_private(H.ev.user, from, MY_ID, FF_PORTNUM, buf, (size_t)n);
+}
+
 static ff_crew_member_t const *member(uint32_t node)
 {
     return ff_crew_find(ff_shell_crew(&H.shell), node);
@@ -8659,6 +8677,216 @@ static void S27_shell_sound_sink_silent_when_ui_ticks_off(void)
 }
 
 /* ===================================================================== */
+/* S29 PR2 (docs/specs/S29-radio-only.md) — FIND mode: PING auto-reply,   */
+/* the session's own ping cadence, PONG updating both readings, and the  */
+/* trend-haptic/sound trigger. Reuses the flare_wire_spy_t/S seam above   */
+/* (send_private capture) — the same injection seam every other S29      */
+/* shell-wiring test in this file already established.                   */
+/* ===================================================================== */
+
+/* Decode the nonce out of S.buf (the most recently sent PING) — used by
+ * tests that need to reply with a matching PONG. */
+static uint32_t last_sent_ping_nonce(void)
+{
+    ff_proto_msg_t msg;
+    int const type = ff_proto_decode(S.buf, S.len, &msg);
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PING, type);
+    return msg.body.ping.nonce;
+}
+
+static void S29_ping_auto_reply_produces_pong_with_our_rssi_reading(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    flare_wire_spy_install(true);
+
+    /* on_rx_meta always fires before the payload event for the same
+     * packet (mc_client.c's own documented ordering) — reproduced here
+     * by injecting it first, exactly as production does. No pairing:
+     * STRANGER is never paired, and the reply must fire anyway. */
+    inject_rx_meta(STRANGER, MC_RX_PATH_DIRECT, true, -55);
+    inject_ping(STRANGER, 777u);
+
+    TEST_ASSERT_EQUAL_INT(1, S.n_sends);
+    TEST_ASSERT_EQUAL_UINT32(STRANGER, S.dest);
+
+    ff_proto_msg_t out;
+    int const type = ff_proto_decode(S.buf, S.len, &out);
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PONG, type);
+    TEST_ASSERT_EQUAL_UINT32(777u, out.body.pong.nonce);
+    TEST_ASSERT_EQUAL_INT16(-55, out.body.pong.rssi_dbm);
+    TEST_ASSERT_FALSE(out.body.pong.has_snr); /* inject_rx_meta never sets snr */
+}
+
+static void S29_ping_auto_reply_skipped_when_no_rssi_reading(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    flare_wire_spy_install(true);
+
+    inject_rx_meta(STRANGER, MC_RX_PATH_DIRECT, false, -55); /* has_rssi = false */
+    inject_ping(STRANGER, 1u);
+
+    TEST_ASSERT_EQUAL_INT(0, S.n_sends); /* nothing honest to report — see shell_find_auto_reply_ping's doc comment */
+}
+
+static void S29_find_session_sends_ping_at_10s_cadence(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    flare_wire_spy_install(true);
+
+    ff_shell_debug_find_start(&H.shell, DANA);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_EQUAL_INT(1, S.n_sends);
+    TEST_ASSERT_EQUAL_UINT32(DANA, S.dest);
+    ff_proto_msg_t msg;
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PING, ff_proto_decode(S.buf, S.len, &msg));
+
+    /* Well under 10s later: no second send. */
+    advance(5000u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(1, S.n_sends);
+
+    /* At 10s: sends again. */
+    advance(5000u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(2, S.n_sends);
+}
+
+static void S29_find_stops_on_leaving_radar_face(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    flare_wire_spy_install(true);
+
+    ff_intent_t const to_radar = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    ff_shell_intent(&H.shell, &to_radar);
+    ff_shell_tick(&H.shell, H.clk.t); /* settle on RADAR, prev_face = RADAR */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, ff_shell_view(&H.shell)->active_face);
+
+    ff_shell_debug_find_start(&H.shell, DANA);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_find(&H.shell)->active);
+
+    /* The launcher IS home now (S26e) — FF_INTENT_LAUNCHER_SELECT is
+     * only meaningful FROM the launcher itself (ff_route_launcher_select's
+     * own guard), so leaving Radar for Signals is HOME then a launcher
+     * pick, exactly like a real HOME-button-then-tap would be. The NEXT
+     * tick's face-transition check (ff_shell.c, mirroring the existing
+     * INBOX/SETTINGS blocks) cancels the session once active_face is no
+     * longer RADAR. */
+    ff_intent_t const home = {.kind = FF_INTENT_HOME, .u = {0}};
+    ff_shell_intent(&H.shell, &home);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_find(&H.shell)->active, "HOME alone (still effectively off Radar) should already cancel");
+}
+
+static void S29_pong_updates_both_readings(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    flare_wire_spy_install(true);
+
+    ff_shell_debug_find_start(&H.shell, DANA);
+    ff_shell_tick(&H.shell, H.clk.t); /* sends ping */
+    uint32_t const nonce = last_sent_ping_nonce();
+
+    /* Our reading of DANA (ordinary direct-packet path, unrelated
+     * plumbing — the PONG is itself a direct packet, so shell_ev_rx_meta
+     * already updates ff_crew_on_rssi for it in production; reproduced
+     * here by injecting the rx_meta event first, same ordering). */
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -55);
+    /* DANA's reading of US, carried in the PONG body — the one NEW fact
+     * FIND adds. */
+    inject_pong(DANA, nonce, -70, true, -35);
+
+    TEST_ASSERT_EQUAL_INT16(-55, member(DANA)->rssi_dbm); /* unchanged path, still works */
+    ff_find_t const *f = ff_shell_find(&H.shell);
+    TEST_ASSERT_TRUE(f->has_their_reading);
+    TEST_ASSERT_EQUAL_INT16(-70, f->their_rssi_of_us);
+    TEST_ASSERT_TRUE(f->their_has_snr);
+    TEST_ASSERT_EQUAL_FLOAT(-3.5f, f->their_snr_of_us);
+}
+
+static void S29_pong_from_wrong_node_does_not_update_find(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    flare_wire_spy_install(true);
+
+    ff_shell_debug_find_start(&H.shell, DANA);
+    ff_shell_tick(&H.shell, H.clk.t);
+    uint32_t const nonce = last_sent_ping_nonce();
+
+    inject_rx_meta(KEV_ID, MC_RX_PATH_DIRECT, true, -40);
+    inject_pong(KEV_ID, nonce, -40, false, 0); /* right nonce, wrong sender */
+
+    TEST_ASSERT_FALSE(ff_shell_find(&H.shell)->has_their_reading);
+}
+
+/* Trend-haptic/sound: fires the WARMER pulse+sound exactly once across a
+ * real 6-sample improving crossing, driven entirely through the shell's
+ * own tick/on_private seam (not ff_find_on_pong directly — this is the
+ * end-to-end wiring test; ff_find's own crossing-detection math is
+ * covered exhaustively in core's test_find.c). */
+static void S29_pong_trend_crossing_fires_warmer_haptic_and_sound(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    flare_wire_spy_install(true);
+
+    ff_shell_debug_find_start(&H.shell, DANA);
+
+    int16_t const samples[] = {-100, -99, -101, -90, -89, -91}; /* delta +10 dB */
+    for (int i = 0; i < 6; i++) {
+        ff_shell_tick(&H.shell, H.clk.t);
+        uint32_t const nonce = last_sent_ping_nonce();
+        H.haptic.count = 0;
+        inject_pong(DANA, nonce, samples[i], false, 0);
+        if (i < 5) {
+            TEST_ASSERT_EQUAL_INT_MESSAGE(0, H.haptic.count, "fired before the 6th (crossing) sample");
+        }
+        advance(FF_FIND_PING_INTERVAL_MS);
+    }
+    TEST_ASSERT_EQUAL_INT(1, H.haptic.count); /* WARMER: single buzz (interpretation call, see ff_shell.c) */
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_FIND_WARMER));
+    TEST_ASSERT_EQUAL_INT(0, sound_count(FF_SOUND_FIND_COLDER));
+}
+
+static void S29_pong_trend_crossing_fires_colder_haptic_twice(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    flare_wire_spy_install(true);
+
+    ff_shell_debug_find_start(&H.shell, DANA);
+
+    int16_t const samples[] = {-70, -69, -71, -85, -86, -84}; /* delta ~ -15 dB */
+    uint32_t nonce = 0u;
+    for (int i = 0; i < 6; i++) {
+        ff_shell_tick(&H.shell, H.clk.t);
+        nonce = last_sent_ping_nonce();
+        H.haptic.count = 0;
+        inject_pong(DANA, nonce, samples[i], false, 0);
+        advance(FF_FIND_PING_INTERVAL_MS);
+    }
+    (void)nonce;
+    /* COLDER: two buzzes back-to-back (the seam has no duration/pattern
+     * parameter — see shell_find_haptic_colder's own doc comment). */
+    TEST_ASSERT_EQUAL_INT(2, H.haptic.count);
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_FIND_COLDER));
+    TEST_ASSERT_EQUAL_INT(0, sound_count(FF_SOUND_FIND_WARMER));
+}
+
+/* ===================================================================== */
 /* fix/audio-init-order-seed-silence — "seeded/replayed history never    */
 /* chimes" (docs/specs/S27-sounds.md Amendments). The real end-to-end    */
 /* demo-seed path (ff_demo_seed against the actual embedded festpack) is */
@@ -10914,6 +11142,15 @@ int main(void)
     RUN_TEST(S16_render_key_churn_budget_map);
     RUN_TEST(S16_render_key_churn_budget_radar_live_peer);
     RUN_TEST(S16_render_key_churn_budget_diagnostics);
+
+    RUN_TEST(S29_ping_auto_reply_produces_pong_with_our_rssi_reading);
+    RUN_TEST(S29_ping_auto_reply_skipped_when_no_rssi_reading);
+    RUN_TEST(S29_find_session_sends_ping_at_10s_cadence);
+    RUN_TEST(S29_find_stops_on_leaving_radar_face);
+    RUN_TEST(S29_pong_updates_both_readings);
+    RUN_TEST(S29_pong_from_wrong_node_does_not_update_find);
+    RUN_TEST(S29_pong_trend_crossing_fires_warmer_haptic_and_sound);
+    RUN_TEST(S29_pong_trend_crossing_fires_colder_haptic_twice);
 
     return UNITY_END();
 }

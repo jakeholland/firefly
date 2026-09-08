@@ -536,6 +536,29 @@ static ff_fixture_result_t fx_parse_radar(fx_ctx_t const *c, int obj_i, ff_radar
     return FF_FIXTURE_OK;
 }
 
+/* S29 PR2 — ff_find_t, reused directly as the fixture/dump field type
+ * (no separate app-layer projection struct — see ff_app_state.h's own
+ * doc comment on the `find` field for why). Only the fields a fixture
+ * can honestly author are exposed: `started_ms`/`last_ping_sent_ms`/
+ * `next_nonce`/`sample_hist`/`sample_count`/`sample_head`/
+ * `last_fired_trend` are this module's own bookkeeping (see ff_find.h),
+ * not something a static golden fixture should be reconstructing by
+ * hand — they stay at their zeroed default, matching this module's own
+ * "additive, defaults are the least-claiming value" convention. */
+static ff_fixture_result_t fx_parse_find(fx_ctx_t const *c, int obj_i, ff_find_t *f)
+{
+    int t;
+    if (fx_obj_get(c, obj_i, "active", &t)) f->active = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "target_node_id", &t)) f->target_node_id = (uint32_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "ping_count", &t)) f->ping_count = (uint32_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "has_their_reading", &t)) f->has_their_reading = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "their_rssi_of_us", &t)) f->their_rssi_of_us = (int16_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "their_has_snr", &t)) f->their_has_snr = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "their_snr_of_us", &t)) f->their_snr_of_us = (float)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "their_reading_age_ms", &t)) f->their_reading_age_ms = (uint32_t)fx_num(c, t, 0.0);
+    return FF_FIXTURE_OK;
+}
+
 static void fx_parse_now_row(fx_ctx_t const *c, int obj_i, ff_app_now_row_t *row)
 {
     int t;
@@ -1842,6 +1865,14 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
             return rc;
         }
     }
+    /* S29 PR2 */
+    if (fx_obj_get(&ctx, 0, "find", &sec_i) && !fx_is_null(&ctx, sec_i)) {
+        ff_fixture_result_t rc = fx_parse_find(&ctx, sec_i, &out->find);
+        if (rc != FF_FIXTURE_OK) {
+            memset(out, 0, sizeof(*out));
+            return rc;
+        }
+    }
     if (fx_obj_get(&ctx, 0, "now", &sec_i) && !fx_is_null(&ctx, sec_i)) {
         ff_fixture_result_t rc = fx_parse_now(&ctx, sec_i, &out->now);
         if (rc != FF_FIXTURE_OK) {
@@ -2325,6 +2356,20 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
         fw_radar_signal_dot(&w, &s->radar.signal_dots[i]);
     }
     fw_raw(&w, "]}");
+
+    /* S29 PR2 — mirrors fx_parse_find field-for-field. Only the
+     * fixture-authorable subset (see fx_parse_find's own doc comment);
+     * this module's internal bookkeeping (sample history, nonces, ...)
+     * is not part of the round-trip contract. */
+    fw_raw(&w, ",\"find\":{");
+    fw_raw(&w, s->find.active ? "\"active\":true" : "\"active\":false");
+    fw_fmt(&w, ",\"target_node_id\":%u", (unsigned)s->find.target_node_id);
+    fw_fmt(&w, ",\"ping_count\":%u", (unsigned)s->find.ping_count);
+    fw_raw(&w, s->find.has_their_reading ? ",\"has_their_reading\":true" : ",\"has_their_reading\":false");
+    fw_fmt(&w, ",\"their_rssi_of_us\":%d", (int)s->find.their_rssi_of_us);
+    fw_raw(&w, s->find.their_has_snr ? ",\"their_has_snr\":true" : ",\"their_has_snr\":false");
+    fw_fmt(&w, ",\"their_snr_of_us\":%g", (double)s->find.their_snr_of_us);
+    fw_fmt(&w, ",\"their_reading_age_ms\":%u}", (unsigned)s->find.their_reading_age_ms);
 
     /* now (S07 slice b round 2's now_state_t shape — see ff_app_state.h's
      * doc comment and fx_parse_now/fx_now_state_table above, which this
