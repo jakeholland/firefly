@@ -2483,28 +2483,33 @@ static void S18_AC4_self_position_latches_the_wall_but_stays_dropped_for_crew(vo
     /* The headline reorder: shell_ev_position now offers self's own
      * rx_time to ff_wall_observe BEFORE the self-drop returns, exactly
      * like shell_ev_node already did for NodeInfo (D1) — bringing the two
-     * into the same shape. Self is TRUSTED (shell_wall_trust_for), so its
-     * own GPS-disciplined reading both bootstraps AND can move an
-     * existing latch, while ff_crew_find/ff_heard_note/ff_crew_on_position
-     * stay gated behind shell_drop_as_self exactly as
-     * S16_b1_own_traffic_is_not_treated_as_inbound already pins for the
-     * non-wall side of this same event. */
+     * into the same shape. Self is TRUSTED (shell_wall_trust_for) when the
+     * reading actually carries GPS evidence (2026-09-08 field fix —
+     * MC_LOC_INTERNAL here), so a genuinely GPS-disciplined reading both
+     * bootstraps AND can move an existing latch, while
+     * ff_crew_find/ff_heard_note/ff_crew_on_position stay gated behind
+     * shell_drop_as_self exactly as S16_b1_own_traffic_is_not_treated_as_inbound
+     * already pins for the non-wall side of this same event. */
     harness_seed_settings(0);
     harness_init(100000u, true);
     inject_my_info(MY_ID);
 
     TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_shell_wall(&H.shell).src);
 
-    /* Only our own live Position arrives — no NodeInfo, no peer. */
-    inject_position(MY_ID, U_EVENING, 39.0, -82.0);
+    /* Only our own live Position arrives — no NodeInfo, no peer. Bootstrap
+     * accepts any tier by design, so loc_source doesn't matter yet — but
+     * use MC_LOC_INTERNAL throughout so this test exercises the SAME
+     * genuinely-GPS-measured reading the re-latch step below needs. */
+    inject_position_ex(MY_ID, U_EVENING, 39.0, -82.0, MC_LOC_INTERNAL, false, 0);
 
     ff_wall_t const w0 = ff_shell_wall(&H.shell);
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w0.src);
     TEST_ASSERT_EQUAL_INT16(1320, w0.now_min);
 
     /* And it moves an EXISTING latch too, not just a bootstrap — self is
-     * TRUSTED, so a later disagreeing self-reading re-latches. */
-    inject_position(MY_ID, U_AWAKE, 39.0, -82.0);
+     * TRUSTED here because this reading is GPS evidence (MC_LOC_INTERNAL),
+     * so a later disagreeing self-reading re-latches. */
+    inject_position_ex(MY_ID, U_AWAKE, 39.0, -82.0, MC_LOC_INTERNAL, false, 0);
     TEST_ASSERT_EQUAL_INT16(1200, ff_shell_wall(&H.shell).now_min);
 
     /* Still never treated as inbound crew/feed traffic. */
@@ -2512,6 +2517,38 @@ static void S18_AC4_self_position_latches_the_wall_but_stays_dropped_for_crew(vo
     TEST_ASSERT_EQUAL_UINT8(0, ff_heard_count(ff_shell_heard(&H.shell)));
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
     TEST_ASSERT_EQUAL_UINT32(0, ff_shell_wall_rejected_relatches(&H.shell));
+}
+
+static void S18_2026_09_08_self_position_without_gps_evidence_cannot_move_an_established_latch(void)
+{
+    /* The 2026-09-08 field fix itself, at the shell level: bench report,
+     * a puck's comms brain reported its own un-disciplined RTC time
+     * (no GPS fix yet, post-power-cycle) attached to a self Position, and
+     * the wall latch treated node_id==self alone as TRUSTED evidence and
+     * re-latched to the stale reading — the exact honesty gap S18 exists
+     * to close, reached through "self" instead of "a lone stranger". A
+     * self Position with `loc_source` NOT GPS-measured (MC_LOC_UNKNOWN
+     * here — "the sender didn't say", i.e. no GPS evidence) must be
+     * treated the same as an unpaired stranger's disagreeing reading
+     * (S18_AC2): it cannot move an established latch, and the rejection
+     * is bench-visible. */
+    harness_seed_settings(0);
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+
+    /* Establish the latch with a genuine GPS-measured self reading. */
+    inject_position_ex(MY_ID, U_EVENING, 39.0, -82.0, MC_LOC_INTERNAL, false, 0);
+    TEST_ASSERT_EQUAL_INT16(1320, ff_shell_wall(&H.shell).now_min);
+    TEST_ASSERT_EQUAL_UINT32(0, ff_shell_wall_rejected_relatches(&H.shell));
+
+    /* A later self Position with NO GPS evidence (the comms brain's own
+     * un-disciplined RTC) disagrees by two hours. Before the fix this
+     * would have re-latched (self was unconditionally TRUSTED); after the
+     * fix it is REJECTED, exactly like S18_AC2's second stranger. */
+    inject_position(MY_ID, U_AWAKE, 39.0, -82.0); /* plain: loc_source defaults MC_LOC_UNKNOWN */
+
+    TEST_ASSERT_EQUAL_INT16(1320, ff_shell_wall(&H.shell).now_min); /* UNCHANGED */
+    TEST_ASSERT_EQUAL_UINT32(1, ff_shell_wall_rejected_relatches(&H.shell));
 }
 
 static void S18_self_trust_is_independent_of_dev_trust_all(void)
@@ -2524,10 +2561,14 @@ static void S18_self_trust_is_independent_of_dev_trust_all(void)
      * If the classifier used shell_drop_as_self, self would fall through
      * to BOOTSTRAP under the flag and could no longer MOVE an established
      * latch — silently demoting self's own GPS-disciplined anchor exactly
-     * when the bench harness is driving. So: with the flag ON, self must
-     * still be TRUSTED enough to re-latch. This is S18_AC4 with
-     * --dev-trust-all set; AC4 alone (flag off) can't catch the swap
-     * because the two helpers are identical when the flag is off. */
+     * when the bench harness is driving. So: with the flag ON, a GPS-
+     * measured self reading must still be TRUSTED enough to re-latch. This
+     * is S18_AC4 with --dev-trust-all set; AC4 alone (flag off) can't
+     * catch the swap because the two helpers are identical when the flag
+     * is off. Uses MC_LOC_INTERNAL throughout (2026-09-08 field fix) so
+     * this test isolates the dev-trust-all/drop-as-self independence it
+     * targets from the separate GPS-evidence gate AC4's sibling test
+     * above now covers. */
     harness_seed_settings(0);
     harness_init(100000u, true);
     ff_shell_dev_trust_all(&H.shell, true);
@@ -2535,15 +2576,16 @@ static void S18_self_trust_is_independent_of_dev_trust_all(void)
 
     /* Self bootstraps the latch at 22:00 (any tier establishes a latch,
      * so the bootstrap alone does not distinguish the mutation). */
-    inject_position(MY_ID, U_EVENING, 39.0, -82.0);
+    inject_position_ex(MY_ID, U_EVENING, 39.0, -82.0, MC_LOC_INTERNAL, false, 0);
     TEST_ASSERT_EQUAL_INT16(1320, ff_shell_wall(&H.shell).now_min);
 
-    /* Self, still TRUSTED despite the flag, moves the established latch
-     * two hours backward. The swap-to-drop_as_self mutation demotes self
-     * to BOOTSTRAP here and would REJECT this instead (now_min stays 1320,
-     * rejected count ticks to 1) — so this assertion, and the counter one,
-     * both fail under the swap. */
-    inject_position(MY_ID, U_AWAKE, 39.0, -82.0);
+    /* Self, still TRUSTED despite the flag (this reading is GPS evidence),
+     * moves the established latch two hours backward. The swap-to-
+     * drop_as_self mutation demotes self to BOOTSTRAP here and would
+     * REJECT this instead (now_min stays 1320, rejected count ticks to
+     * 1) — so this assertion, and the counter one, both fail under the
+     * swap. */
+    inject_position_ex(MY_ID, U_AWAKE, 39.0, -82.0, MC_LOC_INTERNAL, false, 0);
     TEST_ASSERT_EQUAL_INT16(1200, ff_shell_wall(&H.shell).now_min);
     TEST_ASSERT_EQUAL_UINT32(0, ff_shell_wall_rejected_relatches(&H.shell));
 }
@@ -2576,6 +2618,41 @@ static void S18_paired_members_backward_nodeinfo_reading_is_still_ignored(void)
      * ff_wall_observe at all, so it cannot be counted as a trust-gate
      * rejection either. */
     TEST_ASSERT_EQUAL_UINT32(0, ff_shell_wall_rejected_relatches(&H.shell));
+}
+
+static void S18_2026_09_08_self_nodeinfo_replay_without_gps_evidence_cannot_move_an_established_latch(void)
+{
+    /* The 2026-09-08 field fix's NodeInfo-replay twin: the cold-boot
+     * want_config replay is exactly where a comms brain fresh off a power
+     * cycle offers its OWN cached last_heard before its GPS has locked —
+     * shell_observe_wall_nodeinfo shares shell_wall_trust_for with the
+     * live on_position path (S18_2026_09_08_self_position_without_
+     * gps_evidence_cannot_move_an_established_latch, above), so the same
+     * gate must hold here too. */
+    harness_seed_settings(0);
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+
+    /* Establish the latch with a genuine GPS-measured self NodeInfo. */
+    inject_node_with_position_ex(MY_ID, U_EVENING, 39.0, -82.0, MC_LOC_INTERNAL, false, 0);
+    TEST_ASSERT_EQUAL_INT16(1320, ff_shell_wall(&H.shell).now_min);
+    TEST_ASSERT_EQUAL_UINT32(0, ff_shell_wall_rejected_relatches(&H.shell));
+
+    /* A later self NodeInfo replay claims a last_heard two hours FORWARD
+     * of the latch's prediction (so the D1 forward-only guard does not
+     * itself swallow it before the trust check runs — see
+     * S18_paired_members_backward_nodeinfo_reading_is_still_ignored, just
+     * above, for the backward case that gate handles on its own) but
+     * carries no GPS evidence — a positionless NodeInfo, the plain
+     * `inject_node_with_position` shape want_config replay traffic
+     * actually has (mc_client.h: NodeInfo replay never carries rx_time,
+     * and stock firmware's PositionLite->Position conversion drops
+     * loc_source too). Before the fix this would have re-latched (self
+     * was unconditionally TRUSTED); after the fix it is REJECTED. */
+    inject_node_with_position(MY_ID, U_EVENING + 7200u, 39.0, -82.0);
+
+    TEST_ASSERT_EQUAL_INT16(1320, ff_shell_wall(&H.shell).now_min); /* UNCHANGED */
+    TEST_ASSERT_EQUAL_UINT32(1, ff_shell_wall_rejected_relatches(&H.shell));
 }
 
 static void S18_expired_latch_relatches_trust_blind_through_the_shell(void)
@@ -10523,8 +10600,10 @@ int main(void)
     RUN_TEST(S18_AC2_second_unpaired_stranger_cannot_move_the_wall_clock);
     RUN_TEST(S18_AC3_a_paired_members_backward_correction_relatches);
     RUN_TEST(S18_AC4_self_position_latches_the_wall_but_stays_dropped_for_crew);
+    RUN_TEST(S18_2026_09_08_self_position_without_gps_evidence_cannot_move_an_established_latch);
     RUN_TEST(S18_self_trust_is_independent_of_dev_trust_all);
     RUN_TEST(S18_paired_members_backward_nodeinfo_reading_is_still_ignored);
+    RUN_TEST(S18_2026_09_08_self_nodeinfo_replay_without_gps_evidence_cannot_move_an_established_latch);
     RUN_TEST(S18_expired_latch_relatches_trust_blind_through_the_shell);
 
     RUN_TEST(SELFPOS_AC1_self_position_internal_adopts_my_pos);
