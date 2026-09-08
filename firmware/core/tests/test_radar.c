@@ -272,11 +272,14 @@ static void S06_AC1_mode_stale(void)
 
 static void S06_AC1_mode_lost(void)
 {
+    /* 2026-09-07 [api] presence-heard-vs-position: FF_CREW_LOST_MS
+     * widened 10min -> 20min (ff_crew.h) — now_ms bumped from 700000 to
+     * comfortably past the new 1200000ms threshold. */
     ff_crew_t c;
     ff_crew_member_t *m = setup_selected_member(&c);
     m->has_pos = true;
     m->pos = (ff_latlon_t){0.01, 0.0};
-    m->pos_age_ms = 0u; /* age at now_ms=700000 is 700000ms: LOST (>600s) */
+    m->pos_age_ms = 0u; /* age at now_ms=1300000 is 1300000ms: LOST (>1200000ms) */
 
     ff_radar_view_t v;
     memset(&v, 0, sizeof(v));
@@ -284,7 +287,7 @@ static void S06_AC1_mode_lost(void)
     ff_radar_smooth_reset(&sm);
     ff_latlon_t my_pos = {0.0, 0.0};
 
-    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 700000u);
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 1300000u);
 
     TEST_ASSERT_EQUAL_INT(RADAR_LOST, v.mode);
     TEST_ASSERT_TRUE(v.arrow_valid); /* has_pos true: a real (old) bearing exists */
@@ -326,13 +329,17 @@ static void S06_AC1_mode_lost_via_never_had_a_fix(void)
 
 static void S06_AC1_close_by_rssi_wins_over_stale_gps(void)
 {
+    /* 2026-09-07 [api] presence-heard-vs-position: FF_CREW_LOST_MS
+     * widened 10min -> 20min (ff_crew.h) — now_ms bumped from 700000 to
+     * comfortably past the new 1200000ms threshold so this fix is still
+     * genuinely LOST on its own. */
     ff_crew_t c;
     ff_crew_member_t *m = setup_selected_member(&c);
     m->has_pos = true;
-    m->pos = (ff_latlon_t){0.01, 0.0}; /* ~1112 m: outside 30 m, distance leg false */
-    m->pos_age_ms = 0u;                /* age at now_ms=700000 is 700000ms: LOST on its own */
-    m->rssi_dbm = -50;                 /* > -60 dBm threshold */
-    m->rssi_age_ms = 700000u - 500u;   /* age 500ms at now_ms=700000: inside the 10s window */
+    m->pos = (ff_latlon_t){0.01, 0.0};  /* ~1112 m: outside 30 m, distance leg false */
+    m->pos_age_ms = 0u;                 /* age at now_ms=1300000 is 1300000ms: LOST on its own */
+    m->rssi_dbm = -50;                  /* > -60 dBm threshold */
+    m->rssi_age_ms = 1300000u - 500u;   /* age 500ms at now_ms=1300000: inside the 10s window */
 
     ff_radar_view_t v;
     memset(&v, 0, sizeof(v));
@@ -340,11 +347,11 @@ static void S06_AC1_close_by_rssi_wins_over_stale_gps(void)
     ff_radar_smooth_reset(&sm);
     ff_latlon_t my_pos = {0.0, 0.0};
 
-    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 700000u);
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 1300000u);
 
-    /* This member's GPS fix is 700s old — comfortably past the 600s LOST
-     * threshold, so freshness alone says LOST. If the CLOSE check ran
-     * AFTER the freshness switch instead of before it, this would
+    /* This member's GPS fix is 1300s old — comfortably past the 1200s
+     * LOST threshold, so freshness alone says LOST. If the CLOSE check
+     * ran AFTER the freshness switch instead of before it, this would
      * resolve RADAR_LOST. Pins the priority order CLOSE > freshness
      * (S06 spec: "CLOSE per S02 predicate; else LIVE/STALE/LOST from
      * freshness" — CLOSE is checked first, unconditionally). */

@@ -213,6 +213,22 @@ typedef struct {
      * (CLAUDE.md: domain logic belongs in core). */
     bool  place;
     bool  stale;
+    /* 2026-09-07 amendment (presence-heard-vs-position) — the selected
+     * member's HEARD presence (`ff_crew_presence`: ANY packet, not
+     * position), independent of `place`/`stale` above which are purely
+     * position-derived (`ff_crew_freshness`). Populated unconditionally,
+     * same "one place this fact is derived" rule as place/stale;
+     * FF_CREW_PRESENCE_NEVER when there is no selection (RADAR_NOSEL) or
+     * the member has genuinely never been heard.
+     *
+     * PLACEMENT itself — `mode`, `arrow_deg`/`arrow_valid`, the rim tint,
+     * `dist_str`/`age_str` — stays driven by position freshness alone;
+     * this field changes none of that (a stale position is still drawn
+     * as stale). Its one consumer is the RADAR_LOST renderer's
+     * never-fixed branch (scr_radar.c), which reads this to distinguish
+     * "near, no fix" (heard recently, no position ever) from a genuinely
+     * silent radio — see docs/specs/S06-radar-face.md's amendment. */
+    ff_crew_presence_t heard_presence;
     ff_radar_dot_t dots[FF_CREW_MAX];
     uint8_t n_dots;
     /* NOT written by ff_radar_compute — see this header's deviation note. */

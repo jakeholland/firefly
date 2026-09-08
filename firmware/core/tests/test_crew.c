@@ -63,22 +63,25 @@ static void S02_AC1_freshness_exactly_45000ms_is_stale(void)
     TEST_ASSERT_EQUAL(FF_FRESH_STALE, ff_crew_freshness(&m, 45000u));
 }
 
-static void S02_AC1_freshness_exactly_600000ms_is_stale(void)
+/* 2026-09-07 [api] presence-heard-vs-position: FF_CREW_LOST_MS widened
+ * 10min -> 20min (1200000ms) — see ff_crew.h's doc comment on the
+ * constant. Renamed from the old *_600000ms_* names to match. */
+static void S02_AC1_freshness_exactly_1200000ms_is_stale(void)
 {
     ff_crew_member_t m;
     memset(&m, 0, sizeof(m));
     m.has_pos = true;
     m.pos_age_ms = 0;
-    TEST_ASSERT_EQUAL(FF_FRESH_STALE, ff_crew_freshness(&m, 600000u));
+    TEST_ASSERT_EQUAL(FF_FRESH_STALE, ff_crew_freshness(&m, 1200000u));
 }
 
-static void S02_AC1_freshness_just_over_600000ms_is_lost(void)
+static void S02_AC1_freshness_just_over_1200000ms_is_lost(void)
 {
     ff_crew_member_t m;
     memset(&m, 0, sizeof(m));
     m.has_pos = true;
     m.pos_age_ms = 0;
-    TEST_ASSERT_EQUAL(FF_FRESH_LOST, ff_crew_freshness(&m, 600001u));
+    TEST_ASSERT_EQUAL(FF_FRESH_LOST, ff_crew_freshness(&m, 1200001u));
 }
 
 static void S02_AC1_freshness_never_when_no_pos_ever(void)
@@ -89,16 +92,16 @@ static void S02_AC1_freshness_never_when_no_pos_ever(void)
     TEST_ASSERT_EQUAL(FF_FRESH_NEVER, ff_crew_freshness(&m, 999999u));
 }
 
-static void S02_AC1_freshness_just_under_600000ms_is_stale(void)
+static void S02_AC1_freshness_just_under_1200000ms_is_stale(void)
 {
-    /* Symmetric to S02_AC1_freshness_exactly_600000ms_is_stale: the STALE
-     * side immediately below the LOST boundary, mirroring the
+    /* Symmetric to S02_AC1_freshness_exactly_1200000ms_is_stale: the
+     * STALE side immediately below the LOST boundary, mirroring the
      * just-under-45s LIVE-side test above. */
     ff_crew_member_t m;
     memset(&m, 0, sizeof(m));
     m.has_pos = true;
     m.pos_age_ms = 0;
-    TEST_ASSERT_EQUAL(FF_FRESH_STALE, ff_crew_freshness(&m, 599999u));
+    TEST_ASSERT_EQUAL(FF_FRESH_STALE, ff_crew_freshness(&m, 1199999u));
 }
 
 static void S02_AC1_freshness_handles_uint32_wraparound(void)
@@ -1025,16 +1028,143 @@ static void LONGNAME_display_name_null_member_is_safe_empty(void)
     TEST_ASSERT_EQUAL_STRING("", ff_crew_display_name(NULL));
 }
 
+/* ------------------------------------------------------------------- */
+/* HEARD — presence-heard-vs-position (2026-09-07 [api] S02 amendment)  */
+/* ------------------------------------------------------------------- */
+
+static void HEARD_never_before_first_on_heard(void)
+{
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    TEST_ASSERT_FALSE(m.has_heard);
+    TEST_ASSERT_EQUAL(FF_CREW_PRESENCE_NEVER, ff_crew_presence(&m, 999999u));
+}
+
+static void HEARD_null_member_is_never(void)
+{
+    TEST_ASSERT_EQUAL(FF_CREW_PRESENCE_NEVER, ff_crew_presence(NULL, 12345u));
+}
+
+static void HEARD_on_heard_finds_or_creates_and_sets_fields(void)
+{
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    ff_crew_on_heard(&c, 7u, 5000u);
+    ff_crew_member_t const *m = ff_crew_find(&c, 7u);
+    TEST_ASSERT_NOT_NULL(m);
+    TEST_ASSERT_TRUE(m->has_heard);
+    TEST_ASSERT_EQUAL_UINT32(5000u, m->last_heard_ms);
+}
+
+static void HEARD_on_heard_null_crew_is_safe(void)
+{
+    ff_crew_on_heard(NULL, 7u, 5000u); /* must not crash */
+}
+
+static void HEARD_freshly_heard_is_heard(void)
+{
+    /* age 0, and just under the HEARD/STALE boundary. */
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    m.has_heard = true;
+    m.last_heard_ms = 1000u;
+    TEST_ASSERT_EQUAL(FF_CREW_PRESENCE_HEARD, ff_crew_presence(&m, 1000u));
+    TEST_ASSERT_EQUAL(FF_CREW_PRESENCE_HEARD, ff_crew_presence(&m, 1000u + FF_CREW_HEARD_LIVE_MS - 1u));
+}
+
+static void HEARD_exactly_heard_live_ms_is_stale(void)
+{
+    /* Strict inequality on the HEARD side (age < FF_CREW_HEARD_LIVE_MS,
+     * per ff_crew.h): the boundary value itself lands in STALE. */
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    m.has_heard = true;
+    m.last_heard_ms = 0u;
+    TEST_ASSERT_EQUAL(FF_CREW_PRESENCE_STALE, ff_crew_presence(&m, FF_CREW_HEARD_LIVE_MS));
+}
+
+static void HEARD_exactly_heard_lost_ms_is_stale(void)
+{
+    /* Inclusive toward STALE at the LOST boundary too (age <=
+     * FF_CREW_HEARD_LOST_MS), mirroring ff_crew_freshness' own
+     * inclusive-toward-STALE convention. */
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    m.has_heard = true;
+    m.last_heard_ms = 0u;
+    TEST_ASSERT_EQUAL(FF_CREW_PRESENCE_STALE, ff_crew_presence(&m, FF_CREW_HEARD_LOST_MS));
+}
+
+static void HEARD_just_over_heard_lost_ms_is_lost(void)
+{
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    m.has_heard = true;
+    m.last_heard_ms = 0u;
+    TEST_ASSERT_EQUAL(FF_CREW_PRESENCE_LOST, ff_crew_presence(&m, FF_CREW_HEARD_LOST_MS + 1u));
+}
+
+static void HEARD_presence_is_independent_of_position(void)
+{
+    /* The owner's whole "why are we LOST?" bug, as a predicate test: a
+     * member heard 30s ago but with NO position at all (has_pos ==
+     * false, hence ff_crew_freshness == NEVER) must read HEARD, not
+     * NEVER/LOST — the two axes never conflate. */
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    m.has_pos = false;
+    m.has_heard = true;
+    m.last_heard_ms = 0u;
+    uint32_t const now = 30u * 1000u;
+
+    TEST_ASSERT_EQUAL(FF_FRESH_NEVER, ff_crew_freshness(&m, now));
+    TEST_ASSERT_EQUAL(FF_CREW_PRESENCE_HEARD, ff_crew_presence(&m, now));
+}
+
+static void HEARD_stale_position_with_fresh_heard_is_not_position_lost(void)
+{
+    /* The indoor-no-fix scenario from the owner's investigation: a
+     * position aged well past FF_CREW_LOST_MS (position LOST), but
+     * NodeInfo/telemetry keep arriving (heard fresh). Both facts are
+     * independently true and honest — freshness stays LOST (position IS
+     * old), presence stays HEARD (the radio IS still hearing them). */
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    m.has_pos = true;
+    m.pos_age_ms = 0u;
+    m.has_heard = true;
+    m.last_heard_ms = FF_CREW_LOST_MS; /* heard again right as the old fix was already LOST-aged */
+    uint32_t const now = FF_CREW_LOST_MS + 60u * 1000u; /* position now well past LOST */
+
+    TEST_ASSERT_EQUAL(FF_FRESH_LOST, ff_crew_freshness(&m, now));
+    TEST_ASSERT_EQUAL(FF_CREW_PRESENCE_HEARD, ff_crew_presence(&m, now));
+}
+
+static void HEARD_wraparound_safe(void)
+{
+    /* Same uint32 rollover convention as S02_AC1_freshness_handles_
+     * uint32_wraparound above. */
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    m.has_heard = true;
+    m.last_heard_ms = UINT32_MAX - 99u;
+
+    TEST_ASSERT_EQUAL(FF_CREW_PRESENCE_HEARD, ff_crew_presence(&m, 100u)); /* true elapsed: 200ms */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
 
     RUN_TEST(S02_AC1_freshness_just_under_45s_is_live);
     RUN_TEST(S02_AC1_freshness_exactly_45000ms_is_stale);
-    RUN_TEST(S02_AC1_freshness_exactly_600000ms_is_stale);
-    RUN_TEST(S02_AC1_freshness_just_over_600000ms_is_lost);
+    RUN_TEST(S02_AC1_freshness_exactly_1200000ms_is_stale);
+    RUN_TEST(S02_AC1_freshness_just_over_1200000ms_is_lost);
     RUN_TEST(S02_AC1_freshness_never_when_no_pos_ever);
-    RUN_TEST(S02_AC1_freshness_just_under_600000ms_is_stale);
+    RUN_TEST(S02_AC1_freshness_just_under_1200000ms_is_stale);
     RUN_TEST(S02_AC1_freshness_handles_uint32_wraparound);
 
     RUN_TEST(S02_AC2_upsert_existing_id_returns_same_slot);
@@ -1098,6 +1228,18 @@ int main(void)
     RUN_TEST(LONGNAME_display_name_both_empty_is_empty);
     RUN_TEST(LONGNAME_display_name_never_synthesizes_from_short);
     RUN_TEST(LONGNAME_display_name_null_member_is_safe_empty);
+
+    RUN_TEST(HEARD_never_before_first_on_heard);
+    RUN_TEST(HEARD_null_member_is_never);
+    RUN_TEST(HEARD_on_heard_finds_or_creates_and_sets_fields);
+    RUN_TEST(HEARD_on_heard_null_crew_is_safe);
+    RUN_TEST(HEARD_freshly_heard_is_heard);
+    RUN_TEST(HEARD_exactly_heard_live_ms_is_stale);
+    RUN_TEST(HEARD_exactly_heard_lost_ms_is_stale);
+    RUN_TEST(HEARD_just_over_heard_lost_ms_is_lost);
+    RUN_TEST(HEARD_presence_is_independent_of_position);
+    RUN_TEST(HEARD_stale_position_with_fresh_heard_is_not_position_lost);
+    RUN_TEST(HEARD_wraparound_safe);
 
     return UNITY_END();
 }

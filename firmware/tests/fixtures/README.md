@@ -18,7 +18,8 @@ loader is tolerant of missing/unknown keys, matching
 keys anywhere are silently skipped, not errors.
 
 **But a PRESENT enum key must carry one of its documented strings**
-(issue #28, orchestrator ruling). `face`, `radar.mode`, `now.state`,
+(issue #28, orchestrator ruling). `face`, `radar.mode`, `radar.heard_presence`
+(2026-09-07), `now.state`,
 `signals.subview`, `signals.convs[].{conv,preview_kind,preview_dir,presence}`, `signals.target_kind`, `compose.mode`, and `settings.share_mode` fail
 the whole load with `FF_FIXTURE_ERR_BAD_ENUM` — `*out` fully zeroed, and
 a stderr line naming the bad key and value — when the key is present but
@@ -80,6 +81,7 @@ unrelated-looking golden diff.)
   "bearing_valid": true,
   "place": false,
   "stale": false,
+  "heard_presence": "never",
   "clock_str": "9:41",
   "batt_pct": 78,
   "mesh_ok": true,
@@ -103,6 +105,7 @@ unrelated-looking golden diff.)
 | `bearing_valid` | bool | `false` | Same "valid defaults false" convention as `arrow_valid`/`flare.takeover_bearing_valid` — a fixture providing `bearing_deg` without this must not be read as an honestly-known bearing. |
 | `place` | bool | `false` | 2026-09-05 amendment — mirrors a dot's own `place`, but for the SELECTION: true iff the selection's own position is an ASSERTED (`LOC_MANUAL`) landmark. Populated for every mode, not just `nohdg` (redundant with `mode == "place"` there, but the one place this is computed in core). |
 | `stale` | bool | `false` | 2026-09-05 amendment — mirrors a dot's own `stale` for the SELECTION: true iff not `place` and the position's freshness isn't LIVE. Primary consumer: `mode: "nohdg"`'s rim tint (freshness still "picks the rim colour" even though the mode itself stays `nohdg` — see `docs/specs/S06-radar-face.md`'s amendment). |
+| `heard_presence` | string enum: `heard`\|`stale`\|`lost`\|`never` | `never` | **2026-09-07 amendment (presence-heard-vs-position).** The selection's `ff_crew_presence` (core/ff_crew.h) — ANY packet heard, a SEPARATE axis from `place`/`stale` above (which stay position-only). Defaults to `never`, NOT the enum's raw zero value (`heard` is 0 in `ff_crew_presence_t`) — same "explicit safe default" reasoning `radar.mode`'s `nosel` default uses; a fixture that never mentions this key must not silently claim "heard recently". Its one consumer: `mode: "lost"`'s never-fixed renderer (`age_str == ""`) reads `heard`/`stale` here to show "NEAR, NO FIX" instead of "NO FIX YET" — see `radar_heard_no_fix.json` below. |
 | `clock_str` | string (≤5 chars) | `""` |
 | `batt_pct` | integer | `0` (note: `-1` is the documented "unknown" sentinel elsewhere in this codebase — pass it explicitly if that's what a fixture needs) |
 | `mesh_ok` | bool | `false` |
@@ -447,7 +450,8 @@ and a worst-case crew-ring layout).
 | `radar_close_collision.json` | `close` | `15 m` | `3 SEC` | same scenario as `radar_close.json`, but with 4 crew-ring dots deliberately placed at worst-case bearings (one straight at the status bar, three clustered straight at the FLARE button / trend chip) to exercise `app/screens/radar_layout.c`'s layout resolver — the three southward dots resolve into a 1-dot + 1-cluster-of-2 outcome (a "2" marker, not a hidden member), and the northward dot lands clear of the status bar. Regressing the resolver will show up here even if it doesn't show up in the plain `radar_close` golden — though the authoritative regression coverage is `app/screens/tests/test_radar_layout.c`'s geometry-level sweep, not this golden (see that file's header comment for why) |
 | `radar_nofix.json` | `nofix` | `""` (unknown — my position invalid) | `6 MIN` (the *selected member's* last-known age is still honestly known even though mine isn't) | arrow hidden, "NO FIX - RADIO ONLY" |
 | `radar_nosel.json` | `nosel` | `""` | `""` | no paired crew member at all — empty-crew state, `mesh_ok: false` for variety |
-| `radar_never.json` | `lost` (folded — see below) | `""` | `""` | selected member "JAMIE" is paired but has never sent a fix; `age_str[0] == '\0'` is what `scr_radar.c` keys off to show "NO FIX YET" instead of a "LAST SEEN" chip — NOT distinguishable from a genuinely-old fix by `mode` alone (both are `RADAR_LOST`; see `radar_lost.json` above for the other side of that same `mode`) |
+| `radar_never.json` | `lost` (folded — see below) | `""` | `""` | selected member "JAMIE" is paired but has never sent a fix; `age_str[0] == '\0'` is what `scr_radar.c` keys off to show "NO FIX YET" instead of a "LAST SEEN" chip — NOT distinguishable from a genuinely-old fix by `mode` alone (both are `RADAR_LOST`; see `radar_lost.json` above for the other side of that same `mode`). `heard_presence` omitted -> defaults `never`, so this fixture keeps the "genuinely silent" copy |
+| `radar_heard_no_fix.json` | `lost` (folded — same never-fixed case) | `""` | `""` | **2026-09-07 amendment (presence-heard-vs-position).** Identical to `radar_never.json` except `heard_presence: "heard"` — same "JAMIE", never sent a fix, but the radio HAS heard from her recently (NodeInfo/telemetry). Renders "NEAR, NO FIX" / "Heard recently, no GPS fix yet" instead of `radar_never.json`'s "NO FIX YET" / "Waiting for their first GPS fix" — a friend heard but without a fix must never read the same as one who's genuinely gone quiet |
 | `radar_place.json` | `place` | `610 m` | `""` (always empty — see `ff_radar.h`'s `RADAR_PLACE` doc comment) | issue #33 — a landmark's asserted (`LOC_MANUAL`) position, "CAMP BASE". Solid arrow (a real coordinate exists), neutral "FIXED POSITION" chip — never "LIVE", never a rim tint, never an invented age. One ring dot (`"C"`, `place: true`) also carries the honest treatment alongside two ordinary live dots |
 | `radar_imprecise.json` | `live` | `~5.8 km` | `8 SEC` | issue #47 — `dist_imprecise: true`; the selected member's precision is known-degraded (13 bits, the default-public-channel case measured on hardware). Freshness/mode are untouched (LIVE, fresh fix) — only the distance is an honest area estimate, dimmed in render and suffixed "- AREA" on the chip, never a metre-looking number |
 | `radar_nohdg.json` | `nohdg` | `492 ft` | `8 SEC` | 2026-09-05 amendment — my heading is unknown (`bearing_valid: true`, `arrow_valid: false`); name+distance stack as in `live`, amber "NO COMPASS" chip in place of the arrow, mono "BEARING 180° · S" hint below the distance (`bearing_deg: 180`). Fresh fix (`stale: false`) so no rim tint — see `radar_nohdg_stale.json` for the tinted case |

@@ -51,10 +51,47 @@ meshtastic --set serial.enabled true --set serial.mode PROTO \
 meshtastic --set bluetooth.enabled false        # optional, saves power
 meshtastic --set-owner "Jake"
 meshtastic --ch-set name Firefly --ch-set psk random --ch-index 0   # copy the PSK to every crew node
+meshtastic --set position.position_broadcast_secs 120 \
+           --set position.position_broadcast_smart_enabled true \
+           --set position.broadcast_smart_minimum_interval_secs 30
 ```
 
 PROTO mode exposes the protobuf client API (the same one the phone app uses) on
 those pins; the puck's meshclient (S03) speaks it.
+
+**Position broadcast interval, 2026-09-07 (presence-heard-vs-position,
+`docs/specs/S02-core-crew.md`'s amendment).** The last three `--set`s above
+are new: stock Meshtastic's own default is `position_broadcast_secs 900`
+(15 min), which is *longer* than this project's own (pre-amendment)
+10-minute LOST threshold — a stationary friend was guaranteed to read LOST
+on the Radar/CREW page between their own radio's broadcasts, independent of
+anything the puck firmware did. `position_broadcast_secs 120` sets a 2-minute
+worst-case interval; `position_broadcast_smart_enabled true` (already the
+Meshtastic default, set explicitly here for clarity) means a STATIONARY node
+sends far less often than that — smart broadcast only re-sends early on
+meaningful movement, so this mostly matters for a moving node crossing the
+mesh; `broadcast_smart_minimum_interval_secs 30` floors how often even a
+constantly-moving node can re-send, so a jittery GPS fix can't spam the
+channel. Field names verified against the installed `meshtastic` CLI
+(`/Users/jakeholland/.local/bin/meshtastic`, v2.7.11)'s own protobuf config
+definitions (`meshtastic.protobuf.config_pb2`): `position.position_broadcast_secs`,
+`position.position_broadcast_smart_enabled`,
+`position.broadcast_smart_minimum_interval_secs`.
+
+**Airtime note for an 8-node crew.** A Meshtastic position packet is small
+(tens of bytes); at the "Long Fast" default LoRa preset commonly used in
+the US915 region (SF11/BW250), a packet that size occupies roughly a
+quarter- to half-second of airtime — an approximation from public
+Meshtastic community figures, not hardware-measured on this project's own
+radios, and worth confirming in the field before committing to it. Worst
+case (every one of 8 crew nodes moving continuously, all re-sending at the
+120 s ceiling) is on the order of 8 packets per 2 minutes shared across the
+whole channel — a small fraction of LoRa's air, well under typical regional
+duty-cycle/fair-use expectations, but not zero: smart broadcast is what
+keeps a STATIONARY festival crew's actual traffic far below this worst
+case, which is the common case this interval is tuned for. If a future
+festival's crew grows well past 8, or the interval is dropped further,
+re-check this estimate rather than assuming it still holds.
 
 ## Bring-up order
 

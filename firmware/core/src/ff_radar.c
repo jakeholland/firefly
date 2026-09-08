@@ -141,6 +141,7 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
         v->bearing_deg = 0.0f;
         v->place = false;
         v->stale = false;
+        v->heard_presence = FF_CREW_PRESENCE_NEVER; /* no selection, nothing to have heard */
         v->arrow_deg = smooth->smoothed_deg; /* frozen: nothing to smooth toward */
         return;
     }
@@ -165,6 +166,12 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
     ff_freshness_t const fresh = ff_crew_freshness(member, now_ms);
     v->place = (fresh == FF_FRESH_ASSERTED);
     v->stale = !v->place && (fresh != FF_FRESH_LIVE);
+
+    /* 2026-09-07 amendment (presence-heard-vs-position) — the SEPARATE
+     * heard axis (ff_radar.h's doc comment on this field): computed here
+     * unconditionally, same "always populated, independent of
+     * my_pos_ok/heading_ok" treatment place/stale get just above. */
+    v->heard_presence = ff_crew_presence(member, now_ms);
 
     float distance_m = -1.0f; /* -1: unknown, matches ff_crew_close_range's convention */
     if (my_pos_ok && member->has_pos) {

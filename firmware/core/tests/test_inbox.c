@@ -64,8 +64,9 @@ static void push(ff_feed_t *f, ff_feed_kind_t kind, ff_feed_dir_t dir, uint32_t 
 }
 
 /* Add a crew member directly into a (zeroed) roster — the test_sigview
- * convention: NO direct packet (rssi_dbm == INT16_MIN) and NO position
- * by default, so nothing is accidentally SEEN. */
+ * convention: NO direct packet (rssi_dbm == INT16_MIN), NO position, and
+ * NO heard packet (has_heard == false) by default, so nothing is
+ * accidentally SEEN. */
 static ff_crew_member_t *add_member(ff_crew_t *c, uint32_t node_id, char const *name, char initial,
                                     uint8_t color_idx, bool paired)
 {
@@ -80,10 +81,14 @@ static ff_crew_member_t *add_member(ff_crew_t *c, uint32_t node_id, char const *
     return m;
 }
 
-static void set_rssi_age(ff_crew_member_t *m, int16_t dbm, uint32_t age_ms)
+/* 2026-09-07 [api] presence-heard-vs-position: ff_inbox's presence field
+ * is now heard-based (ff_crew_presence), not RSSI/position-based — this
+ * fixture helper is what makes a member SEEN in the tests below, taking
+ * over set_rssi_age's old role for that purpose. */
+static void set_heard_age(ff_crew_member_t *m, uint32_t age_ms)
 {
-    m->rssi_dbm    = dbm;
-    m->rssi_age_ms = NOW - age_ms;
+    m->has_heard     = true;
+    m->last_heard_ms = NOW - age_ms;
 }
 
 /* Find a conversation by (kind, node_id) in the built list, or NULL. */
@@ -357,8 +362,8 @@ static void S24_AC2_ordering_unread_then_traffic_then_quiet(void)
     (void)linked_hi;
     (void)unread_new;
     (void)unread_old;
-    set_rssi_age(seen_q, -70, 60u * 1000u);
-    set_rssi_age(read_m, -70, 5u * 1000u); /* fresh presence must NOT beat traffic ordering */
+    set_heard_age(seen_q, 60u * 1000u);
+    set_heard_age(read_m, 5u * 1000u); /* fresh presence must NOT beat traffic ordering */
 
     /* Interleaved traffic. Ages: smaller = newer (age = NOW - at_ms). */
     push(&f, FEED_TEXT, FEED_DIR_DIRECT, 0x10u, 0, NOW - 500, "old unread", true);
@@ -399,8 +404,8 @@ static void S24_AC2_quiet_ties_break_by_ascending_node_id_linked_last(void)
     add_member(&c, 0x22u, "amy", 'A', 2, true);   /* LINKED */
     ff_crew_member_t *s2 = add_member(&c, 0x88u, "sue", 'S', 3, true);
     ff_crew_member_t *s1 = add_member(&c, 0x11u, "moe", 'M', 4, true);
-    set_rssi_age(s1, -70, 30u * 1000u); /* SEEN, same age */
-    set_rssi_age(s2, -70, 30u * 1000u); /* SEEN, same age */
+    set_heard_age(s1, 30u * 1000u); /* SEEN, same age */
+    set_heard_age(s2, 30u * 1000u); /* SEEN, same age */
 
     ff_inbox_t ib;
     ff_inbox_build(&ib, &f, &c, NOW);

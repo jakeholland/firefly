@@ -341,9 +341,19 @@ void test_S23d_rally_no_pack_sends_nothing(void)
 }
 
 /* S23c_AC3_poke_refreshes_presence — after aging SAM (paired, no fix, no
- * prior RSSI) to LOST/LINKED, a PRESENCE_POKE applied at a later demo time
- * makes his freshest sighting recent again (SEEN). Read through the real
- * ff_sigview_presence, computed from real crew state. */
+ * prior RSSI/heard packet) to LOST/LINKED, a PRESENCE_POKE applied at a
+ * later demo time makes his freshest sighting recent again (SEEN). Read
+ * through the real ff_sigview_presence, computed from real crew state.
+ *
+ * 2026-09-07 [api] presence-heard-vs-position: `ff_sigview_presence` is
+ * now heard-based (`ff_crew_presence`), not position/RSSI-based — see
+ * ff_sigview.h's top comment. The poke's DIRECT+has_rssi
+ * `mc_rx_meta_t` still flows through the SAME `shell_ev_rx_meta` this
+ * test always exercised (ff_demoapply.c's FF_DEMO_DISPATCH_POKE
+ * comment), which now ALSO calls `ff_crew_on_heard` for any paired
+ * sender — so the poke refreshes `last_heard_ms` exactly as it used to
+ * refresh `rssi_age_ms`, and this test's assertions read that axis
+ * instead. */
 void test_S23c_poke_refreshes_presence(void)
 {
     seed_shell();
@@ -351,36 +361,35 @@ void test_S23c_poke_refreshes_presence(void)
     uint8_t n = 0;
     uint32_t const *ids = ff_demo_live_node_ids(&n);
 
-    /* SAM has no position fix and (before any poke) no direct RSSI: no
-     * evidence at all => LINKED. */
+    /* SAM has no position fix and (before any poke) has never been
+     * heard from at all: no evidence at all => LINKED. */
     ff_crew_t const *crew = ff_shell_crew(&s_shell);
     ff_crew_member_t const *sam = ff_crew_find(crew, FF_DEMO_NODE_SAM);
     TEST_ASSERT_NOT_NULL(sam);
     TEST_ASSERT_TRUE(sam->paired);
+    TEST_ASSERT_FALSE(sam->has_heard);
 
     uint32_t const now0 = s_clock_ms;
-    ff_freshness_t f0 = ff_crew_freshness(sam, now0);
-    bool have_rssi0 = (sam->rssi_dbm != INT16_MIN);
-    ff_sigview_presence_t pr0 =
-        ff_sigview_presence(f0, now0 - sam->pos_age_ms, have_rssi0, now0 - sam->rssi_age_ms, NULL);
+    ff_crew_presence_t heard0 = ff_crew_presence(sam, now0);
+    ff_sigview_presence_t pr0 = ff_sigview_presence(heard0, 0u, NULL);
     TEST_ASSERT_EQUAL_INT(FF_PRESENCE_LINKED, pr0);
 
-    /* Advance the demo clock well past LOST, then poke SAM. The poke
-     * timestamps rssi_age via ff_crew_on_rssi (shell's clock reads
-     * s_clock_ms), so his freshest sighting is now ~0ms old => SEEN. */
-    s_clock_ms = now0 + FF_CREW_LOST_MS + 60u * 1000u;
+    /* Advance the demo clock well past HEARD-LOST, then poke SAM. The
+     * poke timestamps last_heard_ms via ff_crew_on_heard (shell's clock
+     * reads s_clock_ms), so his freshest sighting is now ~0ms old =>
+     * SEEN. */
+    s_clock_ms = now0 + FF_CREW_HEARD_LOST_MS + 60u * 1000u;
     ff_demo_event_t pk = mk_poke(4 /* SAM */);
     ff_demo_apply_event(&ev, &pk, ids, n, &s_pack);
 
     crew = ff_shell_crew(&s_shell);
     sam = ff_crew_find(crew, FF_DEMO_NODE_SAM);
+    TEST_ASSERT_TRUE(sam->has_heard); /* the poke gave him a heard packet */
     uint32_t const now1 = s_clock_ms;
-    ff_freshness_t f1 = ff_crew_freshness(sam, now1);
-    bool have_rssi1 = (sam->rssi_dbm != INT16_MIN);
-    TEST_ASSERT_TRUE(have_rssi1); /* the poke gave him a direct RSSI sample */
+    ff_crew_presence_t heard1 = ff_crew_presence(sam, now1);
+    uint32_t const heard_age1 = now1 - sam->last_heard_ms;
     uint32_t age_out = UINT32_MAX;
-    ff_sigview_presence_t pr1 =
-        ff_sigview_presence(f1, now1 - sam->pos_age_ms, have_rssi1, now1 - sam->rssi_age_ms, &age_out);
+    ff_sigview_presence_t pr1 = ff_sigview_presence(heard1, heard_age1, &age_out);
     TEST_ASSERT_EQUAL_INT(FF_PRESENCE_SEEN, pr1);
     TEST_ASSERT_TRUE(age_out <= 1000u); /* freshest sighting is the just-applied poke */
     ff_shell_close(&s_shell);

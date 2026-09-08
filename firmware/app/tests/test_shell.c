@@ -660,8 +660,13 @@ static void S16_AC9_want_config_replay_does_not_refresh_position_age(void)
 
     TEST_ASSERT_EQUAL_INT(FF_FRESH_STALE, ff_crew_freshness(member(DANA), H.clk.t));
 
-    /* The same replay again at T+12 min. */
-    advance(420000u); /* now T+12 min */
+    /* The same replay again at T+25 min. 2026-09-07 [api]
+     * presence-heard-vs-position: FF_CREW_LOST_MS widened 10min -> 20min
+     * (ff_crew.h), so this needs to land past the new 1200000ms
+     * threshold — bumped from T+12 min/420000ms to T+25 min/1200000ms
+     * (was comfortably past the old 600000ms boundary; now comfortably
+     * past the new one instead). */
+    advance(1200000u); /* now T+25 min */
     inject_node_with_position(DANA, U_EVENING, 39.0, -82.0);
     TEST_ASSERT_EQUAL_INT(FF_FRESH_LOST, ff_crew_freshness(member(DANA), H.clk.t));
 
@@ -674,11 +679,11 @@ static void S16_AC9_want_config_replay_does_not_refresh_position_age(void)
      * would be wrong.
      *
      * Measured rather than reasoned about: a genuinely current position
-     * (rx_time == the real now, 12 minutes after the original latch)
+     * (rx_time == the real now, 25 minutes after the original latch)
      * must read LIVE. If the wall had been dragged back, its age would
-     * compute as -720 s — the future — and the fix would be dropped
+     * compute as -1500 s — the future — and the fix would be dropped
      * entirely, leaving DANA LOST. */
-    inject_position(DANA, U_EVENING + 720u, 39.0, -82.0);
+    inject_position(DANA, U_EVENING + 1500u, 39.0, -82.0);
     TEST_ASSERT_EQUAL_INT(FF_FRESH_LIVE, ff_crew_freshness(member(DANA), H.clk.t));
 }
 

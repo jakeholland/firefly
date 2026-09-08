@@ -451,3 +451,27 @@ positions/times anywhere (rally rules above).
   by `S24_AC1_composer_send_when_link_down_is_queued_not_dropped`. Both
   renames are deliberate rewrites of tests that pinned the OLD (bad)
   behavior, not incidental churn.
+
+- **2026-09-07, maintainer decision — presence-heard-vs-position**
+  (`docs/specs/S02-core-crew.md`'s own amendment; cross-referenced here
+  because this doc's "Honest-data" section is where the `SEEN <age>` /
+  `LOST` / `LINKED` vocabulary is specified). The Honest-data section's
+  "Presence text is `SEEN <age>` / `LOST` / `LINKED` from real
+  freshness" line is amended: the presence this text renders is now
+  `ff_crew_presence` (core/ff_crew.h — ANY packet heard, HEARD/STALE
+  within 10 min → SEEN, LOST past 10 min, NEVER heard → LINKED), routed
+  through `ff_sigview_presence` exactly as before, NOT `ff_crew_freshness`
+  (position age) as it read pre-amendment. The word "freshness" in that
+  line should now be read as "heard-freshness" — a member's LAST KNOWN
+  POSITION can be old or entirely absent while their presence chip still
+  reads `SEEN <age>`, honestly, because the radio is still hearing them.
+  AC2's "conversations with honest ... presence" is unaffected in kind
+  (still `ff_inbox`, still `ff_sigview_presence`, still the same three
+  words); only the evidence backing it changed. No rendering code in
+  `scr_inbox.c` changed — `inbox_presence_text` reads the same
+  `cv->presence`/`cv->presence_age_ms` pair it always did; only
+  `ff_inbox_build`'s two inputs to `ff_sigview_presence` (core/src/
+  ff_inbox.c) changed, from (position freshness, direct-packet RSSI age)
+  to (`ff_crew_presence`, heard age). See S02's amendment for the full
+  rationale, the wiring change (`shell_ev_rx_meta`), and the fixture
+  helper rename in `test_inbox.c` (`set_rssi_age` → `set_heard_age`).

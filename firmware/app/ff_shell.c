@@ -2065,6 +2065,40 @@ static void shell_ev_rx_meta(void *u, uint32_t from, mc_rx_meta_t const *m)
         ff_crew_on_rssi(&sh->crew, from, m->rssi_dbm);
     }
 
+    /* 2026-09-07 [api] presence-heard-vs-position — ANY inbound packet
+     * naming a PAIRED sender counts as "heard" (ff_crew_on_heard), the
+     * fix for the owner-verified "why are we LOST?" investigation
+     * (docs/specs/S02-core-crew.md's amendment): a friend's NodeInfo or
+     * telemetry keeps this member out of the radio-silence LOST bucket
+     * even when their last known POSITION (ff_crew_freshness, unchanged)
+     * ages past FF_CREW_LOST_MS or never arrived at all. Deliberately
+     * NOT gated on rx_path/has_rssi like the RSSI leg above — this fact
+     * isn't about signal strength or proximity, only "is the radio still
+     * hearing them," so a relayed packet counts exactly the same as a
+     * direct one. `ff_crew_on_heard` find-or-creates too, same
+     * effect-not-name rule as `ff_crew_on_rssi`'s own comment; the find
+     * + paired check above has already gated it.
+     *
+     * SCOPE NOTE (flagged per AGENTS.md, not implemented here): the
+     * boot/reconnect NodeInfo REPLAY path (`shell_ev_node`, driven by
+     * `n->last_heard` from the want_config handshake) does NOT flow
+     * through `on_rx_meta` — it is a synthesized nodeDB dump, not a live
+     * MeshPacket, so this hook cannot see it. A member reconnecting
+     * after a puck restart therefore reads NEVER-heard until their next
+     * LIVE packet, even though the mesh's own nodeDB may have a
+     * perfectly honest `last_heard` for them already. Left this way
+     * deliberately: seeding `last_heard_ms` from replay would need the
+     * same D1 latch-circularity guard `shell_ev_node`'s position path
+     * already fights (`defined_the_latch` / `shell_replay_buffer`), and
+     * conflating that machinery with presence risked a much larger,
+     * less-reviewable change for a boot-only edge case — steady-state
+     * presence (the bug this PR fixes) is unaffected either way, since
+     * ordinary NodeInfo/telemetry re-announcements ARE live MeshPackets
+     * and already fire `on_rx_meta` before this function returns. */
+    if (sender->paired) {
+        ff_crew_on_heard(&sh->crew, from, now);
+    }
+
     /* m->has_snr / m->snr_db: nothing in core consumes SNR yet. Left
      * unread rather than stashed somewhere it would go stale. */
 }
@@ -2651,16 +2685,15 @@ static void shell_project_crew_page(shell_t const *sh, uint32_t now_ms, ff_app_s
         row->initial = m->initial;
         row->color_idx = m->color_idx;
 
-        /* Same honest presence legs ff_inbox_build (core/src/ff_inbox.c)
-         * feeds ff_sigview_presence — position freshness + direct-packet
-         * RSSI age; ASSERTED/NEVER contribute nothing (ff_sigview.h). */
-        ff_freshness_t const fresh = ff_crew_freshness(m, now_ms);
-        uint32_t const pos_age = now_ms - m->pos_age_ms;
-        bool const have_rssi = (m->rssi_dbm != INT16_MIN);
-        uint32_t const rssi_age = now_ms - m->rssi_age_ms;
+        /* 2026-09-07: same heard-based presence ff_inbox_build
+         * (core/src/ff_inbox.c) now feeds ff_sigview_presence — ANY
+         * packet from this node (ff_crew_presence), not position/RSSI
+         * age — see ff_sigview.h's top comment. */
+        ff_crew_presence_t const heard = ff_crew_presence(m, now_ms);
+        uint32_t const heard_age = m->has_heard ? (now_ms - m->last_heard_ms) : 0u;
 
         uint32_t age = 0;
-        row->presence = ff_sigview_presence(fresh, pos_age, have_rssi, rssi_age, &age);
+        row->presence = ff_sigview_presence(heard, heard_age, &age);
         row->presence_age_ms = (row->presence == FF_PRESENCE_LINKED) ? 0u : age;
     }
     cw->roster_full = (sh->crew.count >= FF_CREW_MAX);
