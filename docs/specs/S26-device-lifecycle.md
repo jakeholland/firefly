@@ -348,6 +348,83 @@ and the rebuild it gates are one atomic, lock-held operation
 no automated test possible on this target without hardware-in-the-loop
 touch injection).
 
+**AMENDED 2026-09-07 — "DIM is visible; don't eat the next tap after a
+normal reading pause"** (maintainer decision, on-glass bug report,
+fix/dim-touch-delivery). Bench trace on Jake's puck: the screen woke to
+100% backlight with NO touch delivered to the UI, then dimmed 15 s
+later — twice. Root cause: the 2026-09-02 amendment above ("a touch or
+button press that begins while the screen is not ACTIVE is a wake-only
+input and is never delivered to the UI") swallowed a press-begin at
+**DIM** exactly the same way it swallowed one at OFF or SLEEP — but
+`FF_IDLE_T_DIM_MS` is only 15 s, and at DIM the screen is still fully
+readable (minimum backlight, not dark). A wearer who simply pauses to
+read for 15 s — an entirely ordinary interval, not an edge case — had
+their very next tap silently eaten, indistinguishable on glass from
+"the touchscreen doesn't work." OFF and SLEEP have a real screen (dark)
+to protect against an accidental tap on hidden UI; DIM does not — the
+wearer can see exactly what they're about to tap.
+
+**The fix:** at **DIM**, a press that begins is now delivered to the UI
+normally, AND wakes the screen (restores brightness) — the same
+gesture does both, same as it always has at DIM's neighbor states, just
+without the withholding. At **OFF** and **SLEEP** (screen dark),
+behavior is unchanged: wake-only, the whole gesture withheld until
+release. The "decision made once, at press-begin" semantics from the
+original amendment are unchanged — a press that begins at ACTIVE and
+continues into DIM was already delivered before this amendment (state
+matters only at press START) and still is; this amendment only changes
+what happens when a press *begins* while already at DIM.
+
+Implemented as a one-line change to the SAME pure gate,
+`ff_idle_touch_gate` (`core/include/ff_idle.h`/`.c` `[api]`) — the
+begin-time branch now checks for OFF/SLEEP specifically (swallow) rather
+than "not ACTIVE" (swallow), with DIM falling through to the same
+deliver-and-wake path ACTIVE's own begin-sample already took the "no
+wake needed" half of. Both consulting call sites inherit the new
+behavior automatically, with no call-site changes needed: the touch
+read path (`ff_display_touch_start`/`ff_touch_gate_read_cb`,
+`targets/esp32s3/components/ff_display/ff_display.c`) and the
+BOOT-as-home debounce (`app_main.c`, `s_boot_gate`) — a BOOT press that
+begins at DIM now also acts as HOME and wakes, same rule as touch,
+since the amendment's premise ("nothing to protect against on a
+readable screen") applies equally to the physical button; no reason
+found for BOOT to differ. The sim's ctl pointer indev
+(`targets/sim/ctl_loop.c`) mirrors the same gate and needed no logic
+change, only comment updates.
+
+**New permanent diagnostic** (`ff_touch_gate_read_cb`,
+`targets/esp32s3/components/ff_display/ff_display.c`): a swallowed
+press-begin (now only possible at OFF/SLEEP) logs one INFO line, `touch
+swallowed (wake-only) @ (x, y) state=<OFF|SLEEP>`, rate-limited to one
+per 200 ms — the same rate-limit window `ff_touch_press_log_cb` already
+used for delivered presses — so the wake-only leg of this contract stays
+observable on the bench console going forward instead of being silent
+by design. A second, independently rate-limited line, `touch poll
+skipped: i2c bus busy`, covers the callback's pre-existing I2C-bus-lock
+failure path (`ff_display_i2c_bus_lock`'s own doc comment has the bus-
+contention background): a failed lock reports "no touch" for that poll,
+indistinguishable downstream from a genuine release, so this makes lock
+contention visible rather than silently masquerading as a spurious
+finger lift.
+
+**Tests:** `firmware/core/tests/test_idle.c` — the DIM leg of the
+wake-only touch-gate suite now asserts delivery from the first sample
+(renamed `S26_wakeonly_AC_press_during_dim_delivers_from_first_sample_
+and_wakes`; previously asserted the opposite, swallow-until-release);
+confirmed fail-first against the pre-amendment gate before this fix
+landed. The OFF and SLEEP legs (unchanged behavior) and the
+ACTIVE-begins/continues-into-DIM leg (`..._stays_delivered_through_
+dim_transition`) were already covered and continue to pass unmodified.
+Sim integration: `targets/sim/tests/test_wakeonly_touch.c` gained its
+own dedicated DIM case (`S26_wakeonly_dim_tap_delivers_from_first_
+sample_and_wakes` — a real launcher tap through a live `ff_ctl_loop_*`
+session, asserting BOTH the LVGL PRESSED style and the resulting
+navigation on the first press) split out from the shared OFF/SLEEP
+harness (renamed `run_wakeonly_gated_case`), since DIM now asserts the
+opposite outcome from that harness's shared logic. No golden changed
+(92/92 byte-identical against committed goldens) — this amendment
+changes input delivery timing, not any rendered pixel.
+
 ### (d) `ff_notify` + message banner
 Core `ff_notify` as above (queue depth 4, FIFO, expiry, `dismiss`, `pop`).
 Shell: an incoming MESSAGE / RALLY (paired sender) enqueues a BANNER; the

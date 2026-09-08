@@ -342,7 +342,8 @@ void ff_ctl_loop_close(ff_ctl_loop_ctx_t *ctx)
  * ------------------------------------------------------------------- */
 
 /* S26 wake-only-touch amendment (docs/specs/S26-device-lifecycle.md
- * "(c) Inactivity -> dim -> screen off", 2026-09-02): the ONE seam every
+ * "(c) Inactivity -> dim -> screen off", 2026-09-02, amended 2026-09-07):
+ * the ONE seam every
  * synthetic touch sample passes through before LVGL sees it — mirrors
  * `ff_display.c`'s device-side touch read path (that file's own comment
  * on `ff_touch_gate_read_cb`/`ff_display_touch_set_idle` explains the
@@ -366,11 +367,13 @@ void ff_ctl_loop_close(ff_ctl_loop_ctx_t *ctx)
  * every HELD sample after, where the gate does not re-call it (S26f AC1
  * pin, ff_idle.h's "state only matters at press START" note).
  * `ff_idle_touch_gate` then decides delivery: a press that BEGAN while
- * idle was not ACTIVE is swallowed (LVGL is told
+ * idle was OFF or SLEEP (screen dark) is swallowed (LVGL is told
  * LV_INDEV_STATE_RELEASED, with the real last point, so it sees no
- * press at all — no PRESSED style, no CLICKED) for the whole gesture;
- * one that began ACTIVE (or is already past its own begin-sample) is
- * delivered per the gate's own latched decision. */
+ * press at all — no PRESSED style, no CLICKED) for the whole gesture.
+ * One that began ACTIVE or DIM (screen visible either way — 2026-09-07
+ * amendment: DIM has nothing to protect against, so it is delivered
+ * and wakes just like ACTIVE), or is already past its own begin-sample,
+ * is delivered per the gate's own latched decision. */
 static void ctl_loop_pointer_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
     ff_ctl_loop_ctx_t *ctx = lv_indev_get_user_data(indev);

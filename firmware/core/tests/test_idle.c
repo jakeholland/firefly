@@ -594,19 +594,29 @@ static void S26f_amendment_keep_awake_dominates_regardless_of_sleep_inhibit(void
 
 /* ------------------------------------------------------------------- */
 /* Wake-only touch/button gate (amendment, 2026-09-02 maintainer        */
-/* decision, S26c) — see ff_idle.h's own doc comment for the full       */
+/* decision, S26c; amended again 2026-09-07 — DIM now delivers + wakes, */
+/* OFF/SLEEP unchanged) — see ff_idle.h's own doc comment for the full  */
 /* contract this implements.                                            */
 /*                                                                       */
 /* THE PROXY (AGENTS.md item 6): the easy proxy for "a wake-only press   */
-/* is swallowed" is checking the FIRST sample only — which a version     */
-/* that swallows once and then delivers every subsequent sample (a       */
-/* one-shot latch, not a held one) would still pass. So the DIM/OFF      */
-/* tests below sample MULTIPLE times while still held, before release,   */
-/* and assert every one of them reads "not delivered" — not just the     */
-/* first. */
+/* is swallowed" (OFF/SLEEP) or "a press is delivered" (ACTIVE/DIM) is   */
+/* checking the FIRST sample only — which a version that flips its      */
+/* decision after one sample (a one-shot latch, not a held one) would    */
+/* still pass. So the tests below sample MULTIPLE times while still      */
+/* held, before release, and assert every one of them reads the SAME     */
+/* verdict as the first — not just the first. */
 /* ------------------------------------------------------------------- */
 
-static void S26_wakeonly_AC_press_during_dim_wakes_and_swallows_until_release(void)
+/* 2026-09-07 amendment (docs/specs/S26-device-lifecycle.md's wake-only
+ * touch/button gate section) — supersedes the pre-amendment version of
+ * this test, which used to assert the OPPOSITE (DIM swallowed like
+ * OFF/SLEEP). A press that BEGINS at DIM is now delivered normally from
+ * the very first sample, AND still wakes (restores brightness) — the
+ * screen is readable at DIM, so there is nothing left to protect
+ * against. Fail-first proof (PR body): with the pre-amendment gate
+ * still in place, this test's first TEST_ASSERT_TRUE below fails
+ * (gate returns false) — see the PR body for the captured failure. */
+static void S26_wakeonly_AC_press_during_dim_delivers_from_first_sample_and_wakes(void)
 {
     ff_idle_t idle;
     ff_idle_touch_gate_t gate;
@@ -615,25 +625,22 @@ static void S26_wakeonly_AC_press_during_dim_wakes_and_swallows_until_release(vo
     ff_idle_input(&idle, 0);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false, false));
 
-    /* Press begins while DIM: wakes, and this very first sample is
-     * already swallowed (not "wakes, then delivers the same sample"). */
-    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 10, true));
+    /* Press begins while DIM: delivered from this very first sample
+     * (not "wakes, then swallows"), AND the wake fires (state flips to
+     * ACTIVE, restoring brightness). */
+    TEST_ASSERT_TRUE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 10, true));
     TEST_ASSERT_EQUAL_MESSAGE(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle), "press-begin-while-DIM did not wake");
 
-    /* Held: every subsequent sample stays swallowed, not just the
-     * first (the proxy this file's own note above calls out) — even
-     * though idle is now ACTIVE, which a version that re-checked state
-     * every sample (instead of latching at begin) would misread as
-     * "deliver". */
-    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 20, true));
-    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 30, true));
+    /* Held: every subsequent sample stays delivered, not just the
+     * first (the proxy this file's own note above calls out). */
+    TEST_ASSERT_TRUE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 20, true));
+    TEST_ASSERT_TRUE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 30, true));
 
-    /* Release: not delivered either (nothing to deliver), and the latch
-     * resets. */
+    /* Release: latch resets; nothing to deliver on a release sample. */
     TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 40, false));
 
-    /* Next press begins while ACTIVE (the wake stuck): delivered from
-     * the very first sample. */
+    /* Next press begins while ACTIVE (the wake stuck): still delivered
+     * from the very first sample. */
     TEST_ASSERT_TRUE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 100, true));
     TEST_ASSERT_TRUE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 110, true));
     TEST_ASSERT_TRUE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 120, true));
@@ -824,7 +831,7 @@ int main(void)
     RUN_TEST(S26f_amendment_sleep_inhibit_does_not_block_dim_or_off);
     RUN_TEST(S26f_amendment_keep_awake_dominates_regardless_of_sleep_inhibit);
 
-    RUN_TEST(S26_wakeonly_AC_press_during_dim_wakes_and_swallows_until_release);
+    RUN_TEST(S26_wakeonly_AC_press_during_dim_delivers_from_first_sample_and_wakes);
     RUN_TEST(S26_wakeonly_AC_press_during_off_wakes_and_swallows_until_release);
     RUN_TEST(S26_wakeonly_AC_press_during_sleep_wakes_and_swallows_until_release);
     RUN_TEST(S26_wakeonly_AC_press_during_active_delivers_from_first_sample);

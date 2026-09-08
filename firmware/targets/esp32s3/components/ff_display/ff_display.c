@@ -1160,6 +1160,26 @@ void ff_display_touch_set_idle(ff_idle_t *idle)
  * touch, never a press) rather than block the LVGL task. */
 #define FF_TOUCH_I2C_LOCK_TIMEOUT_MS 20
 
+/* Bench diagnostic (2026-09-07, added alongside the DIM-delivers S26
+ * amendment above): a swallowed press-begin, and a poll skipped for a
+ * busy I2C bus, are both the "why didn't my tap register" symptom Jake's
+ * bench trace reported — the DIM leg of that report is now fixed by the
+ * gate itself, but the OFF/SLEEP wake-only leg and lock contention are
+ * still silent by design; these two lines make them visible on the
+ * console instead. Terse, permanent, rate-limited the same 200 ms gap as
+ * `ff_touch_press_log_cb` above (same static-timestamp pattern, its own
+ * variable per callsite so the two never suppress each other). */
+static char const *ff_idle_state_name(ff_idle_state_t state)
+{
+    switch (state) {
+        case FF_IDLE_STATE_ACTIVE: return "ACTIVE";
+        case FF_IDLE_STATE_DIM:    return "DIM";
+        case FF_IDLE_STATE_OFF:    return "OFF";
+        case FF_IDLE_STATE_SLEEP:  return "SLEEP";
+        default:                   return "UNKNOWN";
+    }
+}
+
 static void ff_touch_gate_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
     /* Touch-vs-compass I2C fix (ff_display_i2c_bus_lock's own doc
@@ -1177,16 +1197,44 @@ static void ff_touch_gate_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
         ff_display_i2c_bus_unlock();
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
+        /* A failed lock reports RELEASED this poll regardless of what the
+         * finger is actually doing — indistinguishable, downstream, from
+         * a genuine release. Rate-limited so lock contention shows up on
+         * the console instead of masquerading as a spurious finger lift. */
+        static int64_t s_last_i2c_busy_log_us;
+        int64_t const busy_now_us = esp_timer_get_time();
+        if (s_last_i2c_busy_log_us == 0 ||
+            (busy_now_us - s_last_i2c_busy_log_us) >= (int64_t)FF_TOUCH_LOG_MIN_GAP_MS * 1000) {
+            s_last_i2c_busy_log_us = busy_now_us;
+            ESP_LOGI(TAG, "touch poll skipped: i2c bus busy");
+        }
     }
 
     bool const physically_down = (data->state == LV_INDEV_STATE_PRESSED);
     s_touch_raw_down = physically_down;
+
+    /* Captured BEFORE ff_idle_touch_gate runs: a swallowed press-begin
+     * fires ff_idle_input internally (the wake), which flips `s_touch_idle`
+     * to ACTIVE — so the state that CAUSED the swallow must be read now,
+     * not after, or the log below would always print "state=ACTIVE". */
+    bool const press_begin = physically_down && !s_touch_gate.was_pressed;
+    ff_idle_state_t const state_at_begin = ff_idle_state(s_touch_idle);
 
     uint32_t const now_ms = (uint32_t)(esp_timer_get_time() / 1000);
     bool const deliver = ff_idle_touch_gate(s_touch_idle, &s_touch_gate, now_ms, physically_down);
 
     if (physically_down && !deliver) {
         data->state = LV_INDEV_STATE_RELEASED;
+        if (press_begin) {
+            static int64_t s_last_swallow_log_us;
+            int64_t const swallow_now_us = esp_timer_get_time();
+            if (s_last_swallow_log_us == 0 ||
+                (swallow_now_us - s_last_swallow_log_us) >= (int64_t)FF_TOUCH_LOG_MIN_GAP_MS * 1000) {
+                s_last_swallow_log_us = swallow_now_us;
+                ESP_LOGI(TAG, "touch swallowed (wake-only) @ (%d, %d) state=%s", (int)data->point.x,
+                         (int)data->point.y, ff_idle_state_name(state_at_begin));
+            }
+        }
     }
 }
 
