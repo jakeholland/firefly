@@ -305,48 +305,215 @@ static void map_label_collector_flush(map_label_collector_t const *lc, lv_obj_t 
 }
 
 /* ---------------------------------------------------------------------
- * lv_line / triangle static storage pools — same "caller cleans before
- * every rebuild" invariant as scr_radar.c's own pools (see that file's
- * header comment for the full rationale, issue #17). Sized for this
+ * fix/map-back-gesture-stall (2026-09-07) — the shared shapes-layer
+ * draw-op pool. What this REPLACES: every polygon fill triangle and
+ * every stroke segment used to be its own full-puck-sized `lv_obj_t`
+ * (a real widget, with its own event list, style array, and
+ * spec_attr/children bookkeeping) carrying a ONE-PRIMITIVE draw
+ * callback — up to ~300 of them for a real festival pack
+ * (FF_APP_MAP_MAX_FEATURES * FF_APP_MAP_MAX_POLY_PTS-ish). That is a
+ * lot of individual `lv_obj_create` calls for what is, geometrically,
+ * static content computed once per build. Bench evidence (2026-09-07,
+ * real puck, see docs/specs/S28-gestures.md's dated amendment): a press
+ * on the Map face stalled the LVGL/touch-poll loop by ~520ms — nothing
+ * else on the puck shows this (Radar's own arrow+chips are a handful of
+ * objects, imperceptible) — and the leading suspect is exactly this
+ * object count: ANY invalidation of the Map tile's area (a press's own
+ * PRESSED/FOCUSED state bookkeeping on an ancestor, a banner, a repaint
+ * for an unrelated reason) forces LVGL to re-walk and re-render every
+ * one of those ~300 objects' own event-dispatch + style-resolution
+ * machinery, not just re-run ~300 cheap draw calls.
+ *
+ * The fix: every polygon fill TRIANGLE and stroke SEGMENT this file
+ * wants drawn is appended, IN CALL ORDER, to `s_draw_ops` below (a
+ * plain array write — no `lv_obj_create`, no event list, no style
+ * array) instead of becoming its own object; a shared `lv_obj_t`'s
+ * `LV_EVENT_DRAW_MAIN` callback (`map_shapes_layer_draw_cb`) replays a
+ * CONTIGUOUS RANGE of that pool with direct `lv_draw_triangle`/
+ * `lv_draw_line` calls when (and only as often as) LVGL actually asks
+ * it to paint — collapsing what used to be dozens of objects PER
+ * FEATURE into one.
+ *
+ * Only ONE object per whole build, always? NO — and this is the one
+ * subtlety worth a paragraph of its own, because an earlier version of
+ * this fix tried exactly that (one giant object created before the
+ * per-feature loop, EVERY feature's ops appended to it) and
+ * `run_goldens.sh` caught a real bug in it: a STAGE's labeled stub
+ * circle (`FF_MAP_RENDER_STAGE_STUB`, `map_draw_feature_shape` below)
+ * stays its OWN small `lv_obj_t` (drawn via the ordinary widget
+ * bg+border path, not reimplemented against raw `lv_draw_rect` — a
+ * from-scratch reimplementation of `lv_obj`'s own circle rendering
+ * turned out NOT to be pixel-identical: `map_untraced.png` regressed by
+ * 1.08% when tried). Pulling every OTHER feature's triangles/lines into
+ * one object created before ANY feature ran would put the WHOLE fill
+ * layer below every stub regardless of feature order, when the true
+ * (per-object, per-feature-index) ordering has a LATER feature's fill
+ * painting OVER an EARLIER stage's stub — `map_clip_stress.png` (stub
+ * at index 0, polygons at index 3/4) and `map_real_lost_lands.png`
+ * (stub over "Venue extent") both regressed on that version.
+ *
+ * The actual rule, and why it is still correct: this pool's shapes
+ * layer is closed and a fresh one opened every time a stub interrupts
+ * the run (`ff_scr_map_build`'s per-feature loop calls
+ * `map_close_shapes_run` right before a STAGE_STUB, so the NEXT
+ * triangle/segment lazily opens a NEW layer positioned right after that
+ * stub's own object). So for N features with S stub features
+ * interleaved, this produces AT MOST S+1 shared layer objects instead
+ * of ONE per triangle/segment — collapsing the ~300-object case (a real
+ * pack: many polygon features, a handful of stages) down to a handful
+ * of objects total, while every object (stub or layer) is still created
+ * in EXACTLY the same relative order the old one-object-per-primitive
+ * code produced — LVGL draws children bottom-to-top in CREATION order,
+ * so preserving that order is what makes this a mechanism change only:
+ * pixel output is unchanged (goldens stay byte-identical,
+ * `run_goldens.sh`, both determinism passes AND the golden compare).
+ *
+ * Same "caller cleans before every rebuild" invariant as scr_radar.c's
+ * own pools (issue #17): `map_reset_pools` clears the counts, not the
+ * storage, at the top of every `ff_scr_map_build` call. Sized for this
  * face's worst case: every feature a closed FF_APP_MAP_MAX_POLY_PTS-gon
  * (stroke = one segment per edge, fill = n-2 triangles), across
- * FF_APP_MAP_MAX_FEATURES features, plus a handful for the YOU arrow and
- * rally pin.
+ * FF_APP_MAP_MAX_FEATURES features.
  * ------------------------------------------------------------------- */
 #define FF_SCR_MAP_MAX_LINE_SEGMENTS (FF_APP_MAP_MAX_FEATURES * FF_APP_MAP_MAX_POLY_PTS + 8)
 #define FF_SCR_MAP_MAX_TRIANGLES (FF_APP_MAP_MAX_FEATURES * FF_APP_MAP_MAX_POLY_PTS + 2)
-
-static lv_point_precise_t s_line_pts[FF_SCR_MAP_MAX_LINE_SEGMENTS][2];
-static int s_line_pt_next;
-
-static lv_point_precise_t *map_alloc_line_pts(void)
-{
-    if (s_line_pt_next >= FF_SCR_MAP_MAX_LINE_SEGMENTS) {
-        s_line_pt_next = 0; /* defensive wrap: never index out of bounds */
-    }
-    return s_line_pts[s_line_pt_next++];
-}
+#define FF_SCR_MAP_MAX_DRAW_OPS (FF_SCR_MAP_MAX_LINE_SEGMENTS + FF_SCR_MAP_MAX_TRIANGLES)
+/* Worst case for run-splitting: a stage feature on every OTHER index
+ * (maximally interleaved with polygon/line features) opens a fresh run
+ * after each one — at most FF_APP_MAP_MAX_FEATURES + 1 runs. */
+#define FF_SCR_MAP_MAX_LAYER_RUNS (FF_APP_MAP_MAX_FEATURES + 1)
 
 typedef struct {
+    bool is_line; /* true: p[0]/p[1] + width is a stroked segment; false: p[0..2] is a filled triangle */
     lv_point_precise_t p[3];
     lv_color_t color;
     lv_opa_t opa;
-} map_tri_desc_t;
-static map_tri_desc_t s_tri_descs[FF_SCR_MAP_MAX_TRIANGLES];
-static int s_tri_desc_next;
+    int32_t width; /* line only */
+} map_draw_op_t;
+static map_draw_op_t s_draw_ops[FF_SCR_MAP_MAX_DRAW_OPS];
+static int s_draw_op_next;
 
-static map_tri_desc_t *map_alloc_tri_desc(void)
+/* One shapes-layer object's own slice of `s_draw_ops` — `end == -1`
+ * means "still open" (the layer keeps accumulating as more ops are
+ * appended); `map_close_shapes_run` pins it once a stub is about to
+ * interrupt the run (or `ff_scr_map_build` does, for whichever run is
+ * still open at the end of the per-feature loop). */
+typedef struct {
+    int start;
+    int end;
+} map_layer_range_t;
+static map_layer_range_t s_layer_ranges[FF_SCR_MAP_MAX_LAYER_RUNS];
+static int s_layer_range_next;
+static map_layer_range_t *s_open_range; /* NULL: no run currently open */
+
+static map_draw_op_t *map_alloc_draw_op(void)
 {
-    if (s_tri_desc_next >= FF_SCR_MAP_MAX_TRIANGLES) {
-        s_tri_desc_next = 0;
+    if (s_draw_op_next >= FF_SCR_MAP_MAX_DRAW_OPS) {
+        s_draw_op_next = 0; /* defensive wrap: never index out of bounds */
     }
-    return &s_tri_descs[s_tri_desc_next++];
+    return &s_draw_ops[s_draw_op_next++];
 }
 
 static void map_reset_pools(void)
 {
-    s_line_pt_next = 0;
-    s_tri_desc_next = 0;
+    s_draw_op_next = 0;
+    s_layer_range_next = 0;
+    s_open_range = NULL;
+}
+
+/* map_shapes_layer_draw_cb — replays THIS layer's own [start,end) slice
+ * of `s_draw_ops`, stashed as this object's `user_data` at creation
+ * time (`map_open_shapes_run`) — see this section's header comment for
+ * why a build can have more than one of these objects, and why each
+ * must only ever replay its OWN slice. `round_start`/`round_end` = 1
+ * for every line mirrors `lv_obj_set_style_line_rounded(line, true, 0)`
+ * on a 2-point line (the ONLY shape `map_draw_segment` ever drew):
+ * LVGL's own `lv_line` LV_EVENT_DRAW_MAIN handler
+ * (src/widgets/line/lv_line.c) sets `round_start=1` unconditionally on
+ * a line's first (and, for a 2-point line, only) segment when
+ * `line_rounded` is set, matching this. */
+static void map_shapes_layer_draw_cb(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_current_target_obj(e);
+    map_layer_range_t const *range = (map_layer_range_t const *)lv_event_get_user_data(e);
+    lv_layer_t *layer = lv_event_get_layer(e);
+
+    lv_area_t area;
+    lv_obj_get_coords(obj, &area);
+
+    for (int i = range->start; i < range->end; i++) {
+        map_draw_op_t const *op = &s_draw_ops[i];
+        if (op->is_line) {
+            lv_draw_line_dsc_t dsc;
+            lv_draw_line_dsc_init(&dsc);
+            dsc.p1.x = op->p[0].x + area.x1;
+            dsc.p1.y = op->p[0].y + area.y1;
+            dsc.p2.x = op->p[1].x + area.x1;
+            dsc.p2.y = op->p[1].y + area.y1;
+            dsc.color = op->color;
+            dsc.opa = op->opa;
+            dsc.width = op->width;
+            dsc.round_start = 1;
+            dsc.round_end = 1;
+            lv_draw_line(layer, &dsc);
+        } else {
+            lv_draw_triangle_dsc_t dsc;
+            lv_draw_triangle_dsc_init(&dsc);
+            for (int k = 0; k < 3; k++) {
+                dsc.p[k].x = op->p[k].x + area.x1;
+                dsc.p[k].y = op->p[k].y + area.y1;
+            }
+            dsc.color = op->color;
+            dsc.opa = op->opa;
+            lv_draw_triangle(layer, &dsc);
+        }
+    }
+}
+
+/* map_open_shapes_run — starts a fresh shapes-layer object (and its own
+ * range) positioned HERE in `parent`'s child order, i.e. wherever the
+ * caller currently is in the per-feature loop. Lazy: called from
+ * `map_draw_segment`/`map_draw_filled_triangle` only the FIRST time
+ * either is called since the last `map_close_shapes_run` (or since
+ * `map_reset_pools`), so a run with zero shapes in it never creates an
+ * empty object. */
+static void map_open_shapes_run(lv_obj_t *parent)
+{
+    if (s_open_range != NULL) {
+        return; /* a run is already open — append to it, no new object */
+    }
+    if (s_layer_range_next >= FF_SCR_MAP_MAX_LAYER_RUNS) {
+        s_layer_range_next = 0; /* defensive wrap: never index out of bounds (see map_alloc_draw_op) */
+    }
+    map_layer_range_t *range = &s_layer_ranges[s_layer_range_next++];
+    range->start = s_draw_op_next;
+    range->end = -1; /* pinned by map_close_shapes_run once this run ends */
+    s_open_range = range;
+
+    lv_obj_t *layer = lv_obj_create(parent);
+    lv_obj_remove_style_all(layer);
+    lv_obj_set_size(layer, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_set_pos(layer, 0, 0);
+    lv_obj_clear_flag(layer, LV_OBJ_FLAG_CLICKABLE); /* tap-anywhere must resolve to the puck, not chrome */
+    lv_obj_add_event_cb(layer, map_shapes_layer_draw_cb, LV_EVENT_DRAW_MAIN, range);
+}
+
+/* map_close_shapes_run — pins the currently-open run's `end` to the
+ * pool's current count and clears `s_open_range`, so the run's own
+ * object never replays ops appended AFTER it (a later run's own ops).
+ * Called right before a stage's stub circle (its own object, created
+ * next, must end up ABOVE this run's fills/strokes but the run must
+ * stop growing once the stub — and whatever comes after it — starts),
+ * and once more after the whole per-feature loop to close out
+ * whichever run is still open. A no-op if no run is open (two stubs in
+ * a row, or the very first feature is a stub). */
+static void map_close_shapes_run(void)
+{
+    if (s_open_range == NULL) {
+        return;
+    }
+    s_open_range->end = s_draw_op_next;
+    s_open_range = NULL;
 }
 
 /* ---------------------------------------------------------------------
@@ -354,6 +521,9 @@ static void map_reset_pools(void)
  * convention/positioning trick as scr_radar.c's radar_draw_segment /
  * radar_draw_filled_triangle (see those for the "why pin an
  * explicit-full-puck-size object at (0,0)" rationale; not repeated here).
+ * Both now lazily open a shapes run (`map_open_shapes_run`) and APPEND
+ * to `s_draw_ops` instead of creating an `lv_obj_t` per call — see this
+ * section's header comment.
  * ------------------------------------------------------------------- */
 
 static void map_draw_segment(lv_obj_t *parent, float from_dx, float from_dy, float to_dx, float to_dy,
@@ -361,42 +531,16 @@ static void map_draw_segment(lv_obj_t *parent, float from_dx, float from_dy, flo
 {
     int32_t const half = FF_THEME_PUCK_PX / 2;
 
-    lv_point_precise_t *pts = map_alloc_line_pts();
-    pts[0].x = half + (int32_t)from_dx;
-    pts[0].y = half + (int32_t)from_dy;
-    pts[1].x = half + (int32_t)to_dx;
-    pts[1].y = half + (int32_t)to_dy;
-
-    lv_obj_t *line = lv_line_create(parent);
-    lv_obj_remove_style_all(line);
-    lv_obj_set_size(line, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
-    lv_obj_set_pos(line, 0, 0);
-    lv_obj_clear_flag(line, LV_OBJ_FLAG_CLICKABLE); /* tap-anywhere must resolve to the puck, not chrome */
-    lv_line_set_points(line, pts, 2);
-    lv_obj_set_style_line_width(line, width, 0);
-    lv_obj_set_style_line_color(line, lv_color_hex(color_hex), 0);
-    lv_obj_set_style_line_rounded(line, true, 0);
-    lv_obj_set_style_line_opa(line, opa, 0);
-}
-
-static void map_triangle_draw_cb(lv_event_t *e)
-{
-    lv_obj_t *obj = lv_event_get_current_target_obj(e);
-    map_tri_desc_t *td = (map_tri_desc_t *)lv_event_get_user_data(e);
-    lv_layer_t *layer = lv_event_get_layer(e);
-
-    lv_area_t area;
-    lv_obj_get_coords(obj, &area);
-
-    lv_draw_triangle_dsc_t dsc;
-    lv_draw_triangle_dsc_init(&dsc);
-    for (int i = 0; i < 3; i++) {
-        dsc.p[i].x = td->p[i].x + area.x1;
-        dsc.p[i].y = td->p[i].y + area.y1;
-    }
-    dsc.color = td->color;
-    dsc.opa = td->opa;
-    lv_draw_triangle(layer, &dsc);
+    map_open_shapes_run(parent);
+    map_draw_op_t *op = map_alloc_draw_op();
+    op->is_line = true;
+    op->p[0].x = half + (int32_t)from_dx;
+    op->p[0].y = half + (int32_t)from_dy;
+    op->p[1].x = half + (int32_t)to_dx;
+    op->p[1].y = half + (int32_t)to_dy;
+    op->color = lv_color_hex(color_hex);
+    op->opa = opa;
+    op->width = width;
 }
 
 static void map_draw_filled_triangle(lv_obj_t *parent, float p0x, float p0y, float p1x, float p1y, float p2x,
@@ -404,22 +548,17 @@ static void map_draw_filled_triangle(lv_obj_t *parent, float p0x, float p0y, flo
 {
     int32_t const half = FF_THEME_PUCK_PX / 2;
 
-    map_tri_desc_t *td = map_alloc_tri_desc();
-    td->p[0].x = half + (int32_t)p0x;
-    td->p[0].y = half + (int32_t)p0y;
-    td->p[1].x = half + (int32_t)p1x;
-    td->p[1].y = half + (int32_t)p1y;
-    td->p[2].x = half + (int32_t)p2x;
-    td->p[2].y = half + (int32_t)p2y;
-    td->color = lv_color_hex(color_hex);
-    td->opa = opa;
-
-    lv_obj_t *obj = lv_obj_create(parent);
-    lv_obj_remove_style_all(obj);
-    lv_obj_set_size(obj, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
-    lv_obj_set_pos(obj, 0, 0);
-    lv_obj_clear_flag(obj, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(obj, map_triangle_draw_cb, LV_EVENT_DRAW_MAIN, td);
+    map_open_shapes_run(parent);
+    map_draw_op_t *op = map_alloc_draw_op();
+    op->is_line = false;
+    op->p[0].x = half + (int32_t)p0x;
+    op->p[0].y = half + (int32_t)p0y;
+    op->p[1].x = half + (int32_t)p1x;
+    op->p[1].y = half + (int32_t)p1y;
+    op->p[2].x = half + (int32_t)p2x;
+    op->p[2].y = half + (int32_t)p2y;
+    op->color = lv_color_hex(color_hex);
+    op->opa = opa;
 }
 
 static lv_obj_t *map_make_label(lv_obj_t *parent, char const *text, uint32_t color_hex, float dx, float dy)
@@ -565,6 +704,14 @@ static void map_draw_feature_shape(lv_obj_t *parent, ff_map_xform_t const *xform
 
     switch (render_kind) {
     case FF_MAP_RENDER_STAGE_STUB: {
+        /* Its own small `lv_obj_t`, unchanged from before this fix — see
+         * `s_draw_ops`'s own header comment for why this shape stays
+         * outside the shared pool (an attempt to fold it in via a raw
+         * `lv_draw_rect` replay was not pixel-identical) and why the
+         * caller (`ff_scr_map_build`) calls `map_close_shapes_run`
+         * right before this case runs, so this stub's own object still
+         * lands in EXACTLY the same relative creation-order slot the
+         * old per-primitive code gave it. */
         float anchor_e, anchor_n, cx, cy;
         (void)map_feature_anchor_en(f, &anchor_e, &anchor_n);
         ff_map_project(xform, anchor_e, anchor_n, &cx, &cy);
@@ -776,6 +923,76 @@ static void map_rotate(float x, float y, float heading_deg, float *out_x, float 
     *out_y = x * s + y * c;
 }
 
+/* ---------------------------------------------------------------------
+ * map_draw_marker_triangle — a single filled triangle drawn as its OWN
+ * small `lv_obj_t` (the ORIGINAL per-object technique this file used to
+ * use for every triangle — see `s_draw_ops`'s header comment above for
+ * why that changed for FEATURE fills/strokes specifically). Deliberately
+ * NOT routed through `s_draw_ops`/the shared shapes layer: the YOU
+ * arrow (`map_draw_you`, below, its one caller) is drawn AFTER rally and
+ * BEFORE labels/crew in `ff_scr_map_build`'s own call order, and that
+ * z-order is real — an arrow the map fixtures already exercise on top
+ * of a feature fill must stay on top. Pulling it into the shapes layer
+ * (created once, at the BOTTOM of the stack, before the per-feature
+ * loop even runs) would silently sink it back underneath every
+ * feature's fill. There is at most ONE of these per build, so the
+ * per-object cost `s_draw_ops`'s header comment describes never applies
+ * here — this is not a missed optimization, it is the correct choice
+ * for a marker that needs its own z-order slot. */
+typedef struct {
+    lv_point_precise_t p[3];
+    lv_color_t color;
+    lv_opa_t opa;
+} map_marker_tri_desc_t;
+
+static void map_marker_triangle_draw_cb(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_current_target_obj(e);
+    map_marker_tri_desc_t *td = (map_marker_tri_desc_t *)lv_event_get_user_data(e);
+    lv_layer_t *layer = lv_event_get_layer(e);
+
+    lv_area_t area;
+    lv_obj_get_coords(obj, &area);
+
+    lv_draw_triangle_dsc_t dsc;
+    lv_draw_triangle_dsc_init(&dsc);
+    for (int i = 0; i < 3; i++) {
+        dsc.p[i].x = td->p[i].x + area.x1;
+        dsc.p[i].y = td->p[i].y + area.y1;
+    }
+    dsc.color = td->color;
+    dsc.opa = td->opa;
+    lv_draw_triangle(layer, &dsc);
+}
+
+static void map_draw_marker_triangle(lv_obj_t *parent, float p0x, float p0y, float p1x, float p1y, float p2x,
+                                      float p2y, uint32_t color_hex, lv_opa_t opa)
+{
+    int32_t const half = FF_THEME_PUCK_PX / 2;
+    /* `static`: the object's own draw callback reads this by pointer at
+     * PAINT time (which can be later than this call, e.g. the very
+     * first `lv_refr_now`), same lifetime convention `s_draw_ops`
+     * itself relies on — safe because at most one YOU arrow exists per
+     * build, so nothing else can overwrite it before this build's own
+     * object is torn down by the next `lv_obj_clean`. */
+    static map_marker_tri_desc_t td;
+    td.p[0].x = half + (int32_t)p0x;
+    td.p[0].y = half + (int32_t)p0y;
+    td.p[1].x = half + (int32_t)p1x;
+    td.p[1].y = half + (int32_t)p1y;
+    td.p[2].x = half + (int32_t)p2x;
+    td.p[2].y = half + (int32_t)p2y;
+    td.color = lv_color_hex(color_hex);
+    td.opa = opa;
+
+    lv_obj_t *obj = lv_obj_create(parent);
+    lv_obj_remove_style_all(obj);
+    lv_obj_set_size(obj, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_set_pos(obj, 0, 0);
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(obj, map_marker_triangle_draw_cb, LV_EVENT_DRAW_MAIN, &td);
+}
+
 /**
  * map_draw_you / map_collect_you_label — split in two (PR #73 THIRD
  * review round, BLOCKING finding #1): same bug and same fix as
@@ -816,7 +1033,7 @@ static void map_draw_you(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app_m
     map_rotate(FF_MAP_YOU_ARROW_WIDTH_PX / 2.0f, FF_MAP_YOU_ARROW_LEN_PX * 0.4f, map->you_heading_deg, &right_x,
                &right_y);
 
-    map_draw_filled_triangle(parent, cx + tip_x, cy + tip_y, cx + left_x, cy + left_y, cx + right_x, cy + right_y,
+    map_draw_marker_triangle(parent, cx + tip_x, cy + tip_y, cx + left_x, cy + left_y, cx + right_x, cy + right_y,
                               FF_THEME_COLOR_INK, LV_OPA_COVER);
 }
 
@@ -953,11 +1170,25 @@ void ff_scr_map_build(lv_obj_t *parent, ff_app_map_t const *map, bool colorblind
      *   4. crew dots and the truncation indicator — outside the label
      *      collision system entirely (crew uses small initials, not
      *      full-word labels; the indicator is fixed-position chrome). */
+    /* fix/map-back-gesture-stall: each non-stage feature's shape now
+     * appends triangle/line ops to `s_draw_ops` instead of creating an
+     * `lv_obj_t` per triangle/segment (a shared layer object is opened
+     * lazily, and closed right before a stage's own stub circle — see
+     * `s_draw_ops`'s own header comment above `map_draw_segment` for
+     * why a stub must interrupt the run rather than share it). Close
+     * whatever run is still open once every feature has been visited —
+     * `map_draw_feature_shape`'s own stub case closes the run itself
+     * before each stub, but the LAST run (if the pack's final features
+     * aren't stages) is only closed here. */
     for (uint8_t i = 0; i < map->n_features; i++) {
         ff_app_map_feature_t const *f = &map->features[i];
         ff_map_render_kind_t const rk = ff_map_feature_render_kind(f->n_pts, f->kind == FF_APP_MAP_KIND_STAGE);
+        if (rk == FF_MAP_RENDER_STAGE_STUB) {
+            map_close_shapes_run();
+        }
         map_draw_feature_shape(puck, &xform, f, rk);
     }
+    map_close_shapes_run();
     map_draw_rally(puck, &xform, map);
     map_draw_you(puck, &xform, map);
 

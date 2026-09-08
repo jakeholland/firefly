@@ -204,6 +204,11 @@ void ff_gesture_glue_attach(lv_indev_t *indev, ff_shell_t *sh)
     /* cx/cy are placeholders here — gesture_glue_on_pressed recomputes
      * them (flip-aware) fresh at every DOWN before they are ever read. */
     ff_gesture_cfg_default(&cfg, FF_THEME_GLASS_CX, FF_THEME_GLASS_CY, FF_THEME_GLASS_R);
+    /* Explicit rather than relying on ff_gesture_cfg_default's own
+     * panel_size_px=412 default staying in sync with the theme (ff_gesture.h's
+     * "Edge tolerance, part 3" section) — this is the same panel the touch
+     * coordinates fed to ff_gesture_feed are reported in. */
+    cfg.panel_size_px = FF_THEME_PUCK_PX;
     ff_gesture_init(&ctx->g, &cfg);
 
     ctx->timer = lv_timer_create(gesture_glue_timer_cb, FF_GESTURE_GLUE_TIMER_MS, ctx);

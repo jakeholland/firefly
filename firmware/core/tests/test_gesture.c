@@ -52,7 +52,10 @@ static void gesture_cfg_default_pins_spec_constants(void)
     TEST_ASSERT_EQUAL_INT16(GLASS_CX, cfg.cx);
     TEST_ASSERT_EQUAL_INT16(GLASS_CY, cfg.cy);
     TEST_ASSERT_EQUAL_INT16(GLASS_R, cfg.r);
-    TEST_ASSERT_EQUAL_INT16(28, cfg.rim_px);
+    /* 2026-09-07 map-back-gesture-stall amendment: rim_px split and
+     * widened (28 -> 44/64) — ff_gesture.h's "Edge tolerance" section. */
+    TEST_ASSERT_EQUAL_INT16(44, cfg.back_rim_px);
+    TEST_ASSERT_EQUAL_INT16(64, cfg.home_rim_px);
     TEST_ASSERT_EQUAL_INT16(56, cfg.back_travel_px);
     TEST_ASSERT_EQUAL_INT16(64, cfg.home_travel_px);
     TEST_ASSERT_EQUAL_INT16(24, cfg.axis_lock_px);
@@ -60,6 +63,11 @@ static void gesture_cfg_default_pins_spec_constants(void)
     TEST_ASSERT_EQUAL_UINT16(1200, cfg.long_ms);
     TEST_ASSERT_EQUAL_INT16(12, cfg.long_slop_px);
     TEST_ASSERT_FALSE(cfg.long_press_enabled);
+    TEST_ASSERT_EQUAL_UINT16(150, cfg.stall_gap_ms);
+    TEST_ASSERT_EQUAL_INT16(16, cfg.edge_slop_px);
+    /* 2026-09-07 map-back-gesture-stall amendment, round 3: new field,
+     * ff_gesture.h's "Edge tolerance, part 3" section. */
+    TEST_ASSERT_EQUAL_INT16(412, cfg.panel_size_px);
 }
 
 /* ------------------------------------------------------------------- */
@@ -71,15 +79,21 @@ static void S28_AC1_left_rim_swipe_recognises_back(void)
     ff_gesture_t g;
     gesture_new(&g, false);
 
-    /* DOWN inside the circle, within the left rim zone: cx-r+28 = 36,
-     * so x=20 qualifies. */
+    /* DOWN inside the circle, within the left rim zone: cx-r+back_rim_px
+     * = 208-200+44 = 52, so x=20 qualifies. */
     TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 20, 206, 0));
     /* dx=60 >= 56, |dy|=0 <= 0.6*60, well inside the 500ms window. */
     TEST_ASSERT_EQUAL(FF_GESTURE_BACK, ff_gesture_feed(&g, true, 80, 206, 100));
 }
 
 /* ------------------------------------------------------------------- */
-/* AC2 — the same motion starting 40px inboard of the rim -> NONE       */
+/* AC2 — the same motion starting 60px inboard of the (widened) rim ->  */
+/* NONE. 2026-09-07 amendment: adjusted from "40px inboard" to "60px    */
+/* inboard" because back_rim_px widened 28 -> 44 (ff_gesture.h's "Edge  */
+/* tolerance" section) — the old 40px-inboard point (x=76) is now       */
+/* itself only 24px past the new, wider zone edge (52), not a clean     */
+/* negative control; 60px inboard of the new edge keeps the same        */
+/* "comfortably outside the zone" margin the original AC2 intended.     */
 /* ------------------------------------------------------------------- */
 
 static void S28_AC2_swipe_starting_inboard_of_rim_is_none(void)
@@ -87,10 +101,11 @@ static void S28_AC2_swipe_starting_inboard_of_rim_is_none(void)
     ff_gesture_t g;
     gesture_new(&g, false);
 
-    /* Left rim zone ends at x=36; start 40px further in. */
-    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 76, 206, 0));
-    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 136, 206, 100));
-    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, false, 136, 206, 140));
+    /* Left rim zone ends at x = cx-r+back_rim_px = 208-200+44 = 52;
+     * start 60px further in (x=112). */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 112, 206, 0));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 172, 206, 100));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, false, 172, 206, 140));
 }
 
 /* ------------------------------------------------------------------- */
@@ -126,6 +141,16 @@ static void S28_AC4_slow_swipe_over_window_is_none(void)
     gesture_new(&g, false);
 
     TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 20, 206, 0));
+    /* fix/map-back-gesture-stall amendment: a prompt (well under
+     * stall_gap_ms=150) first sample here establishes that nothing was
+     * stalled — see ff_gesture.h's "Stall tolerance" section — so the
+     * window's clock is NOT moved and the ORIGINAL DOWN time still
+     * governs. Without this sample, a single DOWN->600ms jump is
+     * genuinely indistinguishable from a stalled device (S28_AC11's own
+     * shape) and the amended FSM correctly, not wrongly, rescues it —
+     * this test is about a SLOW finger with a live, unstalled poll
+     * loop, so it must look like one. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 22, 206, 20));
     /* Same ratio as AC1 (dy=0), but 600ms > the 500ms window. */
     TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 80, 206, 600));
 }
@@ -139,7 +164,7 @@ static void S28_AC5_bottom_rim_swipe_up_recognises_home(void)
     ff_gesture_t g;
     gesture_new(&g, false);
 
-    /* Bottom rim zone starts at y = cy+r-28 = 378. */
+    /* Bottom rim zone starts at y = cy+r-home_rim_px = 206+200-64 = 342. */
     TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 208, 390, 0));
     /* up=70 >= 64, |dx|=0, elapsed=100ms -> mean speed 0.7 px/ms >= 0.25. */
     TEST_ASSERT_EQUAL(FF_GESTURE_HOME, ff_gesture_feed(&g, true, 208, 320, 100));
@@ -282,6 +307,364 @@ static void S28_AC10_time_wrap_still_recognises_long_press(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* fix/map-back-gesture-stall (2026-09-07 dated amendment to S28's own  */
+/* spec) — AC11/AC12: a stalled poll loop must not eat the recognition  */
+/* window (bench evidence: a press on the Map face froze the device's   */
+/* touch-poll loop for ~520ms, making BACK/HOME unreachable there —     */
+/* see ff_gesture.h's "Stall tolerance" section for the full mechanism  */
+/* and docs/specs/S28-gestures.md's own dated amendment for the bench   */
+/* numbers). NOTE ON NUMBERING: slice b (test_gesture_glue.c) already   */
+/* uses S28_AC11..AC18 for its own (later, sim/glue-level) criteria —   */
+/* the coordinator's brief for THIS fix named the new core-level tests  */
+/* "AC11"/"AC12" too; kept literally as instructed since these live in  */
+/* a different file/module than slice b's AC11/AC12 and test different  */
+/* things, but flagged here (and in the PR body) as a real numbering    */
+/* collision in the spec's own AC space, not a copy-paste mistake.      */
+/* ------------------------------------------------------------------- */
+
+static void S28_AC11_stall_after_down_then_normal_swipe_recognises_back(void)
+{
+    ff_gesture_t g;
+    gesture_new(&g, false);
+
+    /* DOWN inside the left rim zone, at t=0. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 20, 206, 0));
+    /* The device's own poll loop stalls for 520ms (> stall_gap_ms=150)
+     * — this is the FIRST sample fed after DOWN, with no travel yet at
+     * this exact instant. The one-shot stall check fires here, moving
+     * the window's own clock (t0) forward to t=520. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 20, 206, 520));
+    /* A normal 56px swipe, well within 500ms of the FIRST sample
+     * (920 - 520 = 400ms) even though it lands 920ms after the real
+     * DOWN — which the un-amended FSM measured window_ms against and
+     * would have failed (S28_AC4's own rule, applied to a stall instead
+     * of a slow finger) — exactly the Map-face BACK-unreachable bug
+     * this amendment fixes. Mutation guard: deleting the stall check
+     * (or comparing against the ORIGINAL t0=0: 920-0=920 > 500) makes
+     * this assert fail instead. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_BACK, ff_gesture_feed(&g, true, 76, 206, 920));
+}
+
+static void S28_AC12_genuinely_slow_swipe_over_window_still_fails(void)
+{
+    ff_gesture_t g;
+    gesture_new(&g, false);
+
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 20, 206, 0));
+    /* THE PROXY, stated up front (AGENTS.md item 6): "a stall-tolerant
+     * window recognises a late swipe" is satisfied just as well by an
+     * FSM that simply doubled or dropped `window_ms` outright, which
+     * would wrongly let a slow, ordinary drag through too. The FIRST
+     * sample after DOWN arrives promptly here (20ms, well under
+     * stall_gap_ms=150) — nothing was stalled, so t0 is NOT moved, and
+     * a genuinely slow drag (56px only after 700ms, over the 500ms
+     * window, with every individual gap far under stall_gap_ms) must
+     * still read as NONE — the tolerance is for GAPS, not for slowness
+     * in general. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 21, 206, 20));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 76, 206, 700));
+}
+
+/* ------------------------------------------------------------------- */
+/* fix/map-back-gesture-stall — real-puck bench replay (AC13 onward).   */
+/* Geometry throughout THIS section is the bench's own, stated directly */
+/* in the coordinator's bench log: cx=cy=206, r=206 (the "current left  */
+/* rim zone x<=28 / bottom rim zone y>=384" figures only fall out of    */
+/* the standard formulas with THIS geometry — 206-206+28=28 and         */
+/* 206+206-28=384 — not the theme's own FF_THEME_GLASS_CX/CY/R used     */
+/* above; kept distinct from GLASS_CX/CY/R deliberately, per-section,   */
+/* rather than silently reusing a name for two different geometries).   */
+/* ------------------------------------------------------------------- */
+
+#define BENCH_CX 206
+#define BENCH_CY 206
+#define BENCH_R  206
+
+static void gesture_new_bench(ff_gesture_t *g)
+{
+    ff_gesture_cfg_t cfg;
+    ff_gesture_cfg_default(&cfg, BENCH_CX, BENCH_CY, BENCH_R);
+    ff_gesture_init(g, &cfg);
+}
+
+/* AC13 — bug (1): Radar, DOWN(5,175), a 9-sample poll trace with dx
+ * reaching 58 (dy=3) at t=136ms, reported NOT recognised on the real
+ * puck ("REGRESSION: ... find why the new code rejects dx 58 / dy 3 at
+ * 136ms — stall-rule bookkeeping, t0 handling, a changed comparison,
+ * the 'first sample' flag").
+ *
+ * INVESTIGATED, NOT REPRODUCED IN THIS FSM: every inter-sample gap in
+ * this trace is <=20ms (well under stall_gap_ms=150), so the stall-
+ * tolerance rule (ff_gesture.h's "Stall tolerance" section) never even
+ * engages — t0 stays at DOWN's own timestamp throughout. Run against
+ * BOTH the pre-amendment FSM (commit 6174eaf, before the stall-
+ * tolerance rule existed at all) and the current one (3b6bce7), this
+ * exact sequence already returns FF_GESTURE_BACK at t=136 in both —
+ * confirmed by direct compile-and-run of both source trees against
+ * this literal sample sequence, not just by reading the code. There is
+ * no reproducible core-FSM bug here for this trace; kept as a passing
+ * regression guard. (If the real device genuinely failed to recognise
+ * this exact motion, the cause is outside this module — most likely
+ * the production glue/indev delivery path or a geometry mismatch
+ * between the bench capture and the puck's actual runtime cx/cy/r —
+ * not something `ff_gesture_feed`'s own logic can be made to explain
+ * away without contradicting this direct evidence.) */
+static void S28_AC13_bench_radar_swipe_recognises_back(void)
+{
+    ff_gesture_t g;
+    gesture_new_bench(&g);
+
+    int const t[]  = {0, 16, 36, 56, 76, 96, 116, 136, 156, 176};
+    int const x[]  = {5, 5, 5, 5, 5, 15, 15, 63, 63, 142};
+    int const y[]  = {175, 175, 175, 175, 175, 173, 173, 178, 178, 207};
+
+    for (size_t i = 0; i < 7; i++) {
+        TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, (int16_t)x[i], (int16_t)y[i], (uint32_t)t[i]));
+    }
+    /* t=136: dx=58, dy=3 — the sample the bug report names explicitly. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_BACK, ff_gesture_feed(&g, true, (int16_t)x[7], (int16_t)y[7], (uint32_t)t[7]));
+}
+
+/* AC14 — bug (3): Map, DOWN(5,180), dx first reaches 167 (>=56) at the
+ * SAME sample dy jumps to 69 (t=176ms), reported NOT recognised.
+ * Hypothesis: "the axis-lock abort (|dy|>24 'before dx reaches 56')
+ * fires on the same sample [dx first crosses 56]" — i.e. a same-sample
+ * ordering bug.
+ *
+ * INVESTIGATED, NOT REPRODUCED: `ff_gesture_feed`'s G1 block only
+ * evaluates the axis-lock check inside the `dx < back_travel_px`
+ * branch; the sample where dx first reaches/exceeds the threshold goes
+ * straight to the ratio+window `else` branch and never touches the
+ * axis-lock check at all (see that function's own top comment: "The
+ * axis-lock disqualification is checked on every sample BEFORE that
+ * threshold is reached, not after"). Run directly against this exact
+ * sequence, the shipped 3b6bce7 FSM already returns FF_GESTURE_BACK at
+ * t=176 (ratio 69/167 = 0.41 <= 0.6, matching the bug report's own
+ * arithmetic). No ordering fix was needed; kept as a passing regression
+ * guard pinning the (already-correct) evaluation order. */
+static void S28_AC14_bench_map_ordering_recognises_back(void)
+{
+    ff_gesture_t g;
+    gesture_new_bench(&g);
+
+    int const t[] = {0, 16, 36, 56, 76, 96, 116, 136, 156, 176};
+    int const x[] = {5, 5, 5, 5, 5, 5, 5, 52, 52, 172};
+    int const y[] = {180, 180, 180, 180, 180, 180, 180, 192, 192, 249};
+
+    for (size_t i = 0; i < 9; i++) {
+        TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, (int16_t)x[i], (int16_t)y[i], (uint32_t)t[i]));
+    }
+    /* t=176: dx=167 (first sample >=56), dy=69, ratio 0.41 <= 0.6. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_BACK, ff_gesture_feed(&g, true, (int16_t)x[9], (int16_t)y[9], (uint32_t)t[9]));
+}
+
+/* AC15 — bug (4): Map, DOWN(5,156): a REAL, reproducible bug. This
+ * DOWN point is 5-206=-201, 156-206=-50 from centre: dist^2=42901 vs
+ * r^2=42436 (r=206) — just ~1.1px OUTSIDE the admission circle. Before
+ * this amendment, `gesture_in_circle` used `r` with zero tolerance, so
+ * this entire touch went straight to FF_GESTURE_PHASE_ABORTED at DOWN
+ * — before the stall check, the rim zone, the axis lock, or the ratio
+ * check ever ran. A genuine edge-of-glass touch like this is exactly
+ * the "touch calibration" phenomenon docs/specs/S28-gestures.md's
+ * bench amendment documents elsewhere for the HOME rim (item 6) —
+ * here it blocks admission entirely, for BACK. Fixed by
+ * `cfg.edge_slop_px` (ff_gesture.h's "Edge tolerance" section):
+ * `gesture_in_circle` now compares against `r + edge_slop_px`.
+ * Mutation-proven: setting `edge_slop_px` back to 0 (or reverting
+ * `gesture_in_circle` to compare against plain `r`) makes this test's
+ * FIRST assertion fail (ABORTED instead of TRACKING) — verified by a
+ * fresh build with that one-line change reverted. This sample also
+ * exercises the stall-tolerance rule (first post-DOWN sample arrives
+ * 325ms late) — both fixes work together on the same touch. */
+static void S28_AC15_bench_map_edge_admits_and_recognises_back(void)
+{
+    ff_gesture_t g;
+    gesture_new_bench(&g);
+
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 156, 0));
+    /* First sample after DOWN, 325ms late (> stall_gap_ms=150): admitted
+     * only because of the edge-slop fix (dist ~207.1 > r=206, but
+     * <= r+edge_slop_px=222); the stall check also fires here, moving
+     * t0 to 325. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 156, 325));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 174, 345));
+    /* dx=191 (>=56), dy=103, ratio 103/191=0.54 <= 0.6; 385-325=60ms,
+     * well inside the (stall-adjusted) 500ms window. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_BACK, ff_gesture_feed(&g, true, 196, 259, 385));
+}
+
+/* AC16 — bug (2): Map, DOWN(5,219), the bench's OWN positive control
+ * ("stall rule OK"): a 327ms stall, then a normal swipe. dist from
+ * (206,206) is ~201.4, comfortably inside r=206 even without the edge
+ * slop — this one was never blocked by admission, only exercises the
+ * stall-tolerance path already covered by AC11/AC12. Kept here as a
+ * passing regression guard alongside its siblings in this bench-replay
+ * section. */
+static void S28_AC16_bench_map_stall_recognises_back(void)
+{
+    ff_gesture_t g;
+    gesture_new_bench(&g);
+
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 219, 0));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 219, 327));
+    TEST_ASSERT_EQUAL(FF_GESTURE_BACK, ff_gesture_feed(&g, true, 101, 199, 347));
+}
+
+/* AC17 — bug (5): Map, DOWN(5,207): vertical-first motion must still
+ * read as NONE (the #130 regression guard, applied to this section's
+ * own bench geometry) — a negative control proving the edge-slop and
+ * rim-widening fixes above did not loosen the axis lock. */
+static void S28_AC17_bench_map_vertical_first_stays_none(void)
+{
+    ff_gesture_t g;
+    gesture_new_bench(&g);
+
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 207, 0));
+    /* dx=2, dy=-36: |dy|=36 > axis_lock_px(24) while dx(2) < 56 ->
+     * disqualified as a scroll before BACK's threshold is ever reached. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 7, 171, 56));
+}
+
+/* ------------------------------------------------------------------- */
+/* fix/map-back-gesture-stall (2026-09-07, round 3) — rim admission     */
+/* independent of the visual glass circle (ff_gesture.h's own "Edge     */
+/* tolerance, part 3" section). Geometry throughout THIS section is the */
+/* LIVE theme geometry (GLASS_CX/CY/R = 208/206/200), matching the      */
+/* on-glass evidence: Jake's puck, running 678dd33 + bench sample       */
+/* logging, 2026-09-07. NOTE ON NUMBERING: continuing the sequential    */
+/* AC18... numbering here collides with slice b's own AC11-AC18 (a      */
+/* different file/module, different criteria) — same known, flagged     */
+/* collision this file's AC11/AC12 section already documents; not a     */
+/* copy-paste mistake.                                                  */
+/* ------------------------------------------------------------------- */
+
+/* AC18 — the exact MAP trace from the on-glass evidence: a clean
+ * left-rim BACK swipe, DOWN(5,119), never recognised before this
+ * amendment (k=0 on every sample) because DOWN(5,119) is
+ * dist~220.9px from (208,206) — past even the padded admission circle
+ * (r+edge_slop_px=216) — so the touch was ABORTED before rim-zone logic
+ * ever ran. Fixed by `gesture_down_admitted`'s rim-zone OR: x=5 is
+ * within the BACK rim (cx-r+back_rim_px=52) and y=119 is within the
+ * circle's own unpadded vertical span (cy-r..cy+r = 6..406). Mutation-
+ * proven: reverting the admission check to plain `gesture_in_circle`
+ * makes the first (non-DOWN) assertion below fail (the touch is
+ * ABORTED, so every later sample also returns NONE, including the one
+ * that must return BACK). Timestamps and points are the bench log's
+ * own values, fed verbatim (the duplicate-pair samples are the touch
+ * controller's ~40 ms update rate observed through a 20 ms poll). */
+static void S28_AC18_puck_map_theme_geometry_left_rim_swipe_recognises_back(void)
+{
+    ff_gesture_t g;
+    gesture_new(&g, false);
+
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 119, 2370552));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 119, 2370568));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 119, 2370588));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 12, 122, 2370608));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 12, 122, 2370628));
+    /* dx=89-5=84 >= 56 (first threshold crossing): |dy|=21 <= 0.6*84=50.4,
+     * 2370648-2370552=96ms well within the 500ms window -> BACK, exactly
+     * at the sample the on-glass evidence names. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_BACK, ff_gesture_feed(&g, true, 89, 140, 2370648));
+    /* S28_AC8 — nothing further fires for the rest of this touch. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 89, 140, 2370668));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 151, 153, 2370688));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 151, 153, 2370708));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 195, 163, 2370728));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 195, 163, 2370748));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, false, 195, 163, 2370768));
+}
+
+/* AC19 — the on-glass evidence's own positive control: the same kind of
+ * swipe on Settings, DOWN(5,183), WAS recognised before this amendment
+ * (dist~204px, inside r+edge_slop_px=216) — kept here as a regression
+ * guard that the rim-zone OR does not change an already-working case. */
+static void S28_AC19_puck_settings_theme_geometry_left_rim_swipe_recognises_back(void)
+{
+    ff_gesture_t g;
+    gesture_new(&g, false);
+
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 183, 2372960));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 183, 2372980));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 23, 188, 2373020));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 23, 188, 2373040));
+    /* dx=98-5=93 >= 56: |dy|=16 <= 0.6*93=55.8, 2373178-2372960=218ms
+     * within the window -> BACK, exactly at the sample the on-glass
+     * evidence names. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_BACK, ff_gesture_feed(&g, true, 98, 199, 2373178));
+}
+
+/* AC20 — left-rim DOWNs at x=5, various y, are all admitted (a
+ * qualifying horizontal swipe from each recognises BACK) — the general
+ * case the MAP trace (AC18) is one instance of: a real BACK swipe can
+ * start anywhere along the left edge, not just near the vertical
+ * centre line the old zero-tolerance circle effectively required. */
+static void S28_AC20_left_rim_downs_at_various_y_all_admitted(void)
+{
+    int16_t const ys[] = {60, 119, 206, 300, 350};
+    for (size_t i = 0; i < sizeof(ys) / sizeof(ys[0]); i++) {
+        ff_gesture_t g;
+        gesture_new(&g, false);
+        TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, ys[i], 0));
+        TEST_ASSERT_EQUAL(FF_GESTURE_BACK, ff_gesture_feed(&g, true, 65, ys[i], 100));
+    }
+}
+
+/* AC21 — a rim-admitted DOWN does not weaken the axis lock: DOWN(5,119)
+ * (the same MAP point as AC18) followed by a mostly-vertical drag must
+ * still read as NONE, not BACK — proving rim admission only widens WHERE
+ * a touch is allowed to start, not what counts as a swipe once it has. */
+static void S28_AC21_admitted_rim_start_with_vertical_drag_is_none(void)
+{
+    ff_gesture_t g;
+    gesture_new(&g, false);
+
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 119, 0));
+    /* dx=2, dy=61: |dy|=61 > axis_lock_px(24) while dx(2) < 56 ->
+     * disqualified as a scroll before BACK's threshold is ever reached. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 7, 180, 56));
+}
+
+/* AC22 — the driver's own invalid-point sentinels are still rejected:
+ * (-1,-1) and a raw 0xFFFF (already narrowed to int16_t -1 by the
+ * caller, same as (-1,-1) at this API boundary) must not be admitted
+ * by either the circle or a rim zone just because -1 <= the BACK rim's
+ * x threshold. */
+static void S28_AC22_invalid_points_rejected(void)
+{
+    ff_gesture_t g1;
+    gesture_new(&g1, false);
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g1, true, -1, -1, 0));
+    /* Would satisfy BACK's travel/ratio/window if the DOWN had been
+     * admitted. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g1, true, 59, -1, 100));
+
+    ff_gesture_t g2;
+    gesture_new(&g2, false);
+    /* 0xFFFF narrows to int16_t -1 at this API boundary — the same
+     * point as (-1,-1) above, fed via the literal the driver actually
+     * emits. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g2, true, (int16_t)0xFFFFu, (int16_t)0xFFFFu, 0));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g2, true, 59, -1, 100));
+}
+
+/* AC23 — bottom-rim HOME from the launcher trace: Jake starting HOME at
+ * y=358 with this section's cx/cy/r. Home zone starts at
+ * y >= cy+r-home_rim_px = 206+200-64 = 342, so y=358 qualifies (and is
+ * also inside the padded circle here — dist~152.3 <= 216 — so this is a
+ * regression guard on the home-rim math rather than a rim-admission-only
+ * case, but pins the exact numbers from the coordinator's brief). */
+static void S28_AC23_bottom_rim_home_from_launcher_trace(void)
+{
+    ff_gesture_t g;
+    gesture_new(&g, false);
+
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 217, 358, 0));
+    /* up=80 >= 64, |dx|=0, elapsed=200ms -> mean speed 0.4 px/ms >= 0.25. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_HOME, ff_gesture_feed(&g, true, 217, 278, 200));
+}
+
+/* ------------------------------------------------------------------- */
 /* NULL safety                                                          */
 /* ------------------------------------------------------------------- */
 
@@ -314,6 +697,22 @@ int main(void)
     RUN_TEST(S28_AC9_down_outside_circle_never_starts_a_gesture);
     RUN_TEST(S28_AC10_time_wrap_still_recognises_back);
     RUN_TEST(S28_AC10_time_wrap_still_recognises_long_press);
+
+    RUN_TEST(S28_AC11_stall_after_down_then_normal_swipe_recognises_back);
+    RUN_TEST(S28_AC12_genuinely_slow_swipe_over_window_still_fails);
+
+    RUN_TEST(S28_AC13_bench_radar_swipe_recognises_back);
+    RUN_TEST(S28_AC14_bench_map_ordering_recognises_back);
+    RUN_TEST(S28_AC15_bench_map_edge_admits_and_recognises_back);
+    RUN_TEST(S28_AC16_bench_map_stall_recognises_back);
+    RUN_TEST(S28_AC17_bench_map_vertical_first_stays_none);
+
+    RUN_TEST(S28_AC18_puck_map_theme_geometry_left_rim_swipe_recognises_back);
+    RUN_TEST(S28_AC19_puck_settings_theme_geometry_left_rim_swipe_recognises_back);
+    RUN_TEST(S28_AC20_left_rim_downs_at_various_y_all_admitted);
+    RUN_TEST(S28_AC21_admitted_rim_start_with_vertical_drag_is_none);
+    RUN_TEST(S28_AC22_invalid_points_rejected);
+    RUN_TEST(S28_AC23_bottom_rim_home_from_launcher_trace);
 
     RUN_TEST(gesture_null_safe);
 

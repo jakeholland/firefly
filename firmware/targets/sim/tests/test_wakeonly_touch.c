@@ -1,20 +1,27 @@
 /**
  * test_wakeonly_touch.c — S26 wake-only-touch amendment
  * (docs/specs/S26-device-lifecycle.md "(c) Inactivity -> dim -> screen
- * off", dated 2026-09-02, maintainer decision): "a touch or button press
- * that begins while the screen is not ACTIVE is a wake-only input and is
- * never delivered to the UI."
+ * off", dated 2026-09-02, maintainer decision, AMENDED 2026-09-07): "a
+ * touch or button press that begins while the screen is not ACTIVE is a
+ * wake-only input and is never delivered to the UI" — except, as of the
+ * 2026-09-07 amendment, at DIM: the screen is still fully readable
+ * there (minimum backlight, not dark), so a press that begins at DIM is
+ * now delivered normally AND wakes. OFF (and SLEEP) are unchanged:
+ * wake-only, the whole gesture withheld.
  *
- * On-glass bug this closes: a tap on a DIM/OFF screen both woke the
- * device AND landed on whatever was under the finger — an unintended
- * launcher navigation, in this test's case. `ff_idle_touch_gate`
- * (core/include/ff_idle.h) is the pure decision; `ctl_loop.c`'s
- * `ctl_loop_pointer_read_cb` is the sim's enact of it — this file drives
- * a REAL `ff_ctl_loop_*` session (the same object main.c's `--headless
- * --ctl PORT` uses) through a hand-choreographed press/release so it can
- * inspect LVGL's PRESSED style mid-gesture, something the `ctl_tap`
- * black-box helper other tests use cannot do (it completes press+release
- * in one call).
+ * On-glass bug the ORIGINAL 2026-09-02 amendment closed: a tap on a
+ * DIM/OFF screen both woke the device AND landed on whatever was under
+ * the finger — an unintended launcher navigation, in this test's case.
+ * On-glass bug the 2026-09-07 amendment closes: DIM's own 15 s threshold
+ * is well inside a normal reading pause, so treating it like OFF/SLEEP
+ * meant the very next tap after any 15 s pause was silently eaten.
+ * `ff_idle_touch_gate` (core/include/ff_idle.h) is the pure decision;
+ * `ctl_loop.c`'s `ctl_loop_pointer_read_cb` is the sim's enact of it —
+ * this file drives a REAL `ff_ctl_loop_*` session (the same object
+ * main.c's `--headless --ctl PORT` uses) through a hand-choreographed
+ * press/release so it can inspect LVGL's PRESSED style mid-gesture,
+ * something the `ctl_tap` black-box helper other tests use cannot do
+ * (it completes press+release in one call).
  *
  * THE PROXY, stated up front (AGENTS.md standing rule item 6): the easy
  * proxy for "a wake-only tap does nothing" is checking the face/intent
@@ -24,7 +31,11 @@
  * `lv_obj_has_state(hub_btn, LV_STATE_PRESSED)` immediately after the
  * press half of the gesture, before release — catching a gate that only
  * suppresses the eventual CLICKED event but still leaks the live PRESSED
- * indev state through to LVGL's hit-testing.
+ * indev state through to LVGL's hit-testing. The DIM case below has the
+ * mirror-image proxy: the easy way to fake "DIM delivers" is a version
+ * that shows PRESSED but never actually fires CLICKED/navigation, so
+ * that test checks BOTH the press style AND the resulting face change,
+ * on the FIRST tap (not "eventually").
  *
  * Uses the launcher's RADAR hub circle (boot default face, S26e amended
  * 2026-09-01) as the real button: an ordinary `lv_button` with
@@ -152,16 +163,17 @@ static void wg_release_and_settle(ff_ctl_loop_ctx_t *ctx)
 }
 
 /* ---------------------------------------------------------------------
- * Shared logic, driven against caller-owned storage: session open
- * through settle-back-to-radar after the second (delivered) tap.
- * `state_advance_ms` is how far past t=0 the mock clock jumps (no touch
- * anywhere in between, so idle time has been accruing since t=0 the
- * whole session) to land in the state under test before the gated tap —
- * DIM's own threshold for the DIM case, OFF's for the OFF case (ff_idle's
- * own boundary tests already pin the exact arithmetic; this harness only
- * needs one confirmed crossing each).
+ * Shared logic for the STILL-GATED states (OFF, SLEEP — unchanged by
+ * the 2026-09-07 amendment), driven against caller-owned storage:
+ * session open through settle-back-to-radar after the second
+ * (delivered) tap. `state_advance_ms` is how far past t=0 the mock
+ * clock jumps (no touch anywhere in between, so idle time has been
+ * accruing since t=0 the whole session) to land in the state under test
+ * before the gated tap — OFF's own threshold (ff_idle's own boundary
+ * tests already pin the exact arithmetic; this harness only needs one
+ * confirmed crossing).
  * ------------------------------------------------------------------- */
-static void run_wakeonly_touch_case(ff_shell_t *shell, fp_pack_t *pack, ff_ctl_loop_ctx_t *ctx,
+static void run_wakeonly_gated_case(ff_shell_t *shell, fp_pack_t *pack, ff_ctl_loop_ctx_t *ctx,
                                      uint32_t state_advance_ms, ff_idle_state_t expected_state_before_tap)
 {
     ff_shell_cfg_t shell_cfg;
@@ -193,13 +205,13 @@ static void run_wakeonly_touch_case(ff_shell_t *shell, fp_pack_t *pack, ff_ctl_l
     ff_ctl_loop_pump(ctx);
     TEST_ASSERT_EQUAL(expected_state_before_tap, ff_idle_state(&ctx->idle));
 
-    /* ---- Gated tap: begins while not ACTIVE. -------------------------
+    /* ---- Gated tap: begins while OFF or SLEEP (screen dark). ---------
      * Must wake, must swallow the ENTIRE gesture — checked at the press
      * half (before release, this file's own top-comment proxy note)
      * AND after settling. */
     wg_press(ctx, hub_btn);
     TEST_ASSERT_EQUAL_MESSAGE(FF_IDLE_STATE_ACTIVE, ff_idle_state(&ctx->idle),
-                               "a press-begin while DIM/OFF did not wake idle to ACTIVE");
+                               "a press-begin while OFF/SLEEP did not wake idle to ACTIVE");
     TEST_ASSERT_FALSE_MESSAGE(lv_obj_has_state(hub_btn, LV_STATE_PRESSED),
                                "the hub showed PRESSED during a wake-only tap — the gesture leaked to LVGL");
     wg_release_and_settle(ctx);
@@ -223,12 +235,67 @@ static void run_wakeonly_touch_case(ff_shell_t *shell, fp_pack_t *pack, ff_ctl_l
     lv_deinit();
 }
 
-static void S26_wakeonly_dim_tap_wakes_and_swallows_then_delivers(void)
+/* 2026-09-07 amendment: a press that begins at DIM is delivered
+ * normally, from the FIRST tap, AND wakes — a separate case from
+ * `run_wakeonly_gated_case` above (OFF/SLEEP), not a parameterization
+ * of it, since the two now assert opposite outcomes on the press half
+ * of the gesture. THE PROXY (this file's own top-comment note): checks
+ * both PRESSED-style-shows AND the resulting face change on this single
+ * tap, not "eventually after a second tap" — a version that restored
+ * brightness but still swallowed the gesture (i.e. changed nothing but
+ * kept the old DIM behavior) would fail the PRESSED assertion below;
+ * a version that showed PRESSED but never wired the CLICKED event
+ * through would fail the face-change assertion after release. */
+static void S26_wakeonly_dim_tap_delivers_from_first_sample_and_wakes(void)
 {
     static ff_shell_t shell;
     static fp_pack_t pack;
     static ff_ctl_loop_ctx_t ctx;
-    run_wakeonly_touch_case(&shell, &pack, &ctx, FF_IDLE_T_DIM_MS, FF_IDLE_STATE_DIM);
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+    bool quit_flag = false;
+    (void)ff_ctl_loop_handlers(&ctx, &quit_flag);
+
+    ff_ctl_loop_pump(&ctx); /* settle the always-dirty first tick */
+    lv_refr_now(ctx.disp); /* force layout so lv_obj_get_click_area below returns real coords, not (0,0) */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ctx.state.active_face); /* S26e amended 2026-09-01 boot default */
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&ctx.idle));
+
+    lv_obj_t *hub_btn = find_button_with_label(lv_screen_active(), "RADAR");
+    TEST_ASSERT_NOT_NULL_MESSAGE(hub_btn, "launcher RADAR hub button not found — is the launcher actually built?");
+    TEST_ASSERT_FALSE(lv_obj_has_state(hub_btn, LV_STATE_PRESSED));
+
+    /* ---- Cross into DIM, with no touch anywhere. ---------------------- */
+    ctx.mock_clock_ms = FF_IDLE_T_DIM_MS;
+    ff_ctl_loop_pump(&ctx);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_state(&ctx.idle));
+
+    /* ---- The tap: begins while DIM. Delivered from THIS press, AND
+     * wakes (checked at the press half, before release, same proxy
+     * discipline as the gated cases above). */
+    wg_press(&ctx, hub_btn);
+    TEST_ASSERT_EQUAL_MESSAGE(FF_IDLE_STATE_ACTIVE, ff_idle_state(&ctx.idle),
+                               "a press-begin while DIM did not wake idle to ACTIVE");
+    TEST_ASSERT_TRUE_MESSAGE(lv_obj_has_state(hub_btn, LV_STATE_PRESSED),
+                              "a press-begin while DIM did not show PRESSED — the 2026-09-07 amendment "
+                              "requires DIM to deliver, not swallow, like OFF/SLEEP still do");
+    wg_release_and_settle(&ctx);
+
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&ctx.idle));
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_RADAR, ctx.state.active_face,
+                               "a tap begun at DIM did not navigate — FF_INTENT_LAUNCHER_SELECT never fired "
+                               "on the first tap");
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
 }
 
 static void S26_wakeonly_off_tap_wakes_and_swallows_then_delivers(void)
@@ -236,7 +303,7 @@ static void S26_wakeonly_off_tap_wakes_and_swallows_then_delivers(void)
     static ff_shell_t shell;
     static fp_pack_t pack;
     static ff_ctl_loop_ctx_t ctx;
-    run_wakeonly_touch_case(&shell, &pack, &ctx, FF_IDLE_T_OFF_MS, FF_IDLE_STATE_OFF);
+    run_wakeonly_gated_case(&shell, &pack, &ctx, FF_IDLE_T_OFF_MS, FF_IDLE_STATE_OFF);
 }
 
 /* Permanent regression guard for the tearDown fix above (debt/test-
@@ -261,7 +328,7 @@ static void tearDown_is_idempotent_after_lv_init(void)
 int main(void)
 {
     UNITY_BEGIN();
-    RUN_TEST(S26_wakeonly_dim_tap_wakes_and_swallows_then_delivers);
+    RUN_TEST(S26_wakeonly_dim_tap_delivers_from_first_sample_and_wakes);
     RUN_TEST(S26_wakeonly_off_tap_wakes_and_swallows_then_delivers);
     RUN_TEST(tearDown_is_idempotent_after_lv_init);
     return UNITY_END();

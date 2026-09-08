@@ -268,6 +268,24 @@ uint8_t ff_idle_brightness_pct(ff_idle_state_t state, uint8_t stored_pct);
  * (an unintended button press, launcher navigation, etc.) — the wake
  * should be the ENTIRE effect of that tap.
  *
+ * **AMENDED 2026-09-07 — "DIM is visible; don't eat the next tap after
+ * a normal reading pause"** (maintainer decision, on-glass bug report).
+ * The 2026-09-02 rule above was correct for OFF and SLEEP (screen dark
+ * — nothing to see, so a press landing on the hidden UI underneath is
+ * definitely a wake, never an intentional tap) but too broad for DIM:
+ * `FF_IDLE_T_DIM_MS` is only 15 s, the screen stays fully readable at
+ * DIM (minimum backlight, not dark), and a wearer who simply pauses to
+ * read for that long had their very next tap silently swallowed —
+ * indistinguishable, on glass, from "taps don't work." **A press that
+ * begins at DIM is now delivered normally AND wakes the screen**
+ * (restores brightness) — the wearer can see exactly what they're
+ * tapping, so there is nothing left to protect against. OFF and SLEEP
+ * are unchanged: wake-only, the whole gesture withheld. The
+ * "decision at press-begin only" semantics are unchanged too — a press
+ * that begins at ACTIVE and continues into DIM was already delivered
+ * before this amendment and still is; this only changes what happens
+ * when a press *begins* at DIM.
+ *
  * `ff_idle_touch_gate_t` is a PER-INPUT-SOURCE latch: one instance per
  * physical input (the touch panel, BOOT, ...) so two input sources'
  * gestures are never confused with each other (e.g. a touch mid-gesture
@@ -298,14 +316,21 @@ void ff_idle_touch_gate_init(ff_idle_touch_gate_t *gate);
  * nothing changed" contract as `ff_idle_tick`):
  *
  *  - `pressed` transitions false -> true (a press BEGINS) while
- *    `ff_idle_state(idle)` is NOT ACTIVE: this is a WAKE. Fires
- *    `ff_idle_input(idle, now_ms)` (the wake itself — the same call
- *    every other input source on this device makes), latches
- *    `gate->swallowing = true`, and returns false (not delivered) —
- *    for this sample and every subsequent sample of the SAME gesture,
- *    until release.
+ *    `ff_idle_state(idle)` is OFF or SLEEP (screen dark): this is a
+ *    WAKE-ONLY press. Fires `ff_idle_input(idle, now_ms)` (the wake
+ *    itself — the same call every other input source on this device
+ *    makes), latches `gate->swallowing = true`, and returns false (not
+ *    delivered) — for this sample and every subsequent sample of the
+ *    SAME gesture, until release.
+ *  - `pressed` transitions false -> true while DIM (screen visible, at
+ *    minimum brightness): delivered normally, AND wakes — fires
+ *    `ff_idle_input(idle, now_ms)` same as above (2026-09-07 amendment:
+ *    the screen is readable at DIM, so there is nothing to protect
+ *    against; delivering the tap plus restoring brightness is the
+ *    whole effect). Returns true; `gate->swallowing` stays false.
  *  - `pressed` transitions false -> true while ACTIVE: delivered
- *    normally. Returns true; `gate->swallowing` stays false.
+ *    normally, no wake needed (already active). Returns true;
+ *    `gate->swallowing` stays false.
  *  - `pressed` continues true (the gesture is still held): returns
  *    whatever was decided AT PRESS-BEGIN (`!gate->swallowing`), even if
  *    `idle`'s own state changes mid-gesture (e.g. ACTIVE -> DIM while a
