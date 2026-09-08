@@ -26,3 +26,8 @@ firmware/build
 
 # Local design working files (Claude Design canvases live as artifacts, not in-repo)
 firefly-design/
+
+# pass 13: firefly_case.py's own root-fillet decision log (debugging aid,
+# recreated by every build() run — see hardware/case/README.md's pass-13
+# section).
+hardware/case/_root_fillet_log.jsonl
