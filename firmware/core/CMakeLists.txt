@@ -462,3 +462,17 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_find COMMAND test_find)
 endif()
+
+# S30 — core/miclevel: mic level math (RMS/peak dBFS, DC-block HPF,
+# attack/release envelope). Pure C11, no I/O, host-testable — shared by
+# the esp32s3 device's real I2S1 mic reader (firmware/targets/esp32s3/
+# components/ff_mic) and this test. See ff_miclevel.h.
+if(FF_BUILD_TESTS)
+    add_executable(test_miclevel
+        tests/test_miclevel.c
+    )
+    target_link_libraries(test_miclevel PRIVATE ff-core unity)
+    ff_apply_warnings(test_miclevel)
+
+    add_test(NAME test_miclevel COMMAND test_miclevel)
+endif()

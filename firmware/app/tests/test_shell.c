@@ -10259,6 +10259,11 @@ static void S_diag_all_unknown_when_nothing_observed(void)
     TEST_ASSERT_EQUAL_INT8(-1, d->batt_pct);
     TEST_ASSERT_FALSE(d->has_free_heap);
 
+    /* S30 — never called on the sim (no ff_mic hardware): "MIC absent". */
+    TEST_ASSERT_FALSE(d->mic_present);
+    TEST_ASSERT_FALSE(d->mic_running);
+    TEST_ASSERT_FALSE(d->has_mic_level);
+
     /* Always honestly known, both targets — never gated behind a has_*
      * flag per ff_app_diag_t's own doc comment. harness_init(1000u, ..)
      * starts the mock clock at 1000ms, hence 1s, not 0. */
@@ -10333,6 +10338,7 @@ static void S_diag_reports_observed_facts(void)
     ff_shell_set_batt_mv(&H.shell, 3900u, H.clk.t);
     ff_shell_set_device_stats(&H.shell, true, 123456u, FF_APP_MAG_QMC5883P, FF_APP_IMU_OK);
     ff_shell_set_heading(&H.shell, 87.0f);
+    ff_shell_set_mic_status(&H.shell, true, true, true, -42.3f); /* S30 */
 
     advance(2000u);
 
@@ -10401,6 +10407,12 @@ static void S_diag_reports_observed_facts(void)
     TEST_ASSERT_TRUE(strlen(d->fw_git_sha) > 0);
     TEST_ASSERT_TRUE(strlen(d->fw_build_date) > 0);
 
+    /* 7. Mic (S30) */
+    TEST_ASSERT_TRUE(d->mic_present);
+    TEST_ASSERT_TRUE(d->mic_running);
+    TEST_ASSERT_TRUE(d->has_mic_level);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, -42.3f, d->mic_envelope_dbfs);
+
     /* The bench console's getter must report the SAME facts as the page
      * (one computation, two presentations). */
     ff_app_diag_t const bench = ff_shell_diag_debug(&H.shell);
@@ -10408,6 +10420,7 @@ static void S_diag_reports_observed_facts(void)
     TEST_ASSERT_EQUAL_INT(FF_APP_POS_SRC_INTERNAL, bench.pos_src);
     TEST_ASSERT_EQUAL_UINT8(1, bench.crew_count);
     TEST_ASSERT_EQUAL_INT(FF_APP_MAG_QMC5883P, bench.mag_kind);
+    TEST_ASSERT_TRUE(bench.mic_present);
 }
 
 /* The DIAGNOSTICS page's own age fields use the coarsened-age render-key
@@ -10623,6 +10636,70 @@ static void S_diag_free_heap_keys_rendered_whole_kb_bucket_only(void)
     ff_shell_set_device_stats(&H.shell, true, 181500u, FF_APP_MAG_QMC5883P, FF_APP_IMU_OK);
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                              "a rendered DIAGNOSTICS heap change did not repaint the page");
+}
+
+/* S30 — the MIC row's own churn-budget discipline (deliverable: "coarsen
+ * the level to 1 dB and zero it unless the diag page is active"), same
+ * shape as S_diag_free_heap_keys_rendered_whole_kb_bucket_only above:
+ * a sub-1dB envelope wobble (real mic noise, or the attack/release
+ * filter settling toward a target) must stay CLEAN; a whole-dB-or-more,
+ * rendered change must repaint. */
+static void S30_diag_mic_envelope_keys_rendered_whole_db_bucket_only(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    {
+        ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 4u}};
+        ff_shell_intent(&H.shell, &leave_launcher);
+    }
+    send_bare(FF_INTENT_SETTINGS_OPEN_DIAGNOSTICS);
+
+    ff_shell_set_mic_status(&H.shell, true, true, true, -42.0f);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* mic appears: dirty */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->settings.diag.mic_present);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->settings.diag.has_mic_level);
+
+    /* Sub-1dB wobble, same rendered "%.0f dBFS" bucket: MUST be clean. */
+    advance(100u);
+    ff_shell_set_mic_status(&H.shell, true, true, true, -42.4f);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a sub-1dB DIAGNOSTICS mic envelope tick rebuilt the frame - raw mic_envelope_dbfs "
+                              "leaked into the render key");
+
+    /* A real, rendered 1dB-or-more move: dirty. */
+    advance(100u);
+    ff_shell_set_mic_status(&H.shell, true, true, true, -38.0f);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a rendered DIAGNOSTICS mic envelope change did not repaint the page");
+
+    /* present/running flipping false, WHILE the diag page is open, must
+     * also dirty — these are plain bools carried verbatim by the key's
+     * top-of-function memcpy (shell_render_key), not bucketed, so a real
+     * state flip (mic unplugged/stopped) must never be swallowed. */
+    advance(100u);
+    ff_shell_set_mic_status(&H.shell, true, false, false, 0.0f);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t), "mic stopping did not repaint the DIAGNOSTICS page");
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->settings.diag.mic_running);
+}
+
+/* S30 — the MIC row must stay ZERO (never leak a stale reading) while
+ * DIAGNOSTICS is NOT the active subview, same "opaque to churn while not
+ * showing" discipline every other DIAGNOSTICS field already carries
+ * (shell_project_diag_page's own early return). */
+static void S30_diag_mic_row_zeroed_outside_diagnostics_subview(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    ff_shell_set_mic_status(&H.shell, true, true, true, -20.0f);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+
+    /* Never opened DIAGNOSTICS at all (default subview) — the whole
+     * `diag` struct, mic included, stays at its memset-zero default. */
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->settings.diag.mic_present);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->settings.diag.mic_running);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->settings.diag.has_mic_level);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, ff_shell_view(&H.shell)->settings.diag.mic_envelope_dbfs);
 }
 
 /**
@@ -11179,6 +11256,8 @@ int main(void)
     RUN_TEST(S_diag_snr_keys_rendered_half_db_bucket_only);
     RUN_TEST(S_diag_batt_mv_keys_rendered_ten_mv_bucket_only);
     RUN_TEST(S_diag_free_heap_keys_rendered_whole_kb_bucket_only);
+    RUN_TEST(S30_diag_mic_envelope_keys_rendered_whole_db_bucket_only);
+    RUN_TEST(S30_diag_mic_row_zeroed_outside_diagnostics_subview);
 
     RUN_TEST(S16_render_key_churn_budget_launcher);
     RUN_TEST(S16_render_key_churn_budget_inbox);

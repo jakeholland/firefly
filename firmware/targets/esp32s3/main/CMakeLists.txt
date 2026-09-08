@@ -32,8 +32,11 @@ idf_component_register(
     # (under CONFIG_FF_LINK_UART) to open the UART transport and wire it into
     # ff_shell_cfg_t.transport; already reachable transitively via
     # ff_app's own REQUIRES, listed explicitly here because this file
-    # names its header directly, not just mc_client.h's types.
-    REQUIRES ff_app ff_app_ui ff_core ff_display ff_power ff_audio ff_compass ff_meshclient lvgl
+    # names its header directly, not just mc_client.h's types. ff_mic: S30 —
+    # the onboard I2S1 mic HAL, called from app_main.c under CONFIG_FF_MIC
+    # (default on; see Kconfig.projbuild) — same always-linked,
+    # source-gated-usage shape as ff_compass just above.
+    REQUIRES ff_app ff_app_ui ff_core ff_display ff_power ff_audio ff_compass ff_mic ff_meshclient lvgl
     # nvs_flash: the real settings store (S21 §4). esp_timer/freertos: clock
     # + task delays. esp_system: esp_restart() (S26 slice b's reboot action).
     # esp_driver_usb_serial_jtag: usb_serial_jtag_is_connected() (S26 slice f

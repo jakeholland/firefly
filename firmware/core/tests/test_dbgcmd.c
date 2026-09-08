@@ -218,6 +218,88 @@ static void dbgcmd_find_rejects_trailing_text_after_node(void)
     TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("find a1b2c3d4 extra", &cmd));
 }
 
+/* S30 — "mic" / "mic on" / "mic off" / "mic watch <secs>". */
+
+static void dbgcmd_mic_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("mic", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_MIC, cmd.kind);
+}
+
+static void dbgcmd_mic_with_extra_arg_rejected(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic status", &cmd));
+}
+
+static void dbgcmd_mic_on_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("mic on", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_MIC_ON, cmd.kind);
+}
+
+static void dbgcmd_mic_off_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("mic off", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_MIC_OFF, cmd.kind);
+}
+
+static void dbgcmd_mic_on_off_reject_trailing_text(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic on now", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic off now", &cmd));
+}
+
+static void dbgcmd_mic_watch_parses_seconds(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("mic watch 10", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_MIC_WATCH, cmd.kind);
+    TEST_ASSERT_EQUAL_UINT32(10u, cmd.u.mic_watch_secs);
+}
+
+static void dbgcmd_mic_watch_accepts_boundaries(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("mic watch 1", &cmd));
+    TEST_ASSERT_EQUAL_UINT32(1u, cmd.u.mic_watch_secs);
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("mic watch 30", &cmd));
+    TEST_ASSERT_EQUAL_UINT32(30u, cmd.u.mic_watch_secs);
+}
+
+static void dbgcmd_mic_watch_rejects_out_of_range(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic watch 0", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic watch 31", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic watch 999", &cmd));
+}
+
+static void dbgcmd_mic_watch_rejects_non_decimal(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic watch ten", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic watch -5", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic watch 1.5", &cmd));
+}
+
+static void dbgcmd_mic_watch_rejects_missing_or_trailing_arg(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic watch", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic watch 10 now", &cmd));
+}
+
+static void dbgcmd_mic_unknown_sub_verb_rejected(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic bogus", &cmd));
+}
+
 static void dbgcmd_flare_parses(void)
 {
     ff_dbgcmd_t cmd;
@@ -537,6 +619,19 @@ int main(void)
     RUN_TEST(dbgcmd_find_no_arg_is_bad_args);
     RUN_TEST(dbgcmd_find_bad_hex_is_bad_args);
     RUN_TEST(dbgcmd_find_rejects_trailing_text_after_node);
+
+    RUN_TEST(dbgcmd_mic_parses);
+    RUN_TEST(dbgcmd_mic_with_extra_arg_rejected);
+    RUN_TEST(dbgcmd_mic_on_parses);
+    RUN_TEST(dbgcmd_mic_off_parses);
+    RUN_TEST(dbgcmd_mic_on_off_reject_trailing_text);
+    RUN_TEST(dbgcmd_mic_watch_parses_seconds);
+    RUN_TEST(dbgcmd_mic_watch_accepts_boundaries);
+    RUN_TEST(dbgcmd_mic_watch_rejects_out_of_range);
+    RUN_TEST(dbgcmd_mic_watch_rejects_non_decimal);
+    RUN_TEST(dbgcmd_mic_watch_rejects_missing_or_trailing_arg);
+    RUN_TEST(dbgcmd_mic_unknown_sub_verb_rejected);
+
     RUN_TEST(dbgcmd_flare_parses);
     RUN_TEST(dbgcmd_flare_cancel_parses);
     RUN_TEST(dbgcmd_cal_parses);

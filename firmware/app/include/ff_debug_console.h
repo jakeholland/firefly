@@ -158,6 +158,58 @@ typedef int (*ff_dbgconsole_i2c_health_fn)(void *user, char *out, size_t cap);
 typedef void (*ff_dbgconsole_perf_fn)(void *user, ff_dbgconsole_reply_fn reply, void *reply_user);
 
 /**
+ * ff_dbgconsole_mic_action_t / ff_dbgconsole_mic_fn — S30 mic bring-up:
+ * the `mic`/`mic on`/`mic off`/`mic watch <secs>` commands' ONE platform
+ * hook (docs/specs/S30-audio-input.md). Follows `ff_dbgconsole_perf_fn`'s
+ * shape (handed the reply sink directly, emits its own already-
+ * `"dbg: mic "`-prefixed lines), for the same reason: this is device-only
+ * data with no home in `ff_shell_t` (the esp32s3-only `ff_mic` component
+ * — this dispatcher never touches it directly, CLAUDE.md's "I/O lives in
+ * the target" placement rule) reporting a variable NUMBER of lines
+ * (`mic watch` prints repeatedly). One hook, not four, because all four
+ * sub-commands are "do a small thing to the SAME mic driver, then report
+ * its status" — a single `action` argument dispatches inside the hook the
+ * exact same way `ff_dbgcmd_kind_t` already dispatches at the parser
+ * layer, rather than this header growing three more `ff_dbgconsole_
+ * handle_line` parameters for four closely-related verbs.
+ *
+ * `mic`/`mic on`/`mic off` are expected to be effectively instantaneous
+ * (a channel enable/disable plus a status read) — the hook returns
+ * before `ff_dbgconsole_handle_line` does, same as every other command.
+ * `mic watch` is the one deliberate exception: per the deliverable's own
+ * "print once per 250ms for up to 30s, then stop", the hook BLOCKS for
+ * up to `watch_secs` seconds, printing a line every ~250ms — this
+ * freezes the calling task (on the esp32s3 target, the render-loop task
+ * `dbgconsole_poll` runs on) for that entire window, a deliberate,
+ * bounded (`FF_DBGCMD_MIC_WATCH_MAX_S` = 30s, ff_dbgcmd.h), bench-only
+ * tradeoff — see docs/specs/S30-audio-input.md's own "Console" section
+ * for the full reasoning and the alternative (an async per-frame ticker)
+ * this deliberately did NOT build. The esp32s3 target's own
+ * implementation feeds the task watchdog (`esp_task_wdt_reset`) on every
+ * iteration of that internal loop so a 30s `mic watch` never trips it.
+ *
+ * `watch_secs` is meaningful only for `FF_DBGCONSOLE_MIC_WATCH` (already
+ * range-checked by the parser into `ff_dbgcmd.h`'s
+ * `[FF_DBGCMD_MIC_WATCH_MIN_S, FF_DBGCMD_MIC_WATCH_MAX_S]` — the hook
+ * never has to re-validate it); 0 for every other action.
+ *
+ * `mic == NULL` (the sim, which has no mic driver at all) makes every
+ * one of the four commands reply with the single honest line
+ * `"dbg: mic unavailable on this target"` — this function's own job,
+ * mirroring `perf == NULL`'s identical single-line contract above,
+ * never the hook's.
+ */
+typedef enum {
+    FF_DBGCONSOLE_MIC_STATUS = 0, /* "mic" bare */
+    FF_DBGCONSOLE_MIC_ON,
+    FF_DBGCONSOLE_MIC_OFF,
+    FF_DBGCONSOLE_MIC_WATCH,
+} ff_dbgconsole_mic_action_t;
+
+typedef void (*ff_dbgconsole_mic_fn)(void *user, ff_dbgconsole_mic_action_t action, uint32_t watch_secs,
+                                      ff_dbgconsole_reply_fn reply, void *reply_user);
+
+/**
  * ff_dbgconsole_handle_line — parse one raw line (via
  * `ff_dbgcmd_parse`) and dispatch it against `sh`, emitting zero or
  * more `"dbg: "`-prefixed reply lines through `reply`.
@@ -189,11 +241,16 @@ typedef void (*ff_dbgconsole_perf_fn)(void *user, ff_dbgconsole_reply_fn reply, 
  * prints the scan line; it just omits the compass line, honestly,
  * rather than printing one with fields it cannot answer. `i2c_health`
  * (2026-09-08) follows the identical NULL-is-honestly-omitted rule.
+ *
+ * `mic` (S30) is the `ff_dbgconsole_mic_fn` platform hook — see that
+ * typedef's own doc comment for the single-hook-four-verbs shape and the
+ * `mic watch` blocking-duration contract.
  */
 void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len, uint32_t now_ms,
                                 ff_dbgconsole_reply_fn reply, void *user, ff_dbgconsole_i2c_scan_fn i2c_scan,
                                 ff_dbgconsole_compass_status_fn compass_status,
-                                ff_dbgconsole_i2c_health_fn i2c_health, ff_dbgconsole_perf_fn perf);
+                                ff_dbgconsole_i2c_health_fn i2c_health, ff_dbgconsole_perf_fn perf,
+                                ff_dbgconsole_mic_fn mic);
 
 #endif /* FF_TARGET_SIM || CONFIG_FF_DEBUG_CONSOLE */
 
