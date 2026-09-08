@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "ff_batt.h" /* S25 slice c — battery gauge: honest mV -> percent + display filter */
+#include "ff_build_info.h" /* DIAGNOSTICS — FF_BUILD_GIT_SHA / FF_BUILD_DATE */
 #include "ff_geo.h"
 #include "ff_meshname.h" /* NAME in Settings — charset sanitize + short-name derivation */
 #include "ff_multitap.h" /* S10 quick flare — the N-presses-within-a-window counter FSM */
@@ -333,6 +334,14 @@ typedef struct {
     char mesh_owner_name[FF_SETTINGS_NAME_LEN];
     bool my_name_from_node;
 
+    /* DIAGNOSTICS — the short-name counterpart to mesh_owner_name above
+     * (which only ever captured long_name; nothing needed the short one
+     * before this page). Same "self NodeInfo only, never fabricated"
+     * rule, captured alongside long_name in the same shell_ev_node
+     * block. */
+    bool has_mesh_owner_short_name;
+    char mesh_owner_short_name[FF_SETTINGS_NAME_LEN];
+
     /* Confirmation-fix round 2 (bench finding, 2026-09-06, AFTER commit
      * 51e4ae1): `name Jake` reported `confirmed=1`/a checkmark INSTANTLY
      * when the puck's stored name already happened to equal the mesh's
@@ -549,6 +558,78 @@ typedef struct {
      * at the read side even though the mutation itself already
      * happened. */
     ff_batt_filter_t batt_filter;
+    /* DIAGNOSTICS — the raw mV `ff_shell_set_batt_mv` was last called
+     * with, independent of `ff_batt_filter_t`'s own filtered/display
+     * state (which tracks only VALID readings folded into its window —
+     * see ff_batt.h). "Last raw reading pushed" is its own honest fact,
+     * distinct from "currently displayed percent". */
+    bool has_last_batt_mv;
+    uint16_t last_batt_mv_raw;
+
+    /* --- DIAGNOSTICS (Settings -> "DIAGNOSTICS" row) ------------------
+     * A handful of small facts nothing else in this file tracked before
+     * this page needed them. Each carries its own honest has_-flag or
+     * UNKNOWN enum member (never a fabricated value) — see ff_app_
+     * state.h's ff_app_diag_t doc comment for the full page spec. */
+
+    /* Self position, richer than my_pos/my_pos_ok above — the raw
+     * mc_position_t facts the "Position (mine)" section shows
+     * (source/altitude/sats/precision) that shell_maybe_adopt_my_pos
+     * never needed to keep before this page existed. Written by the
+     * SAME two call sites that already call shell_maybe_adopt_my_pos
+     * (shell_ev_position/shell_ev_node), at the same moment — see that
+     * function's own doc comment. */
+    mc_loc_source_t my_pos_loc_source;
+    bool my_pos_has_altitude;
+    int32_t my_pos_altitude_m;
+    bool my_pos_has_sats;
+    uint32_t my_pos_sats_in_view;
+    bool my_pos_has_precision_bits;
+    uint32_t my_pos_precision_bits;
+
+    /* Last inbound packet's radio metadata, mesh-wide — a raw "what did
+     * my radio last measure" diagnostic, deliberately NOT gated on
+     * pairing/direct-path attribution the way ff_crew_on_rssi's crew
+     * RSSI trend is (that gate protects a TRUST decision; this is a
+     * link-quality readout that stays honest either way, annotated with
+     * rx_path so the DIAGNOSTICS screen can say "relayed"/"direct"/
+     * "hops unknown" rather than silently mislabel a relay's numbers as
+     * the sender's). Captured unconditionally in shell_ev_rx_meta,
+     * before the self-drop. */
+    bool has_last_rx_meta;
+    uint32_t last_rx_meta_ms;
+    bool last_rx_meta_has_rssi;
+    int16_t last_rx_meta_rssi;
+    bool last_rx_meta_has_snr;
+    float last_rx_meta_snr;
+    mc_rx_path_t last_rx_meta_rx_path;
+
+    /* This node's own telemetry (TELEMETRY_APP, port 67) — channel
+     * utilization / air-util-tx, from mc_events_t.on_telemetry filtered
+     * to from == my_node_id (shell_ev_telemetry). */
+    bool has_self_telemetry;
+    uint32_t self_telemetry_ms;
+    bool telem_has_chan_util;
+    float telem_chan_util;
+    bool telem_has_air_util_tx;
+    float telem_air_util_tx;
+
+    /* Time since the last FromRadio frame the framer completed —
+     * derived each tick by watching mc_get_stats(&sh->mc).frames_ok for
+     * a change (ff_shell_tick). No meshclient API change needed for
+     * this one: it is app-layer bookkeeping over an already-public
+     * counter. */
+    bool has_last_frame;
+    uint32_t last_frame_ms;
+    uint32_t last_frames_ok_seen;
+
+    /* Device-only facts pushed by ff_shell_set_device_stats (see that
+     * function's own doc comment, ff_shell.h) — free heap + compass
+     * chip identification. Never written on the sim. */
+    bool has_device_stats;
+    uint32_t device_free_heap_bytes;
+    ff_app_mag_kind_t device_mag_kind;
+    ff_app_imu_state_t device_imu_state;
 
 #if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
     /* --dev-trust-all (S16 AC6), and its device-side mirror
@@ -876,14 +957,15 @@ static bool shell_drop_as_self(shell_t const *sh, uint32_t node_id)
  * none per CLAUDE.md), so none is added here rather than inventing one
  * for this single call site.
  */
-static void shell_maybe_adopt_my_pos(shell_t *sh, ff_latlon_t pos, mc_loc_source_t loc_source, uint32_t rx_ms)
+static void shell_maybe_adopt_my_pos(shell_t *sh, mc_position_t const *p, uint32_t rx_ms)
 {
+    ff_latlon_t const pos = {p->lat, p->lon};
     if (pos.lat == 0.0 && pos.lon == 0.0) return; /* no real fix yet */
 
     bool adopt = false;
-    if (loc_source == MC_LOC_INTERNAL || loc_source == MC_LOC_EXTERNAL) {
+    if (p->loc_source == MC_LOC_INTERNAL || p->loc_source == MC_LOC_EXTERNAL) {
         adopt = true;
-    } else if (loc_source == MC_LOC_MANUAL) {
+    } else if (p->loc_source == MC_LOC_MANUAL) {
 #if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
         adopt = sh->dev_trust_all;
 #endif
@@ -894,6 +976,18 @@ static void shell_maybe_adopt_my_pos(shell_t *sh, ff_latlon_t pos, mc_loc_source
     sh->my_pos_ok = true;
     sh->my_pos_ms = rx_ms;
     sh->my_pos_ms_valid = true;
+
+    /* DIAGNOSTICS — the richer facts this same fix carries, kept
+     * alongside my_pos so "Position (mine)" always describes exactly
+     * the ADOPTED fix, never a different (e.g. rejected/untrusted)
+     * reading. See this struct's own field doc comments (shell_t). */
+    sh->my_pos_loc_source = p->loc_source;
+    sh->my_pos_has_altitude = p->has_altitude;
+    sh->my_pos_altitude_m = p->altitude_m;
+    sh->my_pos_has_sats = p->has_sats_in_view;
+    sh->my_pos_sats_in_view = p->sats_in_view;
+    sh->my_pos_has_precision_bits = p->has_precision_bits;
+    sh->my_pos_precision_bits = p->precision_bits;
 }
 
 /**
@@ -1441,8 +1535,7 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
     if (shell_is_self(sh, n->node_num) && n->has_position && !defined_the_latch) {
         uint32_t rx_ms = 0;
         if (shell_rx_ms_from_unix(sh, n->last_heard, now, &rx_ms)) {
-            ff_latlon_t const self_pos = {n->position.lat, n->position.lon};
-            shell_maybe_adopt_my_pos(sh, self_pos, n->position.loc_source, rx_ms);
+            shell_maybe_adopt_my_pos(sh, &n->position, rx_ms);
         }
     }
 
@@ -1501,6 +1594,15 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
                 ff_settings_save(&sh->settings, sh->store);
             }
         }
+    }
+
+    /* DIAGNOSTICS — the short-name counterpart to the long_name capture
+     * just above; same self-only, never-fabricated rule, independent of
+     * `defined_the_latch` for the same "a name has no age to get wrong"
+     * reason. */
+    if (shell_is_self(sh, n->node_num) && n->has_short_name) {
+        shell_copy_str(sh->mesh_owner_short_name, sizeof(sh->mesh_owner_short_name), n->short_name);
+        sh->has_mesh_owner_short_name = true;
     }
 
     if (shell_drop_as_self(sh, n->node_num)) return; /* never treat our own traffic as inbound */
@@ -1663,6 +1765,13 @@ static void shell_ev_owner(void *u, char const *long_name, char const *short_nam
          * self-NodeInfo block applies, above. */
         sh->mesh_owner_name_seq = sh->name_pushed_seq;
     }
+    /* DIAGNOSTICS — short-name counterpart, same "this is our own owner,
+     * so a get_owner_response is as authoritative as a self NodeInfo"
+     * reasoning shell_ev_node's own short-name capture uses. */
+    if (short_name != NULL && short_name[0] != '\0') {
+        shell_copy_str(sh->mesh_owner_short_name, sizeof(sh->mesh_owner_short_name), short_name);
+        sh->has_mesh_owner_short_name = true;
+    }
 
     sh->name_has_reply = true;
     shell_copy_str(sh->name_reply_long, sizeof(sh->name_reply_long), long_name);
@@ -1758,8 +1867,7 @@ static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
     if (shell_is_self(sh, node) && p->has_rx_time) {
         uint32_t rx_ms = 0;
         if (shell_rx_ms_from_unix(sh, p->rx_time, now, &rx_ms)) {
-            ff_latlon_t const self_pos = {p->lat, p->lon};
-            shell_maybe_adopt_my_pos(sh, self_pos, p->loc_source, rx_ms);
+            shell_maybe_adopt_my_pos(sh, p, rx_ms);
         }
     }
 
@@ -1861,12 +1969,25 @@ static void shell_ev_rx_meta(void *u, uint32_t from, mc_rx_meta_t const *m)
     shell_t *sh = (shell_t *)u;
     if (sh == NULL || m == NULL) return;
 
+    uint32_t const now = shell_now(sh);
+
+    /* DIAGNOSTICS — captured unconditionally, BEFORE the self-drop below:
+     * this is a raw "what did my radio last measure" link-quality
+     * diagnostic, not a trust decision, so it is not gated on pairing,
+     * direct-path attribution, or even self-vs-crew (see this field's
+     * own doc comment, shell_t). */
+    sh->has_last_rx_meta = true;
+    sh->last_rx_meta_ms = now;
+    sh->last_rx_meta_has_rssi = m->has_rssi;
+    sh->last_rx_meta_rssi = m->rssi_dbm;
+    sh->last_rx_meta_has_snr = m->has_snr;
+    sh->last_rx_meta_snr = m->snr_db;
+    sh->last_rx_meta_rx_path = m->rx_path;
+
     /* mc_client.h warns explicitly: self-packets are NOT filtered by the
      * library, and a caller maintaining a per-peer roster wants to skip
      * its own id rather than create a slot for itself. */
     if (shell_drop_as_self(sh, from)) return;
-
-    uint32_t const now = shell_now(sh);
 
     /* This fires for EVERY inbound MeshPacket naming a sender, including
      * encrypted ones and portnums out of decode scope — which makes it
@@ -1904,6 +2025,30 @@ static void shell_ev_rx_meta(void *u, uint32_t from, mc_rx_meta_t const *m)
 
     /* m->has_snr / m->snr_db: nothing in core consumes SNR yet. Left
      * unread rather than stashed somewhere it would go stale. */
+}
+
+/**
+ * shell_ev_telemetry — DIAGNOSTICS: `mc_events_t.on_telemetry`. Filtered
+ * to THIS node's own report (`from == my_node_id`) — the Mesh section's
+ * "channel utilization / air-util TX from the node's own telemetry"
+ * fact, not a per-crew-member measurement (no per-node telemetry cache
+ * exists or is needed for this page). A telemetry report heard for any
+ * OTHER node is simply not this event's concern and is ignored, same
+ * shape `shell_ev_rx_meta`'s own self/crew split establishes for a
+ * different fact.
+ */
+static void shell_ev_telemetry(void *u, uint32_t from, mc_telemetry_t const *t)
+{
+    shell_t *sh = (shell_t *)u;
+    if (sh == NULL || t == NULL) return;
+    if (!shell_is_self(sh, from)) return;
+
+    sh->has_self_telemetry = true;
+    sh->self_telemetry_ms = shell_now(sh);
+    sh->telem_has_chan_util = t->has_channel_utilization;
+    sh->telem_chan_util = t->channel_utilization;
+    sh->telem_has_air_util_tx = t->has_air_util_tx;
+    sh->telem_air_util_tx = t->air_util_tx;
 }
 
 /* ---------------------------------------------------------------------
@@ -2522,6 +2667,182 @@ static void shell_project_compass_cal(shell_t const *sh, ff_app_settings_t *out)
     }
 }
 
+/* -------------------------------------------------------------------
+ * Boundary translations, ff_app_diag_t's own doc comment (ff_app_state.h)
+ * explains why each of these exists rather than reusing the lower-layer
+ * enum directly.
+ * ------------------------------------------------------------------- */
+static ff_app_link_t shell_diag_link(ff_shell_link_t link)
+{
+    switch (link) {
+    case FF_SHELL_LINK_NONE: return FF_APP_LINK_NONE;
+    case FF_SHELL_LINK_RECONNECTING: return FF_APP_LINK_RECONNECTING;
+    case FF_SHELL_LINK_CONNECTED: return FF_APP_LINK_CONNECTED;
+    }
+    return FF_APP_LINK_NONE;
+}
+
+static ff_app_pos_src_t shell_diag_pos_src(mc_loc_source_t src)
+{
+    switch (src) {
+    case MC_LOC_MANUAL: return FF_APP_POS_SRC_MANUAL;
+    case MC_LOC_INTERNAL: return FF_APP_POS_SRC_INTERNAL;
+    case MC_LOC_EXTERNAL: return FF_APP_POS_SRC_EXTERNAL;
+    case MC_LOC_UNKNOWN:
+    default: return FF_APP_POS_SRC_UNKNOWN;
+    }
+}
+
+static ff_app_wall_trust_t shell_diag_wall_trust(ff_wall_trust_t t)
+{
+    switch (t) {
+    case FF_WALL_TRUST_TRUSTED: return FF_APP_WALL_TRUST_TRUSTED;
+    case FF_WALL_TRUST_CORROBORATED: return FF_APP_WALL_TRUST_CORROBORATED;
+    case FF_WALL_TRUST_BOOTSTRAP:
+    default: return FF_APP_WALL_TRUST_BOOTSTRAP;
+    }
+}
+
+/**
+ * shell_compute_diag — DIAGNOSTICS: the ONE place that assembles
+ * `ff_app_diag_t` off live shell/meshclient state (see the three
+ * boundary translators just above). Two callers, deliberately sharing
+ * this single computation rather than each doing their own pass:
+ * `shell_project_diag_page` below (built ONLY while `subview ==
+ * FF_SETTINGS_SUB_DIAGNOSTICS` — the `ff_app_name_edit_t` precedent, not
+ * CREW/compass-cal's "always built" one, since nothing else reads a live
+ * fact off this page while it isn't showing), and the bench console's
+ * `diag` command (`ff_shell_diag_debug`, near the bottom of this file) —
+ * "one projection, two presentations" (ff_dbgcmd.h's own doc comment on
+ * `diag`), never a second computation that could quietly drift from the
+ * screen's.
+ *
+ * Crew/heard counts are read straight off `sh->crew`/`sh->heard` here
+ * (the same fields `dbgconsole_roster`/`dbgconsole_heard`,
+ * ff_debug_console.c, already loop over) rather than a caller-supplied
+ * `ff_app_crew_page_t` — the settings projection built one for its own
+ * page already (`shell_project_crew_page`), but the bench console caller
+ * has none, and a single shared computation cannot depend on a
+ * projection only one of its two callers has run.
+ */
+static void shell_compute_diag(shell_t const *sh, uint32_t now_ms, ff_app_diag_t *d)
+{
+    /* 1. Link */
+    d->link = shell_diag_link(sh->link);
+    d->my_node_id = sh->has_my_node_id ? sh->my_node_id : 0u;
+    d->has_short_name = sh->has_mesh_owner_short_name;
+    shell_copy_str(d->short_name, sizeof(d->short_name), sh->mesh_owner_short_name);
+    d->has_long_name = sh->has_mesh_owner_name;
+    shell_copy_str(d->long_name, sizeof(d->long_name), sh->mesh_owner_name);
+    d->has_last_frame_age = sh->has_last_frame;
+    if (d->has_last_frame_age) d->last_frame_age_ms = now_ms - sh->last_frame_ms;
+    {
+        mc_stats_t const stats = mc_get_stats(&sh->mc);
+        d->frames_ok = stats.frames_ok;
+        d->decode_errors = stats.decode_errors;
+        d->reconnects = stats.reconnects;
+    }
+
+    /* 2. Position (mine) */
+    d->pos_ok = sh->my_pos_ok;
+    if (d->pos_ok) {
+        d->pos_src = shell_diag_pos_src(sh->my_pos_loc_source);
+        d->pos_lat = sh->my_pos.lat;
+        d->pos_lon = sh->my_pos.lon;
+        d->pos_has_altitude = sh->my_pos_has_altitude;
+        d->pos_altitude_m = sh->my_pos_altitude_m;
+        d->pos_has_sats = sh->my_pos_has_sats;
+        d->pos_sats_in_view = sh->my_pos_sats_in_view;
+        d->pos_has_precision_bits = sh->my_pos_has_precision_bits;
+        d->pos_precision_bits = sh->my_pos_precision_bits;
+        d->pos_has_age = sh->my_pos_ms_valid;
+        if (d->pos_has_age) d->pos_age_ms = now_ms - sh->my_pos_ms;
+    }
+
+    /* 3. Mesh — crew_count/heard_count read straight off sh->crew/
+     * sh->heard (dbgconsole_roster/dbgconsole_heard's own loop shape),
+     * not off a caller's `ff_app_crew_page_t`: see this function's own
+     * doc comment for why a shared computation cannot assume one. */
+    {
+        uint8_t n_paired = 0;
+        for (uint8_t i = 0; i < sh->crew.count; ++i) {
+            if (sh->crew.members[i].paired) n_paired++;
+        }
+        d->crew_count = n_paired;
+    }
+    d->heard_count = ff_heard_count(&sh->heard);
+    d->has_last_rssi = sh->last_rx_meta_has_rssi;
+    d->last_rssi_dbm = sh->last_rx_meta_rssi;
+    d->has_last_snr = sh->last_rx_meta_has_snr;
+    d->last_snr_db = sh->last_rx_meta_snr;
+    d->last_rf_direct = (sh->last_rx_meta_rx_path == MC_RX_PATH_DIRECT);
+    d->has_last_rf_age = sh->has_last_rx_meta;
+    if (d->has_last_rf_age) d->last_rf_age_ms = now_ms - sh->last_rx_meta_ms;
+    d->has_chan_util = sh->telem_has_chan_util;
+    d->chan_util_pct = sh->telem_chan_util;
+    d->has_air_util_tx = sh->telem_has_air_util_tx;
+    d->air_util_tx_pct = sh->telem_air_util_tx;
+    d->has_telemetry_age = sh->has_self_telemetry;
+    if (d->has_telemetry_age) d->telemetry_age_ms = now_ms - sh->self_telemetry_ms;
+    /* Position-broadcast age: the SAME self-position timestamp as
+     * pos_age_ms above — see ff_app_diag_t's own doc comment for why
+     * this puck has exactly one such observation, surfaced twice. */
+    d->has_pos_broadcast_age = d->pos_ok && sh->my_pos_ms_valid;
+    if (d->has_pos_broadcast_age) d->pos_broadcast_age_ms = now_ms - sh->my_pos_ms;
+
+    /* 4. Time */
+    ff_wall_t const wall = shell_wall(sh, now_ms);
+    d->wall_latched = (wall.src != FF_WALL_UNKNOWN);
+    d->wall_has_trust = sh->has_last_wall_obs;
+    if (d->wall_has_trust) d->wall_trust = shell_diag_wall_trust(sh->last_wall_obs_trust);
+    d->wall_has_src_node = sh->has_last_wall_obs;
+    if (d->wall_has_src_node) d->wall_src_node = sh->last_wall_obs_node;
+    {
+        ff_wall_offset_cfg_t cfg;
+        shell_wall_offset_cfg(sh, &cfg);
+        int16_t offset_min = 0;
+        bool assumed = false;
+        d->wall_has_offset = ff_wall_resolve_offset(&cfg, &offset_min, &assumed);
+        if (d->wall_has_offset) {
+            d->wall_offset_min = offset_min;
+            d->wall_offset_assumed = assumed;
+        }
+    }
+    d->has_local_time = d->wall_latched;
+    ff_fmt_clock(d->local_time_str, sizeof(d->local_time_str), wall.now_min, d->wall_latched, sh->settings.clock_24h);
+
+    /* 5. Compass */
+    d->mag_kind = sh->has_device_stats ? sh->device_mag_kind : FF_APP_MAG_NONE;
+    d->mag_present = sh->has_device_stats && (sh->device_mag_kind != FF_APP_MAG_NONE);
+    d->imu_state = sh->has_device_stats ? sh->device_imu_state : FF_APP_IMU_ABSENT;
+    d->heading_valid = (sh->heading_deg >= 0.0f);
+    d->heading_deg = d->heading_valid ? sh->heading_deg : 0.0f;
+    d->compass_cal_set = sh->settings.cal_valid;
+
+    /* 6. Device */
+    d->has_batt_mv = sh->has_last_batt_mv;
+    d->batt_mv = sh->last_batt_mv_raw;
+    d->batt_pct = sh->batt_filter.displayed_pct; /* -1 until has_displayed — same sentinel ff_radar_view_t.batt_pct uses */
+    d->uptime_s = now_ms / 1000u; /* the shell's OWN uptime — see ff_shell_set_device_stats's doc comment */
+    shell_copy_str(d->fw_git_sha, sizeof(d->fw_git_sha), FF_BUILD_GIT_SHA);
+    shell_copy_str(d->fw_build_date, sizeof(d->fw_build_date), FF_BUILD_DATE);
+    d->has_free_heap = sh->has_device_stats;
+    if (d->has_free_heap) d->free_heap_bytes = sh->device_free_heap_bytes;
+}
+
+/**
+ * shell_project_diag_page — DIAGNOSTICS (Settings -> "DIAGNOSTICS" row).
+ * Built ONLY while `subview == FF_SETTINGS_SUB_DIAGNOSTICS` (see
+ * `shell_compute_diag`'s own doc comment just above for why); otherwise
+ * `out->diag` stays at `shell_project`'s whole-view memset zero, exactly
+ * like `ff_app_name_edit_t` off its own subview.
+ */
+static void shell_project_diag_page(shell_t const *sh, uint32_t now_ms, ff_app_settings_t *out)
+{
+    if (out->subview != FF_SETTINGS_SUB_DIAGNOSTICS) return;
+    shell_compute_diag(sh, now_ms, &out->diag);
+}
+
 /**
  * The Map face (S09).
  *
@@ -2717,6 +3038,7 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
     shell_project_crew_page(sh, now_ms, &sh->view.settings); /* S12/S04 */
     shell_project_compass_cal(sh, &sh->view.settings);       /* S12 step 3 */
     shell_project_name_edit(sh, &sh->view.settings);         /* NAME in Settings */
+    shell_project_diag_page(sh, now_ms, &sh->view.settings); /* DIAGNOSTICS */
     shell_project_map(sh, &sh->view.map);
     shell_project_banner(sh, now_ms, &sh->view.banner); /* S26(d) */
 
@@ -2967,6 +3289,22 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
     for (uint8_t i = 0; i < key->settings.crew.heard_count && i < FF_APP_CREW_HEARD_MAX; i++) {
         key->settings.crew.heard[i].age_ms = shell_coarsen_age_ms(v->settings.crew.heard[i].age_ms);
     }
+
+    /* DIAGNOSTICS — five raw-age fields, same coarsening discipline as
+     * every other age this key coarsens above. The page only renders
+     * when its own subview is showing, but that is exactly why this
+     * still matters: a wearer who leaves DIAGNOSTICS open must not
+     * repaint every tick over five ticking sub-minute ages that
+     * ff_fmt_age would render identically anyway. */
+    key->settings.diag.last_frame_age_ms =
+        v->settings.diag.has_last_frame_age ? shell_coarsen_age_ms(v->settings.diag.last_frame_age_ms) : 0u;
+    key->settings.diag.pos_age_ms = v->settings.diag.pos_has_age ? shell_coarsen_age_ms(v->settings.diag.pos_age_ms) : 0u;
+    key->settings.diag.last_rf_age_ms =
+        v->settings.diag.has_last_rf_age ? shell_coarsen_age_ms(v->settings.diag.last_rf_age_ms) : 0u;
+    key->settings.diag.telemetry_age_ms =
+        v->settings.diag.has_telemetry_age ? shell_coarsen_age_ms(v->settings.diag.telemetry_age_ms) : 0u;
+    key->settings.diag.pos_broadcast_age_ms =
+        v->settings.diag.has_pos_broadcast_age ? shell_coarsen_age_ms(v->settings.diag.pos_broadcast_age_ms) : 0u;
 
     /* S26 slice d — the banner's age, same coarsened-age discipline as
      * every preview/presence age above: scr_banner.c renders it only
@@ -3532,6 +3870,21 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
         mc_tick(&sh->mc, now_ms);
     }
 
+    /* DIAGNOSTICS — "time since last FromRadio frame". No meshclient API
+     * change needed: mc_stats_t.frames_ok already counts every frame the
+     * framer completes, so watching it for a change against last tick's
+     * value is enough to stamp the moment a frame arrived, at app-layer
+     * tick granularity (which is what any consumer of this age already
+     * renders at). */
+    {
+        uint32_t const frames_ok_now = mc_get_stats(&sh->mc).frames_ok;
+        if (frames_ok_now != sh->last_frames_ok_seen) {
+            sh->last_frames_ok_seen = frames_ok_now;
+            sh->has_last_frame = true;
+            sh->last_frame_ms = now_ms;
+        }
+    }
+
     /* S18 slice b (#50): the cold-boot want_config replay buffered its
      * cached positions while the wall latch was still settling. Re-age the
      * whole buffer against the now-settled latch EXACTLY on the link's
@@ -3785,6 +4138,7 @@ mc_events_t ff_shell_events(ff_shell_t *sh_pub)
     ev.on_private = shell_ev_private;
     ev.on_my_info = shell_ev_my_info;
     ev.on_rx_meta = shell_ev_rx_meta;
+    ev.on_telemetry = shell_ev_telemetry; /* DIAGNOSTICS */
     ev.on_owner = shell_ev_owner; /* confirmation-fix follow-up */
     ev.on_routing_ack = shell_ev_routing_ack; /* confirmation-fix follow-up */
     ev.user = shell_of(sh_pub);
@@ -5161,6 +5515,18 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         sh->settings_subview = FF_SETTINGS_SUB_LIST;
         return;
 
+    case FF_INTENT_SETTINGS_OPEN_DIAGNOSTICS:
+        /* DIAGNOSTICS — the Settings "DIAGNOSTICS" row. Gated on the
+         * takeover exactly like CREW/CALIBRATE_TOUCH above. Opens the
+         * DIAGNOSTICS sub-view; the next projection
+         * (shell_project_diag_page) builds the page fresh, so there is
+         * nothing else to prime here. BACK returns to the plain list via
+         * FF_INTENT_BACK's existing generic subview rule (no dedicated
+         * case needed — see that intent's own doc comment, ff_intent.h). */
+        if (takeover_up) return;
+        sh->settings_subview = FF_SETTINGS_SUB_DIAGNOSTICS;
+        return;
+
     case FF_INTENT_CREW_PAIR:
         /* S12/S04 — the CREW screen's HEARD-list "ADD" control. Routes
          * to ff_shell_pair, the one sanctioned roster-growth path (its
@@ -6024,6 +6390,30 @@ void ff_shell_set_batt_mv(ff_shell_t *sh_pub, uint16_t pack_mv, uint32_t now_ms)
      * ADC-read PR must pass its own real clock reading (e.g.
      * esp_timer_get_time() / 1000) here, not the shell's. */
     (void)ff_batt_filter_push(&sh->batt_filter, pack_mv, now_ms);
+
+    /* DIAGNOSTICS — the raw mV reading, tracked independent of the
+     * filter's own display smoothing: honest per this SINGLE push's own
+     * plausibility (ff_batt_pct_from_mv), not gated on whether the
+     * filter's multi-sample dead-sensor logic has reverted the DISPLAYED
+     * percent yet. An individually-implausible push leaves the previous
+     * raw reading in place, same "don't overwrite a real number with a
+     * blip" precedent the filter itself applies to its own window. */
+    if (ff_batt_pct_from_mv(pack_mv) >= 0) {
+        sh->has_last_batt_mv = true;
+        sh->last_batt_mv_raw = pack_mv;
+    }
+}
+
+void ff_shell_set_device_stats(ff_shell_t *sh_pub, bool ok, uint32_t free_heap_bytes, ff_app_mag_kind_t mag_kind,
+                                ff_app_imu_state_t imu_state)
+{
+    if (sh_pub == NULL) return;
+    shell_t *sh = shell_of(sh_pub);
+    sh->has_device_stats = ok;
+    if (!ok) return; /* honest "nothing to report" — see this function's own doc comment, ff_shell.h */
+    sh->device_free_heap_bytes = free_heap_bytes;
+    sh->device_mag_kind = mag_kind;
+    sh->device_imu_state = imu_state;
 }
 
 ff_shell_link_t ff_shell_link(ff_shell_t const *sh_pub)
@@ -6325,6 +6715,30 @@ ff_shell_my_pos_debug_t ff_shell_my_pos_debug(ff_shell_t const *sh_pub)
     if (out.has_age) {
         out.age_ms = shell_now(sh) - sh->my_pos_ms; /* wraparound-safe unsigned subtraction */
     }
+    return out;
+}
+
+/**
+ * ff_shell_diag_debug — [api] debug-only: the DIAGNOSTICS page's own
+ * `ff_app_diag_t`, computed live regardless of whether the Settings
+ * DIAGNOSTICS sub-view is actually open. Exists for the bench console's
+ * `diag` command (`ff_debug_console.c`'s `dbgconsole_diag`), which has no
+ * `ff_app_settings_t` of its own to read `shell_project_diag_page`'s
+ * output from and must not require a wearer to have navigated onto the
+ * page over USB just to ask "what does it currently say" — same
+ * motivation as `ff_shell_wall_debug`/`ff_shell_my_pos_debug` above.
+ *
+ * Calls the SAME `shell_compute_diag` the real projection does — see
+ * that function's own doc comment for why this is one computation, two
+ * presentations, not a second copy that could drift from the screen's.
+ */
+ff_app_diag_t ff_shell_diag_debug(ff_shell_t const *sh_pub)
+{
+    ff_app_diag_t out;
+    memset(&out, 0, sizeof(out));
+    if (sh_pub == NULL) return out;
+    shell_t const *sh = shell_of_const(sh_pub);
+    shell_compute_diag(sh, shell_now(sh), &out);
     return out;
 }
 

@@ -68,6 +68,21 @@ static void dbgcmd_i2c_parses(void)
     TEST_ASSERT_EQUAL(FF_DBGCMD_I2C, cmd.kind);
 }
 
+/* DIAGNOSTICS — `diag` is zero-arg, same shape as `wall`/`i2c` above. */
+static void dbgcmd_diag_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("diag", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_DIAG, cmd.kind);
+}
+
+static void dbgcmd_diag_with_extra_arg_rejected(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("diag now", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_NONE, cmd.kind);
+}
+
 static void dbgcmd_send_parses_with_text(void)
 {
     ff_dbgcmd_t cmd;
@@ -401,6 +416,8 @@ int main(void)
     RUN_TEST(dbgcmd_heard_parses);
     RUN_TEST(dbgcmd_wall_parses);
     RUN_TEST(dbgcmd_i2c_parses);
+    RUN_TEST(dbgcmd_diag_parses);
+    RUN_TEST(dbgcmd_diag_with_extra_arg_rejected);
     RUN_TEST(dbgcmd_send_parses_with_text);
     RUN_TEST(dbgcmd_dm_parses_with_hex_and_text);
     RUN_TEST(dbgcmd_dm_accepts_bang_prefix);

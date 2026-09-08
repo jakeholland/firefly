@@ -573,8 +573,29 @@ typedef struct {
  * check still catches that), and a ~36 KB static shell remains
  * comfortable in the S3's 512 KB SRAM; this stays a runaway-growth
  * tripwire, not a hardware limit.
+ *
+ * RAISED 36 KB -> 38 KB for DIAGNOSTICS ([api]), deliberately, per this
+ * comment's own instruction: a page's worth of small tracking fields
+ * that had no home before this page existed — richer self-position
+ * facts (source/altitude/sats/precision, alongside the existing
+ * `my_pos`/`my_pos_ok`), the last inbound packet's RSSI/SNR/rx_path,
+ * this node's own telemetry (channel util/air-util TX), the last-frame
+ * timestamp, the self mesh short-name cache, and the device-stats push
+ * (free heap + compass identification) — none doubled via the `view`/
+ * `prev_key` render-key pair (unlike the raises above): `ff_app_diag_t`
+ * is built ONLY while its own subview is showing (the `ff_app_name_
+ * edit_t` precedent, not `ff_app_crew_page_t`'s "always built" one — see
+ * that struct's own doc comment, ff_app_state.h), so its bytes exist
+ * once as plain shell_t tracking state, not as view-model state that
+ * lands twice. Measured, not estimated: sizeof(shell_t) is 37,528 B
+ * against the old 36,864 B budget (a hard compile failure). 38 KB
+ * (38,912 B) clears it with ~1.3 KB headroom — comfortably past the
+ * ~600-900 B margins the earlier raises used, since this feature keeps
+ * growing across the tests/goldens that follow it. A ~38 KB static
+ * shell remains comfortable in the S3's 512 KB SRAM; this stays a
+ * runaway-growth tripwire, not a hardware limit.
  */
-#define FF_SHELL_BYTES 36864u
+#define FF_SHELL_BYTES 38912u
 
 /** Alignment of the opaque payload. 8 covers every member the shell
  *  holds today (the widest are `double` inside `ff_latlon_t` and
@@ -1274,6 +1295,45 @@ void ff_shell_set_heading(ff_shell_t *sh, float heading_deg);
  */
 void ff_shell_set_batt_mv(ff_shell_t *sh, uint16_t pack_mv, uint32_t now_ms);
 
+/**
+ * ff_shell_set_device_stats — [api] DIAGNOSTICS: push the handful of
+ * device-only facts the DIAGNOSTICS page's "Device" section needs that
+ * have no existing seam — mirrors `ff_shell_set_batt_mv`/`ff_shell_
+ * set_heading`'s own "push API, target calls it, the shell just stores
+ * the value for the next projection" shape.
+ *
+ * Everything ELSE the Device section shows already has a home: battery
+ * via `ff_shell_set_batt_mv`, compass heading via `ff_shell_set_heading`,
+ * calibration-set/identity via the existing `ff_settings_t.cal_valid`,
+ * and uptime via the shell's own clock (`ff_shell_now_ms` since
+ * `ff_shell_init` IS this app's own uptime on both targets — no push
+ * needed). What remains genuinely has no reading on the sim at all:
+ *
+ *   - `free_heap_bytes` — an esp-idf heap query (`heap_caps_get_free_
+ *     size`), meaningless on the sim's host allocator. `ff_shell.c`
+ *     projects it only when `ok` is true (device-only; DIAGNOSTICS
+ *     renders "--" whenever this has never been called, i.e. always on
+ *     the sim).
+ *   - `mag_kind`/`imu_state` — `ff_compass_status()` (the esp32s3-only
+ *     `ff_compass` component ff_shell.h cannot depend on; see ff_app_
+ *     state.h's `ff_app_mag_kind_t`/`ff_app_imu_state_t` doc comment for
+ *     why this function reuses THOSE app-layer enums directly rather
+ *     than inventing a third copy of the same vocabulary). The sim has
+ *     no magnetometer/IMU driver at all and never calls this.
+ *
+ * `ok == false` means "nothing real to report" (mirrors `pack_mv == 0`'s
+ * "still don't know" convention on `ff_shell_set_batt_mv`) — every field
+ * below reads honestly unknown on the next projection, never a
+ * fabricated zero. `ok == true` is the ordinary case: a device tick that
+ * actually queried the heap allocator and the compass driver, whatever
+ * the two independently returned (a present compass with a still-absent
+ * IMU is a perfectly real, honestly-reportable combination — this call
+ * takes both at once purely because one target tick (app_main.c) reads
+ * both together, not because they are coupled facts).
+ */
+void ff_shell_set_device_stats(ff_shell_t *sh, bool ok, uint32_t free_heap_bytes, ff_app_mag_kind_t mag_kind,
+                                ff_app_imu_state_t imu_state);
+
 /* ---------------------------------------------------------------------
  * Read-only accessors (status bar, pairing UI, tests)
  * ------------------------------------------------------------------- */
@@ -1887,6 +1947,19 @@ typedef struct {
 } ff_shell_my_pos_debug_t;
 
 ff_shell_my_pos_debug_t ff_shell_my_pos_debug(ff_shell_t const *sh);
+
+/**
+ * ff_shell_diag_debug — [api] debug-only: DIAGNOSTICS' own `ff_app_diag_t`
+ * (link/position/mesh/time/compass/device facts), computed live
+ * regardless of whether the Settings DIAGNOSTICS sub-view is open. Exists
+ * for the bench console's `diag` command, which has no `ff_app_settings_t`
+ * of its own to read the real projection's output from — see this
+ * function's own doc comment (ff_shell.c) for why it shares the exact
+ * same computation the screen uses rather than a second one. `sh == NULL`
+ * returns an all-zero (all-unknown) `ff_app_diag_t`, same "honest zero on
+ * a bad handle" contract every getter in this section keeps.
+ */
+ff_app_diag_t ff_shell_diag_debug(ff_shell_t const *sh);
 
 #endif /* FF_TARGET_SIM || CONFIG_FF_DEBUG_CONSOLE */
 

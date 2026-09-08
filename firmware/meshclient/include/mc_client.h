@@ -249,6 +249,23 @@ typedef struct {
      * not full" rather than being assumed impossible. */
     bool has_precision_bits;
     uint32_t precision_bits;
+
+    /**
+     * [api] Diagnostics (S03 amendment) — satellite count as stated by
+     * the sender (`Position.sats_in_view`, mesh.pb.h tag 19). Same
+     * proto3 implicit-presence shape as `precision_bits` above (a plain
+     * SINGULAR uint32, no wire-level has-flag), and the same folding
+     * rule: a wire value of exactly 0 is byte-identical to "field never
+     * set", and a position fix genuinely arriving with zero satellites
+     * in view is implausible (a GPS needs several in view to compute any
+     * fix at all) — so 0 reads absent here too, per this field's own
+     * documented precedent. Unlike precision_bits there is no
+     * upper-bound garbage check: any nonzero uint32 is a plausible (if
+     * unusually large) satellite count, so nothing above 0 is rejected.
+     * Absent must NOT be read as "no satellites in view" — it means the
+     * sender did not say. */
+    bool has_sats_in_view;
+    uint32_t sats_in_view;
 } mc_position_t;
 
 typedef struct {
@@ -352,6 +369,40 @@ typedef struct {
     mc_rx_path_t rx_path;
 } mc_rx_meta_t;
 
+/**
+ * [api] Diagnostics — a node's own DEVICE metrics, decoded from a
+ * `Telemetry` message carrying a `device_metrics` variant
+ * (TELEMETRY_APP, portnum 67; `meshtastic_Telemetry.which_variant ==
+ * meshtastic_Telemetry_device_metrics_tag`). Meshtastic's `Telemetry`
+ * message is a oneof over several metric kinds (environment, power,
+ * local stats, ...); this library decodes ONLY the device_metrics
+ * variant — see `mc_events_t.on_telemetry`'s own doc comment for why
+ * every other variant is silently not-an-error, mirroring the existing
+ * "well-formed, nothing this library understands to report" precedent
+ * ADMIN_APP already sets for a reply variant it doesn't interpret.
+ *
+ * Every field is explicit-presence-flagged, same discipline as
+ * `mc_rx_meta_t`/`mc_position_t` above: `meshtastic_DeviceMetrics`'s own
+ * fields are all real proto3 `optional` (explicit presence — nanopb
+ * generates a genuine `has_*` per field, unlike `Position.sats_in_view`'s
+ * implicit-presence uint32), so this struct's `has_*` flags are a
+ * faithful passthrough of the wire's own presence bits, not a synthesized
+ * heuristic.
+ */
+typedef struct {
+    bool has_battery_level;
+    uint32_t battery_level; /* 0-100, >100 conventionally "powered" — same convention as mc_nodeinfo_t.battery_level */
+
+    bool has_channel_utilization;
+    float channel_utilization; /* percent, 0-100 (Meshtastic's own convention: airtime pct of the primary channel) */
+
+    bool has_air_util_tx;
+    float air_util_tx; /* percent, 0-100 (this node's own TX airtime pct) */
+
+    bool has_uptime_seconds;
+    uint32_t uptime_seconds; /* the REPORTING node's own uptime, not ours */
+} mc_telemetry_t;
+
 /** Counts of frames/packets we saw but didn't fully decode, per spec
  * ("Everything else skipped silently but counted"). */
 typedef struct {
@@ -410,6 +461,26 @@ typedef struct {
      * attributing either reading to `from`.
      */
     void (*on_rx_meta)(void *u, uint32_t from, mc_rx_meta_t const *m);
+
+    /**
+     * [api] Diagnostics — fires for a `Telemetry` message (TELEMETRY_APP,
+     * portnum 67) carrying a `device_metrics` variant. `from` is the
+     * reporting node — for THIS puck's comms brain reporting on itself,
+     * `from == my_node_id` (the same self-attribution rule `on_position`/
+     * `on_node` already give callers; no separate self-flag needed).
+     * Fires for every node the mesh carries device telemetry for, not
+     * only self — a caller building a "my node's own link/radio health"
+     * view (the DIAGNOSTICS screen this event exists for) filters on
+     * `from == my_node_id` itself, the same way `shell_ev_rx_meta`
+     * already filters `on_rx_meta` for crew-specific purposes. Never
+     * fires for a `Telemetry` carrying any OTHER variant (environment,
+     * power, local stats, ...) — those decode fine but this library
+     * currently has nothing to report about them, mirroring the
+     * pre-existing "well-formed, not this library's concern yet"
+     * precedent already documented on the ADMIN_APP dispatch branch in
+     * mc_client.c.
+     */
+    void (*on_telemetry)(void *u, uint32_t from, mc_telemetry_t const *t);
 
     /**
      * NAME in Settings, confirmation-fix follow-up — fires when an

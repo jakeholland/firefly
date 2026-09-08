@@ -1,0 +1,58 @@
+{
+  "fixture": "settings_diag_full",
+  "face": "settings",
+  "settings": {
+    "subview": "diagnostics",
+    "diag": {
+      "link": "connected",
+      "my_node_id": 4096,
+      "short_name": "JAKE",
+      "long_name": "Jake Holland",
+      "last_frame_age_ms": 800,
+      "frames_ok": 12045,
+      "decode_errors": 2,
+      "reconnects": 1,
+
+      "pos_src": "internal",
+      "pos_ok": true,
+      "pos_lat": 39.9371,
+      "pos_lon": -82.4152,
+      "pos_altitude_m": 287,
+      "pos_sats_in_view": 9,
+      "pos_precision_bits": 32,
+      "pos_age_ms": 4200,
+
+      "crew_count": 3,
+      "heard_count": 2,
+      "last_rssi_dbm": -61,
+      "last_snr_db": 7.5,
+      "last_rf_direct": true,
+      "last_rf_age_ms": 1500,
+      "chan_util_pct": 12.5,
+      "air_util_tx_pct": 3.2,
+      "telemetry_age_ms": 60000,
+      "pos_broadcast_age_ms": 4200,
+
+      "wall_latched": true,
+      "wall_trust": "trusted",
+      "wall_src_node": 4096,
+      "wall_offset_min": -300,
+      "wall_offset_assumed": false,
+      "local_time_str": "9:46 pm",
+
+      "mag_kind": "qmc5883p",
+      "mag_present": true,
+      "imu_state": "ok",
+      "heading_valid": true,
+      "heading_deg": 87,
+      "compass_cal_set": true,
+
+      "batt_mv": 3900,
+      "batt_pct": 82,
+      "uptime_s": 5025,
+      "fw_git_sha": "a1b2c3d4e5f6",
+      "fw_build_date": "2026-09-05",
+      "free_heap_bytes": 123456
+    }
+  }
+}

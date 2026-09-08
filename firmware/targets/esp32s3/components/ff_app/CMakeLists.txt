@@ -87,3 +87,40 @@ endif()
 if(CONFIG_FF_DEBUG_CONSOLE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE CONFIG_FF_DEBUG_CONSOLE=1)
 endif()
+
+# DIAGNOSTICS — app/include/ff_build_info.h's FF_BUILD_GIT_SHA/FF_BUILD_DATE
+# macros. Same git-describe wiring firmware/app/CMakeLists.txt applies to
+# the sim's ff-shell target, PRIVATE to this component (ff_shell.c is the
+# sole consumer, same reasoning as the two Kconfig defines just above). A
+# missing/broken git leaves both macros at ff_build_info.h's own honest
+# "unknown"/__DATE__ fallback, silently.
+find_package(Git QUIET)
+set(FF_BUILD_GIT_SHA_VALUE "")
+set(FF_BUILD_DATE_VALUE "")
+if(GIT_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --short=12 HEAD
+        WORKING_DIRECTORY ${FF_FW_DIR}
+        OUTPUT_VARIABLE FF_BUILD_GIT_SHA_VALUE
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE FF_BUILD_GIT_SHA_RC
+    )
+    if(NOT FF_BUILD_GIT_SHA_RC EQUAL 0)
+        set(FF_BUILD_GIT_SHA_VALUE "")
+    else()
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} show -s --format=%cd --date=short HEAD
+            WORKING_DIRECTORY ${FF_FW_DIR}
+            OUTPUT_VARIABLE FF_BUILD_DATE_VALUE
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+    endif()
+endif()
+if(NOT FF_BUILD_GIT_SHA_VALUE STREQUAL "")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE FF_BUILD_GIT_SHA="${FF_BUILD_GIT_SHA_VALUE}")
+endif()
+if(NOT FF_BUILD_DATE_VALUE STREQUAL "")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE FF_BUILD_DATE="${FF_BUILD_DATE_VALUE}")
+endif()

@@ -397,6 +397,50 @@ target_link_libraries(ff-shell PUBLIC ff-app ff-route ff-wiring ff-core ff-meshc
 target_compile_features(ff-shell PUBLIC c_std_11)
 ff_apply_warnings(ff-shell)
 
+# DIAGNOSTICS — app/include/ff_build_info.h's FF_BUILD_GIT_SHA/FF_BUILD_DATE
+# macros fall back to "unknown"/__DATE__ (that header's own #ifndef guards)
+# when nothing overrides them. Supply the real values here, from git, when
+# this checkout has one: the commit ff_shell.c (the sole consumer) was built
+# from, and that COMMIT's own date — not the compile host's clock, which is
+# not reproducible across build machines. `git rev-parse`/`git show` both
+# walk up from CWD to find the repo root on their own, so this works whether
+# firmware/ is the repo root or a subdirectory of a larger checkout (and
+# inside a worktree, whose ".git" is a file, not a directory, pointing at
+# the real one — never probed for directly, only via the git command's own
+# exit code). A missing/broken git (no .git at all, a source tarball, a CI
+# checkout with history stripped) leaves both macros at ff_build_info.h's
+# own honest fallback, silently — this is a nice-to-have, not a gate.
+find_package(Git QUIET)
+set(FF_BUILD_GIT_SHA_VALUE "")
+set(FF_BUILD_DATE_VALUE "")
+if(GIT_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --short=12 HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE FF_BUILD_GIT_SHA_VALUE
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE FF_BUILD_GIT_SHA_RC
+    )
+    if(NOT FF_BUILD_GIT_SHA_RC EQUAL 0)
+        set(FF_BUILD_GIT_SHA_VALUE "")
+    else()
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} show -s --format=%cd --date=short HEAD
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            OUTPUT_VARIABLE FF_BUILD_DATE_VALUE
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+    endif()
+endif()
+if(NOT FF_BUILD_GIT_SHA_VALUE STREQUAL "")
+    target_compile_definitions(ff-shell PRIVATE FF_BUILD_GIT_SHA="${FF_BUILD_GIT_SHA_VALUE}")
+endif()
+if(NOT FF_BUILD_DATE_VALUE STREQUAL "")
+    target_compile_definitions(ff-shell PRIVATE FF_BUILD_DATE="${FF_BUILD_DATE_VALUE}")
+endif()
+
 # Bench/debug console (CONFIG_FF_DEBUG_CONSOLE) — app/ff_debug_console.c:
 # the dispatch half over a live ff_shell_t (docs/hardware/comms-brain.md,
 # "Bench console"; the pure line parser is core's ff-core library,

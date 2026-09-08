@@ -972,8 +972,40 @@ static const fx_enum_entry_t fx_share_mode_table[] = {
 static const fx_enum_entry_t fx_settings_subview_table[] = {
     {"list", FF_SETTINGS_SUB_LIST},
     {"crew", FF_SETTINGS_SUB_CREW},
-    {"compass_cal", FF_SETTINGS_SUB_COMPASS_CAL}, /* S12 step 3 */
-    {"name_edit", FF_SETTINGS_SUB_NAME_EDIT},     /* NAME in Settings */
+    {"compass_cal", FF_SETTINGS_SUB_COMPASS_CAL},   /* S12 step 3 */
+    {"name_edit", FF_SETTINGS_SUB_NAME_EDIT},       /* NAME in Settings */
+    {"diagnostics", FF_SETTINGS_SUB_DIAGNOSTICS},   /* DIAGNOSTICS */
+};
+
+/* DIAGNOSTICS — ff_app_diag_t's five small boundary-translated enums
+ * (ff_app_state.h's own doc comment on that struct has the full
+ * rationale for why each one exists). */
+static const fx_enum_entry_t fx_diag_link_table[] = {
+    {"none", FF_APP_LINK_NONE},
+    {"reconnecting", FF_APP_LINK_RECONNECTING},
+    {"connected", FF_APP_LINK_CONNECTED},
+};
+static const fx_enum_entry_t fx_diag_pos_src_table[] = {
+    {"unknown", FF_APP_POS_SRC_UNKNOWN},
+    {"manual", FF_APP_POS_SRC_MANUAL},
+    {"internal", FF_APP_POS_SRC_INTERNAL},
+    {"external", FF_APP_POS_SRC_EXTERNAL},
+};
+static const fx_enum_entry_t fx_diag_wall_trust_table[] = {
+    {"bootstrap", FF_APP_WALL_TRUST_BOOTSTRAP},
+    {"trusted", FF_APP_WALL_TRUST_TRUSTED},
+    {"corroborated", FF_APP_WALL_TRUST_CORROBORATED},
+};
+static const fx_enum_entry_t fx_diag_mag_kind_table[] = {
+    {"none", FF_APP_MAG_NONE},
+    {"qmc5883l", FF_APP_MAG_QMC5883L},
+    {"hmc5883l", FF_APP_MAG_HMC5883L},
+    {"qmc5883p", FF_APP_MAG_QMC5883P},
+};
+static const fx_enum_entry_t fx_diag_imu_state_table[] = {
+    {"absent", FF_APP_IMU_ABSENT},
+    {"no_data", FF_APP_IMU_NO_DATA},
+    {"ok", FF_APP_IMU_OK},
 };
 
 static const fx_enum_entry_t fx_name_edit_mode_table[] = {
@@ -1100,6 +1132,178 @@ static ff_fixture_result_t fx_parse_name_edit(fx_ctx_t const *c, int obj_i, ff_a
     return FF_FIXTURE_OK;
 }
 
+/* fx_parse_diag — DIAGNOSTICS (Settings -> "DIAGNOSTICS" page):
+ * ff_app_diag_t, field-for-field flat (the struct itself has no nested
+ * sub-structs, unlike compass_cal/name_edit's own siblings-in-JSON-but-
+ * flat-in-C shape) — every JSON key below names a struct member
+ * directly. Every optional fact's `has_*` flag is DERIVED from its
+ * value key being present (the crew/heard-row `has_name` precedent
+ * fx_parse_crew_page already established above), so a golden that wants
+ * "fully populated" states every value key, and one that wants
+ * "all-unknown" (the honest-data proof this page's spec calls for)
+ * simply omits them all — no fixture author ever sets a `has_x: true`
+ * flag directly. `batt_pct` is the one field whose OWN omitted-default
+ * is not the struct's zero-init: -1 is "unknown" on this int8 (the same
+ * sentinel `ff_radar_view_t.batt_pct` uses), so it is defaulted
+ * explicitly here, the same "the memset(0) default would be a lie"
+ * reason `s->brightness_pct` gets defaulted in fx_parse_settings below. */
+static ff_fixture_result_t fx_parse_diag(fx_ctx_t const *c, int obj_i, ff_app_diag_t *d)
+{
+    int t;
+    d->batt_pct = -1;
+
+    /* 1. Link */
+    if (fx_obj_get(c, obj_i, "link", &t)) {
+        int v;
+        ff_fixture_result_t rc =
+            fx_enum(c, t, fx_diag_link_table, sizeof(fx_diag_link_table) / sizeof(fx_diag_link_table[0]),
+                    "settings.diag.link", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        d->link = (ff_app_link_t)v;
+    }
+    if (fx_obj_get(c, obj_i, "my_node_id", &t)) d->my_node_id = (uint32_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "short_name", &t)) {
+        d->has_short_name = true;
+        fx_copy_str(c, t, d->short_name, sizeof(d->short_name));
+    }
+    if (fx_obj_get(c, obj_i, "long_name", &t)) {
+        d->has_long_name = true;
+        fx_copy_str(c, t, d->long_name, sizeof(d->long_name));
+    }
+    if (fx_obj_get(c, obj_i, "last_frame_age_ms", &t)) {
+        d->has_last_frame_age = true;
+        d->last_frame_age_ms = (uint32_t)fx_num(c, t, 0.0);
+    }
+    if (fx_obj_get(c, obj_i, "frames_ok", &t)) d->frames_ok = (uint32_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "decode_errors", &t)) d->decode_errors = (uint32_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "reconnects", &t)) d->reconnects = (uint32_t)fx_num(c, t, 0.0);
+
+    /* 2. Position (mine) */
+    if (fx_obj_get(c, obj_i, "pos_src", &t)) {
+        int v;
+        ff_fixture_result_t rc =
+            fx_enum(c, t, fx_diag_pos_src_table, sizeof(fx_diag_pos_src_table) / sizeof(fx_diag_pos_src_table[0]),
+                    "settings.diag.pos_src", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        d->pos_src = (ff_app_pos_src_t)v;
+    }
+    if (fx_obj_get(c, obj_i, "pos_ok", &t)) d->pos_ok = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "pos_lat", &t)) d->pos_lat = fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "pos_lon", &t)) d->pos_lon = fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "pos_altitude_m", &t)) {
+        d->pos_has_altitude = true;
+        d->pos_altitude_m = (int32_t)fx_num(c, t, 0.0);
+    }
+    if (fx_obj_get(c, obj_i, "pos_sats_in_view", &t)) {
+        d->pos_has_sats = true;
+        d->pos_sats_in_view = (uint32_t)fx_num(c, t, 0.0);
+    }
+    if (fx_obj_get(c, obj_i, "pos_precision_bits", &t)) {
+        d->pos_has_precision_bits = true;
+        d->pos_precision_bits = (uint32_t)fx_num(c, t, 0.0);
+    }
+    if (fx_obj_get(c, obj_i, "pos_age_ms", &t)) {
+        d->pos_has_age = true;
+        d->pos_age_ms = (uint32_t)fx_num(c, t, 0.0);
+    }
+
+    /* 3. Mesh */
+    if (fx_obj_get(c, obj_i, "crew_count", &t)) d->crew_count = (uint8_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "heard_count", &t)) d->heard_count = (uint8_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "last_rssi_dbm", &t)) {
+        d->has_last_rssi = true;
+        d->last_rssi_dbm = (int16_t)fx_num(c, t, 0.0);
+    }
+    if (fx_obj_get(c, obj_i, "last_snr_db", &t)) {
+        d->has_last_snr = true;
+        d->last_snr_db = (float)fx_num(c, t, 0.0);
+    }
+    if (fx_obj_get(c, obj_i, "last_rf_direct", &t)) d->last_rf_direct = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "last_rf_age_ms", &t)) {
+        d->has_last_rf_age = true;
+        d->last_rf_age_ms = (uint32_t)fx_num(c, t, 0.0);
+    }
+    if (fx_obj_get(c, obj_i, "chan_util_pct", &t)) {
+        d->has_chan_util = true;
+        d->chan_util_pct = (float)fx_num(c, t, 0.0);
+    }
+    if (fx_obj_get(c, obj_i, "air_util_tx_pct", &t)) {
+        d->has_air_util_tx = true;
+        d->air_util_tx_pct = (float)fx_num(c, t, 0.0);
+    }
+    if (fx_obj_get(c, obj_i, "telemetry_age_ms", &t)) {
+        d->has_telemetry_age = true;
+        d->telemetry_age_ms = (uint32_t)fx_num(c, t, 0.0);
+    }
+    if (fx_obj_get(c, obj_i, "pos_broadcast_age_ms", &t)) {
+        d->has_pos_broadcast_age = true;
+        d->pos_broadcast_age_ms = (uint32_t)fx_num(c, t, 0.0);
+    }
+
+    /* 4. Time */
+    if (fx_obj_get(c, obj_i, "wall_latched", &t)) d->wall_latched = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "wall_trust", &t)) {
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_diag_wall_trust_table,
+                                          sizeof(fx_diag_wall_trust_table) / sizeof(fx_diag_wall_trust_table[0]),
+                                          "settings.diag.wall_trust", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        d->wall_has_trust = true;
+        d->wall_trust = (ff_app_wall_trust_t)v;
+    }
+    if (fx_obj_get(c, obj_i, "wall_src_node", &t)) {
+        d->wall_has_src_node = true;
+        d->wall_src_node = (uint32_t)fx_num(c, t, 0.0);
+    }
+    if (fx_obj_get(c, obj_i, "wall_offset_min", &t)) {
+        d->wall_has_offset = true;
+        d->wall_offset_min = (int16_t)fx_num(c, t, 0.0);
+    }
+    if (fx_obj_get(c, obj_i, "wall_offset_assumed", &t)) d->wall_offset_assumed = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "local_time_str", &t)) {
+        d->has_local_time = true;
+        fx_copy_str(c, t, d->local_time_str, sizeof(d->local_time_str));
+    }
+
+    /* 5. Compass */
+    if (fx_obj_get(c, obj_i, "mag_kind", &t)) {
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_diag_mag_kind_table,
+                                          sizeof(fx_diag_mag_kind_table) / sizeof(fx_diag_mag_kind_table[0]),
+                                          "settings.diag.mag_kind", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        d->mag_kind = (ff_app_mag_kind_t)v;
+    }
+    if (fx_obj_get(c, obj_i, "mag_present", &t)) d->mag_present = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "imu_state", &t)) {
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_diag_imu_state_table,
+                                          sizeof(fx_diag_imu_state_table) / sizeof(fx_diag_imu_state_table[0]),
+                                          "settings.diag.imu_state", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        d->imu_state = (ff_app_imu_state_t)v;
+    }
+    if (fx_obj_get(c, obj_i, "heading_valid", &t)) d->heading_valid = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "heading_deg", &t)) d->heading_deg = (float)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "compass_cal_set", &t)) d->compass_cal_set = fx_bool(c, t, false);
+
+    /* 6. Device */
+    if (fx_obj_get(c, obj_i, "batt_mv", &t)) {
+        d->has_batt_mv = true;
+        d->batt_mv = (uint16_t)fx_num(c, t, 0.0);
+    }
+    if (fx_obj_get(c, obj_i, "batt_pct", &t)) d->batt_pct = (int8_t)fx_num(c, t, -1.0);
+    if (fx_obj_get(c, obj_i, "uptime_s", &t)) d->uptime_s = (uint32_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "fw_git_sha", &t)) fx_copy_str(c, t, d->fw_git_sha, sizeof(d->fw_git_sha));
+    if (fx_obj_get(c, obj_i, "fw_build_date", &t)) fx_copy_str(c, t, d->fw_build_date, sizeof(d->fw_build_date));
+    if (fx_obj_get(c, obj_i, "free_heap_bytes", &t)) {
+        d->has_free_heap = true;
+        d->free_heap_bytes = (uint32_t)fx_num(c, t, 0.0);
+    }
+
+    return FF_FIXTURE_OK;
+}
+
 /* Returns non-OK only for a present-but-unrecognized `share_mode`
  * (issue #28 — see fx_enum's doc comment). */
 static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_app_settings_t *s)
@@ -1192,6 +1396,13 @@ static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_ap
     int name_edit_i;
     if (fx_obj_get(c, obj_i, "name_edit", &name_edit_i) && !fx_is_null(c, name_edit_i)) {
         ff_fixture_result_t rc = fx_parse_name_edit(c, name_edit_i, &s->name_edit);
+        if (rc != FF_FIXTURE_OK) return rc;
+    }
+
+    /* DIAGNOSTICS — the "DIAGNOSTICS" page. */
+    int diag_i;
+    if (fx_obj_get(c, obj_i, "diag", &diag_i) && !fx_is_null(c, diag_i)) {
+        ff_fixture_result_t rc = fx_parse_diag(c, diag_i, &s->diag);
         if (rc != FF_FIXTURE_OK) return rc;
     }
 
