@@ -1479,6 +1479,198 @@ BOSS_CORE_R = 2.6   # see clipped_pillar_with_reach -- < boss_dia/2 (3.0), > cou
 # matter here since the join happens BEFORE the hole/counterbore cuts.
 POST_CORE_R = 1.1   # < top_post_dia/2 (2.0), > top_post_pilot_dia/2 (0.81)
 
+# --- pass 14, item 1: lanyard-end corner blocks (A+B1 / C+B2) ---------------
+# Jake's sketch: the four free-standing Top-side bosses at the lanyard end
+# become TWO solid corner blocks, one per side -- "a buttress block the two
+# screws land in, not two posts with a web". See add_lanyard_corner_block's
+# own docstring for the full construction. These constants went through TWO
+# live rounds this pass: a first version padded the capsule to 3.7mm radius
+# (boss_dia/2 + 0.7) to satisfy verify_root_fillets' 3.6mm probe on its own
+# -- but a live check_interference run found real overlap (up to 46mm^3)
+# against the inserted XIAO/Wio boards at B1/B2: their REAL footprint at
+# B1/B2's own y (~-15) reaches x=+-8.9mm, only 3.61mm from B1/B2's own
+# centre (+-12.5mm) -- LESS than the 3.7mm the capsule needed, so no amount
+# of ring/stack-footprint clamping alone could fit both at once. Fixed by
+# splitting the two jobs: CORNER_BLOCK_PAD=0.0 (the capsule/wedge's own
+# radius is just boss_dia/2, the SAME footprint the old individual bosses
+# always had, proven interference-free through pass 13) plus the pass-13
+# conical collar (already added below, near the ceiling only) to satisfy
+# verify_root_fillets' probe instead -- the collar's own geometry doesn't
+# care what the underlying pillar's cross-section is, so a plain
+# boss-radius capsule gets exactly the same 1.1mm-at-dz=0.4mm boost any
+# other boss/post in this file gets. CORNER_BLOCK_STACK_MARGIN is a second,
+# independent belt-and-suspenders cut against the STATIC L76K PCB footprint
+# param (which the live board interference above showed is a reasonable,
+# if not perfectly tight, proxy for the real 3-board stack's own envelope).
+CORNER_BLOCK_PAD = 0.0             # mm added to boss_dia/2 -- see the module comment above: 0 keeps the
+                                    # capsule/wedge at exactly the old proven-safe boss radius; verify_root_
+                                    # fillets is satisfied by the collar (added unconditionally below), not this.
+CORNER_BLOCK_REACH = 10.0          # mm -- deliberately oversized outward-wedge reach: clipped by
+                                    # clip_to_inner_cavity (the true shell) and CORNER_BLOCK_RING_CLEARANCE below,
+                                    # so the block's REAL reach is whichever boundary is actually closer.
+CORNER_BLOCK_RING_CLEARANCE = 0.5  # mm kept clear of the lip/anchor ring's own inner edge (lip_r[0]) -- at
+                                    # CORNER_BLOCK_PAD=0.0, B1/B2 (19.53mm from spine_a) reach only 22.53mm;
+                                    # trim's lip_r[0]=23.95 minus this 0.5mm clearance = 23.45mm, comfortable
+                                    # margin (current has far more still: lip_r[0]=25.95).
+CORNER_BLOCK_STACK_MARGIN = 0.8    # mm -- belt-and-suspenders cut of the L76K PCB footprint (p['bay']['stack3']
+                                    # ['l76k_pcb']) + this margin, from the block's own 'wide' portion, full
+                                    # z0..z1 height (not just the frame's own low-z band) -- the live interference
+                                    # this pass found reached as high as z=22.9 (the Wio module), well above the
+                                    # comms-stack FRAME's own z-range, so a low-z-only keepout (matching
+                                    # add_comms_stack_frame's) would have missed it. Sized to clear BOSS_CORE_R's
+                                    # own reach (2.6mm from each screw, i.e. to x=+-9.9 for B1/B2) with 0.2mm to
+                                    # spare -- the core is never clipped by this (it's added back in afterward,
+                                    # unclipped, same as every other boss/post's core).
+
+
+def _lanyard_corner_pair(p, side):
+    """The near/far case-screw pair merged into one Top-side corner block
+    (pass 14, item 1): side<0 -> A (near the centreline, y=-8) + B1 (far,
+    toward the dome tip, y=-15); side>0 -> C + B2. 'near'/'far' is relative
+    to the case's own y=0 centreline, not to spine_a."""
+    by_name = {s['name']: s for s in p['screws_ABC']}
+    return (by_name['A'], by_name['B1']) if side < 0 else (by_name['C'], by_name['B2'])
+
+
+def add_lanyard_corner_block(root, bodies, p, side, clip_tool=None):
+    """Pass 14, item 1: merge case-screw bosses A+B1 (side<0) or C+B2
+    (side>0) into ONE solid Top-side corner block, replacing their old
+    separate Top-side cylinders (see add_case_boss's build_top=False for
+    the Bottom-side halves, UNCHANGED by this pass -- Bottom's own
+    counterbores stay exactly where they were).
+
+    Construction -- the same 'wide (clipped) + core (unclipped, guaranteed
+    full-height reach)' pattern clipped_pillar_with_reach already
+    establishes for every other boss/post in this file:
+
+    'wide' = a stadium/capsule (oriented_stadium_prism) connecting the two
+    screw centres, radius boss_dia/2 + CORNER_BLOCK_PAD (see that
+    constant's own module comment for why PAD=0.0, not a bigger padding,
+    is the live-confirmed safe choice) -- every point ON the connecting
+    segment, including both screw centres themselves, has the segment's
+    FULL disk of that radius around it in EVERY direction (a Minkowski-sum
+    capsule's own defining property) -- UNIONED with an oversized outward
+    wedge (oriented_box_prism, CORNER_BLOCK_REACH=10mm) that starts
+    exactly at the capsule's own outward edge (so it only ever ADDS
+    material outward, never reaching back in toward the screws' own
+    inboard/comms-stack side) and reaches toward the true dome wall.
+    'Outward' is determined LIVE (a dot product against the direction
+    away from spine_a), not assumed, so this keeps working if a future
+    pass moves either screw. The union is clipped THREE ways: clip_to_
+    inner_cavity (the true shell -- so it can never punch through, same
+    as every other boss/post); a plain cylinder centred on spine_a at
+    radius lip_r[0] - CORNER_BLOCK_RING_CLEARANCE, so the block stops
+    cleanly short of the lip/anchor ring's own inner edge rather than
+    fusing into it; and a cut of the L76K PCB footprint (p['bay']
+    ['stack3']['l76k_pcb']) + CORNER_BLOCK_STACK_MARGIN, spanning the
+    block's FULL z-height -- a live check_interference run this pass
+    found the real inserted XIAO/Wio boards reach as high as z~22.9 at
+    B1/B2's own y, well above the comms-stack frame's own low-z band, so
+    this keepout is NOT limited to that band the way add_comms_stack_
+    frame's own per-boss relief is (see CORNER_BLOCK_STACK_MARGIN's own
+    module comment for the exact numbers this closed).
+
+    'core' = two full-height (split_z..top_ceiling_underside_z), UNCLIPPED
+    cylinders (radius BOSS_CORE_R), one at each screw centre -- guarantees
+    the join physically reaches both z ends, exactly like every other
+    boss/post (clip_to_inner_cavity alone shrinks by its own safety
+    margin on every face including the z ends -- see clipped_pillar_
+    with_reach's own docstring for the silent-no-op-join bug this
+    pattern fixes). Added back in AFTER the stack-footprint cut, so it is
+    never itself clipped by it (BOSS_CORE_R's own 2.6mm reach already
+    clears the PCB edge + CORNER_BLOCK_STACK_MARGIN by construction --
+    see that constant's own comment).
+
+    A conical root-reinforcement collar (add_root_reinforcement, the same
+    pass-13 mechanism used at every other post/boss in this file) is added
+    at BOTH screw centres, unconditionally, near the ceiling only --
+    live-confirmed THIS pass to be genuinely needed (not just belt-and-
+    suspenders): the plain boss-radius capsule alone missed ONE of
+    verify_root_fillets' 8 angles at B1/B2 (the ceiling's own fillet
+    curvature narrows the usable radius there, at that particular
+    direction, independent of the comms-stack question above), and the
+    collar -- unconditional, full 360 degrees, geometry-independent --
+    closes it the same way it already does for the top posts.
+
+    z0..z1 = split_z..top_ceiling_underside_z, unchanged from the old
+    per-screw Top boss, so the block's top face sits at the exact same
+    height the screws already bottomed out against -- see the pass-14
+    README section."""
+    near, far = _lanyard_corner_pair(p, side)
+    (nx, ny), (fx, fy) = near['xy'], far['xy']
+    boss_r = p['boss_dia'] / 2.0
+    cap_r = boss_r + CORNER_BLOCK_PAD
+    z0, z1 = p['split_z'], p['top_ceiling_underside_z']
+    ay = p['spine_a'][1]
+
+    dx, dy = fx - nx, fy - ny
+    seg_len = math.hypot(dx, dy)
+    axis1 = (dx / seg_len, dy / seg_len, 0.0)
+    axis2 = (-axis1[1], axis1[0], 0.0)
+    mx, my = (nx + fx) / 2.0, (ny + fy) / 2.0
+    if _dot(axis2, (mx, my - ay, 0.0)) < 0:
+        axis2 = (-axis2[0], -axis2[1], -axis2[2])  # now points OUTWARD, away from spine_a
+
+    capsule = oriented_stadium_prism(
+        root, (mx, my, z0), axis1, axis2, (0.0, 0.0, 1.0),
+        seg_len + 2.0 * cap_r, 2.0 * cap_r, z1 - z0)
+
+    wedge_offset = cap_r + CORNER_BLOCK_REACH / 2.0
+    wedge_center = (mx + axis2[0] * wedge_offset, my + axis2[1] * wedge_offset, z0)
+    wedge = oriented_box_prism(
+        root, wedge_center, axis1, axis2, (0.0, 0.0, 1.0),
+        seg_len + 2.0 * cap_r, CORNER_BLOCK_REACH, z1 - z0)
+
+    wide = combine_join(root, capsule, [wedge])
+    wide = clip_to_inner_cavity(root, wide, p, clip_tool)
+
+    ring_limit_r = p['lip_r'][0] - CORNER_BLOCK_RING_CLEARANCE
+    ring_limit = cylinder_solid(root, 0.0, ay, ring_limit_r, z0 - 1.0, z1 + 1.0)
+    wide = combine_intersect(root, wide, [ring_limit])
+
+    s3 = p['bay'].get('stack3')
+    if s3 is not None:
+        pcb = s3['l76k_pcb']
+        m = CORNER_BLOCK_STACK_MARGIN
+        stack_keepout = box_solid(root, pcb['x'][0] - m, pcb['x'][1] + m, pcb['y'][0] - m, pcb['y'][1] + m,
+                                   z0 - 0.5, z1 + 0.5)
+        wide = combine_cut(root, wide, [stack_keepout])
+
+    core_n = cylinder_solid(root, nx, ny, BOSS_CORE_R, z0, z1)
+    core_f = cylinder_solid(root, fx, fy, BOSS_CORE_R, z0, z1)
+    block = combine_join(root, wide, [core_n, core_f])
+
+    top_in = _refetch_by_name(root, 'Top') or bodies['Top']
+    top = combine_join(root, top_in, [block])
+    if clip_tool is not None:
+        top = dedupe_body(root, top, 'Top')
+    top = _refetch_by_name(root, 'Top') or top
+
+    for (cx, cy) in (near['xy'], far['xy']):
+        pilot = cylinder_solid(root, cx, cy, p['top_pilot_dia'] / 2.0, p['top_pilot_z'][0], p['top_pilot_z'][1])
+        top = combine_cut(root, top, [pilot])
+    top = _refetch_by_name(root, 'Top') or top
+
+    # Live-confirmed (this pass): the capsule alone satisfies
+    # verify_root_fillets' 3.6mm-radius/8-angle probe at A/C, but B1/B2 --
+    # the far screw of each pair, closer to the dome tip -- miss ONE of
+    # the 8 angles (the one pointing toward both the true wall AND the
+    # dome cap's own ceiling fillet at once): clip_to_inner_cavity's
+    # ceiling isn't flat out at B1/B2's own radius from spine_a, it's
+    # already into the same outer-fillet curvature the shoulder profile
+    # uses (rho > fillet_center_rho), so the wide capsule loses a sliver
+    # right at the ceiling in that one direction. The standard pass-13
+    # conical collar (add_root_reinforcement) at each screw's own centre
+    # closes this the same way it already does for every other post/boss
+    # in this file -- applied to both screws of the pair for symmetry
+    # (a no-op margin add for A/C, which didn't need it).
+    for name, (cx, cy) in ((near['name'], near['xy']), (far['name'], far['xy'])):
+        top = add_root_reinforcement(root, top, 'Top', f'corner_block_{name}', cx, cy, boss_r,
+                                      z1, direction='up')
+        top = _refetch_by_name(root, 'Top') or top
+    bodies['Top'] = top
+    return bodies
+
 # 2026-09-08 pass 9b, finding 9: the rib_plate's reach-to-the-wall
 # 'connector spoke' (add_button) -- shared with add_button_plate_clearance
 # so the Screen Plate's own clearance cutout always covers whatever
@@ -1527,7 +1719,7 @@ def _refetch_by_name(root, name):
     return None
 
 
-def add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=None, core_r=None):
+def add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=None, core_r=None, build_top=True):
     boss_r = p['boss_dia'] / 2.0
     if core_r is None:
         core_r = BOSS_CORE_R
@@ -1568,7 +1760,7 @@ def add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=None, core_r=No
     bottom = _refetch_by_name(root, 'Bottom') or bottom
     bodies['Bottom'] = bottom
 
-    if not is_D:
+    if not is_D and build_top:
         top_in = _refetch_by_name(root, 'Top') or bodies['Top']
         top_boss = clipped_pillar_with_reach(
             root, cx, cy, boss_r, p['split_z'], p['top_ceiling_underside_z'], p, clip_tool, BOSS_CORE_R)
@@ -1596,13 +1788,26 @@ def add_case_screws(root, bodies, p, clip_tool=None):
     # position clear of the redesigned comms stack (see params_current.py's
     # screws_ABC comment and add_comms_bay's boss-relief cuts), so every
     # case-screw boss now gets the normal full-height core.
+    #
+    # 2026-09-14 pass 14, item 1: Bottom's own per-screw bosses/
+    # counterbores are UNCHANGED (build_top=False skips the old individual
+    # Top-side cylinder) -- A/B1/B2/C's Top-side halves are built below,
+    # merged in pairs, by add_lanyard_corner_block instead.
     for s in p['screws_ABC']:
         cx, cy = s['xy']
-        bodies = add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=clip_tool, core_r=None)
+        bodies = add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=clip_tool, core_r=None, build_top=False)
         if clip_tool is not None:
             clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
     cx, cy = p['screw_D']['xy']
     bodies = add_case_boss(root, bodies, cx, cy, p, is_D=True, clip_tool=clip_tool)
+    if clip_tool is not None:
+        clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
+
+    # pass 14, item 1: the two lanyard-end corner blocks (A+B1, C+B2)
+    for side in (-1, 1):
+        bodies = add_lanyard_corner_block(root, bodies, p, side, clip_tool=clip_tool)
+        if clip_tool is not None:
+            clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
     return bodies
 
 
@@ -2772,20 +2977,61 @@ def _polyline_loop_lines(sk, loop_pts, z_mm):
         add_line(sk, P(a[0], a[1], z_mm), P(b[0], b[1], z_mm))
 
 
-def deboss_loops(root, body, loops_xy, z_mm, depth_mm, cut_direction):
+def _loop_bbox_mm(loop_pts):
+    xs = [pt[0] for pt in loop_pts]
+    ys = [pt[1] for pt in loop_pts]
+    return (min(xs), max(xs), min(ys), max(ys))
+
+
+def _profile_bbox_mm(prof):
+    bb = prof.boundingBox
+    return (bb.minPoint.x / MM, bb.maxPoint.x / MM, bb.minPoint.y / MM, bb.maxPoint.y / MM)
+
+
+def _bbox_matches(b1, b2, tol=0.05):
+    return all(abs(v1 - v2) <= tol for v1, v2 in zip(b1, b2))
+
+
+def deboss_loops(root, body, loops_xy, z_mm, depth_mm, cut_direction, counter_loops_xy=None):
     """loops_xy: list of closed polygon point lists (world mm, at height
     z_mm). Extrudes each resulting sketch profile `depth_mm` along
-    cut_direction (+1 or -1 in Z) and cuts the union from `body`."""
+    cut_direction (+1 or -1 in Z) and cuts the union from `body`.
+
+    2026-09-14 pass 14, item 2 (real print defect: wordmark counters cut
+    away): a glyph with an enclosed counter (an 'a', a 'd', a flower 'o')
+    draws as an OUTER loop plus an INNER (hole) loop in the same sketch --
+    Fusion's own profile-finder then returns TWO profiles for it: the ring
+    (outer minus counter -- what we WANT to cut) and a SECOND profile that
+    is the counter's own disk, on its own, treated as its own standalone
+    filled region (real, documented Fusion behavior for nested closed
+    curves, not a bug in Fusion). The old code extruded+cut EVERY profile
+    unconditionally, so the counter disk got cut too, erasing the counter
+    entirely (the whole glyph printed solid). `counter_loops_xy`, when
+    given, is the subset of `loops_xy` that are pure counter/hole outlines
+    (from kandiwooks_logo.json's own `is_outer: false` tag -- see
+    wordmark_layout's `counter_loops`): any profile whose own bounding box
+    matches one of these (the counter-disk profile keeps exactly the
+    small counter loop's own bbox; the ring profile keeps the larger
+    OUTER loop's bbox instead, so the two can never be confused) is
+    skipped -- not extruded, not cut -- so the counter survives as a real
+    hole in the debossed ring. None (the default) preserves the exact old
+    behavior of cutting every profile, used by flare_glyph_loops, which
+    has no nested counters to begin with."""
     plane = plane_at_z(root, z_mm)
     sk = new_sketch(root, plane)
     for loop in loops_xy:
         _polyline_loop_lines(sk, loop, z_mm)
     if sk.profiles.count == 0:
         return body
+    counter_bboxes = [_loop_bbox_mm(loop) for loop in (counter_loops_xy or [])]
     direction = 'positive' if cut_direction > 0 else 'negative'
     tools = []
     for i in range(sk.profiles.count):
         prof = sk.profiles.item(i)
+        if counter_bboxes:
+            pb = _profile_bbox_mm(prof)
+            if any(_bbox_matches(pb, cb) for cb in counter_bboxes):
+                continue  # this profile IS a counter disk -- skip it, the counter stays a hole
         ext = root.features.extrudeFeatures
         inp = ext.createInput(prof, adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
         sign = 1.0 if direction == 'positive' else -1.0
@@ -2880,6 +3126,98 @@ def _wordmark_word_raw_loops(data, body_names):
             if len(pts) >= 3:
                 raw_loops.append(pts)
     return raw_loops
+
+
+def _wordmark_word_loops_by_flag(data, body_names):
+    """Like _wordmark_word_raw_loops, but split by kandiwooks_logo.json's
+    own per-loop `is_outer` tag -- (outer_loops, counter_loops). Pass 14,
+    item 2: needed to identify which Fusion sketch profile is the
+    unwanted 'counter disk' byproduct (see deboss_loops' own docstring)
+    and to pair each counter with its own enclosing outer glyph for
+    verify_wordmark_counters' probes."""
+    outer, counter = [], []
+    for body in data:
+        if body['name'] not in body_names:
+            continue
+        for loop in body['loops']:
+            pts = loop['points']
+            if len(pts) < 3:
+                continue
+            (outer if loop.get('is_outer', True) else counter).append(pts)
+    return outer, counter
+
+
+def _point_in_poly(pt, poly):
+    """Plain even-odd ray-casting point-in-polygon test, `poly` a list of
+    (x, y) world-mm points (closed implicitly -- last point connects back
+    to the first). Pure Python -- no Fusion/shapely dependency needed for
+    the pass-14 counter/stroke probe geometry (see
+    _wordmark_counter_probes)."""
+    x, y = pt
+    n = len(poly)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        if (yi > y) != (yj > y):
+            x_int = (xj - xi) * (y - yi) / (yj - yi) + xi
+            if x < x_int:
+                inside = not inside
+        j = i
+    return inside
+
+
+def _poly_area(poly):
+    a = 0.0
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        a += x1 * y2 - x2 * y1
+    return abs(a) / 2.0
+
+
+def _poly_centroid(poly):
+    xs = [pt[0] for pt in poly]
+    ys = [pt[1] for pt in poly]
+    return (sum(xs) / len(xs), sum(ys) / len(ys))
+
+
+def _wordmark_counter_probes(outer_loops, counter_loops):
+    """Pair each counter (hole) loop with its own smallest enclosing outer
+    loop (point-in-polygon containment of the counter's own centroid,
+    picking the smallest-area match when more than one outer loop
+    contains it -- needed for the 'Ka' body, whose 'K' and 'a' outer
+    loops share one JSON body but only 'a' has a counter) and return one
+    probe pair per counter: the counter's own centroid (must read SOLID
+    after the pass-14 fix -- the counter itself must survive) and a point
+    found on the ring between the counter and its own outer boundary
+    (must read HOLLOW -- confirms the deboss itself still happened around
+    it, not silently skipped along with the counter). Pass 14, item 2
+    (verify_wordmark_counters)."""
+    probes = []
+    for counter in counter_loops:
+        ccx, ccy = _poly_centroid(counter)
+        candidates = [o for o in outer_loops if _point_in_poly((ccx, ccy), o)]
+        if not candidates:
+            probes.append({'counter_center': (ccx, ccy), 'stroke_point': None})
+            continue
+        outer = min(candidates, key=_poly_area)
+        r0 = max(math.hypot(px - ccx, py - ccy) for px, py in counter)
+        stroke_pt = None
+        for step_i in range(1, 60):
+            r = r0 + step_i * 0.08
+            for k in range(24):
+                ang = 2.0 * math.pi * k / 24.0
+                pt = (ccx + r * math.cos(ang), ccy + r * math.sin(ang))
+                if _point_in_poly(pt, outer) and not _point_in_poly(pt, counter):
+                    stroke_pt = pt
+                    break
+            if stroke_pt is not None:
+                break
+        probes.append({'counter_center': (ccx, ccy), 'stroke_point': stroke_pt})
+    return probes
 
 
 def _wordmark_split_sprout(loop_pts, gap_threshold=1.5):
@@ -3048,6 +3386,25 @@ def wordmark_layout(p):
     line1_loops = _wordmark_place_word(line1_raw, b1, scale1, (cx, y1), x_center_bbox=b1_center)
     line2_loops = _wordmark_place_word(line2_raw, b2, scale2, (cx, y2))
 
+    # pass 14, item 2: the outer/counter split, transformed through the
+    # EXACT SAME scale/bbox/center as the full word above, so a counter's
+    # world coordinates always land exactly where the matching profile in
+    # the real cut sketch does (see deboss_loops' own docstring for why
+    # exact-bbox matching needs this). counter_probes pairs each counter
+    # with a (counter-centre, ring-point) probe pair for
+    # verify_wordmark_counters.
+    line1_outer_raw, line1_counter_raw = _wordmark_word_loops_by_flag(data, WORDMARK_LINE1_BODIES)
+    line2_outer_raw, line2_counter_raw = _wordmark_word_loops_by_flag(data, WORDMARK_LINE2_BODIES)
+    line1_outer_world = _wordmark_place_word(line1_outer_raw, b1, scale1, (cx, y1), x_center_bbox=b1_center)
+    line2_outer_world = _wordmark_place_word(line2_outer_raw, b2, scale2, (cx, y2))
+    line1_counter_world = (_wordmark_place_word(line1_counter_raw, b1, scale1, (cx, y1), x_center_bbox=b1_center)
+                            if line1_counter_raw else [])
+    line2_counter_world = (_wordmark_place_word(line2_counter_raw, b2, scale2, (cx, y2))
+                            if line2_counter_raw else [])
+    counter_loops = line1_counter_world + line2_counter_world
+    counter_probes = (_wordmark_counter_probes(line1_outer_world, line1_counter_world)
+                       + _wordmark_counter_probes(line2_outer_world, line2_counter_world))
+
     return {
         'line1_loops': line1_loops, 'line2_loops': line2_loops,
         'line1_bbox_local': b1, 'line1_center_bbox_local': b1_center, 'line2_bbox_local': b2,
@@ -3057,6 +3414,8 @@ def wordmark_layout(p):
         'line2_y_range': (y2 - h2 / 2.0, y2 + h2 / 2.0),
         'half_width': target_width / 2.0,
         'vertical_span': (span_south, span_north),
+        'counter_loops': counter_loops,
+        'counter_probes': counter_probes,
     }
 
 
@@ -3080,10 +3439,16 @@ def load_wordmark_loops(p):
 
 
 def add_wordmark_logo(root, bodies, p):
-    world_loops = load_wordmark_loops(p)
+    layout = wordmark_layout(p)
+    world_loops = layout['line1_loops'] + layout['line2_loops']
     z_bot = p['bottom_z']
     depth = p['logo_deboss_depth']
-    bodies['Bottom'] = deboss_loops(root, bodies['Bottom'], world_loops, z_bot, depth, cut_direction=1)
+    # pass 14, item 2: counter_loops_xy tells deboss_loops which Fusion
+    # profile is the unwanted 'counter disk' byproduct (the 'a', 'd', and
+    # both flower 'o' counters) so it gets skipped, not cut -- see
+    # deboss_loops' own docstring.
+    bodies['Bottom'] = deboss_loops(root, bodies['Bottom'], world_loops, z_bot, depth, cut_direction=1,
+                                     counter_loops_xy=layout['counter_loops'])
     return bodies
 
 
@@ -5900,6 +6265,78 @@ def verify_root_fillets(bodies_dict, p):
     return results
 
 
+def verify_corner_blocks(bodies_dict, p):
+    """Gate for pass 14, item 1 (lanyard-end corner blocks A+B1 / C+B2).
+    For each side: (a) both pilot holes are open (hollow) along their full
+    documented depth (p['top_pilot_z'], sampled near each end and at
+    mid-depth); (b) the block reads solid at several points along AND
+    just off the segment between the two screws, at the block's own
+    mid-height -- confirms one continuous buttress, not two disconnected
+    posts joined only at their own OD; (c) the comms-stack footprint's own
+    four corners (p['bay']['stack3']['l76k_pcb']) read hollow in Top at
+    the block's mid-height, and the case's own y=0 centreline stays
+    hollow across the LoRa FPC antenna keep-out strip's y-band
+    (p['bay']['fpc_keepout']) -- both the "stays in the corner" and "does
+    not bridge the end-wall centre" requirements at once."""
+    top = bodies_dict['Top']
+    z0, z1 = p['split_z'], p['top_ceiling_underside_z']
+    z_mid = (z0 + z1) / 2.0
+    pz0, pz1 = p['top_pilot_z']
+    boss_r = p['boss_dia'] / 2.0
+    results = {}
+
+    for side, label in ((-1, 'AB1'), (1, 'CB2')):
+        near, far = _lanyard_corner_pair(p, side)
+        (nx, ny), (fx, fy) = near['xy'], far['xy']
+
+        for name, (cx, cy) in ((near['name'], (nx, ny)), (far['name'], (fx, fy))):
+            checks = [not probe_point_solid(top, P(cx, cy, z))
+                      for z in (pz0 + 0.1, (pz0 + pz1) / 2.0, pz1 - 0.1)]
+            results[f'{name}_pilot_open'] = (all(checks), checks)
+
+        dx, dy = fx - nx, fy - ny
+        seg_len = math.hypot(dx, dy)
+        perp = (-dy / seg_len, dx / seg_len)
+        mx, my = (nx + fx) / 2.0, (ny + fy) / 2.0
+        # z_block: ABOVE the pilot holes' own z1 (top_pilot_z[1]) but still
+        # well within the block's own z0..z1 span -- probing on-axis AT
+        # z_mid would coincide with the pilot hole itself at t=0/1 (the
+        # screw centres), reading hollow by design, not a defect; z_block
+        # sidesteps that entirely so every sample here is a genuine
+        # "is the block's own material here" check.
+        z_block = min(pz1 + 1.5, z1 - 0.5)
+        solid_checks = [probe_point_solid(top, P(nx + t * dx, ny + t * dy, z_block))
+                         for t in (0.0, 0.25, 0.5, 0.75, 1.0)]
+        # off-axis, at a radius safely INSIDE the capsule's own guaranteed
+        # boss_dia/2 + CORNER_BLOCK_PAD coverage everywhere along the
+        # segment (not the OD itself, which the outward wedge -- but not
+        # necessarily the inboard side -- extends past; see
+        # CORNER_BLOCK_PAD's own module comment for why the inboard side
+        # is deliberately NOT padded beyond the plain boss radius).
+        off_r = boss_r - 0.3
+        for sgn in (1.0, -1.0):
+            ox = mx + sgn * perp[0] * off_r
+            oy = my + sgn * perp[1] * off_r
+            solid_checks.append(probe_point_solid(top, P(ox, oy, z_block)))
+        results[f'{label}_block_solid'] = (all(solid_checks), solid_checks)
+
+    s3 = p['bay'].get('stack3')
+    if s3 is not None:
+        pcb = s3['l76k_pcb']
+        corners = [(pcb['x'][0], pcb['y'][0]), (pcb['x'][0], pcb['y'][1]),
+                   (pcb['x'][1], pcb['y'][0]), (pcb['x'][1], pcb['y'][1])]
+        stack_clear = [not probe_point_solid(top, P(cx, cy, z_mid)) for cx, cy in corners]
+        results['stack_footprint_clear'] = (all(stack_clear), stack_clear)
+
+    ko = p['bay']['fpc_keepout']
+    kcz = (ko['z'][0] + ko['z'][1]) / 2.0
+    fpc_checks = [not probe_point_solid(top, P(0.0, ko['y'][0] + frac * (ko['y'][1] - ko['y'][0]), kcz))
+                  for frac in (0.25, 0.5, 0.75)]
+    results['fpc_keepout_centerline_clear'] = (all(fpc_checks), fpc_checks)
+
+    return results
+
+
 def probe_bodies_interference_volume(design, body_a, body_b):
     """Real solid-overlap volume (mm^3) between exactly two standalone
     bodies -- a minimal, unfiltered variant of check_interference's own
@@ -6238,6 +6675,45 @@ def verify_wordmark(bodies_dict, p):
     results['deboss_present'] = (0.05 <= cut_fraction <= 0.85, round(cut_fraction, 3))
     results['floor_intact_below_depth'] = (beyond_ok, beyond_ok)
     results['no_material_below_bed'] = (below_ok, below_ok)
+    return results
+
+
+def verify_wordmark_counters(bodies_dict, p):
+    """Gate for pass 14, item 2 (real print defect: the wordmark's
+    counters -- the enclosed centres of the 'a', the 'd', and both
+    flower-shaped 'o's in WOOKS -- were being cut away, printing solid
+    instead of as a hole in the deboss). Root cause and fix: see
+    deboss_loops' own pass-14 docstring. Uses the exact same
+    `wordmark_layout` counter_probes the build itself computed (so this
+    can never disagree with what was actually cut), at the SAME
+    mid-deboss z verify_wordmark's own grid probe already uses. For each
+    counter: (a) `counter_N_present` -- the counter's own centroid must
+    read SOLID (material present -- the counter was NOT cut away); (b)
+    `counter_N_stroke_open` -- a point on the ring between the counter
+    and its own outer glyph boundary must read HOLLOW (confirms the
+    deboss itself still happened around it, not silently skipped
+    entirely). `counter_count` is a regression guard on the wordmark JSON
+    itself -- expects exactly the 4 counters found in kandiwooks_logo.json
+    today (the 'a', the 'd', and the WOOKS body's 2 flower 'o' counters)."""
+    bottom = bodies_dict['Bottom']
+    layout = wordmark_layout(p)
+    depth = p['logo_deboss_depth']
+    z_bot = p['bottom_z']
+    z_mid = z_bot + depth / 2.0
+    results = {}
+    probes = layout['counter_probes']
+    results['counter_count'] = (len(probes) == 4, len(probes))
+    for i, probe in enumerate(probes):
+        cx, cy = probe['counter_center']
+        counter_ok = probe_point_solid(bottom, P(cx, cy, z_mid))
+        results[f'counter_{i}_present'] = (counter_ok, (round(cx, 3), round(cy, 3)))
+        sp = probe['stroke_point']
+        if sp is None:
+            results[f'counter_{i}_stroke_open'] = (False, None)
+        else:
+            sx, sy = sp
+            stroke_ok = not probe_point_solid(bottom, P(sx, sy, z_mid))
+            results[f'counter_{i}_stroke_open'] = (stroke_ok, (round(sx, 3), round(sy, 3)))
     return results
 
 
@@ -6722,6 +7198,14 @@ def verify(design, params):
     assert not bad_wordmark, (
         f'wordmark check failed: {[(k, wordmark_results[k]) for k in bad_wordmark]}')
 
+    # 2026-09-14 pass 14, item 2: the wordmark's counters ('a', 'd', both
+    # flower 'o's) must survive the deboss -- see deboss_loops' and
+    # verify_wordmark_counters' own docstrings for the root cause/fix.
+    wordmark_counter_results = verify_wordmark_counters(by_name, params)
+    bad_wordmark_counters = [k for k, v in wordmark_counter_results.items() if not v[0]]
+    assert not bad_wordmark_counters, (
+        f'wordmark counter check failed: {[(k, wordmark_counter_results[k]) for k in bad_wordmark_counters]}')
+
     # 2026-09-08 pass 9e (finding 8): LoRa/GPS antenna cable channels --
     # channel-open probe + LoRa skin-safety re-check + GPS battery-floor
     # clearance. See verify_antenna_channels's own docstring.
@@ -6759,6 +7243,14 @@ def verify(design, params):
     root_fillet_results = verify_root_fillets(by_name, params)
     bad_root_fillets = {k: v for k, v in root_fillet_results.items() if k != '_method' and v}
     assert not bad_root_fillets, f'post/boss root reinforcement check failed: {bad_root_fillets}'
+
+    # 2026-09-14 pass 14, item 1: the two merged lanyard-end corner blocks
+    # (A+B1, C+B2) -- pilots open, block solid between/around the pilots,
+    # comms-stack footprint and LoRa FPC keep-out centreline stay clear.
+    # See verify_corner_blocks' own docstring.
+    corner_block_results = verify_corner_blocks(by_name, params)
+    bad_corner_blocks = {k: v for k, v in corner_block_results.items() if not v[0]}
+    assert not bad_corner_blocks, f'lanyard corner block check failed: {bad_corner_blocks}'
 
     # 2026-09-07 pass 13 (item 3, battery connector access): the Screen
     # Plate's clearance window over the display module's own JST-style
@@ -6826,6 +7318,8 @@ def verify(design, params):
         'sliver_results': sliver_results,
         'root_fillet_results': root_fillet_results,
         'battery_access_results': battery_access_results,
+        'corner_block_results': corner_block_results,
+        'wordmark_counter_results': wordmark_counter_results,
     }
 
 
@@ -7384,9 +7878,17 @@ def run(_context: str, variant=None, export=False):
         # touches Bottom at all), so no dedicated entry is needed. If a
         # real local cluster shows up here after a live scan, add it back
         # sized from the actual reported centroid, not guessed.
+        # 2026-09-14 pass 14: y0 widened -12 -> -16 (current variant only)
+        # -- see tools/offline_stl_check.py's TOP_WL, the same constant,
+        # for the full reasoning (the new lanyard-end corner blocks'
+        # outward wedge reaches slightly further into this same ordinary
+        # flat-ceiling/fillet-transition territory on the wider 'current'
+        # shell). Kept in sync with that file deliberately -- both must
+        # agree or the two independent overhang checks could silently
+        # drift apart.
         top_wl = [
             (-8.0, 8.0, 65.0, 81.0, 'usb_tunnel_floor'),
-            (-32.0, 32.0, -12.0, 79.0, 'general_ceiling_overhang'),
+            (-32.0, 32.0, -16.0, 79.0, 'general_ceiling_overhang'),
         ]
         # l76k_frame_ceiling: the L76K wired frame's own ceiling-side
         # transition at the -y dome tip (y -26..-15) -- same fillet-
