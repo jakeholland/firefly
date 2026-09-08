@@ -4500,6 +4500,139 @@ hole/ear visible).
   follow-up pass could add a dedicated, better-framed close-up the way
   `pass9c_lip_ring_section.png` did for the window lip in an earlier pass.
 
+## 2026-09-18 pass 15b (revert the USB-C tunnel half of item 2)
+
+Jake clarified, after seeing pass 15's result, that item 2's "the power
+cable hole needs more room to actually plug in" was about the
+**battery-plug window** on the Screen Plate only — not the case's own
+external USB-C tunnel. Pass 15 (previous section) treated item 2 as
+**both** candidates and enlarged both; this pass reverts the USB-C
+tunnel half back to its pass-14 values, one-for-one, and keeps
+everything else from pass 15 (including the battery-plug window
+extension) exactly as it was. "revert the usb tunnel" (Jake).
+
+**Confirmed exactly which lines belong to the tunnel change** via
+`git diff 08abb3d..897318a -- hardware/case` (08abb3d = pass 14,
+897318a = pass 15/#244) — three `params_current.py` numbers, all under
+the `# --- USB-C tunnel ---` block, nothing in `firefly_case.py` itself
+(`add_usb_tunnel` reads these three PARAMS unconditionally; no code path
+changed):
+
+| Parameter | pass-14 (08abb3d) | pass-15 (#244) | pass-15b (this pass) |
+|---|---|---|---|
+| `usb_tunnel_stadium` (width, height) | `(13.0, 7.0)` | `(13.0, 7.9)` | **`(13.0, 7.0)`** (reverted) |
+| `usb_tunnel_center_z` | `16.4` | `16.85` | **`16.4`** (reverted) |
+| `usb_liner_outer_stadium` (width, height) | `(16.2, 10.2)` | `(16.2, 11.1)` | **`(16.2, 10.2)`** (reverted) |
+| `usb_tunnel_y_start` | `73.5` | `73.5` (unchanged in pass 15) | `73.5` (unchanged) |
+| `usb_liner_thickness` | `1.6` | `1.6` (unchanged in pass 15) | `1.6` (unchanged) |
+
+Net effect on the tunnel bore's own Z extent (current variant; trim is
+the same profile shifted by `_DZ_TOP` = +3.0mm, per `params_trim.py`):
+bottom edge `12.9mm` (unchanged by pass 15 or this revert either way,
+since pass 15's own +0.45mm center shift and +0.45mm half-height growth
+cancelled there), top edge back to `19.9mm` current / `22.9mm` trim
+(pass 15 had pushed it to `20.8mm` / `23.8mm`) — i.e. the tunnel bore is
+now byte-for-byte the same size/position it was in pass 14, the last
+pass Jake printed and called "closest yet."
+
+**KEPT, unchanged from pass 15**: the battery-plug window extension
+(`BATTERY_CONNECTOR_TOP_EXTRA = 3.0`, Screen Plate, `firefly_case.py`)
+and every other pass-15 item (1, 3, 4/5, 6, 7, 8, 9) — none of those
+touch `usb_tunnel_stadium`/`usb_tunnel_center_z`/`usb_liner_outer_stadium`,
+confirmed by the same `git diff 08abb3d..897318a` scan above (the only
+other hunks touching this neighbourhood are the `BATTERY_CONNECTOR_TOP_
+EXTRA` addition itself, a few lines above the USB-C tunnel block in
+`params_current.py`, and unrelated blocks for items 1/3/6/9).
+
+**Code change**: only the three PARAMS values above, in
+`params_current.py` (`params_trim.py` derives its own tunnel Z via
+`+ _DZ_TOP`, unchanged, so nothing there needed to change). The
+pass-15 item-2 comment block ahead of the tunnel PARAMS was replaced
+with a short pointer back to this section; no comment/number in
+`firefly_case.py`'s `add_usb_tunnel`/`BATTERY_CONNECTOR_TOP_EXTRA`
+sections needed to change.
+
+**Rebuilt and re-verified live, full piecewise run (both variants,
+same infrastructure note as every prior pass — `fusion_mcp_execute`
+calls against the same open document, each stage re-fetching bodies by
+name/component since Python locals don't survive between calls; several
+calls here timed out client-side while Fusion kept executing
+server-side, confirmed by re-querying the document and re-running the
+same read afterward, per this file's own established pattern)**:
+
+```
+current: body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference [] / occ_interference []
+         m2: usb_tunnel_open True ("point inside tunnel bore is empty (not solid)")
+         m2: lug_hole_open True, plunger_pretravel_0.3 True, plunger_travel_0.90 True
+         bottom_openings_results: A/B1/B2/C/D_pilot_open True, D_counterbore_open True, lug_hole_open True
+         openings_results (incl. USB tunnel column): 0 bad
+         battery_access_results: window_open [] / hole_clearance []  (battery-plug window kept, still clean)
+         plate_post_spread_results: centroid_dist_mm 28.106, angular_spread_deg 265.83 (diagnostic-only,
+           unchanged from pass 15 -- item 3 untouched by this revert)
+         root_fillet_results / fpc_relief_results / wordmark_results / wordmark_counter_results /
+           antenna_results / corner_block_results / mag_pocket_results / post_wall_results /
+           plunger_reach_results / button_insertion_results / button_retention_results: all clean
+         OK: M1+M2 probes passed
+
+trim:    body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference [] / occ_interference []
+         m2: usb_tunnel_open True ("point inside tunnel bore is empty (not solid)")
+         m2: lug_hole_open True, plunger_pretravel_0.3 True, plunger_travel_0.90 True
+         bottom_openings_results: A/B1/B2/C/D_pilot_open True, D_counterbore_open True, lug_hole_open True
+         openings_results (incl. USB tunnel column): 0 bad
+         battery_access_results: window_open [] / hole_clearance []  (battery-plug window kept, still clean)
+         mag_pocket_results: window_bore_clear 3.955, display_back_clear 3.765 (unchanged from pass 15)
+         plate_post_spread_results: centroid_dist_mm 28.106, angular_spread_deg 265.83 (diagnostic-only,
+           unchanged from pass 15)
+         root_fillet_results / fpc_relief_results / wordmark_results / wordmark_counter_results /
+           antenna_results / corner_block_results / post_wall_results / plunger_reach_results /
+           button_insertion_results / button_retention_results: all clean
+         OK: M1+M2 probes passed
+```
+
+Every number that pass 15 already fixed and is unrelated to the USB-C
+tunnel (battery window, plate posts, root fillets, wordmark, antenna
+channels, corner blocks, mag pocket, bottom openings/lug hole, plunger
+travel, window chamfer) reproduces exactly the same live results as the
+pass-15 section above — confirming this revert touched nothing else.
+
+**Offline STL scan** (`tools/offline_stl_check.py`, both variants, run
+against the fresh exports below):
+
+```
+=== Offline STL checks: current ===
+Bottom: manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Top:    manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Screen_Plate / Power_Button / Home_Button: manifold ok, envelope ok
+OVERALL: PASS
+
+=== Offline STL checks: trim ===
+Bottom: manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Top:    manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Screen_Plate / Power_Button / Home_Button: manifold ok, envelope ok
+OVERALL: PASS
+```
+
+**Exports refreshed**: `export/<variant>/{Bottom,Top,Screen_Plate,
+Power_Button,Home_Button}.stl` re-exported from the rebuilt document for
+both variants, plus `export/<variant>/firefly_<variant>_case.3mf`
+(native, re-exported) and `export/<variant>/firefly_<variant>_plate.3mf`
+(re-packed via `tools/stl_to_3mf.py`, same per-part orientation
+convention as every prior pass — Bottom as-is, Top `flipx`, Screen Plate
+as-is, Power Button `outer-x`, Home Button `outer-rz32.74`). Bytes
+actually changed vs. the pass-15 commit: `current/{Bottom,Top}.stl` and
+`trim/Top.stl` (`current/Bottom.stl` isn't touched by the USB tunnel
+geometry itself, but Fusion's STL export is not byte-deterministic
+run-to-run even for identical B-rep geometry, so a fresh export still
+differs at the byte level — the offline manifold/envelope scan above,
+not a byte-diff, is what actually confirms correctness).
+`trim/Bottom.stl`, and every variant's `Screen_Plate`/`Power_Button`/
+`Home_Button.stl`, are unchanged (git-identical to the pass-15 commit).
+No new renders taken this pass (the tunnel revert has no visible
+silhouette change worth a fresh screenshot set; the pass-15 renders
+already show the rest of the case correctly).
+
 ## Screw list
 
 **2026-09-07 pass 7: boss B split into B1/B2** (its old single position

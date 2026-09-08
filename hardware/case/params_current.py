@@ -505,32 +505,21 @@ PARAMS = {
     # --- USB-C tunnel ---
     'usb_receptacle': {'x': (-4.48, 4.48), 'z': (14.35, 18.43), 'y': 73.0},
     # 2026-09-15 pass 15, item 2 (Jake: "the power cable hole needs more
-    # room to actually plug in. needs more room towards the top"): grown
-    # 0.9mm taller (7.0 -> 7.9mm) and shifted +0.45mm in Z (16.4 -> 16.85)
-    # so the growth is biased UPWARD (toward the glass/+Z side, where
-    # Jake's complaint points) rather than symmetric -- the OLD bore's
-    # lower edge (12.9mm, current) is preserved almost exactly (new lower
-    # edge 12.9mm too, since center+0.45 and half-height+0.45 cancel at
-    # the bottom), all ~0.9mm of new headroom lands on the TOP edge
-    # (19.9mm -> 20.8mm current / 22.9mm -> 23.8mm trim -- see
-    # usb_tunnel_center_z's own +_DZ_TOP shift in params_trim.py). Checked
-    # against a standard USB-C plug overmold (~6.5x8.4mm body): the new
-    # 7.9mm bore height now exceeds the plug's own 6.5-8.4mm body range
-    # with real margin on both variants, cf. the old 7.0mm which was
-    # tight against the top of that range. Re-verified live (both
-    # variants): 0 real interference against the inserted display
-    # occurrence (the tunnel's own Combine-Intersect against the TRUE
-    # curved outer envelope, add_usb_tunnel, already prevents any breach
-    # of the outer skin regardless of how tall this is asked to be -- the
-    # display-body clearance is the one that needed a live check here,
-    # since the tunnel's own XY footprint sits close to the display's own
-    # y-extent near the dome tip). See the pass-15 README section for the
-    # exact clearance numbers.
-    'usb_tunnel_stadium': (13.0, 7.9),
-    'usb_tunnel_center_z': 16.85,
+    # room to actually plug in. needs more room towards the top") was
+    # treated as BOTH candidates -- this USB-C tunnel half (usb_tunnel_
+    # stadium 7.0->7.9mm, usb_tunnel_center_z 16.4->16.85,
+    # usb_liner_outer_stadium 10.2->11.1) AND the Screen Plate battery-
+    # connector window (BATTERY_CONNECTOR_TOP_EXTRA, above) -- but Jake
+    # clarified afterward that item 2 meant the battery-plug window only
+    # ("revert the usb tunnel"). Pass 15b (2026-09-18) reverts this USB-C
+    # tunnel half back to its pass-14 values below; the battery-connector
+    # window extension (BATTERY_CONNECTOR_TOP_EXTRA = 3.0) is UNCHANGED
+    # and kept. See the pass-15b README section.
+    'usb_tunnel_stadium': (13.0, 7.0),
+    'usb_tunnel_center_z': 16.4,
     'usb_tunnel_y_start': 73.5,
     'usb_liner_thickness': 1.6,
-    'usb_liner_outer_stadium': (16.2, 11.1),
+    'usb_liner_outer_stadium': (16.2, 10.2),
 
     # --- lanyard lug/ear (Bottom) ---
     # z = (0.0, 10.0) (pass-5 printability fix, 2026-09-05): the lug's
