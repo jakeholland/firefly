@@ -9250,9 +9250,17 @@ def export_native_3mf_case(design, root, variant, base_dir):
     into ONE file, export the whole root component with every OTHER
     top-level component temporarily hidden (hidden bodies are not
     exported), then restore visibility regardless of outcome."""
+    # pass 16, item H: renamed firefly_{variant}_case.3mf ->
+    # firefly_{variant}_pack.3mf -- this file already bundles EVERY
+    # printed part (case halves + both buttons) into one native 3MF, the
+    # same thing the export directory's own much older, stale
+    # firefly_{variant}_plate.3mf (from before pass 16 retired the Screen
+    # Plate) used to be for the pre-candidate-5 design -- 'pack' names
+    # what it actually is (everything you print, packed into one file)
+    # more clearly than 'case' did.
     out_dir = os.path.join(base_dir, 'export', variant)
     os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, f'firefly_{variant}_case.3mf')
+    path = os.path.join(out_dir, f'firefly_{variant}_pack.3mf')
 
     hide_names = (COMPONENT_REFERENCE, COMPONENT_BOARDS, COMPONENT_COUPONS)
     hidden = []
