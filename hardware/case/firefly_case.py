@@ -1225,6 +1225,29 @@ def add_window(root, bodies, p):
         top = _refetch_by_name(root, 'Top') or top
         bodies['Top'] = top
 
+        # pass 16 resumed (item E, live regression probe -- this item had
+        # real boolean-cut geometry from the initial candidate-5 commit
+        # but, unlike the print-orientation chamfer just above, no
+        # build-time check that the cut actually removed material,
+        # matching this file's own repeated lesson (chamfer_stadium_
+        # edge_at's docstring, the pass-9c regression) that an unverified
+        # chamfer claim is not the same as a real one. Same idiom as the
+        # probe above: pick z partway up THIS cone's own slope and probe
+        # just inside its radius there -- must read hollow at every angle.
+        glass_probe_z = (gz0 + gz1) / 2.0
+        glass_frac = (glass_probe_z - gz0) / (gz1 - gz0)
+        glass_r_at_z = (r - 0.05) + glass_frac * ((r + glass_chamf) - (r - 0.05))
+        glass_probe_r = glass_r_at_z - 0.15
+        glass_bad_angles = []
+        for deg in range(0, 360, 10):
+            rad = math.radians(deg)
+            pt = P(cx + glass_probe_r * math.cos(rad), cy + glass_probe_r * math.sin(rad), glass_probe_z)
+            if probe_point_solid(top, pt):
+                glass_bad_angles.append(deg)
+        assert not glass_bad_angles, (
+            f'add_window: glass-seat chamfer cut did not remove material at angles {glass_bad_angles} (deg) -- '
+            f'the stress-riser relief is not actually there')
+
     return bodies
 
 
