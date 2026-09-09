@@ -4977,6 +4977,116 @@ session):**
   pre-existing (confirmed present before this session touched anything),
   neither root-caused.
 
+### 2026-09-09 pass 16 FIX session (trim variant only) — item 1 done and
+### committed, item 2 root-caused but STOPPED (Fusion/MCP bridge went
+### unavailable mid-diagnosis)
+
+Coordinator hand-off with an 7-item fix list, trim only, in order. This
+session reused `Firefly Case Pass16 Scratch` throughout (never created a
+second scratch document). Honest status at stop time:
+
+**Item 1 — DONE, live-verified, committed
+(`a91abe0`).** Top's 5 non-manifold mesh edges are fixed: 0 non-manifold
+edges across all 4 exported trim parts, 1 body each
+(`tools/offline_stl_check.py export/trim trim params_trim.py` →
+`OVERALL: PASS`). Root-caused MORE precisely than the prior session's own
+investigation: a from-scratch minimal repro (a bare capsule +
+`oriented_box_prism` wedge, add_single_corner_block/add_ear's exact
+construction, with NO `add_root_reinforcement` collar involved at all)
+reproduced 1 non-manifold edge entirely on its own — the wedge's own near
+face is tangent to the capsule cylinder at a single point/line, not a
+real 2-D overlap area. Two fixes, both confirmed against the same minimal
+repro before touching the full case build:
+1. `CORNER_BLOCK_WEDGE_OVERLAP` (0.5mm) grows the wedge's own near edge
+   past the tangent point into the capsule's interior, holding the far
+   (wall-ward) edge fixed.
+2. `add_root_reinforcement`'s collar join is now trim-then-join: cut the
+   body within the collar's own radial footprint (+0.2mm margin,
+   `ROOT_COLLAR_TRIM_MARGIN`) over EXACTLY the collar's own z-band (not
+   expanded — a first attempt expanded the z-band too and broke EVERY
+   feature, not just wedges: live-caught with the same minimal repro,
+   see the commit message for the full story) before joining the collar.
+
+Live-confirmed on a from-scratch trim rebuild: `check_interference == []`,
+`corner_blocks`/`bottom_openings`/`post_walls` all clean, `root_fillets`/
+`ear_root` show only the SAME pre-existing reds as before this fix (not
+regressed, not fixed — items 2/3's own targets).
+
+**Item 2 — root-caused precisely, fix identified, but NOT committed: it
+broke the build in a way this session could not finish diagnosing before
+the Fusion MCP bridge stopped responding.** `verify_ear_root_material`'s
+`S3_riser_solid` probe (a 4-angle ring at `BOSS_CORE_R-0.3` radius around
+the S3 seat) reads hollow at exactly one angle (270°, due south) because
+that exact probe point — `(11.6, 63.16, 17.775)` in trim-world — sits
+0.385mm inside the display module's own second SMT connector's real body
+(`secondary_conn_bbox`, "PITCH1MM-2PIN-SMT-HORIZONTAL"; the keepout cut
+already carries a 0.5mm margin on top of that, which is why it reads
+hollow there). This is a genuine conflict, not a modeling bug — confirmed
+literally any riser material at that point overlaps the real connector,
+so no amount of *reshaping* the riser fixes it (the keepout cut removes
+that exact point regardless of what shape supplied it) — only moving the
+seat can. The seat's own x already sits only 0.115mm short of the
+connector's real edge, so the minimum fix is a small +x shift (away from
+the connector): `board_standoffs['S3']` from `(11.6, 65.46)` to
+`(12.0, 65.46)` (+0.4mm, comfortably under the coordinator's ≤1.0mm cap)
+gives 0.785mm of real clearance.
+
+**Live-tested this exact change and found a severe, NOT-yet-understood
+regression**, isolated cleanly (same reloaded module, only the runtime
+value of `board_standoffs['S3']` differs between the two builds, both in
+the SAME Fusion session so nothing else changed):
+- `board_standoffs['S3'] = (11.6, 65.46)` (unchanged): a normal, healthy
+  `Top` — volume 19.37cm³, bbox `x(-28,28) y(-28,79.8) z(9.2,28.0)`.
+- `board_standoffs['S3'] = (12.0, 65.46)` (the +0.4mm fix): `Top`
+  collapses to **0.067mm³** — a tiny leftover sliver, bbox
+  `x(11.7,12.8) y(61.9,63.5) z(20.47,20.6)`, right near the NEW S3 seat
+  position. A full piecewise gate sweep against this broken body showed
+  nearly every probe hollow EVERYWHERE (`corner_block_A_top`,
+  `ear_wall_root_S1`, `mag_peg_0`, etc. — none of them anywhere near S3)
+  — `check_interference` still read `[]` and `button_insertion` read
+  clean, both consistent with "Top is almost entirely missing material",
+  not a real interference/insertion improvement. This has the signature
+  of `dedupe_body`'s own documented risk (a same-named "(N)" duplicate
+  body existing after some Combine feature, and the WRONG one — the tiny
+  new fragment, not the real accumulated Top — ending up under the bare
+  `'Top'` name from that point forward, so every later join in `build()`
+  silently landed on an orphaned fragment while cuts kept whittling it
+  down), but this was NOT confirmed before the bridge went unavailable —
+  a real, board_standoffs['S3']-triggered regression somewhere in
+  `add_ear`/`_ear_boss_keepout_points`/`add_buttons`'s downstream chain,
+  not root-caused.
+- A smaller shift (+0.2mm, `x=11.8`, clearance 0.585mm — still ≥0.5mm)
+  was queued to test whether the regression is magnitude-sensitive (a
+  topology-crossing near some OTHER boundary, e.g. the
+  `ear_wedge_component_keepouts` box at `x:(11.44,14.88)`) or present at
+  any nonzero shift at all — **that test did not finish**: the Fusion MCP
+  bridge stopped responding (`activeCommand` returned
+  "Server Autodesk Fusion unavailable" on 8+ consecutive polls) partway
+  through the build, per the coordinator's own RecursionError-collapse
+  hard rule ("commit, write the state into the README, and stop after at
+  most three retries").
+
+**Repo state at stop: clean, matching commit `a91abe0` (item 1 only).**
+The broken `board_standoffs['S3']` edit and the STLs it corrupted were
+reverted (`git checkout`) before stopping, NOT committed — item 2 is
+fully un-attempted in the committed tree, only diagnosed. A future
+session should: (a) resume with a FRESH Fusion restart (this session's
+own document had accumulated ~1300+ timeline entries across many rebuilds
+by the time of the collapse — possibly contributing); (b) re-run the
+`x=11.8` (+0.2mm) test first to bisect whether the regression is
+magnitude-sensitive; (c) if any nonzero `board_standoffs['S3']` shift
+breaks the build, look hard at `_ear_boss_keepout_points` (the ONE other
+place `board_standoffs['S3']`'s value feeds a KEEPOUT cut applied to
+EVERY button's own cutting tools, not just the ear's own riser) and at
+`add_buttons`'/`add_ear`'s own `dedupe_body` calls for a same-named
+orphan surviving under the bare `'Top'` name.
+
+**Items 3–7: not started this session** (non-manifold trim collar
+fillets beyond item 1's own scope, `verify_button_insertion`'s Power
+failure, the S2 boss overhang chamfer, the mount coupon, and the final
+full gate sweep/exports/README table) — the session stopped at item 2
+per the hard rule above, before reaching them.
+
 ## Screw list
 
 **SUPERSEDED by pass 16 (candidate-5 display mount, see that section
