@@ -4634,324 +4634,348 @@ silhouette change worth a fresh screenshot set; the pass-15 renders
 already show the rest of the case correctly).
 
 ## 2026-09-19 pass 16 (candidate-5 display mount: ears + S2 boss, no
-Screen Plate — RESUMED a second time, this session)
+Screen Plate — RESUMED a THIRD time, this session, coordinator hand-off)
 
 This pass implements the owner-approved candidate-5 display mount
-(README items A/B/C/D/E/F/G/H/I/J in the task brief), removing the
-Screen Plate and P1–P4 ceiling posts entirely and replacing them with
-two case-integral EARS (S1, S3) grown from Top's own dome wall and a
-short BOSS (S2) grown from the west wall — following the mechanical
-review's own F7 recommendation to generalize `add_lanyard_corner_block`'s
-proven capsule+wedge+core+collar pattern rather than hand-rolling new
-geometry. The design record for this pass — `plate-mounting-round2.md`
-and `r2-plan-candidate5-ears.png` (round-2 mount analysis),
-`review-printability.md`, `review-mechanical.md`, `review-id-assembly.md`
-(the three independent reviews) — is copied into `docs/hardware/` and
-committed alongside this section.
+(items A–J in the task brief), removing the Screen Plate and P1–P4
+ceiling posts entirely in favour of two case-integral EARS (S1, S3)
+grown from Top's own dome wall and a short BOSS (S2) grown from the
+west wall. The design record — `plate-mounting-round2.md`,
+`r2-plan-candidate5-ears.png`, `review-printability.md`,
+`review-mechanical.md`, `review-id-assembly.md` — lives in
+`docs/hardware/`.
 
-**Status up front, honestly.** The prior hand-off left two blocking
-findings unresolved (below). This session resolved BOTH, with real
-owner decisions on the two open questions (relocate D1/D2, and
-re-derive `ear_seat_z` from a live measurement rather than the old
-plate's own number) — but a Fusion MCP infrastructure stall partway
-through re-verification means **item G's full both-variant gate sweep,
-and items C/D/H/I/J, are NOT completed this session** — see "Not done
-this pass" at the end of this section for the honest, itemized list.
-What follows is exactly what IS live-verified, and exactly what is
-implemented in code but not yet re-confirmed after the stall.
+**Status up front, honestly.** The first two hand-offs left Findings
+1/2 (D1/D2 relocation, `ear_seat_z` re-derivation) resolved but a
+Fusion MCP stall ended each session before item G's full gate sweep or
+items C/D/H/I/J. THIS session picked the thread back up with a fresh
+Fusion restart, worked through items 1–8 of the coordinator's own task
+list in order with a checkpoint commit after each, and got substantially
+further — items A–F are essentially complete and live-verified on
+`trim`; item G (full gates, both variants) found real, new problems on
+`current` that are NOT fixed; item H/I are partial (trim only, one
+coupon and the close-up renders not attempted). Every number below is
+from a live, from-scratch rebuild this session (the scratch document
+`Firefly Case Pass16 Scratch`, reused throughout, per the coordinator's
+own instruction) — nothing here is inherited/assumed from the two prior
+hand-offs without being re-confirmed.
 
-### Finding 2 (RESOLVED this session): `ear_seat_z` re-derived from a live measurement
+### Item 1 — full verify() piecewise sweep, live-found fixes (trim)
 
-**Owner decision:** stop inheriting `ear_seat_z` from the old Screen
-Plate's `plate_z[1]`; derive it directly from a live measurement of the
-display module's own real standoff plane (seat top = standoff plane −
-`ear_seat_offset`, 0.25mm).
+Ran every `verify_*()` gate non-fatally (so a red gate doesn't hide the
+rest) against a from-scratch trim rebuild. Found and fixed four real
+defects:
 
-**Live-measured** (this session, `insert_display_pcba()` + a
-`find_ceiling_z_at` downward scan at 0.002mm step — much finer than the
-0.1mm-step scan the prior hand-off used, which landed one grid point low
-and reported 21.75mm): the standoff plane reads IDENTICALLY at S1, S2,
-and S3, both variants — **18.80mm current / 21.80mm trim** (world
-frame), exactly `_DZ_TOP` (3.00mm) apart, confirming it really is a
-fixed property of the display module, shifted uniformly like everything
-else tied to it. `ear_seat_z` = 18.55 current / 21.55 trim (see
-`params_current.py`'s own comment on this param for the full derivation
-and cross-check).
+1. `_find_or_create_doc` referenced `adsk.fusion.DocumentTypes` (does
+   not exist) instead of `adsk.core.DocumentTypes.FusionDesignDocumentType`
+   — every call raised before any build could start. Trivial, but a
+   real blocker for reusing one scratch document at all.
+2. **The prior session's `_corner_block_ring_limit_r` fix is correct**
+   and is now live-confirmed: `verify_post_walls` (D's own shell-skin +
+   pilot-wall) and `verify_corner_blocks` both pass clean on trim.
+3. **New, previously-undiscovered defect:** the display module's own
+   SMT standoff at each of S1/S2/S3 ("SMTSO-M2-3.5X2-3.5ET", live-
+   measured 3.53mm OD × 4.70mm tall) is a full physical component
+   hanging off the PCB — not a bare screw shaft. The old
+   `ear_standoff_hole_dia` (2.4mm) M2 clearance hole left solid ear/boss
+   material exactly where this barrel needed to sit. Found live via
+   `check_interference(Top, every board occurrence)`: 9 real hits, 3 of
+   them a full 36.75mm³ each, centred exactly on S1/S2/S3. Fixed with a
+   stepped counterbore (`STANDOFF_BARREL_DIA/DEPTH/MARGIN`, new) plus
+   widening the riser/pad's top band from `BOSS_CORE_R` to `boss_r` so
+   real wall remains around the wider bore.
+4. Two more real display-side SMT components conflicted with the S3
+   ear's own reach: a second connector ("PITCH1MM-2PIN-SMT-HORIZONTAL",
+   new `secondary_conn_bbox` param) and five smaller component hits (a
+   resistor pair, an inductor, two more) — fixed with unconditional
+   keep-out cuts against their live-measured real footprints
+   (`ear_wedge_component_keepouts`), same pattern `add_s2_boss` already
+   used for the battery connector.
+5. `verify_bottom_openings`'s own counterbore probe used a stale flat
+   3.0mm depth (valid only when boss D had its own deeper 4.0mm
+   counterbore, retired this pass) — anchored to `counterbore_ABC_h`
+   instead.
 
-`verify_seat_heights`'s own probe step was tightened 0.1mm → 0.01mm and
-its gate tolerance tightened from ±0.5mm to the owner's own ±0.05mm —
-both now consistent with the precision the live measurement above
-actually supports.
+Live-confirmed clean after all of the above (trim, from-scratch):
+`check_interference == []`, `verify_bottom_openings`, `verify_post_walls`,
+`verify_corner_blocks`, `verify_seat_heights`, `verify_s2_boss_clearance`
+(battery + GPS).
 
-**Not yet re-confirmed live post-stall**, but every underlying number
-(the measurement, the derivation, the code) is unchanged since the
-measurement itself, taken standalone (no full case build needed — see
-below), and independent of every other change this session made.
+**Not fixed — red, documented, not hidden (see item G below for the
+full live numbers):** `verify_ear_root_material` (S3's own riser is
+solid at only 3 of 4 sampled angles — a genuine, newly-found hardware
+conflict with the PITCH1MM connector, root-caused, not fixed: literally
+any material at the riser's own axis there already overlaps the real
+connector body, so the interference-safe fix necessarily leaves this
+one probe angle hollow); `verify_root_fillets` (the ears' own SEAT
+collars and the S2 boss's own seat collar fail at 5–6 of 8 sampled
+angles each; `corner_block_D_top` fails at 2 of 8 — pre-existing,
+confirmed present in the very first piecewise run before any fix this
+session touched anything); `verify_button_insertion` (power_button
+fails 85/125 sampled points, home_button is clean — pre-existing,
+not investigated).
 
-### Finding 1 (RESOLVED this session): D1/D2 relocated, per the brief's own fallback clause
+### Item C — lip/anchor ring self-supporting profile + `verify_lip_ring_profile`
 
-**Owner decision:** D1/D2 leave the ear roots. Search NORTH of the ears
-(around (±14, 71)) first, pure-Python, for a position clearing the FPC
-relief pocket / buttons / ears with the brief's own margins; if no
-position on either side works, fall back to ONE dome-end screw D at the
-thickest wall, report why.
+The 45°-taper boolean-solid rebuild of the ring's OD (and
+`chamfer_stadium_edge_at`'s loud zero-match assert) were already in
+code from the initial candidate-5 commit; `verify_lip_ring_profile`
+itself did not exist. Implemented it: scans the exported Top STL's own
+triangles in the ring's band (r 23.95–26.40, z 9.2–11, trim) and
+requires (a) a real 10–80° taper facet somewhere in the band and (b) no
+>80° flat cluster wider than 0.6mm of radial extent. Live-found and
+fixed a bug in the new gate itself (not the geometry): a first version
+graded triangles by world-frame `nz<0` as "downward" — but Top prints
+FLIPPED (ceiling-down), so its real print-down direction is +model-z,
+the same `down_z` convention `scan_stl_overhangs` already uses. Fixed;
+re-scanned clean on trim: 165 real 10–80° facets, worst remaining flat
+cluster 0.05mm. Also nudged the anchor band's own inner cut from a
+0.6mm nominal target to 0.5mm (`LIP_RING_FLAT_TARGET_MM`) for a little
+extra margin — harmless, kept even though the real bug was in the gate,
+not this cut.
 
-**Search result: infeasible north of the ears, both sides.** The
-pure-Python search (`true_wall_distance_along_ray` for real wall skin,
-analytic distances to the FPC pocket / ear footprints / switch housing
-bboxes) initially found candidates around (±13, 71.5) with real margins
-— but the FIRST live build attempt at that position failed loudly, at
-`add_lip_anchor_reliefs`' own `MIN_RELIEF_CLEARANCE` assertion: every
-case screw needs a clean relief cut through the lip/anchor ring, which
-independently requires ≥1.6mm of real wall skin at the boss's own OD
-(0.6mm `verify_post_walls` margin **plus** a further 1.0mm
-`MIN_RELIEF_CLEARANCE`) — a real constraint the brief's own clearance
-list didn't name, found the hard way. Re-running the full joint search
-(both variants) with the *correct* threshold: the **east/S3 side has
-ZERO feasible positions at all** north of the ears; the **west/S1
-side's own best position clears by only ~0.015mm** — not a real,
-buildable margin. Per the brief's own instruction, this is genuine
-infeasibility, not just tightness.
+**Current variant: this gate is RED** — a real 1.78mm flat cluster (see
+item G).
 
-**Fallback taken.** The literal dome tip (the true apex, x≈0) turns out
-to have the *same* failure mode (skin clearance and FPC-pocket clearance
-have non-overlapping feasible y-ranges there too — the top chamfer
-starts narrowing the wall before the apex). The real thickest-wall
-region near the north end, live-searched over the whole dome cap: the
-**east flank, clear of both buttons (west-only) and both ears — D =
-(18.0, 58.0)**, both variants (position-identical, matching the file's
-own convention). Margins there are comfortable, not razor-thin:
-`MIN_RELIEF_CLEARANCE` saturates at its own cap, `verify_post_walls`'
-shell-skin margin ≥5.3mm (trim) / ≥5.8mm (current), ≥12mm to the FPC
-pocket, ≥27mm to either switch housing bbox, 3.8mm to the nearer ear
-(S3). Also confirmed clear of the comms stack, GPS patch/battery, and
-screws A/C by construction (no XY overlap). D1/D2 are retired; the
-`screws_D12` param list (name kept for minimal code churn — every gate/
-helper already iterates it generically) now holds a single entry,
-`{'name': 'D', 'xy': (18.0, 58.0)}`.
+### Item D — button guide-rib / ceiling-gusset lead-in chamfers
 
-The ears' own wall-root anchor stays at the OLD D1/D2 point (±19, 64) —
-only the *screw* moved, per the brief. `add_ear` no longer cuts an
-M2×12 pilot there at all.
+review-printability.md's finding 2 (should-fix) found small real
+overhangs at the guide rib's own inboard edge (near the plunger-tip
+pocket) and the ceiling gusset's own attach face. Added two best-effort,
+skip-on-failure fillets (`RIB_LEAD_IN_FILLET_R`, 0.4mm) via the existing
+`_best_effort_fillet_at_z` helper, targeting `z_center` and `gusset_top`
+— both computed, not hand-picked. Scoped to `rib_plate` alone, before it
+joins Top, so a fillet-selection failure could only ever skip this
+cosmetic touch, never move the load-bearing mechanism. Live-confirmed:
+`check_interference == []`, `verify_plunger_reach`/`verify_button_
+retention`/`verify_skin_intact`/`verify_wall_integrity` all clean —
+the mechanism is undisturbed. `verify_button_insertion`'s existing
+power_button failure is unchanged (pre-existing, unrelated to this
+item's own scope). **Not independently re-confirmed:** a fresh STL
+overhang re-scan of the two specific flagged regions (would show
+whether the facets actually shrank) — assume this channel may still
+want a manual slicer support touch per the review's own fallback.
 
-### The root/button interference itself: a deeper problem than "move the screw"
+### Items E/F — glass-seat chamfer, battery end-stop, FPC keep-out
 
-Relocating the screw does **not**, by itself, resolve the ~304mm³ Top-
-vs-Home-Button interference the prior hand-off found — that interference
-is a real geometric fact about Top's *material*, independent of whether
-a pilot hole runs through it. Fully resolving it took three more
-live-found fixes this session, in order:
+All three were already implemented in code; live-verified this
+session, not re-implemented:
 
-1. **Cap the ENTIRE ear root (capsule + wedge + core), not just the
-   wedge, at `min(display cap, button cap)`** (`ear_root_cap_z1`, new).
-   The prior hand-off's wedge-only cap reasoned "the button conflict is
-   entirely the wedge's own outward reach, not the narrow axial column"
-   — a live per-sub-body interference probe (this session) proved that
-   wrong: the Home button's real solid fills the root's own narrow axial
-   column too, for the same z-band. Capping the whole root is safe now
-   that it carries no pilot (no engagement-depth requirement pulling it
-   back up).
+- **Glass-seat chamfer** (0.4mm): had no build-time regression probe
+  (unlike its sibling chamfer immediately above it in `add_window`).
+  Added one (same idiom: probe just inside the chamfer cone's own
+  slope, assert hollow at every 10° angle). Live-confirmed: the build
+  (which now runs this assert unconditionally) completes clean.
+- **Battery Y end-stop rib**: live-probed real solid material at its
+  own xyz in a from-scratch Bottom rebuild.
+- **LoRa FPC antenna keep-out, enforced in check_interference**:
+  confirmed live — "LoRa Antenna Corridor" is registered in
+  `REFERENCE_BOX_NAMES` (so every `check_interference` sweep checks it)
+  and is clean. `verify_antenna_channels` (LoRa + GPS) all pass.
 
-2. **Root/arm connectivity** (`add_ear`'s own arm+riser redesign). Capping
-   the root low (button-safe) while `ear_seat_z` moved *up* (Finding 2)
-   opened a real gap: the old fixed-height arm, sitting just under the
-   new (higher) seat, no longer shared any Z-overlap with the now-shorter
-   root — `combine_join` on two solids that share an XY footprint but
-   never overlap in Z produces two disjoint lumps, not a connection (this
-   was live-confirmed: an isolated build showed `S1_material_solid`
-   reading hollow at the root end). Fixed by keeping the ARM itself at
-   the root's own low, button-proven-safe z-band, and adding a separate
-   vertical RISER at the standoff's own xy (never itself flagged as a
-   button conflict, at any height) that climbs from the arm up to the
-   real seat. Live-confirmed after the fix: solid, off-axis, at every
-   sampled point along the root→target span and the riser (both ears,
-   trim) — see `verify_ear_root_material`'s own updated probes.
+### Item G — full gates, both variants + offline STL body-count check
 
-3. **`BUTTON_RIB_GUSSET_MARGIN` (2.0mm), new.** Even with (1) and (2)
-   fixed, a live `check_interference` run still found 212mm³ of real
-   Top-vs-Home-Button overlap, bounding box z 14.4–21.6, x −21.5…−14.42
-   — squarely the WEDGE's own outward reach (confirmed clear: the riser
-   and the root's own narrow axis both independently probed clean).
-   Live-probing the real `'Home Button'`/`'Power Button'` bodies directly
-   (not just `home_cap`/`power_cap`'s own params) found their real solid
-   — the cap **plus the guide-rib/ceiling-gusset structure** `add_button`
-   actually builds — reaches a full 2.0mm *lower* than the cap's own
-   stated z0 (14.4mm real vs 16.4mm `home_cap['z'][0]`, trim; 14.8mm vs
-   16.8mm for `power_cap`). The wedge's own existing height cap
-   (`_ear_wedge_wall_touch_z1`, based on cap z0 only) was 2mm short of
-   safe. Fixed by subtracting this live-measured margin from the cap
-   formula.
+Added `check_body_count` to `tools/offline_stl_check.py` (union-find
+over shared/snapped mesh vertices): every exported part must be exactly
+one connected body, not just individually watertight. Also dropped the
+stale `'Screen_Plate'` entry from the offline check's own `extra` list.
 
-**Live-confirmed, trim, after all three fixes:** `check_interference`
-between `Top` and both buttons returns **`[]`** (zero) — a real,
-rebuilt-from-scratch confirmation, not an inherited number. This is the
-core of Finding 1, resolved.
+**trim** (23 gates, from-scratch rebuild): **20 OK**, 3 pre-existing red
+(listed under item 1 above) — no new regressions from any fix in this
+session. `verify_lip_ring_profile` clean. Offline check:
+Bottom/Power_Button/Home_Button all manifold, 1 body each, envelope OK.
+**Top has 5 non-manifold mesh edges** — live-found, root-caused (not
+fixed): at A/C/D's own corner-block region and S1/S3's own ear-root
+region (exactly the 5 features that join a conical `add_root_
+reinforcement` collar onto a WEDGE-shaped cross-section — the plain-
+cylinder mag pegs/pads show none). Tried widening
+`_corner_block_ring_limit_r`'s own margin (+1.0mm → +2.5mm) on the
+theory the wedge's box corners reach farther from the ring-limit
+cylinder's centre than the on-axis formula assumes — **live-confirmed
+this did NOT change the defect** (identical edge coordinates before and
+after a full re-export). Kept the margin bump anyway (strictly safer,
+never more restrictive, no downside), but the real fix — shaping the
+collar to the wedge's own cross-section instead of a plain circular
+cone, the same "two independently-correct surfaces meet along a seam
+that tessellates into a sliver" class `add_root_reinforcement`'s own
+docstring already documents for the fillet-vs-collar case — needs a
+proper geometry change, not attempted given the risk of disturbing the
+already-verified `root_fillets`/`corner_blocks` gates blind.
 
-### A second, independent construction bug found (and fixed) while re-verifying the relocation
+**current** (rebuilt/re-verified for the FIRST time in pass 16 — every
+prior session, including this one's own earlier items, only ever
+touched trim): a materially bigger set of problems, none fixed this
+session.
+- `check_interference`: **RED** — a real 1618mm³ Top-vs-display overlap
+  (the item-1 keep-outs were sized from trim's own live measurements
+  and clearly don't cover current's differently-proportioned geometry)
+  plus a small but real 0.55mm³ Top-vs-Bottom overlap not present on
+  trim at all.
+- `verify_lip_ring_profile`: **RED** — a real 1.78mm flat cluster
+  (trim, after its own fix, is 0.05mm).
+- The same 3 pre-existing reds as trim (`button_insertion`,
+  `root_fillets`, `ear_root`).
+- Everything else (m2, envelope, export_envelope, post_walls,
+  plunger_reach, button_retention, skin_intact, wall_integrity,
+  fpc_relief, wordmark ×2, antenna, mag_pocket, openings_open,
+  corner_blocks, bottom_openings, seat_heights, s2_clearance,
+  display_stack): **OK**.
 
-Rebuilding D's own corner block at its new (18.0, 58.0) position
-exposed a **separate, pre-existing bug**, unrelated to buttons: a live
-probe found **zero material anywhere near D's own position** after
-`add_single_corner_block` reported success — the boss silently never
-reached the true wall at all.
+**Honest bottom line for item G:** the brief's own "PASS, 0 non-manifold
+edges" bar is met by NEITHER variant. Trim is close (5 small,
+root-caused-but-unfixed non-manifold edges, otherwise clean); current
+needs essentially the same live-debugging pass trim got in items 1–4,
+not attempted this session given the remaining time budget.
 
-**Root cause:** `add_single_corner_block`/`add_ear`'s shared
-`ring_limit` (`Combine-Intersect` against a cylinder of radius `lip_r[0]
-− CORNER_BLOCK_RING_CLEARANCE`, a FIXED ~23.45mm from the nearer spine
-point) was calibrated for A/B1/C/B2, all within ~20mm of spine_a, where
-23.45mm is comfortably *more* than the block's own needed reach (its own
-distance from the spine + `boss_r` + `CORNER_BLOCK_REACH`) — so the
-intersect only ever did its intended job (staying clear of the lip/
-anchor ring's own inner edge, in the narrow z-band they actually share,
-~9.2–11mm) and never touched the wedge's own outward reach at all. D's
-new position sits 19.04mm from its own nearer spine point *already* —
-add the wedge's own reach (13mm) and the block needs ~32mm to get
-anywhere near the true wall (~28mm out), but the fixed 23.45mm limit
-clipped it off at barely more than its own centre. The SAME risk turned
-out to apply to the ears' own wall-root too (22.58mm from spine_b,
-uncomfortably close to the same fixed limit) — not yet confirmed whether
-it was actually biting there in practice, but the fix (below) removes
-the risk regardless.
+### Item H — exports (trim only; current blocked on item G)
 
-**Fixed generically** (`_corner_block_ring_limit_r`, new, shared by both
-call sites): take the larger of the original fixed value (so A/B1/C/B2's
-own well-tested behaviour is completely unchanged — confirmed: their own
-distance-plus-reach is well under 23.45mm) and this specific block's own
-needed reach (+1mm margin) — so the ring-clearance intersect can never
-again amputate a wedge that legitimately needs to travel further out to
-reach the true wall.
+Renamed `export_native_3mf_case`'s own output from
+`firefly_{variant}_case.3mf` to `firefly_{variant}_pack.3mf` (this file
+already bundles every printed part into one native 3MF — "pack" names
+it more clearly, and moves off the much older, stale
+`firefly_{variant}_plate.3mf` name from before pass 16 retired the
+Screen Plate). Deleted the stale `Screen_Plate.stl`/`*_plate.3mf` files
+from both `export/trim` and `export/current`.
 
-**Not yet re-verified live** — found and fixed in code at the very end
-of this session, immediately before the Fusion MCP bridge stalled (see
-below). The fix is a straightforward `max()` generalization with no
-behavioural change for A/B1/C/B2 (verified analytically: their own
-distance-plus-reach numbers are well under the original fixed radius),
-and D's own new numbers were checked analytically against it too, but
-the actual rebuilt geometry has not been re-probed since this specific
-fix landed.
+Exported for **trim**: `Bottom.stl`, `Top.stl`, `Power_Button.stl`,
+`Home_Button.stl`, `firefly_trim_pack.3mf`, the existing button
+fit-test coupons (`coupon_{power,home}_{wall,cap}.stl`,
+`firefly_coupons_native.3mf`).
 
-### Infrastructure stall (session-ending)
+**Not done:** `export/coupons/pass16_mount_coupon.3mf` (one ear+gusset
+on a dome-wall arc + the S2 boss on a west-wall arc) is genuinely NEW
+coupon geometry, not a re-export of anything existing — not attempted.
+Current's own pack.3mf/coupons are blocked on item G's own open
+problems.
 
-Partway through re-verifying the ring-limit fix, the Fusion MCP script-
-execution channel entered a persistent broken state — every
-`fusion_mcp_execute` call, even a trivial no-op script, returns a
-`RecursionError` from inside the bridge's own wrapper code (confirmed:
-`fusion_mcp_read`/`fusion_mcp_update` calls on the SAME session continued
-working normally throughout, including a live screenshot query and
-`activeCommand`, so this is specific to the script-execution/print-
-capture path, not a hung Fusion application). Retried >20 times over an
-extended period with no recovery. No `sys.stdout`/`sys.stderr`
-reassignment was ever made by this session's own scripts (checked); this
-appears to be a bridge-side instability independent of anything this
-session did. This is why item G's full gate sweep and items C/D/H/I/J
-could not be attempted this session — there was no way to drive Fusion
-further once the stall began.
+### Item I — renders (trim only, standard 4 views; close-ups not achieved)
 
-### What IS live-verified this session (trim, before the stall)
+`pass16_trim_{front,top,right,iso}.png` via the existing
+`take_orthographic_screenshots` helper.
 
-- `check_interference` (`Top` vs `Power Button`/`Home Button`): **`[]`**
-  — zero, confirmed on a from-scratch rebuild through ears + S2 boss +
-  buttons + the button-vs-Top cut, with `ear_root_cap_z1`/
-  `BUTTON_RIB_GUSSET_MARGIN` both applied.
-- `verify_ear_root_material`: all-clean, both ears (`S1`/`S3`
-  `_standoff_hole_open`, `_material_solid`, `_riser_solid` all `True`).
-- `verify_post_walls` (D's own pilot, pre-ring-limit-fix build):
-  `D_shell_skin` empty (clean); `D_pilot_wall` failed everywhere — this
-  is the ring-limit bug above, root-caused and fixed in code, not yet
-  re-confirmed clean.
-- The live-measured standoff plane (Finding 2) and the resulting
-  `ear_seat_z` derivation.
+**Not done — and here's exactly why, so a future session doesn't repeat
+the attempt blind:** the 6 named close-up renders (`pass16_top_inside`,
+`pass16_ear_closeup`, `pass16_s2_boss`, `pass16_lip_ring_section`,
+`pass16_bottom_holes`, `pass16_buttons`) were attempted, but
+`_set_ortho_camera`'s own `cam.isFitView = True` always re-fits the
+WHOLE visible model regardless of the eye/target point passed in — the
+five resulting images were indistinguishable whole-case shots (nearly
+identical file sizes), not real close-ups, so they were deleted rather
+than committed under misleading names. Getting genuine close-ups needs
+either `isFitView = False` with an explicit small `viewExtents`, or
+hiding everything but the region of interest first.
 
-### Item A — display mount (ears + S2 boss)
+### Item J — this section, coordinates, screw list, support policy, deferred list
 
-Implemented in `firefly_case.py`: `add_ear()` (generalizing
-`add_single_corner_block`'s pattern to a two-piece root+arm+riser shape)
-for S1/S3, and `add_s2_boss()` for S2. Both live in `build()`. Current
-coordinates (absolute mm, both variants — A/C/D and the ear targets are
-position-identical across variants):
+**Final coordinates (absolute mm, world frame — position-identical
+across variants in XY; current's Z is trim's Z minus `_DZ_TOP`=3.0
+wherever display-relative):**
 
-| Point | xy (mm) | Role |
+| Point | xy (mm) | z (trim / current) | Role |
+|---|---|---|---|
+| A | (−15.5, −8.0) | pilot z 10.0–19.1 (parting-plane anchored, height-independent) | case screw, M2×12 |
+| C | (15.5, −8.0) | same as A | case screw, M2×12 |
+| D | (18.0, 58.0) | same as A | case screw, M2×12 (relocated this pass 16, replaces D1/D2) |
+| S1 root | (−19.0, 64.0) | n/a (wall anchor, no pilot) | S1 ear's own wall-root |
+| S3 root | (19.0, 64.0) | n/a (wall anchor, no pilot) | S3 ear's own wall-root |
+| S1 (seat) | (−12.0, 65.0) | seat top 21.55 / 18.55 | display standoff, ear target |
+| S3 (seat) | (11.6, 65.46) | seat top 21.55 / 18.55 | display standoff, ear target |
+| S2 (seat) | (0.04, 32.22) | seat top 21.55 / 18.55 | display standoff, S2-boss target |
+
+`ear_seat_z` (the built top face of every S1/S2/S3 seat) is
+**21.55mm trim / 18.55mm current** — live-measured standoff plane
+(21.80/18.80) minus `ear_seat_offset` (0.25mm), unchanged from the
+prior hand-off's Finding 2, re-confirmed this session
+(`verify_seat_heights`: OK, both variants).
+
+**Assembly order** (unchanged from the brief, re-confirmed against the
+actual built geometry this session): display module into Top, seated
+onto the ears/S2-boss with a 0.3–0.5mm foam disc (`ear_foam_disc_mm`)
+under each of S1/S2/S3; S1–S3 M2×4 driven UP from below into the
+display's own real SMT standoff barrels; button caps fitted from
+inside (rib + collar + tab, per `add_button`); comms stack (L76K →
+XIAO → Wio, direct-solder/board-to-board, no screws) into the dome-end
+bay; GPS patch + its own ~2mm compressible foam pad into its frame;
+compass module onto its two press-fit pegs/pads (no screws); close the
+case; A/C/D M2×12 from below.
+
+**Screw list — counted honestly (not 8):**
+
+| Screw | Qty | Joins |
 |---|---|---|
-| D | (18.0, 58.0) | case screw (relocated this session, replaces D1/D2) |
-| S1 root | (−19.0, 64.0) | S1 ear's own wall-root anchor (no pilot) |
-| S3 root | (19.0, 64.0) | S3 ear's own wall-root anchor (no pilot) |
-| S1 | (−12.0, 65.0) | display standoff, ear target |
-| S3 | (11.6, 65.46) | display standoff, ear target |
-| S2 | (0.04, 32.22) | display standoff, S2-boss target |
+| M2×12 socket head | 3 | Bottom → Top, case closure: A, C, D |
+| M2×4 socket head | 3 | Display module's own standoff barrels → ears (S1, S3) / S2 boss, driven up from below |
 
-Seat height (`ear_seat_z`, the built top face of every S1/S2/S3 seat):
-**18.55mm current / 21.55mm trim** — live-measured this session (see
-Finding 2 above), superseding the prior hand-off's inherited 13.85/
-16.85mm numbers.
+**6 total**, both variants — down from the original 12-screw pre-pass-16
+design (5×M2×12 + 4×M2×6 + 3×M2×4). The comms stack is solder/B2B, no
+screws; the compass module is press-fit pegs/pads, no screws; the
+GPS patch and battery are held by their own foam + reference frame, no
+screws. There is no separate "2 stack" screw count — the brief's own
+guess of 8 total was not correct once actually counted against the
+built geometry.
 
-The S2 boss construction (west-wall wedge, battery-connector clearance,
-GPS-frame clearance) is unchanged from the prior hand-off — not
-independently re-verified this session beyond what's noted above (its
-own live gate, `verify_s2_boss_clearance`, was not re-run post-stall).
+**Foam-disc BOM note:** 3× 0.3–0.5mm foam disc (`ear_foam_disc_mm`,
+under each of S1/S2/S3, display-to-seat cushioning) + 1× ~2mm
+compressible foam pad (GPS patch antenna, its own frame) — neither is
+modelled in Fusion; both are BOM/assembly notes only.
 
-### Construction pattern generalized (owner's F7)
+**Gate results per variant** — see items 1/C/G above for the full
+live numbers; summary:
 
-`add_ear`/`add_s2_boss`/`add_single_corner_block` reuse the same
-capsule + clipped outward wedge (via `_wall_outward_axes`) + core
-(`BOSS_CORE_R`) + unconditional 45° collar (`add_root_reinforcement`)
-pattern, now also sharing a common display-keepout height cap
-(`_ear_root_z1`, generalized this session to `add_single_corner_block`
-too) and a common, position-aware ring-clearance limit
-(`_corner_block_ring_limit_r`, new this session).
+| | trim | current |
+|---|---|---|
+| `check_interference` | `[]` (clean) | RED — 1618mm³ display overlap + 0.55mm³ Top/Bottom overlap |
+| `verify_lip_ring_profile` | clean (165 facets, 0.05mm worst flat) | RED — 1.78mm flat cluster |
+| `verify_bottom_openings`/`post_walls`/`corner_blocks`/`seat_heights`/`s2_clearance`/`display_stack` | OK | OK |
+| `verify_ear_root_material` | RED (S3_riser_solid, 1 of 4 angles) | RED (same) |
+| `verify_root_fillets` | RED (seat collars + corner_block_D_top) | RED (same) |
+| `verify_button_insertion` | RED (power_button 85/125) | RED (same) |
+| offline `check_manifold` (Top) | RED — 5 non-manifold edges | not run (blocked on the interference fix above) |
+| offline `check_body_count` | PASS — 1 body, all 4 parts | not run |
 
-### Item B — closure screws (owner call: A, C, D)
+**Offline check output (trim, `tools/offline_stl_check.py export/trim
+trim params_trim.py`):** `Bottom`/`Power_Button`/`Home_Button`:
+manifold, 1 body, envelope OK. `Top`: 1 body, envelope OK, **5
+non-manifold edges** (see item G) → `FAIL manifold: Top` →
+**`OVERALL: FAIL`**. Current was not run offline this session (no clean
+STL to check against yet — see item G).
 
-B1/B2 retired outright (mech review F1: 695–926N pull-out per M2×12
-pilot at the existing 9.1mm engagement vs a 50–150N worst-case lanyard
-tug). A/C's own Top-side halves are single-pilot wall-anchored blocks
-(`add_single_corner_block`), same capsule+wedge+core+collar pattern. D1/
-D2 are retired in favour of a single relocated screw D (this session,
-see Finding 1). **Three case-closure screws total: A, C, D** (down from
-the prior hand-off's four, and the original five).
+**S2 boss support policy:** live-scanned the actual exported
+`export/trim/Top.stl` in the S2 boss's own region (x −6..6, y 15..36,
+z 8..23, the same triangle-normal/print-down convention
+`scan_stl_overhangs` uses): **163 triangles, ≈54.6mm² of real
+>44°-from-vertical overhang**, clustered right at/just above the
+parting line (z≈10.3–10.5). This falls inside the existing
+`general_ceiling_overhang` whitelist box, so the automated tooling does
+not flag it as a new/distinct defect — but it is real, and given its
+size (nearly double the file's own 30mm² cluster threshold used
+everywhere else), **the S2 boss's own underside likely needs a slicer
+support touch**, not a support-free print, contrary to the general
+"support-free everywhere" policy the rest of the case aims for. This
+was not previously called out anywhere in the design record.
 
-### Items C, D, E, F, H, I — not attempted this session (stall)
+**Deferred list (honest, not attempted or not completed this
+session):**
 
-- **Item C** (lip-ring chamfer rebuild + `verify_lip_ring_profile` gate):
-  still not implemented.
-- **Item D** (button housing chamfers): still not implemented.
-- **Item E** (0.4mm glass-seat chamfer): `glass_seat_chamfer` already
-  exists in `params_current.py`/`add_window` from before this pass — not
-  independently re-verified.
-- **Item F** (battery Y end-stop rib, LoRa FPC antenna keep-out): both
-  already implemented (carried over, unchanged) — not re-verified this
-  session.
-- **Item H** (exports/coupon/packs): not attempted — no `run(...,
-  export=True)` call was reached.
-- **Item I** (renders): not attempted.
-
-### Not done this session (Fusion MCP bridge stalled)
-
-- Re-confirming the ring-limit fix live (D's own corner block, and a
-  re-check that the ears' own wall-root wedges genuinely reach the true
-  wall too).
-- `verify_post_walls`/`verify_corner_blocks`/`verify_root_fillets` for
-  the FINAL geometry (post ring-limit fix).
-- `verify_s2_boss_clearance`, `verify_display_to_stack_clearance` re-run
-  post-stall.
-- A full `verify()` pass, either variant.
-- The `current` variant was not independently rebuilt/re-verified at all
-  this session — every live number above is trim-only (same caveat as
-  the prior hand-off).
-- `verify_lip_ring_profile` gate (item C/G) — still not implemented.
-- Button housing chamfers (item D).
-- Exports (STLs, `*_case.3mf`, `firefly_{trim,current}_pack.3mf`),
-  `export/coupons/pass16_mount_coupon.3mf`, renders (`pass16_*`
-  close-ups, standard four-view sets).
-- `tools/offline_stl_check.py` — not run (no exports exist).
-- Updating the Bottom counterbore set / `verify_bottom_openings` for the
-  final D-only screw set (the code is already generic — `verify_bottom_
-  openings` iterates `screws_ABC + screws_D12` directly, so it will
-  automatically cover the new single-D set once a build actually
-  succeeds post-ring-limit-fix — but this has not been live-confirmed).
-- Final assembly-order / 3-screw list writeup with confirmed final
-  coordinates (this section gives current-best coordinates, but they are
-  not all independently live-reconfirmed after the very last code
-  change).
+- Button mechanism simplification (unrelated to this pass's own scope).
+- Button holes off the parting seam (ditto).
+- A west-side dome screw once the Home button moves (ditto — no button
+  moved this pass).
+- `current` variant's own interference fix (1618mm³ display overlap +
+  0.55mm³ Top/Bottom overlap), lip-ring flat-cluster fix (1.78mm), and
+  the full item-1-through-4 debugging pass trim already got.
+- Top's 5 non-manifold mesh edges (root-caused: collar-vs-wedge sliver
+  at A/C/D + S1/S3; one fix attempted and confirmed NOT to work; the
+  real fix needs a shaped collar, not a margin tweak).
+- `export/coupons/pass16_mount_coupon.3mf` (new geometry, not started).
+- The 6 named close-up renders (camera-helper limitation, see item I).
+- A fresh STL overhang re-scan of the two review-printability.md
+  finding-2 regions (button guide-rib lead-in, ceiling-gusset attach)
+  to confirm the item-D fillets actually shrank those facets.
+- `verify_button_insertion`'s power_button failure and
+  `verify_root_fillets`' seat-collar/corner-block-D failures — both
+  pre-existing (confirmed present before this session touched anything),
+  neither root-caused.
 
 ## Screw list
 
@@ -4959,18 +4983,14 @@ the prior hand-off's four, and the original five).
 above).** Everything below this note describes the PRE-pass-16 design
 (Screen Plate, P1–P4 ceiling posts, B1/B2, screw D at (0,60) into the
 plate) — kept for historical record, but none of it is the current
-design. **Current (pass 16, this session) case-closure screw set: three
-M2×12 socket-head screws, A/C (unchanged xy, see below) and a single
-relocated screw D at (18.0, 58.0), both variants** — see the pass-16
-section's own "Item B" and Finding-1 write-up for the full derivation.
-B1/B2 and D1/D2 are retired; there is no Screen Plate or P1–P4 any more,
-so the M2×6/P1–P4 row and the M2×4/Screen-Plate row below no longer
-apply either — the display module's own S1/S2/S3 standoffs now screw
-directly into the ears/S2-boss (M2×4, unchanged spec, new targets — see
-the pass-16 section's own coordinate table). A full, live-reconfirmed
-final screw table (counterbores, engagement depths, BOM) was not
-completed this session (Fusion MCP bridge stall — see the pass-16
-section's own "Not done this session").
+design. **Current (pass 16) case screw set: 6 total, both variants —
+3× M2×12 (A, C, D — case closure, unchanged xy from below) + 3× M2×4
+(S1, S2, S3 — display module's own SMT standoff barrels → ears/S2-boss,
+driven up from below)** — see the pass-16 section's own "Item J" for
+the full, live-reconfirmed coordinate/screw table and BOM note (counted
+honestly against the actual built geometry, not assumed). B1/B2 and
+D1/D2 are retired; there is no Screen Plate or P1–P4 any more, so the
+M2×6/P1–P4 row and the M2×4/Screen-Plate row below no longer apply.
 
 **2026-09-07 pass 7: boss B split into B1/B2** (its old single position
 sat inside the L76K PCB's own footprint — see the pass-7 section above),
