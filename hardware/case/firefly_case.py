@@ -3388,6 +3388,29 @@ def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thicke
     else:
         rib_plate = combine_intersect(root, rib_plate, [rib_outer_envelope])
 
+    # pass 16, item D (printability review #2, "should-fix"): small
+    # best-effort lead-in fillets at (a) the guide rib's own inboard edge
+    # (near the plunger-tip pocket, at the rib's own z_center) and (b) the
+    # ceiling gusset's own attach face (at gusset_top, where the gusset
+    # starts climbing from the rib/connector below) -- the review found
+    # small (each under the 30mm^2 cluster gate on its own) but real
+    # overhangs at both, inside the button housing's own narrow,
+    # hard-to-support channel -- see review-printability.md's own finding
+    # 2 for the exact live-measured facets this responds to. Scoped to
+    # `rib_plate` ALONE, before it joins Top (the intersect just above),
+    # so a Fusion fillet-selection failure here can only ever skip this
+    # cosmetic touch -- never risk the mechanism: verify_plunger_reach/
+    # verify_button_insertion/verify_button_retention all gate the SAME
+    # rib/collar geometry a fillet only rounds the edges of, never moves.
+    # Best-effort/skip-on-failure, same pattern _best_effort_fillet_at_z's
+    # own docstring already establishes for exactly this class of
+    # cosmetic/print-quality (not load-bearing) touch.
+    RIB_LEAD_IN_FILLET_R = 0.4  # mm -- modest, cosmetic/print-quality only (same order as the
+                                # GPS/stack-frame wall roots' own 0.6mm precedent, kept smaller
+                                # here given the tight quarters inside the button housing).
+    _best_effort_fillet_at_z(root, rib_plate, z_center, RIB_LEAD_IN_FILLET_R)
+    _best_effort_fillet_at_z(root, rib_plate, gusset_top, RIB_LEAD_IN_FILLET_R)
+
     # 2026-09-06 pass 6: a Combine-Intersect of rib_plate against the
     # inner-cavity clip tool was tried here as an extra safety net (like
     # the collar's, below) but produced a real, large 'Top x Button'
