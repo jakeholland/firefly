@@ -32,6 +32,45 @@ def _tri_area(a, b, c):
     return 0.5 * math.sqrt(cx * cx + cy * cy + cz * cz)
 
 
+def check_body_count(tris, tol=1e-4):
+    """Pass 16, item G: every exported part must be EXACTLY ONE connected
+    body -- a stray disjoint island (a silent no-op boolean join, the
+    same class of bug this file's own dedupe_body/clipped_pillar_with_
+    reach docstrings warn about elsewhere) would still pass the manifold
+    check above (each disjoint piece is its own perfectly watertight
+    mesh) and could still slice/print as several separate floating
+    parts. Union-find over shared (snapped) vertices, same idiom
+    check_manifold's own vkey already uses -- the number of resulting
+    connected components is the real body count."""
+    def vkey(v):
+        return (round(v[0] / tol) * tol, round(v[1] / tol) * tol, round(v[2] / tol) * tol)
+
+    parent = {}
+
+    def find(x):
+        root = x
+        while parent.get(root, root) != root:
+            root = parent[root]
+        while parent.get(x, x) != root:
+            parent[x], x = root, parent.get(x, root)
+        return root
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for _, v1, v2, v3 in tris:
+        keys = [vkey(v1), vkey(v2), vkey(v3)]
+        for k in keys:
+            parent.setdefault(k, k)
+        union(keys[0], keys[1])
+        union(keys[1], keys[2])
+
+    roots = {find(k) for k in parent}
+    return {'body_count': len(roots), 'one_body': len(roots) == 1}
+
+
 def check_manifold(tris, tol=1e-4):
     """Every edge of a watertight (manifold) mesh is shared by exactly 2
     triangles (one traversal in each direction). Vertices are snapped to
@@ -266,15 +305,22 @@ def main():
         'Bottom': (variant_dir + '/Bottom.stl', -1.0, params['bottom_z'], BOTTOM_WL),
         'Top': (variant_dir + '/Top.stl', 1.0, params['top_z'], TOP_WL),
     }
-    extra = ['Screen_Plate', 'Power_Button', 'Home_Button']
+    # pass 16: no Screen Plate any more (candidate-5 display mount) -- the
+    # documented, exported part set is exactly Bottom/Top/Power_Button/
+    # Home_Button (EXPORT_BODY_NAMES in firefly_case.py). 'Screen_Plate'
+    # removed from this list (it was silently skipped via the
+    # FileNotFoundError continue below anyway, but a stale name here is
+    # misleading -- see the pass-16 README section).
+    extra = ['Power_Button', 'Home_Button']
 
     report = {}
     for name, (path, down_z, bed_z, wl) in bodies.items():
         tris = read_stl_triangles(path)
         manifold = check_manifold(tris)
+        body_count = check_body_count(tris)
         envelope = check_envelope(tris, params, name)
         overhang = scan_stl_overhangs(tris, down_z, bed_z, whitelist_xy=wl)
-        report[name] = {'manifold': manifold, 'envelope': envelope, 'overhang': overhang}
+        report[name] = {'manifold': manifold, 'body_count': body_count, 'envelope': envelope, 'overhang': overhang}
 
     for name in extra:
         path = f'{variant_dir}/{name}.stl'
@@ -283,8 +329,9 @@ def main():
         except FileNotFoundError:
             continue
         manifold = check_manifold(tris)
+        body_count = check_body_count(tris)
         envelope = check_envelope(tris, params, name)
-        report[name] = {'manifold': manifold, 'envelope': envelope}
+        report[name] = {'manifold': manifold, 'body_count': body_count, 'envelope': envelope}
 
     print(f'=== Offline STL checks: {variant} ===')
     print(json.dumps(report, indent=2, default=str))
@@ -293,6 +340,14 @@ def main():
     for name, r in report.items():
         if not r['manifold']['manifold']:
             print(f'FAIL manifold: {name}')
+            fail = True
+        # pass 16, item G: each exported part must be exactly one body --
+        # a stray disjoint island would still pass the manifold check
+        # above (each piece is its own watertight mesh) but is a real,
+        # separately-floating part, not a single printable solid. See
+        # check_body_count's own docstring.
+        if not r['body_count']['one_body']:
+            print(f"FAIL body_count: {name} ({r['body_count']['body_count']} bodies, expected 1)")
             fail = True
         if not r['envelope']['ok']:
             print(f'FAIL envelope: {name}')

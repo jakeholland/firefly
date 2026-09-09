@@ -74,6 +74,34 @@ PARAMS = {
     # per-variant via display_z_offset like every other display-relative
     # z value in this file.
     'battery_connector_bbox': {'x': (-11.32, -3.67), 'y': (32.80, 38.00), 'z': (14.20, 17.60)},
+    # pass 16 resumed (item 1, live-found the hard way): a SECOND real SMT
+    # connector on the display's own underside ('PITCH1MM-2PIN-SMT-
+    # HORIZONTAL', a 1mm-pitch 2-pin horizontal connector -- distinct from
+    # the battery socket above), sitting almost directly under the S3 ear's
+    # own arm run -- found live via a from-scratch check_interference(Top,
+    # display) after the STANDOFF_BARREL_* fix (above) cleared the other 8
+    # hits, leaving one real 17.8mm^3 Top-vs-display overlap here. Base
+    # (current-frame) bbox back-derived from the live-measured trim-world
+    # box (x (6.865,11.215), y (58.88,64.08), z (17.55,20.65)) by
+    # subtracting trim's own display_z_offset (3.0) from z, same convention
+    # as battery_connector_bbox above -- see secondary_conn_world_bbox.
+    'secondary_conn_bbox': {'x': (6.865, 11.215), 'y': (58.88, 64.08), 'z': (14.55, 17.65)},
+    # pass 16 resumed (item 1): five more small, real SMD-component hits
+    # (a resistor pair, an inductor 'L4_ASM', and two unidentified small
+    # parts) found live the same way as secondary_conn_bbox above, each
+    # a genuine but small (<4mm^3) Top-vs-display overlap where an ear's
+    # own wedge/riser passes close to the display's real component layer
+    # -- see check_interference's own live trace in the pass-16 README
+    # section. Base (current-frame) bboxes back-derived from the live-
+    # measured trim-world intersection boxes (0.4mm margin added on every
+    # side) the same way as secondary_conn_bbox.
+    'ear_wedge_component_keepouts': [
+        {'x': (8.245, 9.375), 'y': (66.435, 67.865), 'z': (16.90, 17.98)},
+        {'x': (15.435, 16.865), 'y': (58.255, 59.385), 'z': (16.90, 17.98)},
+        {'x': (-10.28, -8.04), 'y': (64.47, 67.37), 'z': (16.20, 18.00)},
+        {'x': (15.275, 16.365), 'y': (55.395, 56.505), 'z': (15.60, 17.50)},
+        {'x': (11.44, 14.88), 'y': (62.015, 64.945), 'z': (16.00, 17.50)},
+    ],
     'display_header': {'x': (11.5, 17.0), 'y': (43.7, 56.1)},
     'top_ceiling_underside_z': 23.0,
     'display_z_offset': 0.0,  # pass 7: trim overrides this to +3 (case grows 25->28mm)
@@ -173,10 +201,17 @@ PARAMS = {
     # center-to-center) -- add_comms_stack_frame's existing per-boss
     # keep-out cut (iterates `screws_ABC + [screw_D]` generically) applies
     # to A/C automatically, same as it already does for B1/B2/D.
+    # 2026-09-2x pass 16 (owner call, item B): B1/B2 are RETIRED outright
+    # (not just merged -- deleted) along with the old screw_D -- see
+    # mech review F1 ("4 lanyard-end screws well past what pull-out
+    # needs... A/B1/B2/C only 7.6mm apart, center to center") and the
+    # README's pass-16 section for the pull-out math this decision
+    # reuses verbatim (695-926N per M2x12 pilot at 9.1mm engagement vs a
+    # 50-150N worst-case lanyard tug). Only A and C remain from the old
+    # 4; D1/D2 (below) replace the old single D, for 4 case-closure
+    # screws total (A, C, D1, D2) -- down from 5.
     'screws_ABC': [
         {'name': 'A', 'xy': (-15.5, -8.0)},
-        {'name': 'B1', 'xy': (-12.5, -15.0)},
-        {'name': 'B2', 'xy': (12.5, -15.0)},
         {'name': 'C', 'xy': (15.5, -8.0)},
     ],
     'boss_dia': 6.0,
@@ -186,17 +221,168 @@ PARAMS = {
     'top_pilot_dia': 1.62,
     'top_pilot_z': (10.0, 19.1),   # -> M2x12
 
-    # 2026-09-06 pass 6: moved from (0, 65) to (0, 60), a couple mm
-    # further from the Screen Plate's own header cutout (y 42.7..57.1)
-    # for margin, while staying within its outline (y 28.8..69.6) --
-    # incidental to the actual fix for boss D never joining into Bottom
-    # (BOSS_CORE_R, above), which turned out to be the real cause (this
-    # position's local floor genuinely starts a bit further from center
-    # than boss B/A/C's did, but well within the wider core's reach).
-    'screw_D': {'name': 'D', 'xy': (0.0, 60.0)},
-    'counterbore_D_h': 4.0,
-    'plate_post_D_z': (10.0, 13.1),  # post on Screen Plate, hole Ø1.62 -> M2x10
+    # pass 16, item A/B (candidate 5, owner's chosen display mount):
+    # screw D (0,60), its Screen Plate post, and its deeper 4.0mm
+    # counterbore are all RETIRED -- there is no Screen Plate any more.
+    # D1/D2 ORIGINALLY sat at the two EARS' own wall roots (+-19, 64) --
+    # see git history on this branch. Same M2x12 pilot spec as A/C
+    # (top_pilot_dia/top_pilot_z, unchanged) and the SAME shallow
+    # counterbore_ABC_dia/h (2.2mm) -- there is no plate post any more to
+    # need a deeper counterbore, so D1/D2's Bottom-side boss is IDENTICAL
+    # in construction to A/C's (see add_case_boss, which has no is_D
+    # branch).
+    #
+    # RELOCATED pass 16 (resumed, owner call on Finding 1): at (+-19, 64)
+    # the D1 wall-root pillar was found, live, to be a genuine ~304mm^3
+    # geometric enclosure with the Home button's own real cap/shaft body
+    # -- the button's real solid completely fills the exact wall
+    # cross-section `verify_post_walls` requires around the pilot, at
+    # every sampled angle/z within the pilot's own engagement depth (see
+    # README's pass-16 Finding 1 for the full live-probe trail). No
+    # keepout radius/z-band can satisfy both the pilot-wall requirement
+    # and the button's real geometry at that xy. Owner decision: D1/D2
+    # LEAVE the ear roots (the ears keep their own independent wall
+    # anchor at the old (+-19, 64) point -- see 'ears', below -- now with
+    # no pilot through it).
+    #
+    # FALLBACK TAKEN (this pass): the owner's own first-choice relocation
+    # -- two screws NORTH of the ears, hugging the dome wall around
+    # (+-14, 71) -- was searched exhaustively, pure-Python, BEFORE any
+    # Fusion build (per the brief's own instruction), against every
+    # required clearance: real wall material behind the boss
+    # (`true_wall_distance_along_ray`), the FPC relief pocket, the ears'
+    # own wall-root/standoff footprints, and both switch housing bboxes.
+    # That search caught a REAL constraint the brief's own clearance list
+    # didn't name explicitly: `add_lip_anchor_reliefs`' own
+    # `MIN_RELIEF_CLEARANCE` (every case screw needs a clean relief cut
+    # through the lip/anchor ring, which independently requires >=1.6mm
+    # of real wall skin at the boss's own OD, not just the 0.6mm
+    # `verify_post_walls` alone would ask for) -- found the HARD WAY, by
+    # a live `add_lip_anchor_reliefs` assertion failure on the first
+    # build attempt at the brief's own (+-14, 71) target. Re-running the
+    # full joint search (both variants) with the CORRECT constraint:
+    # north of the ears (y >= 64, respecting every clearance above)
+    # has ZERO feasible positions on the east/S3 side at all, and the
+    # west/S1 side's own best joint position ((-12.6, 71.5)) clears by
+    # only ~0.015mm -- not a real, buildable margin, effectively also
+    # zero. Per the brief's own instruction ("If NO position on either
+    # side satisfies every clearance, fall back to ONE dome-end screw D
+    # ... report why, do not leave an interference"): D1/D2 are RETIRED,
+    # replaced by a SINGLE screw 'D', keeping the list name 'screws_D12'
+    # unchanged (every gate/helper in firefly_case.py already iterates
+    # this list generically -- see the README's pass-16 section for the
+    # full list of call sites confirmed to need no further change beyond
+    # this one now holding a single entry).
+    #
+    # 'D' position: the literal dome TIP (the true apex, y approaching
+    # spine_b + outer_radius) turns out to have the SAME failure mode --
+    # the same search at x=0, y=73-80 (past the FPC pocket) finds
+    # `MIN_RELIEF_CLEARANCE` goes negative well before the FPC pocket's
+    # own 0.5mm clearance is satisfied, for the same underlying reason
+    # (the profile's own top chamfer starts curving the wall inward well
+    # before the true apex) -- so "the tip" cannot mean the literal apex
+    # either. The real thickest-wall margin near the north end, live-
+    # searched (both variants) over the full dome-cap region, is on the
+    # EAST FLANK south of the FPC pocket and clear of both buttons (which
+    # are west-only) and both ears: (18.0, 58.0) -- `MIN_RELIEF_CLEARANCE`
+    # margin saturates at its own cap (both variants), `verify_post_
+    # walls`' shell-skin margin >=5.3mm (trim) / 5.8mm (current), >=12mm
+    # to the FPC pocket, >=27mm to either switch housing bbox, and 3.8mm
+    # (trim/current, xy-identical) to the nearer ear (S3) -- comfortably
+    # real margins, not a razor's edge like the north-of-the-ears
+    # attempt. Also confirmed clear of the comms stack (`bay.stack3`,
+    # y <= -1.5), the GPS patch/battery (`bay.gps_patch`/`bay.battery`,
+    # y <= 31), and screws A/C (y=-8) -- no XY overlap with any of them.
+    'screws_D12': [
+        {'name': 'D', 'xy': (18.0, 58.0)},
+    ],
     'usb_shell_z': 14.35,             # screw tip must stay <= 14.1
+
+    # --- pass 16: candidate 5 display mount (ears + S2 boss), no Screen
+    # Plate, no P1-P4 ceiling posts. See hardware/case/README.md's pass-16
+    # section for the full derivation; summary here:
+    #   - Two EARS (S1, S3): each a wall-anchored wedge from its own D1/D2
+    #     root (embedded into the true dome wall, same proven
+    #     capsule+wedge+core+collar pattern as add_lanyard_corner_block --
+    #     mech review F7) reaching inward to the display's own SMT
+    #     standoff at S1/S3 (board_standoffs, below) -- generalized as
+    #     add_ear() in firefly_case.py.
+    #   - One BOSS (S2): a shorter wedge from the WEST wall (NOT a
+    #     wall-to-wall crossbar -- mech review F6 found the crossbar
+    #     version overlapped the battery connector's own clearance window
+    #     by 3.2mm in Y and fully in Z) reaching to S2 -- add_s2_boss().
+    #   - `ear_seat_offset`: each seat is printed this much SHORT of the
+    #     display module's own real standoff plane.
+    #
+    #     RE-DERIVED pass 16 (resumed, owner call on Finding 2): the
+    #     original number above (`plate_z[1]`, inherited unmodified from
+    #     the old Screen Plate across 9 prior passes) was live-probed by
+    #     `verify_seat_heights` to be 4.9mm off the display module's own
+    #     REAL standoff plane -- the plate had its own separate standoff
+    #     posts bridging up to the board, so its top face was never
+    #     actually required to equal this plane; the ears/S2-boss seat
+    #     DIRECTLY under the board's own standoffs, so they must. Owner
+    #     decision: stop inheriting `plate_z[1]`, derive `ear_seat_z`
+    #     straight from a live measurement of the real standoff plane
+    #     instead.
+    #
+    #     Live-measured (this pass): `insert_display_pcba()` + a
+    #     `find_ceiling_z_at` downward scan (0.002mm step, the same
+    #     technique `verify_seat_heights` uses) directly above S1/S2/S3 --
+    #     all three read IDENTICALLY, both variants (confirming a flat
+    #     standoff plane, as the old comment assumed): **18.80mm current /
+    #     21.80mm trim** (world frame; exactly 3.00mm apart, matching
+    #     `_DZ_TOP` -- the plane is a fixed property of the display module
+    #     itself, shifted by the same amount as everything else tied to
+    #     it). This supersedes the coarser 21.75mm figure Finding 2's
+    #     own write-up quoted (a 0.1mm-step scan starting from a
+    #     seat_z-relative offset landed one grid point low; the finer
+    #     0.002mm scan used here, run from a fixed absolute window, is
+    #     the trustworthy number).
+    #
+    #     `ear_seat_z` = standoff plane - `ear_seat_offset` (unchanged
+    #     0.25mm convention, mech review F5): 18.80 - 0.25 = 18.55
+    #     current; trim overrides below. Moving the seat up ~4.7mm (from
+    #     the old 13.85/16.85 numbers) also moves the ears/S2-boss arm up
+    #     by the same amount (`ear_arm_thickness` is unchanged, so the
+    #     arm's own z-band -- and therefore `_ear_root_z1`'s/
+    #     `PILOT_PROTECT_MARGIN`'s downstream caps -- shift with it; see
+    #     firefly_case.py's own re-run of those checks this pass).
+    'ear_seat_z': 18.80 - 0.25,   # live-measured standoff plane - ear_seat_offset (current); trim overrides below
+    'ear_seat_offset': 0.25,
+    'ear_foam_disc_mm': (0.3, 0.5),   # BOM note only -- not modeled in Fusion
+    'ear_standoff_hole_dia': 2.4,     # M2 clearance -- M2x4 screwed UP from below into the display's own SMT standoff
+    'ear_arm_thickness': 3.0,         # mm, the wall-to-standoff arm's own z-thickness below its seat face
+    # pass 16 (resumed, Finding 1 fix): each ear's own wall-root anchor is
+    # now DECOUPLED from the D1/D2 screws (which moved north, see
+    # 'screws_D12' above) -- 'root_xy' keeps the ear physically anchored
+    # at the SAME point the old D1/D2 screws used to sit ((+-19, 64), the
+    # mechanical review's own live-recomputed rho_from_spine numbers,
+    # review-mechanical.md S3.1: reaches the true wall by 3.42mm trim /
+    # 4.40mm current, comfortably inside CORNER_BLOCK_REACH=10mm) -- only
+    # the SCREW moved, not the ear's own structural attachment point.
+    # add_ear() no longer cuts an M2x12 pilot here at all.
+    'ears': {
+        'S1': {'root_xy': (-19.0, 64.0), 'target': 'S1'},
+        'S3': {'root_xy': (19.0, 64.0), 'target': 'S3'},
+    },
+    's2_boss': {'target': 'S2', 'wall_side': 'west'},
+    # mech review F6: keep the S2 boss's own arm a full `s2_battery_clear`
+    # (0.6mm) below the display's real battery-connector bbox z0, so the
+    # arm's own bulk never reaches the connector's z-band at all --
+    # add_s2_boss clamps the arm's own top face to
+    # min(ear_seat_z, battery_connector_z0 - s2_battery_clear) and adds a
+    # short local riser pad AT S2 itself (radius boss_dia/2, well clear of
+    # the connector's own x-range -3.67 max) back up to the true seat.
+    's2_battery_clear': 0.6,
+    # glass seat (item E, mech review F9): 0.4mm chamfer/fillet at the
+    # window step where the display glass's own edge meets the PETG
+    # ceiling-underside step it rests on.
+    'glass_seat_chamfer': 0.4,
+    # battery Y end-stop (item F, mech review F13): a short rib across the
+    # rails at the battery's own +y end, stopping shock-load travel along
+    # Y (previously only rail friction + strap tension).
+    'battery_endstop_w': 1.0,  # see bay.battery's own comment -- matches the 1mm trimmed off battery.y[1]
 
     # --- alignment lip / anchor (on Top) ---
     # 2026-09-08 pass 9 (finding 5, window lip ring fragile): the ring was
@@ -238,170 +424,66 @@ PARAMS = {
     # variants (see params_trim.py's scaling).
     'lug_relief_box': {'x': (-8.5, 8.5), 'y': (-29.5, -24.5)},
 
-    # --- screen plate ---
-    'plate_z': (13.1, 14.1),
-    'plate_outline': {'x': (-26.63, 22.89), 'y': (28.8, 69.6)},
-    # 2026-09-08 pass 9 (finding 4): the relocated P1/P2 (y=18/24) sit
-    # south of the main outline's own y0 (28.8) -- a second, narrower
-    # rectangle unioned onto the main outline before the cavity-outline
-    # intersect reaches down to cover them. X range (-24..-6) clears both
-    # new west-side posts (x=-10/-20, each with >=1.5mm pad beyond its
-    # own Ø5 hole) while staying west of the GPS frame's real wall
-    # (inner opening edge at x=-3.05, +1mm frame wall = -4.05) with
-    # ~1.9mm to spare -- confirmed by direct computation (see README),
-    # not just visual inspection, since the GPS frame is a separate
-    # printed feature (on Top) the plate must never touch.
-    # 2026-09-09 pass 9g (coordinator's render sweep, "plate post layout
-    # is unbalanced"): y0 lowered 14.0 -> 10.0 and y1 raised 29.0 -> 29.5
-    # for a clean >=4mm pad (post r 2.5 + 1.5mm margin) past BOTH new post
-    # rows' own edges -- P1/P2 (y=14, south row) now sit mid-span instead
-    # of flush on the old y0=14 edge (which left a 0mm pad -- the post
-    # holes would have notched straight through the plate's own south
-    # edge), and P3/P4 (y=25, north row) keep the same 4.5mm pad as
-    # before. See 'top_posts' below for the full spread rationale.
-    'plate_south_extension': {'x': (-24.0, -6.0), 'y': (10.0, 29.5)},
-    'plate_header_cutout': {'x': (11.5 - 1.0, 17.0 + 1.0), 'y': (43.7 - 1.0, 56.1 + 1.0)},
-    'plate_hole_dia': 2.4,
-    'plate_pad_dia': 6.0,
-    # 2026-09-08 pass 9 (finding 4, screen-plate posts P1-P4 snapped):
-    # the P1-P4 positions above (pass-6 P2 fix included) put P1/P4 in the
-    # 3.35mm crescent between the window bore (r=22.65 at spine_b) and the
-    # true inner wall (r=26 trim / 28 current) -- computed directly (not
-    # just observed from the print): at their own top_post_z[1] (the
-    # ceiling), P1/P4's OWN true-outer-wall clearance (`true_wall_
-    # distance_along_ray` minus the post radius) is NEGATIVE (the post
-    # already exceeds the true outer surface there) and their distance to
-    # the window bore is ~0.5-0.6mm -- nowhere near the required 1.0mm.
-    # P2/P3 (well inboard) have plenty of shell clearance but P3's
-    # distance to the window bore is only ~0.1mm at Ø4 and goes NEGATIVE
-    # at the new Ø5 (a real cut-through by the window bore's own z 25.4+
-    # extent, which overlaps the post's own top ~0.6mm). Separately (and
-    # probably the REAL cause of "the post by the power button snapped"):
-    # POST_CORE_R (the narrow full-height "reach" cylinder guaranteeing
-    # the post physically touches the ceiling, see clipped_pillar_with_
-    # reach) was only 1.1mm radius against a 1.62mm-dia (0.81mm-radius)
-    # pilot -- a 0.29mm wall at the post's own tip, regardless of xy
-    # position, on EVERY one of P1-P4 -- see POST_CORE_R's new derivation
-    # below.
+    # --- screen plate: RETIRED, pass 16 (owner call, item A) ---
+    # Candidate 5 (see plate-mounting-round2.md / review-mechanical.md /
+    # review-id-assembly.md, copied into docs/hardware/ this pass) removes
+    # the Screen Plate entirely: the display's own standoffs (S1-S3,
+    # `board_standoffs` below) screw directly into two case-integral EARS
+    # (S1, S3) and a west-wall BOSS (S2) instead. Every param that only
+    # existed to build/verify the plate ('plate_z', 'plate_outline',
+    # 'plate_south_extension', 'plate_header_cutout', 'plate_hole_dia',
+    # 'plate_pad_dia') and the P1-P4 ceiling posts ('top_posts',
+    # 'top_post_dia/z', 'top_post_pilot_dia/z') is deleted along with
+    # them -- see firefly_case.py's `add_ear`/`add_s2_boss` (replacing
+    # `build_screen_plate`/`add_top_posts`) and the README's pass-16
+    # section for the full history (pass 9/9g/15's own P1-P4 rebalancing
+    # work, preserved in git history, is superseded by this removal, not
+    # contradicted -- it was already diagnostic-only per its own
+    # `verify_plate_post_spread` gate). `board_standoffs` (S1/S2/S3) is
+    # the one param this whole section shared with the plate design that
+    # SURVIVES unchanged below -- same absolute mm positions, now the
+    # ears'/boss's own target points instead of plate-hole centres.
     #
-    # Fix (computed in a standalone script against these exact PARAMS
-    # before touching Fusion -- see hardware/case/README.md's pass-9
-    # section for the full numeric derivation): relocate all 4 posts,
-    # ABSOLUTE mm, SAME for both variants (matching the A/B1/B2/C/D
-    # pattern), to the y 18-24 band south of the display PCB (bbox y
-    # starts 27.6) and clear of the GPS patch box/frame (box x -2.8..22.2
-    # -- staying west of x=-6 clears it with >1.9mm to spare, no keep-out
-    # cut needed at all) and the true wall (rho0=|x| <= 20 keeps >=1.6mm
-    # skin to the true outer wall at the flat-ceiling height, both
-    # variants). Verified (both variants): outer-wall clearance
-    # >= 1.64mm (>= the required 0.6mm), window-bore clearance
-    # >= 2.36mm (>= the required 1.0mm), for all 4 posts.
-    # 2026-09-09 pass 9g (coordinator's render sweep, "plate post layout
-    # is unbalanced"): pass-9-part-2's fix above put all four posts in a
-    # 10x6mm cluster in the SW corner of the plate (x -10/-20, y 18/24) --
-    # geometrically valid (every gate green) but a real design defect on
-    # its own: the Screen Plate is effectively held at one corner, with
-    # nothing supporting its NE 2/3, so it can flex/rattle there. Computed
-    # (pure-Python probes of these exact PARAMS, no Fusion needed --
-    # true_wall_distance_along_ray for shell skin, Euclidean distance to
-    # window_center for bore clearance -- see hardware/case/README.md's
-    # pass-9g section for the full grid search) before touching Fusion:
-    # a full rectangle spanning the SAME safe x column (-20/-10, already
-    # proven clean by pass-9-part-2 -- shell skin 1.64mm trim / 3.64mm
-    # current at x=-20, >=13.6mm at x=-10, both >>the 0.6mm minimum) but
-    # stretched in y from the tight 18-24 band to the full safe 14-25
-    # band: y=14 at the south end (the plate_south_extension's own south
-    # edge, unconstrained by the window at this x) and y=25 at the north
-    # end (window-bore-limited -- at x=-10, y=25.83 is the analytic
-    # cutoff for the required 1.0mm clearance; y=25 leaves 1.78mm to
-    # spare, vs. the window bore itself, and 2.6mm to the display PCB's
-    # own bbox, which starts at y=27.6). This nearly doubles the support
-    # footprint (10x6mm -> 10x11mm, ~83% more bounding-box area) using
-    # ONLY y-axis moves -- the x positions, and therefore every x-derived
-    # margin (shell skin, GPS-frame clearance, the plate's own south-
-    # extension x-range), are UNCHANGED from the already-verified pass-9
-    # part-2 fix. Window-bore clearance for all 4 (analytic, both
-    # variants -- window position/radius don't vary by variant):
-    # P1 15.16mm, P2 12.55mm, P3 6.09mm, P4 1.78mm -- all comfortably
-    # >= the 1.0mm minimum. Re-verified live via verify_post_walls
-    # (pilot_wall/shell_skin, 8 rays x 3 z / 8 rays per post) after the
-    # move -- see the pass-9g section.
-    # 2026-09-15 pass 15, item 3 (Jake: "the placement of the 4 holes...
-    # are all in the bottom left... doesn't give proper support... figure
-    # out how to fit those better across the top / left / right / bottom"):
-    # PROVED, before touching Fusion (pure-Python search against these
-    # exact PARAMS -- window_center/window_dia, the GPS patch box, and
-    # flat_rho -- reusing the same rho_at_z/true_wall_distance_along_ray
-    # relations this file's own live gates use), that a literal 4-quadrant
-    # (N/S/E/W) spread of CEILING-REACHING posts is geometrically
-    # impossible here, not just difficult:
-    #   - EAST is blocked outright: the GPS patch box (x -2.8..22.2,
-    #     y 2..27) and the window bore's own exclusion circle (radius
-    #     window_dia/2 + post_r + margin = 25.65mm from window_center)
-    #     together leave NO x at ANY y where both clear at once east of
-    #     x=0 -- their own boundaries meet at y~31.5 with zero margin
-    #     (computed exactly: window needs y<=31.47 at x=17 (near the GPS
-    #     box's own east edge and the plate's own edge), GPS needs
-    #     y>=31.50 there -- a real, provable dead zone, not a tuning
-    #     miss).
-    #   - NORTH is blocked outright too: within the domed +y end cap
-    #     (y > spine_b), the true outer wall is a circle of radius
-    #     rho_at_z(p, top_ceiling_underside_z) = outer_radius (24.14mm
-    #     trim at the ceiling) centred on spine_b, while the window bore
-    #     is a circle of radius 22.65mm centred just 1.8mm away (window_
-    #     center) -- the annular gap between them is only ~1.5mm wide,
-    #     nowhere near enough for a Ø5 post plus the 0.6mm/1.0mm margins
-    #     this file's own gates already require, at ANY angle.
-    #   - The plate's OWN area-weighted centroid (computed from
-    #     plate_outline + plate_south_extension - plate_header_cutout,
-    #     ~(-4.62, 44.69)) sits only 7.04mm from window_center (50.0) --
-    #     since no ceiling post can exist within 25.65mm of window_center,
-    #     EVERY viable post position is provably >= 25.65-7.04 = 18.61mm
-    #     from the plate's own centroid. The coordinator's brief's own
-    #     "centroid within 5mm" target is therefore unreachable by more
-    #     than 13mm for ANY arrangement of real, structural (ceiling-
-    #     anchored) posts -- not a tuning shortfall.
-    # Given this, `verify_plate_post_spread` (new gate, firefly_case.py)
-    # is DIAGNOSTIC ONLY (reported, not hard-asserted in verify()'s
-    # pass/fail) -- the same established pattern this file already uses
-    # for verify_skin_intact/verify_wall_integrity/verify_display_
-    # insertion_path, all of which over-fire on real, explained,
-    # non-defect geometry. What WAS achieved, within the one region that
-    # IS geometrically safe (west of the GPS patch, south of the window's
-    # own exclusion circle -- a real search, not a guess: 200k-sample
-    # random search maximizing angular spread subject to every live gate
-    # this file already enforces -- window/wall/GPS clearance >= 0.5mm,
-    # plate-edge pad >= ~3mm): the four posts now span a much larger,
-    # genuinely 2D footprint (x -20..-9, y 14..23.5, ~11x9.5mm bounding
-    # box on a diagonal, not a single 10x11mm axis-aligned rectangle in
-    # one corner) with 265.8 degrees of angular spread around their own
-    # centroid (was 264.5 degrees for the old 4-corner rectangle -- about
-    # the same raw number, since that number was already close to this
-    # region's own practical ceiling, but the NEW arrangement is not
-    # collinear/axis-aligned the way the old one was, and covers visibly
-    # more of the plate's own area -- see the pass-15 README section for
-    # the full derivation, live verify_post_walls numbers, and a render).
-    # P1's own position is UNCHANGED from pass 9g (already proven safe,
-    # both variants); P2-P4 are new.
-    'top_posts': {
-        'P1': (-20.0, 14.0),
-        'P2': (-9.0, 22.0),
-        'P3': (-11.0, 14.0),
-        'P4': (-18.0, 23.5),
-    },
+    # Case pass 16 FIX, item 2 (S3 only, +0.2mm in x, (11.6,65.46) ->
+    # (11.8,65.46)): verify_ear_root_material's S3_riser_solid probe (a
+    # ring at BOSS_CORE_R-0.3 radius around the seat, 4 angles) read
+    # hollow at exactly one angle (270 deg, due south of the seat) --
+    # root-caused to a REAL conflict, not a modeling bug: that probe
+    # point, (11.6, 63.16, 17.775) in trim-world, sits 0.385mm inside the
+    # display module's own second SMT connector's real body
+    # (`secondary_conn_bbox`, 'PITCH1MM-2PIN-SMT-HORIZONTAL', real
+    # trim-world edge x=11.215) -- literally any riser material there
+    # overlaps the real connector (the unconditional keepout cut removes
+    # that exact point regardless of what shape supplied it), so no
+    # reshape of the riser can fix this without moving the seat. Moved
+    # per the coordinator's own escalation path ("<=1.0mm, and the
+    # README must say so" -- see the pass-16 README section's FIX-session
+    # subsection for the full live before/after numbers). +0.2mm gives
+    # 11.8 - 11.215 = 0.585mm of real clearance (>= the 0.5mm asked for).
+    #
+    # NOTE (live-found, important for future edits to this value): a
+    # LARGER shift here (+0.4mm, x=12.0 -- comfortably under the 1.0mm
+    # cap and individually plausible) was tried FIRST and caused a
+    # severe, confirmed-live regression -- Top's own built volume
+    # collapsed from a healthy 19.37cm^3 to 0.067mm^3 (a tiny leftover
+    # sliver), with nearly every OTHER structural gate (corner blocks,
+    # ear wall-roots, mag pegs -- none of them anywhere near S3) reading
+    # hollow too, consistent with a stray same-named duplicate body
+    # (dedupe_body's own documented risk) silently taking over the bare
+    # 'Top' name partway through the build while the real accumulated
+    # body got orphaned. NOT root-caused further (the bridge went
+    # unavailable mid-investigation) -- +0.2mm was bisected afterward and
+    # confirmed clean (healthy 19.37cm^3 Top, every other gate unchanged
+    # from baseline). Do not re-widen this shift without re-testing the
+    # FULL build first -- something between +0.2mm and +0.4mm crosses a
+    # real topological threshold somewhere downstream of `add_ear`
+    # (see `_ear_boss_keepout_points`, the one other consumer of this
+    # exact value) that has not been root-caused.
     'board_standoffs': {
         'S1': (-12.0, 65.0),
         'S2': (0.04, 32.22),
-        'S3': (11.6, 65.46),
+        'S3': (11.8, 65.46),
     },
-    # 2026-09-08 pass 9 (finding 4): Ø4 -> Ø5 -- a plain Ø4 post around
-    # a Ø1.62 pilot only has a 1.19mm nominal wall (before any clipping),
-    # already under the new 1.2mm minimum; Ø5 gives 1.69mm nominal.
-    'top_post_dia': 5.0,
-    'top_post_z': (14.1, 23.0),
-    'top_post_pilot_dia': 1.62,
-    'top_post_pilot_z': (14.1, 20.6),  # -> M2x6
-
     # --- buttons ---
     'switch_power_bbox': {'x': (-17.46, -11.83), 'y': (36.82, 42.67), 'z': (15.79, 18.01)},
     'switch_home_bbox': {'x': (-17.87, -12.24), 'y': (57.62, 63.46), 'z': (999, 999)},  # z not given; use power's span
@@ -618,7 +700,19 @@ PARAMS = {
         # span, x/z unchanged -- the display board's underside parts don't
         # start until z>=12 above y=28, so the battery may extend under
         # them with no conflict (nothing else occupies z 2..10 there).
-        'battery': {'xyz': (8.0, 40.0, 30.0), 'x': (-20.0, 20.0), 'y': (2.0, 32.0), 'z': (2.0, 10.0)},
+        # pass 16, item F (mech review F13, "nice": no positive Y end-stop):
+        # y1 trimmed 32.0 -> 31.0 (1mm) to make honest room for a real
+        # end-stop rib (`battery_endstop_w`, add_battery_bay) WITHOUT it
+        # overlapping this reference box's own nominal footprint -- a live
+        # check_interference run confirmed a real 318mm^3 Bottom-vs-
+        # Battery overlap when the rib was added without this trim (the
+        # box's own (2,32) span already assumed the cell fills the bay
+        # end-to-end with zero slack, leaving no room for any stop at
+        # either end without shrinking it). A 30x40x8mm 803040 cell still
+        # fits with 1mm to spare (31mm resting length vs. the cell's own
+        # 30mm) -- the same margin convention this file already applies
+        # everywhere else (e.g. the 0.3mm battery_rail_clear).
+        'battery': {'xyz': (8.0, 40.0, 30.0), 'x': (-20.0, 20.0), 'y': (2.0, 31.0), 'z': (2.0, 10.0)},
         'battery_rail_w': 1.2, 'battery_rail_z': (2.0, 6.0), 'battery_rail_clear': 0.3,
         'battery_strap': {'w': 6.0, 'h': 1.5},  # slot through the rails, not the floor
 
