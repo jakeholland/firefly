@@ -83,6 +83,23 @@ extern "C" {
  */
 void ff_scr_music_build(ff_app_state_t const *state);
 
+/**
+ * ff_scr_music_debug_render_ticks — [test-only] fix/s31-music-idle-drain
+ * (2026-09-09): a cumulative count of how many times this face's own
+ * per-frame timer actually stepped the swarm and redrew the dot pool —
+ * i.e. every call EXCEPT the ones this file's `music_timer_cb` skips
+ * because `state->music.screen_awake` reads false (DIM/OFF/SLEEP). Reset
+ * to 0 by every `ff_scr_music_build` (a fresh Music session, mirrors
+ * `s_last_beat_count`'s own reset there), so a test can build the face,
+ * pump a DIM/OFF window, and assert this counter did not move —
+ * `targets/sim/tests/test_ctl_music_idle_drain.c`'s whole reason to read
+ * it. Not read by any product code (mirrors `ff_shell_music_debug`'s own
+ * "one-shot debug getter" convention, app/include/ff_shell.h) — it exists
+ * purely so "the swarm timer pauses on DIM/OFF" is a measured property,
+ * not an assumed one (AGENTS.md item 6).
+ */
+uint32_t ff_scr_music_debug_render_ticks(void);
+
 #ifdef __cplusplus
 }
 #endif

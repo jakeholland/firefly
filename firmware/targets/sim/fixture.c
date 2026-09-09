@@ -1457,6 +1457,10 @@ static ff_fixture_result_t fx_parse_diag(fx_ctx_t const *c, int obj_i, ff_app_di
     if (fx_obj_get(c, obj_i, "mic_running", &t)) d->mic_running = fx_bool(c, t, false);
     if (fx_obj_get(c, obj_i, "has_mic_level", &t)) d->has_mic_level = fx_bool(c, t, false);
     if (fx_obj_get(c, obj_i, "mic_envelope_dbfs", &t)) d->mic_envelope_dbfs = (float)fx_num(c, t, 0.0);
+    /* fix/s31-music-idle-drain (2026-09-09) — the MIC ON-TIME power
+     * diagnostic; omitted means 0s, same "absent key = the field's own
+     * zero-init default" convention every other line here uses. */
+    if (fx_obj_get(c, obj_i, "mic_on_s", &t)) d->mic_on_s = (uint32_t)fx_num(c, t, 0.0);
 
     return FF_FIXTURE_OK;
 }

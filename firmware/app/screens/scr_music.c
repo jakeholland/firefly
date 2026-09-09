@@ -187,6 +187,15 @@ static uint32_t s_last_beat_count;
 static uint32_t s_last_tick_ms;
 static uint32_t s_period_ms;
 
+/* fix/s31-music-idle-drain (2026-09-09) — see this file's "Pause on
+ * DIM/OFF" section below (music_timer_cb) and scr_music.h's own doc
+ * comment on ff_scr_music_debug_render_ticks for what this counts and
+ * why. `s_screen_was_awake` starts true (matches the shell's own
+ * screen_awake default, ff_shell.c) so the very first frame after a
+ * build is never mistaken for a resume-from-DIM edge. */
+static uint32_t s_render_tick_count;
+static bool s_screen_was_awake = true;
+
 /* Same 0deg-is-top, clockwise convention `scr_launcher.c`'s own
  * `launcher_deg_to_offset` uses (this file's independent copy — see
  * that function's own comment for why a shared helper isn't worth it
@@ -251,6 +260,39 @@ static void music_timer_cb(lv_timer_t *timer)
     if (state == NULL) return;
 
     uint32_t const now = lv_tick_get();
+
+    /* fix/s31-music-idle-drain (2026-09-09) — "the swarm timer must
+     * pause on DIM/OFF (no rendering, no beat processing) and resume on
+     * wake". `state->music.screen_awake` is the S26 idle FSM's own
+     * ACTIVE/not-ACTIVE fact, pushed by `ff_shell_set_screen_awake` (see
+     * that function's own doc comment, ff_shell.h) and read straight off
+     * the LIVE view here, same "outside the render key" placement
+     * loudness/beat_count already use (this file's top comment, "Per-
+     * frame mechanism"). While not awake: skip stepping/redrawing
+     * entirely — this is the actual CPU-cost half of the fix (the mic
+     * itself already stops being FED new samples the instant idle
+     * leaves ACTIVE, `ff_shell_music_wants_mic`'s own doc comment, but
+     * this timer would otherwise keep re-stepping the swarm 15-30x/sec
+     * on stale loudness/beat state for no one to see, screen dark or
+     * not) — and keep re-pinning `s_last_tick_ms` every tick so a LONG
+     * DIM/OFF stretch never shows up as one giant `elapsed_ms` jump the
+     * instant the screen wakes back up. */
+    if (!state->music.screen_awake) {
+        s_last_tick_ms = now;
+        s_screen_was_awake = false;
+        return;
+    }
+    if (!s_screen_was_awake) {
+        /* Resuming from DIM/OFF THIS frame: treat it exactly like the
+         * first frame after a build (this file's own build-time "settle"
+         * convention, top comment) — pin the baseline now and step for
+         * real next frame, rather than integrating whatever elapsed
+         * while dark as one lurching jump. */
+        s_last_tick_ms = now;
+        s_screen_was_awake = true;
+        return;
+    }
+
     uint32_t const elapsed_ms = now - s_last_tick_ms; /* wraparound-safe unsigned subtraction over a short interval */
     s_last_tick_ms = now;
     if (elapsed_ms == 0u) return;
@@ -265,6 +307,7 @@ static void music_timer_cb(lv_timer_t *timer)
 
     ff_swarm_step(&s_swarm, state->music.loudness, beat_now, (float)elapsed_ms / 1000.0f);
     music_redraw_dots();
+    s_render_tick_count++; /* fix/s31-music-idle-drain — see ff_scr_music_debug_render_ticks's own doc comment (scr_music.h) */
 
     uint32_t const want_period = music_period_ms(state->radar.batt_pct);
     if (want_period != s_period_ms) {
@@ -381,6 +424,13 @@ void ff_scr_music_build(ff_app_state_t const *state)
     s_last_beat_count = state->music.beat_count;
     bool const beat_for_settle = (state->music.beat_count != 0u);
     ff_swarm_step(&s_swarm, state->music.loudness, beat_for_settle, FF_SCR_MUSIC_SETTLE_DT_S);
+    /* fix/s31-music-idle-drain — a fresh Music session starts a fresh
+     * count (mirrors s_last_beat_count just above) and assumes awake
+     * (matches the shell's own screen_awake default, ff_shell.c) so the
+     * timer's very first real tick is never mistaken for a resume-from-
+     * DIM edge. */
+    s_render_tick_count = 0u;
+    s_screen_was_awake = true;
 
     for (uint32_t i = 0; i < FF_SWARM_PARTICLE_COUNT; i++) {
         music_create_dot(puck, &s_swarm.particles[i], &s_dots[i]);
@@ -421,4 +471,9 @@ void ff_scr_music_build(ff_app_state_t const *state)
     lv_timer_t *timer = lv_timer_create(music_timer_cb, s_period_ms, (void *)state);
     s_last_tick_ms = lv_tick_get();
     lv_obj_add_event_cb(puck, music_content_delete_cb, LV_EVENT_DELETE, (void *)timer);
+}
+
+uint32_t ff_scr_music_debug_render_ticks(void)
+{
+    return s_render_tick_count;
 }

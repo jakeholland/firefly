@@ -456,7 +456,7 @@ static int ff_run_window(const char *fixture_path, bool mock_clock, const char *
             bool const keep_awake = ff_shell_keep_awake(view, false); /* no blocking touch-cal flow in the sim */
 
             ff_idle_state_t const idle_state =
-                ff_sim_lifecycle_pump(&s_win_lifecycle.idle, &s_win_lifecycle.rebuild_pending,
+                ff_sim_lifecycle_pump(&s_win_shell, &s_win_lifecycle.idle, &s_win_lifecycle.rebuild_pending,
                                        &s_win_lifecycle.rebuild_count, now_ms, dirty, shell_wake, finger_down,
                                        keep_awake, /* sleep_inhibit */ false, view);
             ff_sim_lifecycle_apply_blank_overlay(idle_state);

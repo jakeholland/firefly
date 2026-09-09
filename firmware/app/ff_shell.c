@@ -682,6 +682,33 @@ typedef struct {
     bool  mic_running;
     bool  mic_has_level;
     float mic_envelope_dbfs;
+    /* fix/s31-music-idle-drain (2026-09-09) — the power diagnostic: the
+     * mic's cumulative on-time since boot, milliseconds, pushed by
+     * ff_shell_set_mic_total_on_ms (see that function's own doc
+     * comment). A SEPARATE setter from ff_shell_set_mic_status above
+     * (not folded into it) so every existing call site/test of that
+     * function is untouched — this is purely additive instrumentation.
+     * Never reset by a mic start/stop cycle, unlike frames_read/
+     * read_errors (ff_mic_status_t's own doc comment) — "how long has
+     * this puck's mic quietly been on, all session" is the actionable
+     * bench question this exists to answer, so a wearer/bench tester can
+     * catch a stuck-awake regression like this PR's own bug from the
+     * DIAGNOSTICS page alone, without needing an overnight bench log. */
+    uint32_t mic_total_on_ms;
+
+    /* fix/s31-music-idle-drain (2026-09-09) — true while the S26 idle
+     * FSM reads ACTIVE (never DIM/OFF/SLEEP), pushed every tick by
+     * ff_shell_set_screen_awake (see that function's own doc comment,
+     * ff_shell.h) right after the caller's own ff_idle_tick call.
+     * Projected verbatim into `view->music.screen_awake` — see that
+     * field's own doc comment (ff_app_state.h) for why scr_music.c's
+     * own per-frame LVGL timer needs this to pause the swarm the
+     * instant the screen is not genuinely visible. Defaults true below
+     * (ff_shell_init) — the least-surprising initial value, matching
+     * ff_idle_t's own zero-state (ACTIVE), so a Music session that
+     * somehow renders before this is ever pushed a "real" value still
+     * animates rather than freezing dark for no reason. */
+    bool screen_awake;
 
     /* S31 Music/Swarm — the beat/loudness detector, fed by
      * ff_shell_set_beat_input (see that function's own doc comment)
@@ -3130,6 +3157,18 @@ static void shell_compute_diag(shell_t const *sh, uint32_t now_ms, ff_app_diag_t
     d->mic_running = sh->mic_present && sh->mic_running;
     d->has_mic_level = sh->mic_present && sh->mic_running && sh->mic_has_level;
     if (d->has_mic_level) d->mic_envelope_dbfs = sh->mic_envelope_dbfs;
+    /* fix/s31-music-idle-drain (2026-09-09) — the power diagnostic: the
+     * mic's cumulative on-time since boot, in whole seconds (matches the
+     * page's own "%us" print, scr_settings.c). Pushed by
+     * ff_shell_set_mic_total_on_ms; see that field's own doc comment on
+     * shell_t (above) for why this is unconditional (present or not,
+     * running or not) rather than gated like mic_running/has_mic_level:
+     * the whole point is to still show a stuck-on total AFTER the mic
+     * has since gone quiet/absent, so a session like this PR's own bug
+     * (mic ran 6.6 hours, then eventually stopped) remains visible on
+     * the very next DIAGNOSTICS visit instead of resetting to 0 the
+     * moment the mic itself stops. */
+    d->mic_on_s = sh->mic_total_on_ms / 1000u;
 }
 
 /**
@@ -3350,6 +3389,12 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
     sh->view.music.beat_count = sh->beat.beat_count;
     sh->view.music.bpm_estimate = sh->beat.bpm_estimate;
     sh->view.music.seed = sh->music_seed;
+    /* fix/s31-music-idle-drain — always projected, same "read straight
+     * off the live view, outside the dirty path" shape as loudness/
+     * beat_count above (see ff_app_music_t's own doc comment on
+     * `screen_awake` and scr_music.c's timer for who actually reads
+     * this and why). */
+    sh->view.music.screen_awake = sh->screen_awake;
 
     /* S27 sounds — BATT_LOW fires once per CROSSING into the low band,
      * not on every tick the reading happens to be low (an edge detector
@@ -3835,6 +3880,18 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
     key->music.loudness = 0.0f;
     key->music.source =
         (v->active_face == FF_APP_FACE_MUSIC) ? v->music.source : FF_APP_MUSIC_SRC_NONE;
+    /* fix/s31-music-idle-drain — same "the render key drives a full
+     * rebuild; scr_music.c's own timer reads the live view for this
+     * instead" reasoning as loudness/beat_count/bpm_estimate just above:
+     * `screen_awake` flips on every DIM<->ACTIVE crossing (every 15-30s
+     * during ordinary use), and NOTHING the render key drives (a full
+     * lv_obj_clean + rebuild) needs to react to it — the swarm's own
+     * per-frame timer callback (scr_music.c) is the only reader, and it
+     * already reads state->music.screen_awake straight off the live
+     * view, outside this key entirely. Zeroing it here costs nothing and
+     * avoids a spurious full-screen rebuild on every DIM/wake transition
+     * while Music is the active face. */
+    key->music.screen_awake = false;
 
     /* On-glass report 2026-09-07 — the Map face's own heading, the exact
      * `arrow_deg` lesson one struct over. `shell_project_map` projects
@@ -4245,6 +4302,10 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     sh->play_sound = cfg->play_sound;
     sh->play_sound_user = cfg->play_sound_user;
     sh->batt_was_low = false;
+    /* fix/s31-music-idle-drain — see this field's own doc comment above:
+     * the least-surprising initial value (ACTIVE), overwritten on the
+     * caller's very first ff_shell_set_screen_awake call. */
+    sh->screen_awake = true;
     /* fix/audio-init-order-seed-silence: unmuted at init — the caller
      * (ff_demo_seed, or this file's own handshake/settle pair) mutes for
      * a bounded window and always unmutes again; see the field's own doc
@@ -7152,6 +7213,28 @@ void ff_shell_set_mic_status(ff_shell_t *sh_pub, bool present, bool running, boo
     if (sh->mic_has_level) sh->mic_envelope_dbfs = envelope_dbfs;
 }
 
+void ff_shell_set_mic_total_on_ms(ff_shell_t *sh_pub, uint32_t total_on_ms)
+{
+    if (sh_pub == NULL) return;
+    shell_of(sh_pub)->mic_total_on_ms = total_on_ms;
+}
+
+void ff_shell_set_screen_awake(ff_shell_t *sh_pub, bool awake)
+{
+    if (sh_pub == NULL) return;
+    shell_of(sh_pub)->screen_awake = awake;
+}
+
+bool ff_shell_music_wants_mic(ff_app_state_t const *view, ff_idle_state_t idle_state)
+{
+    /* fix/s31-music-idle-drain — see this function's own doc comment,
+     * ff_shell.h, for the full "why a shared function" reasoning. Least-
+     * claiming default: nothing is visible, so nothing wants the mic. */
+    if (view == NULL) return false;
+    return (view->active_face == FF_APP_FACE_MUSIC) && !view->flare.takeover_active &&
+           (idle_state == FF_IDLE_STATE_ACTIVE);
+}
+
 void ff_shell_set_beat_input(ff_shell_t *sh_pub, bool mic_present, float mic_rms_dbfs, float mic_env_dbfs,
                               bool imu_present, float accel_z_g, uint32_t now_ms)
 {
@@ -7390,20 +7473,39 @@ bool ff_shell_keep_awake(ff_app_state_t const *view, bool touch_cal_running)
      * never keyed off modal vs. base, only off `active_face`, so there
      * was nothing here to revisit. Considered and rejected per
      * AGENTS.md's "note the interpretation" — see the PR body. */
-    /* S31 Music/Swarm — the Music face keeps the puck awake ONLY while
-     * it is hearing/feeling something above the auto-ranged floor
-     * (docs/specs/S31-music-swarm.md's own "Power policy": "do not keep
-     * a silent room awake forever"). Unlike POWER_MENU/quick-flare/
-     * sending above, simply BEING the active face is not enough —
-     * `view->music.loudness` is the live (unbucketed — this reads
-     * `view`, never the render key) loudness ff_shell_set_beat_input
-     * last computed; a silent/still room settles it back toward 0 (see
-     * ff_beat_update's own "source == NONE decays loudness" doc
-     * comment) and this predicate lets the idle FSM dim/sleep normally
-     * from there, same as any other quiet face. */
-    if (view->active_face == FF_APP_FACE_MUSIC && view->music.loudness > FF_BEAT_KEEPAWAKE_LOUDNESS) {
-        return true;
-    }
+    /* S31 Music/Swarm — REMOVED, fix/s31-music-idle-drain, 2026-09-09
+     * amendment (docs/specs/S31-music-swarm.md). This used to be
+     * `if (view->active_face == FF_APP_FACE_MUSIC && view->music.loudness
+     * > FF_BEAT_KEEPAWAKE_LOUDNESS) return true;` — "the Music face keeps
+     * the puck awake only while it is hearing/feeling something above
+     * the auto-ranged floor". Bench evidence killed it: Jake's puck, left
+     * on Music overnight on main 51c5d16, showed `ff_mic: mic started` at
+     * uptime 44.75s and then NO backlight change for 6.6 HOURS — no DIM
+     * at 15s, no OFF at 30s — in an ordinary quiet room, until `ff_mic:
+     * mic stopped` at uptime 23,878s. Root cause: `ff_beat_t`'s loudness
+     * is computed against an AUTO-RANGING floor (ff_beat.h's own
+     * "Loudness" section) that chases whatever the room's ambient level
+     * actually is with only a ~20s release constant — so ordinary night-
+     * quiet noise sits jittering just above that self-tracking floor
+     * FOREVER, `loudness` never actually settles to (or below)
+     * `FF_BEAT_KEEPAWAKE_LOUDNESS`, and this predicate never released.
+     * The mic ran and the screen sat at 90% the entire time, draining the
+     * battery any time someone left the puck on Music — exactly the
+     * class of bug this predicate exists to prevent, caused by the very
+     * mechanism meant to prevent it.
+     *
+     * Owner's product call (not just a threshold retune): Music must
+     * never override the idle policy. It now gets ZERO special
+     * treatment here — the S26 DIM-at-15s/OFF-at-30s-since-last-INPUT
+     * timers apply to Music exactly as they do to every other quiet
+     * face (Radar, Lineup, ...), same as the "the launcher deliberately
+     * does NOT keep awake" precedent just above this comment already
+     * established for a different face. Sound is never an input. The
+     * mic's own power policy is a SEPARATE predicate now,
+     * `ff_shell_music_wants_mic` (ff_shell.h) — gated on the idle FSM's
+     * OUTPUT (ACTIVE) rather than trying to feed the idle FSM's INPUT
+     * from a signal (loudness) that structurally can never go quiet
+     * enough on its own; see that function's own doc comment. */
     return false;
 }
 

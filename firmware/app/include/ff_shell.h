@@ -199,6 +199,7 @@
 #include "ff_find.h" /* S29 PR2 — ff_find_t, returned by ff_shell_find */
 #include "ff_flare.h"
 #include "ff_heard.h"
+#include "ff_idle.h" /* fix/s31-music-idle-drain — ff_idle_state_t, ff_shell_music_wants_mic's second parameter */
 #include "ff_intent.h"
 #include "ff_latlon.h"
 #include "ff_meshname.h" /* FF_MESHNAME_SHORT_LEN — ff_shell_mesh_name_status_t's pushed_short/reply_short sizing */
@@ -1395,6 +1396,78 @@ void ff_shell_set_device_stats(ff_shell_t *sh, bool ok, uint32_t free_heap_bytes
  * "level".
  */
 void ff_shell_set_mic_status(ff_shell_t *sh, bool present, bool running, bool has_level, float envelope_dbfs);
+
+/**
+ * ff_shell_set_mic_total_on_ms — [api] fix/s31-music-idle-drain
+ * (2026-09-09): push the power diagnostic this PR adds — the mic's
+ * cumulative on-time since boot, milliseconds, projected verbatim (in
+ * whole seconds) into `settings.diag.mic_on_s`, the DIAGNOSTICS page's
+ * "MIC ON-TIME" row (scr_settings.c) and the bench console's `mic`
+ * status line. A SEPARATE setter from `ff_shell_set_mic_status` above
+ * (not folded into its signature) so no existing call site of that
+ * function needs to change — this is purely additive instrumentation.
+ *
+ * The caller (app_main.c) is expected to track this itself (the mic HAL
+ * is the esp32s3-only `ff_mic` component this header cannot depend on —
+ * same boundary `ff_shell_set_mic_status` above already crosses) as a
+ * simple "accumulated total + running since" pair that keeps counting
+ * across every `mic on`/`mic off` cycle, never reset the way
+ * `ff_mic_status_t.frames_read`/`read_errors` are on every `ff_mic_
+ * start()` — the whole point is "how long has this puck's mic quietly
+ * been on, all session", the exact question this PR's own overnight
+ * bug needed an answer to and had none. NULL-safe (no-op).
+ */
+void ff_shell_set_mic_total_on_ms(ff_shell_t *sh, uint32_t total_on_ms);
+
+/**
+ * ff_shell_set_screen_awake — [api] fix/s31-music-idle-drain
+ * (2026-09-09): push the S26 idle FSM's own "is the screen genuinely
+ * ACTIVE right now" fact into the shell, projected verbatim every tick
+ * into `view->music.screen_awake` (see that field's own doc comment,
+ * ff_app_state.h) — scr_music.c's own per-frame LVGL timer reads the
+ * LIVE view pointer for exactly this reason (never the render key; see
+ * that file's top comment, "Golden determinism") so it can pause the
+ * swarm's stepping/redraw the instant DIM/OFF/SLEEP starts, not just
+ * stop RECEIVING new mic samples (`ff_shell_music_wants_mic` below
+ * already covers that half on its own).
+ *
+ * Caller: every live session's own per-tick lifecycle pump, right after
+ * its own `ff_idle_tick` call — app_main.c's device render loop, and
+ * the sim's shared `ff_sim_lifecycle_pump` (sim_lifecycle.h, used by
+ * `ctl_loop.c`/`main.c`/`ff_demo_run.c` alike) — so every live session
+ * (device, ctl, window, demo) feeds this the exact same way, one tick
+ * behind the idle transition itself (the same small lag `ff_shell_set_
+ * mic_status`'s own 2s-cadence push already tolerates elsewhere in this
+ * file — imperceptible against a 15s/30s DIM/OFF threshold). Pass
+ * `idle_state == FF_IDLE_STATE_ACTIVE`. NULL-safe (no-op).
+ */
+void ff_shell_set_screen_awake(ff_shell_t *sh, bool awake);
+
+/**
+ * ff_shell_music_wants_mic — [api] fix/s31-music-idle-drain (2026-09-09):
+ * the WHOLE "should the mic (or IMU fallback) be running right now"
+ * decision for S31's Music/Swarm power policy (docs/specs/
+ * S31-music-swarm.md, "Power policy" amendment) — the mic runs ONLY
+ * while Music is genuinely the visible face: `active_face ==
+ * FF_APP_FACE_MUSIC`, no flare takeover currently covering it, AND the
+ * S26 idle FSM reads ACTIVE (DIM/OFF/SLEEP all withhold it — a silent/
+ * still room, or simply a wearer who stopped looking, must not keep the
+ * mic listening forever). This used to be computed inline in
+ * app_main.c's own render loop; pulled out into ONE shared, pure,
+ * host-testable function so app_main.c's device loop and the sim's own
+ * ctl-harness regression test (targets/sim/tests/
+ * test_ctl_music_idle_drain.c, this same PR) can never drift apart on
+ * what "the mic should be on" means — the exact class of drift AGENTS.md's
+ * "note the interpretation"/measure-don't-reason-harder rules exist to
+ * prevent, and the exact class of bug this whole PR fixes (the OTHER
+ * half of the same policy, `ff_shell_keep_awake`'s Music branch, silently
+ * drifting from what it was meant to guarantee). `idle_state` is the
+ * caller's own `ff_idle_tick` return for this frame — this function does
+ * not own or tick the idle FSM itself (CLAUDE.md: no I/O, no owned
+ * timers, in a function this small and pure). `view == NULL` is a safe
+ * false — the least-claiming answer.
+ */
+bool ff_shell_music_wants_mic(ff_app_state_t const *view, ff_idle_state_t idle_state);
 
 /**
  * ff_shell_set_beat_input — [api] S31 Music/Swarm: feed one sample into
