@@ -884,6 +884,10 @@ def hollow_and_split(root, outer_solid, p):
 
 
 MIN_RELIEF_CLEARANCE = 1.0  # mm the boss relief must clear beyond the boss's own OD (see the assert below)
+LIP_RING_FLAT_TARGET_MM = 0.5  # mm -- nominal remaining flat cap width at the lip/anchor ring's own anchor_z[1]
+                                # (see add_lip_anchor_reliefs' own comment): 0.5 rather than the gate's own 0.6mm
+                                # limit -- a small deliberate margin, kept even after verify_lip_ring_profile's
+                                # own down-direction convention bug (not this cut) was found and fixed.
 
 
 def add_lip_anchor_reliefs(root, bodies, p):
@@ -974,12 +978,27 @@ def add_lip_anchor_reliefs(root, bodies, p):
     # since nothing above it fills that radius) would still fail the
     # <=0.6mm flat-patch gate on its own. Narrow it: cut away everything
     # inward of a SECOND taper (inner boundary growing from lip_r[0] at
-    # anchor_z[0] up to anchor_r[1]-0.6 at anchor_z[1]) using the same
-    # cone_frustum_solid/extrude idiom, filled-to-axis so it removes
-    # material rather than adding it -- narrows the remaining flat cap at
-    # anchor_z[1] to exactly 0.6mm, and (since the cut tool is scoped to
+    # anchor_z[0] up to anchor_r[1]-LIP_RING_FLAT_TARGET_MM at
+    # anchor_z[1]) using the same cone_frustum_solid/extrude idiom,
+    # filled-to-axis so it removes material rather than adding it --
+    # narrows the remaining flat cap at anchor_z[1] to nominally
+    # LIP_RING_FLAT_TARGET_MM, and (since the cut tool is scoped to
     # EXACTLY anchor_z[0]..anchor_z[1]) never touches the lip band below.
-    inner_r_lo, inner_r_hi = p['lip_r'][0], p['anchor_r'][1] - 0.6
+    #
+    # RESUMED pass 16 (item C): a first version of the new
+    # verify_lip_ring_profile gate (below) targeted this cut's own exact
+    # 0.6mm and reported a 0.63mm flat cluster -- but that first version
+    # of the GATE had its own bug (checked world-frame nz<0 for
+    # "downward", not Top's own real print-down direction, which is +z
+    # since Top prints flipped, ceiling-down -- see scan_stl_overhangs'
+    # own down_z convention); fixed, the gate finds this cut's own
+    # boundary clean (max flat cluster 0.05mm, tessellation noise only).
+    # LIP_RING_FLAT_TARGET_MM is kept at 0.5 rather than reverted to 0.6
+    # anyway -- a real, deliberate 0.1mm extra margin against exactly that
+    # class of tessellation slack, now that the gate can actually see it
+    # correctly, costs nothing (still comfortably inside the printability
+    # review's own recommended 0.5-1mm registration land) and only helps.
+    inner_r_lo, inner_r_hi = p['lip_r'][0], p['anchor_r'][1] - LIP_RING_FLAT_TARGET_MM
     cut_a = cone_frustum_solid(root, 0.0, ay, inner_r_lo, inner_r_hi, taper_z0, taper_z1)
     cut_b = cone_frustum_solid(root, 0.0, by, inner_r_lo, inner_r_hi, taper_z0, taper_z1)
     cut_pos = extrude_taper_cut_along_y(root, +1, inner_r_lo, inner_r_hi, taper_z0, taper_z1, ay, by)
@@ -9003,6 +9022,109 @@ def scan_stl_overhangs(stl_path, down_z, bed_z, angle_tol_deg=1.0, min_cluster_m
     }
 
 
+def verify_lip_ring_profile(stl_path, p, down_z=1.0):
+    """Pass 16, item C (printability review, finding 1): a live regression
+    check of the lip/anchor ring's own self-supporting taper, scanned off
+    the ACTUAL exported/triangulated Top STL -- not just the boolean-solid
+    code in add_lip_anchor_reliefs, which could build a taper in Fusion's
+    own B-rep yet still export/print wrong (exactly how the pass-9c edge
+    chamfer regressed silently in the first place -- see chamfer_stadium_
+    edge_at's own docstring). Scans every triangle whose centroid falls in
+    the ring's own band (r in lip_r[0]..anchor_r[1], z in lip_z[0]..
+    anchor_z[1] -- a stadium-shaped `rho` distance, same convention
+    chamfer_stadium_edge_at already uses) and classifies each one facing
+    the REAL print-down direction (`down_z`, same convention and default
+    as scan_stl_overhangs -- Top prints flipped, ceiling-down, so its own
+    print-down is +model-z, NOT -z; a naive world-frame nz<0 check would
+    silently grade the WRONG half of the ring's own surfaces) by its own
+    overhang angle -- 0 degrees for a plain vertical wall, 90 degrees for
+    a flat, horizontal, print-down-facing ceiling:
+
+    - `mid_overhang_found`: at least one real 10-80 degree facet must
+      exist somewhere in the band -- proof the taper chamfer is really
+      there in the exported geometry, not just claimed by the code.
+    - `flat_patch_max_width_mm`: no >80-degree (flat, print-down-facing)
+      cluster may span more than 0.6mm of RADIAL extent anywhere in the
+      band -- the old dead-flat shelf finding 1 found (and add_lip_
+      anchor_reliefs' own second taper cut narrows towards) must stay
+      gone. Radial extent (not area) is the right "how wide" measure
+      here: the ring's own remaining flat cap, if any, is an ANNULAR
+      band, so its meaningful width is how far it reaches inward/
+      outward, not its total triangulated area."""
+    ay, by = p['spine_a'][1], p['spine_b'][1]
+    r_lo, r_hi = p['lip_r'][0], p['anchor_r'][1]
+    z_lo, z_hi = p['lip_z'][0], p['anchor_z'][1]
+    tris = read_stl_triangles(stl_path)
+
+    def rho(x, y):
+        if ay <= y <= by:
+            return abs(x)
+        cy = ay if y < ay else by
+        return math.hypot(x, y - cy)
+
+    band_tol = 0.15  # mm -- tessellation/facet-centroid slack, same order as this file's other STL-scan tolerances
+    mid_overhangs = []
+    flat_tris = []
+    for normal, v1, v2, v3 in tris:
+        cx = (v1[0] + v2[0] + v3[0]) / 3.0
+        cy = (v1[1] + v2[1] + v3[1]) / 3.0
+        cz = (v1[2] + v2[2] + v3[2]) / 3.0
+        r = rho(cx, cy)
+        if not (r_lo - band_tol <= r <= r_hi + band_tol and z_lo - band_tol <= cz <= z_hi + band_tol):
+            continue
+        nlen = math.sqrt(sum(c * c for c in normal))
+        if nlen < 1e-9:
+            ux, uy, uz = v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2]
+            vx, vy, vz = v3[0] - v1[0], v3[1] - v1[1], v3[2] - v1[2]
+            normal = (uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx)
+            nlen = math.sqrt(sum(c * c for c in normal)) or 1.0
+        nz = normal[2] / nlen
+        down_component = nz * down_z  # >0 => facing the real print-down direction (see scan_stl_overhangs)
+        if down_component <= 0:
+            continue  # facing away from print-down -- not an overhang at all
+        overhang_deg = math.degrees(math.asin(min(1.0, max(-1.0, down_component))))
+        if 10.0 <= overhang_deg <= 80.0:
+            mid_overhangs.append((r, cz, overhang_deg))
+        elif overhang_deg > 80.0:
+            flat_tris.append((r, v1, v2, v3))
+
+    def vkey(v):
+        return (round(v[0], 3), round(v[1], 3), round(v[2], 3))
+    parent = {}
+
+    def find(x):
+        r0 = x
+        while parent.get(r0, r0) != r0:
+            r0 = parent[r0]
+        while parent.get(x, x) != r0:
+            parent[x], x = r0, parent.get(x, r0)
+        return r0
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for _, v1, v2, v3 in flat_tris:
+        keys = [vkey(v1), vkey(v2), vkey(v3)]
+        for k in keys:
+            parent.setdefault(k, k)
+        union(keys[0], keys[1])
+        union(keys[1], keys[2])
+
+    clusters = {}
+    for r, v1, v2, v3 in flat_tris:
+        k = find(vkey(v1))
+        lo, hi = clusters.get(k, (r, r))
+        clusters[k] = (min(lo, r), max(hi, r))
+    widest_flat_mm = max((hi - lo for lo, hi in clusters.values()), default=0.0)
+
+    return {
+        'mid_overhang_found': (len(mid_overhangs) > 0, len(mid_overhangs)),
+        'flat_patch_max_width_mm': (widest_flat_mm <= 0.6, round(widest_flat_mm, 3)),
+    }
+
+
 COUPON_LOCAL_X_GAP = 40.0   # local X spacing between the Power and Home pairs
 COUPON_WORLD_OFFSET = (60.0, 0.0, 0.0)  # whole 'Print -- Coupons' component, off to the side of the case
 
@@ -9319,6 +9441,18 @@ def run(_context: str, variant=None, export=False):
             print('  ', name, scan)
         bad_overhangs = {k: v['bad_clusters_mm2'] for k, v in overhang_scans.items() if v['bad_clusters_mm2']}
         assert not bad_overhangs, f'overhang cluster(s) > 30 mm^2 found in exported STL(s): {bad_overhangs}'
+
+        # pass 16, item C: live regression check of the lip/anchor ring's
+        # own self-supporting taper, off the actual exported/triangulated
+        # Top STL -- see verify_lip_ring_profile's own docstring.
+        lip_ring_profile = verify_lip_ring_profile(stl_paths['Top'], params)
+        print('lip/anchor ring profile check (item C):', lip_ring_profile)
+        assert lip_ring_profile['mid_overhang_found'][0], (
+            f'no 10-80 degree taper facet found in the lip/anchor ring band -- '
+            f'the self-supporting chamfer is missing from the exported geometry: {lip_ring_profile}')
+        assert lip_ring_profile['flat_patch_max_width_mm'][0], (
+            f'a flat (>80 degree), >0.6mm-wide downward patch remains in the lip/anchor ring band '
+            f'-- the old dead-flat shelf regression: {lip_ring_profile}')
 
         coupon_paths, coupons_occ = export_coupons(design, root, params, _HERE)
         print('Coupon exports:')
