@@ -1831,27 +1831,36 @@ def _ear_boss_keepout_points(p):
     """The full set of pass-16 mount XY points that must always keep a
     continuous, uninterrupted material column, EACH WITH ITS OWN
     documented z-band (not one shared band for all of them -- see below):
-    the D1/D2 case-screw pilots (Top-side material lives entirely inside
-    the ears, see add_ear) -- protected from `top_pilot_z[0]` down to
-    `_ear_root_z1`'s own capped ceiling reach (their own tallest real
-    need, since the wall-root wedge/core physically has to reach that
-    high to fuse into Top's shell) -- plus every ear's own standoff
-    target (S1, S3) and the S2 boss's own target, protected only through
-    their own much SHORTER arm/seat band (`ear_seat_z -
+    each ear's own wall-root anchor (`ears[name]['root_xy']`) -- protected
+    from `top_pilot_z[0]` down to its own capped ceiling reach (the
+    tallest real need, since the wall-root wedge/core physically has to
+    reach that high to fuse into Top's shell) -- plus every ear's own
+    standoff target (S1, S3) and the S2 boss's own target, protected only
+    through their own much SHORTER arm/seat band (`ear_seat_z -
     ear_arm_thickness` .. `ear_seat_z`).
 
-    ROUND 3 (live-found): a same-band-for-everyone version (either the
-    pilot's own 10.0-19.1mm depth, or the boss's own full OD over the
-    full case height) was always either too short (D1's own wall-root
-    reaches z~22.8mm, ABOVE the pilot's own depth, to fuse into the
-    ceiling -- a live probe found the ear severed into two disjoint
-    bodies again with only the pilot's own depth protected) or too tall
-    (protecting the full case height re-created a real, large Top-vs-
-    Home-Button interference -- see EAR_BOSS_BUTTON_KEEPOUT_R's own
-    docstring). Each point's own real structural need is different, so
-    each gets its own band -- this is the minimum that is BOTH sufficient
-    (no more live-found severs) and small enough to leave the button's
-    own real cap/shaft clearance free to cut everywhere else.
+    RELOCATED pass 16 (resumed, Finding 1 fix): D1/D2 (the case-closure
+    screws) no longer sit at the ear roots at all -- they moved to their
+    own independent corner blocks north of the ears (see 'screws_D12' in
+    params_current.py), far enough from both buttons that this button-
+    cutting keepout is a structural no-op there; only the ear's own
+    wall-root anchor (still at the old (+-19, 64) point, now pilot-less)
+    still needs button protection, so this function is keyed off
+    `p['ears']` alone now, not `p['screws_D12']`.
+
+    ROUND 3 (live-found, ORIGINAL D1/D2-at-the-ear-root design): a
+    same-band-for-everyone version (either the pilot's own 10.0-19.1mm
+    depth, or the boss's own full OD over the full case height) was
+    always either too short (the wall-root reaches z~22.8mm, ABOVE the
+    pilot's own depth, to fuse into the ceiling -- a live probe found the
+    ear severed into two disjoint bodies again with only the pilot's own
+    depth protected) or too tall (protecting the full case height
+    re-created a real, large Top-vs-Home-Button interference -- see
+    EAR_BOSS_BUTTON_KEEPOUT_R's own docstring). Each point's own real
+    structural need is different, so each gets its own band -- this is
+    the minimum that is BOTH sufficient (no more live-found severs) and
+    small enough to leave the button's own real cap/shaft clearance free
+    to cut everywhere else.
 
     Shared between add_ear/add_s2_boss's own construction and add_button/
     build()'s keepout (below) so the two can never silently drift apart
@@ -1860,16 +1869,24 @@ def _ear_boss_keepout_points(p):
     reach_r = boss_r + CORNER_BLOCK_REACH
     ceiling = p['top_ceiling_underside_z']
     pz0 = p['top_pilot_z'][0]
-    pts = []
-    for s in p['screws_D12']:
-        x, y = s['xy']
-        z1 = _ear_root_z1(p, x, y, reach_r, ceiling)
-        pts.append({'xy': (x, y), 'z': (pz0 - 0.5, z1 + 0.5)})
     seat_z = p['ear_seat_z']
-    arm_z = (seat_z - p['ear_arm_thickness'] - 0.5, seat_z + 0.5)
+    pts = []
     for ear in p['ears'].values():
-        pts.append({'xy': p['board_standoffs'][ear['target']], 'z': arm_z})
-    pts.append({'xy': p['board_standoffs'][p['s2_boss']['target']], 'z': arm_z})
+        rx, ry = ear['root_xy']
+        z1 = ear_root_cap_z1(p, rx, ry, reach_r, ceiling)
+        pts.append({'xy': (rx, ry), 'z': (pz0 - 0.5, z1 + 0.5)})
+        # RESUMED pass 16 (Finding 1 fix): the ear's own TARGET now
+        # carries a full-height RISER (root_z1 .. seat_z, see add_ear's
+        # own arm/riser connectivity fix), not just a thin
+        # ear_arm_thickness-tall slice under the seat -- protect the
+        # whole riser span (its own xy sits close enough to the Home
+        # button's own bbox, S1 in particular, to be worth the same
+        # belt-and-suspenders protection the root already gets), not
+        # just its top.
+        tx, ty = p['board_standoffs'][ear['target']]
+        pts.append({'xy': (tx, ty), 'z': (z1 - p['ear_arm_thickness'] - 0.5, seat_z + 0.5)})
+    s2_arm_z = (seat_z - p['ear_arm_thickness'] - 0.5, seat_z + 0.5)
+    pts.append({'xy': p['board_standoffs'][p['s2_boss']['target']], 'z': s2_arm_z})
     return pts
 
 
@@ -1948,16 +1965,35 @@ def _clip_of_ear_boss_keepout(root, tool, p):
     return combine_cut(root, tool, keepouts)
 
 
+BUTTON_RIB_GUSSET_MARGIN = 2.0  # mm -- RESUMED pass 16 (Finding 1, live-found the hard way):
+                                 # the button's own REAL body (cap + guide-rib + ceiling-gusset,
+                                 # everything `add_button` builds -- see build()'s own
+                                 # "cut Top against the buttons' OWN FINAL bodies" comment) reaches
+                                 # LOWER than `home_cap`/`power_cap`'s own 'z' (the CAP alone) --
+                                 # live-probed (this pass): the 'Home Button' body's real solid
+                                 # starts as low as z=14.4mm (trim world) at x=-21..-23 (the
+                                 # WEDGE's own outward reach, not the root's own narrow axis, which
+                                 # only starts at z=16.4 -- matching home_cap['z'][0] exactly) --
+                                 # a full 2.0mm below the cap's own stated z0. A height cap using
+                                 # only home_cap/power_cap's own z0 (this constant's original,
+                                 # pre-resume version, margin=0.4 only) left the wedge's OWN
+                                 # outward-reaching corner still inside the button's real rib/
+                                 # gusset material -- confirmed live (a real 212mm^3 Top-vs-Home-
+                                 # Button interference, bounding box z 14.4-21.6, x -21.5..-14.42 --
+                                 # squarely the wedge's own reach, not the root axis or the
+                                 # standoff riser, both independently confirmed clear).
+
+
 def _ear_wedge_wall_touch_z1(p):
-    """Pass 16 (live-found): the highest z the D1/D2 ear-root WEDGE's own
-    outward reach may safely touch, staying below BOTH side buttons' own
-    real cap/collar geometry (home_cap/power_cap, whichever starts
-    lower) by a small margin -- see the wedge_z1 comment in add_ear for
-    the full story (a live check_interference run found the wedge's own
-    10mm-wide outward reach, not the narrow axial core, is what collides
-    with the Home button's own cap/collar)."""
+    """Pass 16 (live-found, RESUMED this pass -- see BUTTON_RIB_GUSSET_
+    MARGIN's own docstring for the live numbers): the highest z the ear
+    wall-root's WEDGE (and, since Finding 1's resumed fix, the ENTIRE
+    root -- capsule/wedge/core alike, via `ear_root_cap_z1`) may safely
+    touch, staying below BOTH side buttons' own REAL rib/gusset geometry
+    (not just their cap -- `BUTTON_RIB_GUSSET_MARGIN` accounts for the
+    difference) by a small extra safety margin."""
     margin = 0.4
-    return min(p['power_cap']['z'][0], p['home_cap']['z'][0]) - margin
+    return min(p['power_cap']['z'][0], p['home_cap']['z'][0]) - BUTTON_RIB_GUSSET_MARGIN - margin
 
 
 def _ear_root_z1(p, cx, cy, r, z1_nominal):
@@ -1975,6 +2011,36 @@ def _ear_root_z1(p, cx, cy, r, z1_nominal):
         return z1_nominal
     display_z0 = db['z'][0] + dz
     return min(z1_nominal, display_z0 - DISPLAY_KEEPOUT_CLEARANCE)
+
+
+def ear_root_cap_z1(p, cx, cy, r, z1_nominal):
+    """Pass 16 (resumed, Finding 1 fix): the ear's own wall-root anchor
+    -- still at the old (+-19, 64) point, right next to the Home button's
+    own real cap/collar geometry, even though the D1/D2 SCREW itself has
+    moved away (see 'ears'/'screws_D12' in params_current.py) -- needs
+    BOTH height caps `_ear_root_z1` (below the real display module) AND
+    `_ear_wedge_wall_touch_z1` (below both buttons' own cap z0) applied
+    to its ENTIRE root (capsule + wedge + core), not just the wedge.
+
+    Live-found (Finding 1, this pass's resumed work): the ORIGINAL
+    add_ear only capped the WEDGE this way, reasoning "the button
+    conflict is entirely the wedge's own outward reach, not the narrow
+    axial column" -- a live per-sub-body interference probe proved that
+    reasoning wrong: the Home button's own real cap/shaft solid
+    completely fills the root_capsule/root_core's own narrow axial
+    column too, at every angle within `verify_post_walls`' own probe
+    radius, for the full z~17-22mm band those pieces used to reach
+    (uncapped by any button constraint, only by the display). Since the
+    root no longer carries a pilot at all (the M2x12 engagement
+    requirement that justified reaching that high moved away with the
+    screw), capping the WHOLE root at the tighter of the two limits
+    removes the real volume overlap by construction -- Top's material
+    there now never reaches into the button's own z-band at all -- at
+    the cost of a shorter root (loses ~6-7mm of height vs the old,
+    pilot-driven number), acceptable since the ear's own remaining job
+    (a lightweight SMT-standoff seat, not a screw boss) never needed that
+    reach in the first place."""
+    return min(_ear_root_z1(p, cx, cy, r, z1_nominal), _ear_wedge_wall_touch_z1(p))
 
 
 def _wall_outward_axes(p, cx, cy):
@@ -2025,6 +2091,50 @@ def _nearer_spine_y(p, cy):
     return ay if cy < ay else by
 
 
+def _corner_block_ring_limit_r(p, cx, cy):
+    """RESUMED pass 16 (Finding 1, live-found the hard way): the radius
+    (from the nearer spine point, see `_nearer_spine_y`) every wall-
+    anchored member's own Combine-Intersect clip must NOT be smaller
+    than, or the intersect silently amputates the wedge's own reach
+    toward the true wall before it ever gets there.
+
+    The ORIGINAL, pre-resume value (`lip_r[0] - CORNER_BLOCK_RING_
+    CLEARANCE`, a FIXED ~23.45mm/25.45mm regardless of where the block
+    actually sits) was calibrated for A/B1/C/B2 -- all close to spine_a
+    (within ~20mm), where 23.45mm is comfortably MORE than the block's
+    own reach (its own distance from the spine + boss_r + CORNER_BLOCK_
+    REACH), so the intersect only ever does its INTENDED job (staying
+    clear of the lip/anchor ring's own inner edge in the z-band they
+    actually share, z~9.2-11) and never touches the wedge's outward
+    reach at all. Live-found this pass: the relocated D screw
+    ((18, 58), see 'screws_D12' in params_current.py) sits 19.04mm from
+    its own nearer spine point ALREADY -- add its own wedge reach
+    (boss_r + CORNER_BLOCK_REACH = 13mm) and the block needs to reach
+    ~32mm to get anywhere near the true wall (~28mm out), but the fixed
+    23.45mm limit clipped it off at barely more than its own centre,
+    leaving ZERO material anywhere near the true wall -- confirmed live
+    (a built 'Top' with a completely hollow interior at (18, 58), no
+    boss at all, despite `add_single_corner_block` reporting success).
+    The SAME risk applies to the EARS' own wall-root (still at the old
+    (+-19, 64) point -- 22.58mm from spine_b, uncomfortably close to the
+    same fixed limit).
+
+    Fixed generically: take the LARGER of the original fixed value (so
+    A/B1/C/B2's own well-tested behaviour is completely unchanged) and
+    this SPECIFIC block's own needed reach (distance to the nearer spine
+    point + boss_r + CORNER_BLOCK_REACH, the same oversized-then-clipped
+    figure the wedge's own construction already uses, +1mm margin) -- so
+    the ring-clearance intersect can only ever do its own narrow job
+    (clipping the low z-band near the lip/anchor ring, where a wedge
+    that's ALREADY headed toward the wall might otherwise graze the
+    ring's own inner edge) and can never again amputate a wedge that
+    legitimately needs to travel further out to reach the true wall."""
+    boss_r = p['boss_dia'] / 2.0
+    nearer_y = _nearer_spine_y(p, cy)
+    own_reach = math.hypot(cx, cy - nearer_y) + boss_r + CORNER_BLOCK_REACH + 1.0
+    return max(p['lip_r'][0] - CORNER_BLOCK_RING_CLEARANCE, own_reach)
+
+
 def add_single_corner_block(root, bodies, p, screw, clip_tool=None):
     """Pass 16, item B (owner call): retires B1/B2 outright (see mech
     review F1's pull-out math, reused verbatim in the README's pass-16
@@ -2042,12 +2152,23 @@ def add_single_corner_block(root, bodies, p, screw, clip_tool=None):
     collar. This exact pattern -- capsule/cylinder + clipped wedge into
     the wall + full-height core + collar -- is also reused verbatim by
     add_ear/add_s2_boss below (mech review F7: "don't hand-roll new
-    wedge/gusset math... generalize add_lanyard_corner_block's pattern")."""
+    wedge/gusset math... generalize add_lanyard_corner_block's pattern").
+
+    RESUMED pass 16 (Finding 1 fix): generalized to apply `_ear_root_z1`'s
+    own display-keepout height cap to EVERY corner block, not just the
+    old D1/D2-at-the-ear-root special case -- a no-op for A/C (well south
+    of the display's own y-range) but load-bearing for the NEW D1/D2
+    (relocated north of the ears, at (+-12.7-14, ~71.5-72), squarely
+    under the display module's own XY footprint -- see 'screws_D12' in
+    params_current.py) so their own full-height pilot column stays clear
+    of the real inserted display housing exactly the way the ears'
+    former wall-root already did."""
     cx, cy = screw['xy']
     boss_r = p['boss_dia'] / 2.0
-    z0, z1 = p['split_z'], p['top_ceiling_underside_z']
+    z0, z1_nominal = p['split_z'], p['top_ceiling_underside_z']
     ay = p['spine_a'][1]
     axis1, axis2 = _wall_outward_axes(p, cx, cy)
+    z1 = _ear_root_z1(p, cx, cy, boss_r + CORNER_BLOCK_REACH, z1_nominal)
 
     capsule = cylinder_solid(root, cx, cy, boss_r, z0, z1)
     wedge_offset = boss_r + CORNER_BLOCK_REACH / 2.0
@@ -2058,7 +2179,7 @@ def add_single_corner_block(root, bodies, p, screw, clip_tool=None):
     wide = combine_join(root, capsule, [wedge])
     wide = clip_to_inner_cavity(root, wide, p, clip_tool)
 
-    ring_limit_r = p['lip_r'][0] - CORNER_BLOCK_RING_CLEARANCE
+    ring_limit_r = _corner_block_ring_limit_r(p, cx, cy)
     ring_limit = cylinder_solid(root, 0.0, _nearer_spine_y(p, cy), ring_limit_r, z0 - 1.0, z1 + 1.0)
     wide = combine_intersect(root, wide, [ring_limit])
 
@@ -2102,95 +2223,97 @@ def add_ear(root, bodies, p, name, clip_tool=None):
     standoff S1 or S3. Two pieces, unioned into a single block before any
     hole is cut:
 
-    (1) a full-height (split_z..top_ceiling_underside_z) wall-anchored
-    root at the matching D1/D2 screw centre -- IDENTICAL construction to
-    add_single_corner_block (mech review F7), carrying that screw's own
-    M2x12 pilot;
+    (1) a wall-anchored root at `ears[name]['root_xy']` -- SAME
+    capsule+wedge+core construction as add_single_corner_block (mech
+    review F7), but (RESUMED pass 16, Finding 1 fix) carrying NO pilot
+    at all any more, and capped in height by `ear_root_cap_z1` (both the
+    real display module's underside AND both buttons' own cap z0, not
+    just the display) -- see that function's own docstring for why the
+    entire root needs both caps now, not just the wedge;
 
-    (2) a shorter 'seat arm' (a stadium capsule from the root centre to
-    the standoff's own xy) whose OWN top face is the seat --
-    PARAMS['ear_seat_z'] (the display module's real standoff plane --
-    the same value the old Screen Plate's own top face, `plate_z[1]`,
-    already carried for this exact purpose across 9 prior passes --
-    printed `ear_seat_offset` mm short so the WINDOW seat, not this one,
-    takes the assembly preload, mech review F5) -- with a through-hole
-    (`ear_standoff_hole_dia`) for the M2x4 driven up from below into the
-    display's own standoff.
+    (2) a seat arm (a stadium capsule from the root centre to the
+    standoff's own xy) kept at the ROOT's OWN low, button-safe z-band
+    (NOT near the seat -- see the Finding-1 connectivity fix below, in
+    the function body), topped by a vertical RISER at the standoff's own
+    xy that climbs from the arm up to the real seat -- PARAMS['ear_seat_z']
+    (the display module's own REAL, live-measured standoff plane -- see
+    params_current.py's own comment on this param for the pass-16
+    re-derivation) -- printed `ear_seat_offset` mm short so the WINDOW
+    seat, not this one, takes the assembly preload, mech review F5) --
+    with a through-hole (`ear_standoff_hole_dia`) for the M2x4 driven up
+    from below into the display's own standoff.
 
-    Both holes (the D1/D2 pilot and the standoff through-hole) are cut
-    ONCE, after BOTH pieces are already joined together and BOTH root-
-    reinforcement collars have been added -- not interleaved with the
-    joins, unlike the old per-piece corner-block pattern -- because the
-    seat arm's own near end sits exactly at the D1/D2 screw centre and
-    would otherwise re-plug a pilot cut before it was added (pass-15 item
-    8's lesson, generalized: re-cut every pilot/hole AFTER every collar
-    AND every later join that shares its axis)."""
+    The standoff through-hole is cut TWICE (once after both pieces join,
+    once more after both root-reinforcement collars have been added --
+    pass-15 item 8's lesson: re-cut every hole AFTER every collar AND
+    every later join that shares its axis) -- there is no longer a
+    second (pilot) hole to worry about re-plugging, since D1/D2 moved to
+    their own independent corner blocks (see add_single_corner_block,
+    called from add_case_screws)."""
     ear = p['ears'][name]
-    root_screw = next(s for s in p['screws_D12'] if s['name'] == ear['root'])
-    rx, ry = root_screw['xy']
+    rx, ry = ear['root_xy']
     tx, ty = p['board_standoffs'][ear['target']]
     boss_r = p['boss_dia'] / 2.0
     ay = p['spine_a'][1]
     z0, z1 = p['split_z'], p['top_ceiling_underside_z']
     seat_z = p['ear_seat_z']
-    arm_z0 = seat_z - p['ear_arm_thickness']
 
-    # pass 16 (live check_interference finding): cap the wall-root pillar's
-    # own z1 below the real inserted display module's own housing underside
-    # wherever the root's own XY footprint overlaps it -- see
-    # DISPLAY_KEEPOUT_CLEARANCE's docstring for the interference this fixes
-    # and why it's safe (D1/D2 sit against a plain vertical wall here, not
-    # the curving ceiling fillet, and the pilot's own engagement depth
-    # (top_pilot_z[1]=19.1mm) stays comfortably below the cap either way).
-    z1_root = _ear_root_z1(p, rx, ry, boss_r + CORNER_BLOCK_REACH, z1)
+    # RESUMED pass 16 (Finding 1 fix): cap the ENTIRE wall-root (capsule +
+    # wedge + core alike), not just the wedge -- see ear_root_cap_z1's own
+    # docstring for the live-probed reason the old wedge-only cap left a
+    # genuine ~304mm^3 Top-vs-Home-Button interference in the axial
+    # column. Since the root no longer carries a pilot, there is no
+    # engagement-depth requirement pulling it back up.
+    root_z1 = ear_root_cap_z1(p, rx, ry, boss_r + CORNER_BLOCK_REACH, z1)
 
-    # (1) full-height wall-anchored root
+    # (1) wall-anchored root (capped, no pilot)
     axis1w, axis2w = _wall_outward_axes(p, rx, ry)
-    root_capsule = cylinder_solid(root, rx, ry, boss_r, z0, z1_root)
+    root_capsule = cylinder_solid(root, rx, ry, boss_r, z0, root_z1)
     wedge_offset = boss_r + CORNER_BLOCK_REACH / 2.0
     wedge_center = (rx + axis2w[0] * wedge_offset, ry + axis2w[1] * wedge_offset, z0)
-    # WEDGE-ONLY height cap (live-found, this pass, ROUND 4): the WEDGE is
-    # the piece that actually reaches outward into the button's own
-    # territory (CORNER_BLOCK_REACH=10mm wide) -- the plain root_capsule/
-    # root_core (radius boss_r/BOSS_CORE_R, D1's own axis only) stay
-    # UNCAPPED at z1_root, since a live check_interference run confirmed
-    # the button conflict is entirely the wedge's own outward reach, not
-    # the narrow axial column. Capping the WEDGE at
-    # `_ear_wedge_wall_touch_z1` (just below BOTH button caps' own lowest
-    # z, home_cap/power_cap z[0]=13.4/13.8mm) keeps its wall-touching
-    # job (this is what actually fuses the whole root_block into Top's
-    # real shell -- see DISPLAY_KEEPOUT_CLEARANCE's own docstring history
-    # for how that was found) entirely BELOW where either button's own
-    # real cap/collar geometry ever reaches, at the cost of a shorter
-    # (but still genuinely wall-touching) wedge than the corner-block
-    # convention's own full-height one. A live check_interference run
-    # confirmed this brings Top-vs-Home-Button to true zero while
-    # `verify_ear_root_material`/`verify_post_walls` -- which only ever
-    # probe within top_pilot_z (10.0-19.1mm), never up at the wedge's own
-    # z1 -- stay satisfied via root_capsule/root_core's own UNCAPPED
-    # reach to z1_root, unaffected by this.
-    wedge_z1 = min(z1_root, _ear_wedge_wall_touch_z1(p))
     wedge = oriented_box_prism(root, wedge_center, axis1w, axis2w, (0.0, 0.0, 1.0),
-                                2.0 * boss_r, CORNER_BLOCK_REACH, wedge_z1 - z0)
+                                2.0 * boss_r, CORNER_BLOCK_REACH, root_z1 - z0)
     root_wide = combine_join(root, root_capsule, [wedge])
     root_wide = clip_to_inner_cavity(root, root_wide, p, clip_tool)
-    ring_limit_r = p['lip_r'][0] - CORNER_BLOCK_RING_CLEARANCE
-    ring_limit = cylinder_solid(root, 0.0, _nearer_spine_y(p, ry), ring_limit_r, z0 - 1.0, z1_root + 1.0)
+    ring_limit_r = _corner_block_ring_limit_r(p, rx, ry)
+    ring_limit = cylinder_solid(root, 0.0, _nearer_spine_y(p, ry), ring_limit_r, z0 - 1.0, root_z1 + 1.0)
     root_wide = combine_intersect(root, root_wide, [ring_limit])
     s3 = p['bay'].get('stack3')
     if s3 is not None:
         pcb = s3['l76k_pcb']
         m = CORNER_BLOCK_STACK_MARGIN
         stack_keepout = box_solid(root, pcb['x'][0] - m, pcb['x'][1] + m, pcb['y'][0] - m, pcb['y'][1] + m,
-                                   z0 - 0.5, z1_root + 0.5)
+                                   z0 - 0.5, root_z1 + 0.5)
         root_wide = combine_cut(root, root_wide, [stack_keepout])
-    root_core = cylinder_solid(root, rx, ry, BOSS_CORE_R, z0, z1_root)
+    root_core = cylinder_solid(root, rx, ry, BOSS_CORE_R, z0, root_z1)
     root_block = combine_join(root, root_wide, [root_core])
 
-    # (2) seat arm: root centre -> standoff, at reduced height (comfortably
-    # below the display board itself -- the display's own PCB z-band sits
-    # well above ear_seat_z, since ear_seat_z is the SEAT the board's
-    # standoffs rest ON, not the board itself).
+    # (2) seat arm + target riser (RESUMED pass 16, Finding 1 fix -- root/
+    # arm connectivity): the ORIGINAL design put the arm at a fixed
+    # z-band just below `seat_z` -- safe when `root_z1` reached all the
+    # way up near the ceiling (as it did before this fix), since the
+    # arm's own z-band sat comfortably WITHIN the root's own tall z-span.
+    # Now that `root_z1` is capped well below `seat_z` (by the button, at
+    # THIS xy specifically -- see ear_root_cap_z1), a fixed arm z-band
+    # near `seat_z` would sit entirely ABOVE the root's own shortened
+    # z-span: `combine_join` on two solids that share an XY footprint but
+    # NEVER overlap in Z produces a body with two disjoint lumps, not a
+    # real connection (confirmed by inspection before this fix shipped --
+    # exactly the "silently splits into two bodies" defect class this
+    # file's own dedupe_body/keepout docstrings already warn about
+    # elsewhere).
+    #
+    # Fix: keep the ARM itself at the ROOT's OWN low, button-safe z-band
+    # (the SAME z-band the wedge already proves safe -- no live check has
+    # ever flagged the wedge, only the tall axial column, at this xy), so
+    # it shares real Z-overlap with root_block by construction. A
+    # separate vertical RISER, at the STANDOFF's own xy (tx, ty) -- never
+    # flagged as a button conflict at ANY height, root xy only -- then
+    # climbs from the arm's own z-band up to the real `seat_z`. Every
+    # bit of material that reaches into the button's own z-range now
+    # sits at the standoff's xy, never at the root's.
+    arm_z1 = root_z1
+    arm_z0 = arm_z1 - p['ear_arm_thickness']
     dx, dy = tx - rx, ty - ry
     seg_len = math.hypot(dx, dy)
     axis1 = (dx / seg_len, dy / seg_len, 0.0)
@@ -2199,10 +2322,10 @@ def add_ear(root, bodies, p, name, clip_tool=None):
     if _dot(axis2, (mx, my - ay, 0.0)) < 0:
         axis2 = (-axis2[0], -axis2[1], -axis2[2])
     arm = oriented_stadium_prism(root, (mx, my, arm_z0), axis1, axis2, (0.0, 0.0, 1.0),
-                                  seg_len + 2.0 * boss_r, 2.0 * boss_r, seat_z - arm_z0)
+                                  seg_len + 2.0 * boss_r, 2.0 * boss_r, arm_z1 - arm_z0)
     arm = clip_to_inner_cavity(root, arm, p, clip_tool)
-    target_core = cylinder_solid(root, tx, ty, BOSS_CORE_R, arm_z0, seat_z)
-    arm = combine_join(root, arm, [target_core])
+    riser = cylinder_solid(root, tx, ty, BOSS_CORE_R, arm_z0, seat_z)
+    arm = combine_join(root, arm, [riser])
 
     block = combine_join(root, root_block, [arm])
 
@@ -2212,23 +2335,20 @@ def add_ear(root, bodies, p, name, clip_tool=None):
         top = dedupe_body(root, top, 'Top')
     top = _refetch_by_name(root, 'Top') or top
 
-    def _cut_holes(t):
-        pilot = cylinder_solid(root, rx, ry, p['top_pilot_dia'] / 2.0, p['top_pilot_z'][0], p['top_pilot_z'][1])
-        t = combine_cut(root, t, [pilot])
-        t = _refetch_by_name(root, 'Top') or t
+    def _cut_hole(t):
         hole = cylinder_solid(root, tx, ty, p['ear_standoff_hole_dia'] / 2.0, arm_z0 - 0.5, seat_z + 0.5)
         t = combine_cut(root, t, [hole])
         return _refetch_by_name(root, 'Top') or t
 
-    top = _cut_holes(top)
+    top = _cut_hole(top)
 
-    top = add_root_reinforcement(root, top, 'Top', f'ear_{name}_wall_root', rx, ry, boss_r, z1_root, direction='up')
+    top = add_root_reinforcement(root, top, 'Top', f'ear_{name}_wall_root', rx, ry, boss_r, root_z1, direction='up')
     top = _refetch_by_name(root, 'Top') or top
     top = add_root_reinforcement(root, top, 'Top', f'ear_{name}_seat', tx, ty, boss_r, seat_z, direction='up')
     top = _refetch_by_name(root, 'Top') or top
 
-    # pass-15 item 8 lesson: re-cut BOTH holes after both collars join.
-    top = _cut_holes(top)
+    # pass-15 item 8 lesson: re-cut the standoff hole after both collars join.
+    top = _cut_hole(top)
 
     bodies['Top'] = top
     return bodies
@@ -2500,21 +2620,30 @@ def add_case_boss(root, bodies, cx, cy, p, clip_tool=None, core_r=None, build_to
 
 def add_case_screws(root, bodies, p, clip_tool=None):
     """Pass 16 (owner call, items A and B): every Bottom-side boss --
-    A/C (unchanged) and D1/D2 (new, replacing the old single screw D) --
-    is now built IDENTICALLY (build_top=False; every Top-side pilot lives
-    inside a wall-anchored member built elsewhere: A/C's own single-pilot
-    corner block below, D1/D2's own pilot inside add_ear -- see build()).
-    B1/B2 are retired outright (mech review F1) -- 4 case-closure screws
-    total (A, C, D1, D2), down from 5."""
+    A/C (unchanged) and D1/D2 -- is built IDENTICALLY (build_top=False;
+    every Top-side pilot lives inside its own independent single-pilot
+    corner block, see below). B1/B2 are retired outright (mech review
+    F1) -- 4 case-closure screws total (A, C, D1, D2), down from 5.
+
+    RESUMED pass 16 (Finding 1 fix): D1/D2's own Top-side pilot used to
+    live INSIDE add_ear (built at the ear's own wall-root) -- moved out
+    to their own independent add_single_corner_block call, exactly like
+    A/C, now that D1/D2 have relocated away from the ears entirely (see
+    'screws_D12' in params_current.py). add_single_corner_block's own
+    display-keepout height cap (generalized this pass, see its own
+    docstring) keeps D1/D2's full-height pilot column clear of the real
+    display module at their new position, same as it always has for
+    A/C (a no-op there)."""
     for s in p['screws_ABC'] + p['screws_D12']:
         cx, cy = s['xy']
         bodies = add_case_boss(root, bodies, cx, cy, p, clip_tool=clip_tool, core_r=None, build_top=False)
         if clip_tool is not None:
             clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
 
-    # pass 16, item B: A and C's own Top-side halves, single-pilot
-    # wall-anchored blocks (B1/B2 retired -- see mech review F1).
-    for s in p['screws_ABC']:
+    # pass 16, item B/Finding-1-resumed: A/C AND (now) D1/D2's own
+    # Top-side halves, all single-pilot wall-anchored blocks (B1/B2
+    # retired -- see mech review F1).
+    for s in p['screws_ABC'] + p['screws_D12']:
         bodies = add_single_corner_block(root, bodies, p, s, clip_tool=clip_tool)
         if clip_tool is not None:
             clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
@@ -5499,10 +5628,12 @@ def build(app, params):
     clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
 
     # pass 16 (owner call, item A -- candidate 5 display mount): two EARS
-    # (S1, S3) grown from Top's dome wall, carrying D1/D2's own Top-side
-    # pilot, plus a short BOSS from the west wall carrying S2 -- replaces
-    # build_screen_plate/add_top_posts entirely (no Screen Plate, no
-    # P1-P4 ceiling posts).
+    # (S1, S3) grown from Top's dome wall (RESUMED pass 16, Finding 1 fix:
+    # no longer carrying D1/D2's own pilot -- see add_ear's own docstring
+    # -- their own case-closure screws moved into add_case_screws above,
+    # north of the ears), plus a short BOSS from the west wall carrying S2
+    # -- replaces build_screen_plate/add_top_posts entirely (no Screen
+    # Plate, no P1-P4 ceiling posts).
     for ear_name in ('S1', 'S3'):
         bodies = add_ear(root, bodies, params, ear_name, clip_tool=clip_tool)
         clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
@@ -7000,8 +7131,13 @@ def verify_post_walls(bodies_dict, p):
     pilots, per the task's own item G). Two checks per D1/D2 pilot, both
     on 8 rays (0,45,...,315 deg) around the pilot's own axis, at the same
     boss radius (boss_dia/2, not a post radius any more -- D1/D2's
-    Top-side material is the EAR's own wall-root wedge, not a plain
-    cylinder):
+    Top-side material is their own independent corner block's wedge, not
+    a plain cylinder). Iterates `p['screws_D12']` directly, so this
+    generically re-targets itself to wherever D1/D2 actually are --
+    RESUMED pass 16 (Finding 1 fix): D1/D2 moved from the ears' own wall
+    roots to their own independent single-pilot corner blocks north of
+    the ears (see 'screws_D12' in params_current.py); no change needed
+    here beyond that xy update.
 
     (a) '<name>_pilot_wall': >= POST_WALL_MIN (1.2mm) of solid material
     around the Ø1.62 pilot, at 3 z-heights spanning top_pilot_z. A LIVE
@@ -7083,22 +7219,28 @@ def verify_root_fillets(bodies_dict, p):
     features = []  # (name, body, cx, cy, r, z_root, direction)
 
     boss_r = p['boss_dia'] / 2.0
-    for s in p['screws_ABC']:
+    # RESUMED pass 16 (Finding 1 fix): D1/D2 are now independent
+    # single-pilot corner blocks (add_single_corner_block), same
+    # construction as A/C, just at their own relocated xy (north of the
+    # ears, see 'screws_D12' in params_current.py) -- so they share A/C's
+    # own feature-list treatment now, including add_single_corner_block's
+    # generalized `_ear_root_z1` display-keepout cap on their own Top
+    # side (a no-op for A/C, load-bearing for D1/D2).
+    for s in p['screws_ABC'] + p['screws_D12']:
         cx, cy = s['xy']
+        z1_top = _ear_root_z1(p, cx, cy, boss_r + CORNER_BLOCK_REACH, p['top_ceiling_underside_z'])
         features.append((f'boss_{s["name"]}_bottom', bottom, cx, cy, boss_r, 2.0, 'down'))
-        features.append((f'boss_{s["name"]}_top', top, cx, cy, boss_r, p['top_ceiling_underside_z'], 'up'))
-    # pass 16: D1/D2 replace screw D -- Bottom-side collar same as A/C;
-    # their Top-side wall-root collar is added inside add_ear itself
-    # ('ear_<name>_wall_root'), listed here too so this gate covers it.
-    for s in p['screws_D12']:
-        dx, dy = s['xy']
-        features.append((f'boss_{s["name"]}_bottom', bottom, dx, dy, boss_r, 2.0, 'down'))
-        # pass 16 (DISPLAY_KEEPOUT_CLEARANCE fix): the wall-root collar's own
-        # z_root is capped below the real display module -- same
-        # `_ear_root_z1` call add_ear itself uses, not the nominal ceiling,
-        # or this probe looks for material above where the collar actually is.
-        z1_root_probe = _ear_root_z1(p, dx, dy, boss_r + CORNER_BLOCK_REACH, p['top_ceiling_underside_z'])
-        features.append((f'ear_wall_root_{s["name"]}', top, dx, dy, boss_r, z1_root_probe, 'up'))
+        features.append((f'corner_block_{s["name"]}_top', top, cx, cy, boss_r, z1_top, 'up'))
+
+    # pass 16 (resumed): each ear's own wall-root anchor is now
+    # independent of any D1/D2 screw (see 'ears' in params_current.py) --
+    # its own collar ('ear_<name>_wall_root', added inside add_ear) is
+    # capped by BOTH the display AND both buttons' own cap z0
+    # (`ear_root_cap_z1`, the Finding-1 fix), not just the display.
+    for ear_name, ear in p['ears'].items():
+        rx, ry = ear['root_xy']
+        z1_root_probe = ear_root_cap_z1(p, rx, ry, boss_r + CORNER_BLOCK_REACH, p['top_ceiling_underside_z'])
+        features.append((f'ear_wall_root_{ear_name}', top, rx, ry, boss_r, z1_root_probe, 'up'))
 
     # pass 16: the ears' own SEAT-end collars (S1, S3) and the S2 boss's
     # own seat collar -- same probe shape (ring at boss_r+0.6, 0.4mm into
@@ -7140,12 +7282,17 @@ def verify_root_fillets(bodies_dict, p):
 def verify_corner_blocks(bodies_dict, p):
     """Gate, RE-TARGETED pass 16 (owner call, item B: B1/B2 retired, A/C's
     own Top-side halves are now single-pilot wall-anchored blocks, not
-    two-screw capsules -- see add_single_corner_block). For each of A, C:
+    two-screw capsules -- see add_single_corner_block). For each of
+    A, C, D1, D2 (RESUMED pass 16, Finding 1 fix: D1/D2 are now
+    independent corner blocks too, at their own relocated xy north of the
+    ears -- see 'screws_D12' in params_current.py):
     (a) the pilot hole is open (hollow) along its full documented depth
     (p['top_pilot_z'], sampled near each end and at mid-depth); (b) the
     block reads solid at the screw's own centre AND at 4 points around it
     (radius boss_dia/2 - 0.3, safely inside the capsule's own guaranteed
-    coverage), at the block's own mid-height -- confirms real, continuous
+    coverage), at the block's own mid-height (per-screw, since D1/D2's
+    own z1 is capped below the display module via `_ear_root_z1`, unlike
+    A/C's uncapped `top_ceiling_underside_z`) -- confirms real, continuous
     material, not just a touching sliver; (c) the comms-stack footprint's
     own four corners (p['bay']['stack3']['l76k_pcb']) read hollow in Top
     at the block's mid-height, and the case's own y=0 centreline stays
@@ -7153,15 +7300,16 @@ def verify_corner_blocks(bodies_dict, p):
     (p['bay']['fpc_keepout']) -- both the "stays in the corner" and "does
     not bridge the end-wall centre" requirements at once."""
     top = bodies_dict['Top']
-    z0, z1 = p['split_z'], p['top_ceiling_underside_z']
-    z_mid = (z0 + z1) / 2.0
+    z0 = p['split_z']
+    z_mid = (z0 + p['top_ceiling_underside_z']) / 2.0
     pz0, pz1 = p['top_pilot_z']
     boss_r = p['boss_dia'] / 2.0
     results = {}
 
-    for s in p['screws_ABC']:
+    for s in p['screws_ABC'] + p['screws_D12']:
         name = s['name']
         cx, cy = s['xy']
+        z1 = _ear_root_z1(p, cx, cy, boss_r + CORNER_BLOCK_REACH, p['top_ceiling_underside_z'])
 
         checks = [not probe_point_solid(top, P(cx, cy, z))
                   for z in (pz0 + 0.1, (pz0 + pz1) / 2.0, pz1 - 0.1)]
@@ -7638,44 +7786,67 @@ def verify_wordmark_counters(bodies_dict, p):
 
 def verify_ear_root_material(bodies_dict, p):
     """New gate (pass 16, item G -- mech review F7's own reinforcement
-    ask): for each ear (S1, S3), probes (a) the D1/D2 wall-root's own
-    M2x12 pilot open along its documented depth, (b) the ear's own solid
-    material at 5 points along the wall-root -> standoff span (at the
-    arm's own mid-height, safely above the pilot's own z1 near the root
-    end and safely below the display board near the standoff end -- the
-    same 'stays connected, not just touching' discipline
-    verify_corner_blocks already uses), (c) the standoff's own M2x4
-    through-hole open along its depth; and (d) mech review F14 (watch: ear
-    S1's reach toward the FPC relief pocket) -- the analytic distance
-    from each ear's own footprint (root + standoff, each padded by
-    boss_dia/2) to the fpc_relief pocket's own footprint and to the
-    display_header box, reported (not gated -- both distances are
-    comfortably positive/large for the built geometry, but this makes the
-    "watch" item a live, re-checked number rather than an eyeballed plan
-    drawing estimate)."""
+    ask). RESUMED pass 16 (Finding 1 fix): D1/D2 no longer sit at the
+    ear's own wall-root (see 'ears'/'screws_D12' in params_current.py),
+    and the root's own z1 is now capped well below `seat_z` by the
+    button -- see `ear_root_cap_z1` -- so the arm/riser connectivity fix
+    in `add_ear` changes what "solid along the span" means here too. For
+    each ear (S1, S3): (a) the wall-root's own solid material at 5 points
+    along the LOW root->standoff span (at the arm's own z-band, i.e.
+    `root_z1 - ear_arm_thickness/2` -- no longer near `seat_z`, which now
+    sits ABOVE the root's own capped reach); (b) the standoff's own
+    vertical RISER reads solid at its own mid-height (root_z1 to
+    seat_z); (c) the standoff's own M2x4 through-hole open along its
+    full depth; and (d) mech review F14 (watch: ear S1's reach toward
+    the FPC relief pocket) -- the analytic distance from each ear's own
+    footprint (root + standoff, each padded by boss_dia/2) to the
+    fpc_relief pocket's own footprint and to the display_header box,
+    reported (not gated -- both distances are comfortably positive/large
+    for the built geometry, but this makes the "watch" item a live,
+    re-checked number rather than an eyeballed plan drawing estimate)."""
     top = bodies_dict['Top']
     results = {}
-    pz0, pz1 = p['top_pilot_z']
     seat_z = p['ear_seat_z']
     arm_thick = p['ear_arm_thickness']
-    z_mid_arm = seat_z - arm_thick / 2.0
     boss_r = p['boss_dia'] / 2.0
     fpc = p['fpc_relief']
     hdr = p['display_header']
+    ceiling = p['top_ceiling_underside_z']
     for name, ear in p['ears'].items():
-        root_screw = next(s for s in p['screws_D12'] if s['name'] == ear['root'])
-        rx, ry = root_screw['xy']
+        rx, ry = ear['root_xy']
         tx, ty = p['board_standoffs'][ear['target']]
+        root_z1 = ear_root_cap_z1(p, rx, ry, boss_r + CORNER_BLOCK_REACH, ceiling)
+        z_mid_arm = root_z1 - arm_thick / 2.0
+        z_mid_riser = (root_z1 + seat_z) / 2.0
 
-        pilot_checks = [not probe_point_solid(top, P(rx, ry, z)) for z in (pz0 + 0.1, (pz0 + pz1) / 2.0, pz1 - 0.1)]
-        results[f'{name}_pilot_open'] = (all(pilot_checks), pilot_checks)
-
-        hole_checks = [not probe_point_solid(top, P(tx, ty, z)) for z in (seat_z - arm_thick + 0.3, seat_z - 0.3)]
+        hole_checks = [not probe_point_solid(top, P(tx, ty, z)) for z in (root_z1 - arm_thick + 0.3, seat_z - 0.3)]
         results[f'{name}_standoff_hole_open'] = (all(hole_checks), hole_checks)
 
+        # RESUMED pass 16 (root-caused a pre-existing gate bug while
+        # live-verifying the Finding-1 connectivity fix): probing exactly
+        # AT the target's own xy (t=1.0) lands dead-center on the M2x4
+        # standoff clearance hole (`ear_standoff_hole_dia`, cut right
+        # through that same axis) -- always reads hollow there BY DESIGN,
+        # not a defect. This is what the README's own "`material_solid`
+        # shows False at the root/target endpoints specifically -- a
+        # new, smaller finding not yet root-caused" note was describing.
+        # Fixed by sampling t=1.0 OFF-AXIS (same BOSS_CORE_R-0.3 radius
+        # ring `verify_corner_blocks`' own off-axis solid check already
+        # uses), matching how real material is actually laid out around
+        # a drilled hole -- every other t stays on-axis (nothing else is
+        # bored through the arm's own low z-band).
+        off_r = BOSS_CORE_R - 0.3
         solid_checks = [probe_point_solid(top, P(rx + t * (tx - rx), ry + t * (ty - ry), z_mid_arm))
-                         for t in (0.0, 0.25, 0.5, 0.75, 1.0)]
+                         for t in (0.0, 0.25, 0.5, 0.75)]
+        solid_checks += [probe_point_solid(top, P(tx + off_r * math.cos(math.radians(ang)),
+                                                    ty + off_r * math.sin(math.radians(ang)), z_mid_arm))
+                          for ang in (0, 90, 180, 270)]
         results[f'{name}_material_solid'] = (all(solid_checks), solid_checks)
+
+        riser_checks = [probe_point_solid(top, P(tx + off_r * math.cos(math.radians(ang)),
+                                                   ty + off_r * math.sin(math.radians(ang)), z_mid_riser))
+                         for ang in (0, 90, 180, 270)]
+        results[f'{name}_riser_solid'] = (all(riser_checks), (round(z_mid_riser, 3), riser_checks))
 
         # mech F14: nearest approach of either end of the ear (padded by
         # boss_r, since that's the ear's own real radius) to the FPC
@@ -7776,7 +7947,14 @@ def verify_seat_heights(design, root, bodies_dict, p):
                 bodies_list.append(b)
         found_z = None
         for b in bodies_list:
-            z = find_ceiling_z_at(b, sx, sy, seat_z + 5.0, seat_z - 2.0, step=0.1)
+            # pass 16 (resumed): step tightened 0.1 -> 0.01mm -- the gate's
+            # own tolerance (below) was tightened to +/-0.05mm now that
+            # `ear_seat_z` is itself live-derived from this same probe
+            # (see params_current.py's comment); a 0.1mm-step scan could
+            # misreport the gap by up to a full step for no geometric
+            # reason, large enough to spuriously fail (or pass) a
+            # +/-0.05mm gate on its own.
+            z = find_ceiling_z_at(b, sx, sy, seat_z + 5.0, seat_z - 2.0, step=0.01)
             if z is not None and (found_z is None or z < found_z):
                 found_z = z
         if found_z is None:
@@ -7786,7 +7964,15 @@ def verify_seat_heights(design, root, bodies_dict, p):
         results[name] = {
             'standoff_plane_z': round(found_z, 3), 'seat_z': round(seat_z, 3),
             'gap_mm': round(gap, 3), 'expected_gap_mm': offset,
-            'ok': abs(gap - offset) <= 0.5,
+            # pass 16 (resumed, owner call on Finding 2): tightened from
+            # 0.5mm to 0.05mm now that `ear_seat_z` is live-derived
+            # straight from this exact same probe technique (see
+            # params_current.py's comment) rather than inherited from the
+            # old Screen Plate's `plate_z[1]` -- a real design number, not
+            # a legacy guess, so the gate should hold it to the same
+            # precision the owner asked verify() to confirm (-0.25 +/-
+            # 0.05mm on all three seats).
+            'ok': abs(gap - offset) <= 0.05,
         }
     return results
 
