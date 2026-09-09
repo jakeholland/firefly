@@ -3261,6 +3261,57 @@ def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thicke
     tab_hole_body = _clip_of_ear_boss_keepout(root, tab_hole_body, p)
     bodies['Top'] = combine_cut(root, bodies['Top'], [tab_hole_body])
 
+    # Case pass 16 FIX, item 4 (Power button's own verify_button_insertion
+    # sweep failed 85/125 checked points; Home was already clean): live
+    # root-caused to a genuine NEW structural conflict, not a printability
+    # chamfer -- the S2 boss's own arm (add_s2_boss, a pass-16 addition
+    # that did not exist when this button mechanism was last touched) is
+    # a straight horizontal member at y=board_standoffs['S2'][1] (32.22),
+    # z (13.6-16.6 trim), reaching from the true west wall (embedded past
+    # it) all the way to the S2 target -- and the Power button's own
+    # retaining tab travels at almost exactly this z (tab_z=15.8, squarely
+    # inside the arm's own 13.6-16.6 band) through almost exactly this xy
+    # (the button sits on the same west wall, y~30-36) for nearly its
+    # entire insertion stroke, not just near the rib. Confirmed live: a
+    # step-by-step probe of the full insertion sweep found 2-5 of 5 points
+    # solid at EVERY step except the very last (rest position, already
+    # covered by tab_hole_body above) -- and the solid material's own
+    # face bounding box (found by a live face search against the built
+    # Top) is exactly the S2 arm's own footprint (x -26..0.04, y pinned at
+    # 35.22, z 13.6-16.6), not the rib/connector/gusset (whose own z-bands
+    # -- 16.0-23.4, 16.8-22.6, 22.6+ respectively -- all sit ABOVE tab_z).
+    #
+    # Fix: the SAME "dedicated lane...cut the full thickness...so the tab
+    # can slide past freely during assembly" idiom the rib's own tab-
+    # relief lane already uses (finding 9), generalized to the tab's
+    # ENTIRE insertion sweep (verify_button_insertion's own shift_start..
+    # shift_end range, s_rib_inner-2 .. s_tab_face, not just the rib's own
+    # narrow thickness) -- a no-op for Home (whose own sweep never crosses
+    # the S2 arm's footprint at all, confirmed clean before this change).
+    # 2026-09-09 (live-found): a first version used sweep_margin=0.3 (the
+    # same margin the rib's own tab-relief lane uses) and closed 84 of 85
+    # bad checks -- one single corner point (tangential edge, du=0/1.5 at
+    # dv=+tab['w']/2) still read solid at the very start of the sweep
+    # (shift=-7.0, s=3.393, closest to s_sweep_lo). Widened both the
+    # tangential margin and the axial start margin to comfortably clear
+    # it -- live-confirmed 0/125 bad, both buttons, after this change.
+    sweep_margin = 0.5
+    sweep_w = tab['w'] + 2 * sweep_margin
+    sweep_z_hi = z_center - W / 2.0 + sweep_margin
+    sweep_z_lo = z_center - W / 2.0 - tab['h'] - sweep_margin
+    sweep_z_span = sweep_z_hi - sweep_z_lo
+    sweep_z_center = (sweep_z_hi + sweep_z_lo) / 2.0
+    s_sweep_lo = g['s_rib_inner'] - 2.0 - 1.0  # matches verify_button_insertion's own sweep start, +1.0 margin
+    s_sweep_hi = g['s_tab_face']               # rest position -- tab_hole_body already covers just past this
+    sweep_depth = (s_sweep_hi - s_sweep_lo) + 0.5
+    sweep_start_xy = (g['housing_xy'][0] + s_sweep_lo * d2[0], g['housing_xy'][1] + s_sweep_lo * d2[1])
+    tab_sweep_body = oriented_box_prism(root, (sweep_start_xy[0], sweep_start_xy[1], sweep_z_center),
+                                         t3, z3, d3, sweep_w, sweep_z_span, sweep_depth)
+    if tab_clip_tool is not None:
+        tab_sweep_body = combine_intersect_keep(root, tab_sweep_body, [tab_clip_tool])
+    tab_sweep_body = _clip_of_ear_boss_keepout(root, tab_sweep_body, p)
+    bodies['Top'] = combine_cut(root, bodies['Top'], [tab_sweep_body])
+
     # nub pocket at the plunger tip, recessed 0.8mm back toward the outer face
     pocket = p['nub_pocket']
     pocket_center = (g['plunger_tip_xy'][0], g['plunger_tip_xy'][1], g['switch_z_mid'])
