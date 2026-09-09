@@ -2194,7 +2194,24 @@ def _corner_block_ring_limit_r(p, cx, cy):
     legitimately needs to travel further out to reach the true wall."""
     boss_r = p['boss_dia'] / 2.0
     nearer_y = _nearer_spine_y(p, cy)
-    own_reach = math.hypot(cx, cy - nearer_y) + boss_r + CORNER_BLOCK_REACH + 1.0
+    # RESUMED pass 16 (item G, live-found via the offline STL manifold
+    # check, the FIRST time this exact geometry was ever run through it):
+    # a flat +1.0mm margin on the on-axis reach isn't quite enough --
+    # the wedge is a BOX (oriented_box_prism, width 2*boss_r tangentially),
+    # so its own CORNERS, offset sideways from the pure on-axis point this
+    # formula measures, sit slightly FARTHER from the ring_limit cylinder's
+    # own center (the spine point, not the corner block's own center) than
+    # the straight-line reach alone suggests -- just past the +1.0mm
+    # margin in exactly the cases where own_reach is what sets the limit
+    # (A/C/D's corner blocks, S1/S3's ear wall-roots -- the 5 real, tiny,
+    # live-found non-manifold edges this fix closes, one per feature,
+    # confirmed by offline_stl_check.py). Bumped to +2.5mm -- comfortably
+    # past the box corner's own worst-case extra reach (boss_r itself, at
+    # most, for a corner block sitting almost exactly on the spine's own
+    # ray) -- while remaining a no-op for A/B1/C/B2's own well-tested
+    # fixed-value branch (unchanged, still governed by CORNER_BLOCK_RING_
+    # CLEARANCE below, not this margin).
+    own_reach = math.hypot(cx, cy - nearer_y) + boss_r + CORNER_BLOCK_REACH + 2.5
     return max(p['lip_r'][0] - CORNER_BLOCK_RING_CLEARANCE, own_reach)
 
 
