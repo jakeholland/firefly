@@ -9378,6 +9378,146 @@ def export_coupons(design, root, p, base_dir):
     return paths, coupons_occ
 
 
+COMPONENT_MOUNT_COUPON = 'Print — Mount Coupon'
+MOUNT_COUPON_GAP = 30.0  # mm, local X spacing between the two mount points on the coupon
+
+
+def build_mount_coupon_point(root, p, name_prefix, x0):
+    """Case pass 16, item 6: one real mount point (an ear seat OR the S2
+    boss seat) as a standalone, printable fit-test coupon -- a flat wall
+    slab (a local, flattened stand-in for the real dome/west wall's own
+    curved arc there; the case's own wall thickness, `p['wall']`, is the
+    only dimension that matters for this fit test, not the true curvature)
+    with a wall-anchored root growing straight up to a target seat riser,
+    reusing the SAME `add_root_reinforcement` mechanism (default
+    ROOT_COLLAR_RISE, both root and seat) and the SAME barrel-counterbore-
+    plus-through-hole construction (`STANDOFF_BARREL_*`,
+    `ear_standoff_hole_dia`) `add_ear`/`add_s2_boss` use for the real case
+    -- so a real M2 screw can be fit-tested straight into a standoff-
+    barrel-sized counterbore exactly as it would in the assembled case.
+    Simplified from the real construction: root and target share the same
+    xy (a straight vertical riser, no horizontal arm) since this coupon
+    exists to test the SEAT/collar/screw fit, not the arm's own reach to
+    the wall -- and the wall-root has no outward wedge (that reaches
+    toward the true dome/west wall specifically, meaningless on a flat
+    coupon slab). Built face-down exactly as it prints in the real case:
+    the wall slab sits at the LOW z (root_z1 downward, matching Top's own
+    parting-plane-side root anchor), the seat at the HIGH z (matching
+    Top's own ceiling-side seat) -- the same +z-is-print-down convention
+    every other Top part in this file already uses, so no extra rotation
+    is needed before slicing.
+
+    `name_prefix`: 'Ear' or 'S2Boss'. `x0`: local X offset (so two points
+    can sit side by side on one printable coupon)."""
+    boss_r = p['boss_dia'] / 2.0
+    wall = p['wall']
+    z0 = 0.0
+    root_z1 = 4.0
+    # Same riser HEIGHT as the real case: the real ear/S2-boss riser climbs
+    # from its own low arm/root band up to `ear_seat_z` -- reuse that same
+    # real, live-measured span (seat_z - a representative real root_z1,
+    # ~13.6mm trim for the ears) so the coupon's own screw engagement
+    # depth matches the real assembly, not an arbitrary number.
+    real_root_z1_ref = 13.6
+    riser_height = p['ear_seat_z'] - real_root_z1_ref
+    seat_z = root_z1 + riser_height
+
+    slab_half = boss_r + 6.0
+    slab = box_solid(root, x0 - slab_half, x0 + slab_half, -slab_half, slab_half, z0 - wall, z0)
+    slab.name = f'{name_prefix} Wall'
+
+    root_capsule = cylinder_solid(root, x0, 0.0, boss_r, z0, root_z1)
+    block = combine_join(root, slab, [root_capsule])
+    block = dedupe_body(root, block, f'{name_prefix} Wall')
+
+    arm_thick = p['ear_arm_thickness']
+    barrel_z0 = seat_z - STANDOFF_BARREL_DEPTH - STANDOFF_BARREL_MARGIN
+    riser_wide_z0 = max(root_z1, barrel_z0)
+    riser = cylinder_solid(root, x0, 0.0, BOSS_CORE_R, root_z1, riser_wide_z0)
+    riser_wide = cylinder_solid(root, x0, 0.0, boss_r, riser_wide_z0, seat_z)
+    block = combine_join(root, block, [riser, riser_wide])
+    block = dedupe_body(root, block, f'{name_prefix} Wall')
+
+    def _cut_hole(t):
+        # through the FULL coupon, slab included (z0-wall downward) -- in
+        # the real assembly the M2x4 is driven UP FROM BELOW, through a
+        # separate Bottom piece's own access hole, into this Top-side
+        # riser; this standalone coupon has no separate Bottom, so the
+        # hole must reach all the way through its own wall slab for a
+        # real screw to be inserted from outside at all.
+        hole = cylinder_solid(root, x0, 0.0, p['ear_standoff_hole_dia'] / 2.0, z0 - wall - 0.5, seat_z + 0.5)
+        barrel_clear = cylinder_solid(root, x0, 0.0, STANDOFF_BARREL_DIA / 2.0, barrel_z0, seat_z + 0.5)
+        t = combine_cut(root, t, [hole, barrel_clear])
+        return _refetch_by_name(root, f'{name_prefix} Wall') or t
+
+    block = _cut_hole(block)
+    # Plain conical collar at z0 (the BOTTOM of the wall-anchored capsule,
+    # where it meets the slab below), joined DIRECTLY -- NOT via
+    # add_root_reinforcement's own trim-then-join mechanism (item 1's
+    # fix): live-found that mechanism's own pre-join trim cut, sized to
+    # clear a WEDGE's box corners in the real case, fully severs THIS
+    # capsule (whose own radius, 3.0mm, is smaller than the trim's
+    # 4.7mm reach) into two disconnected pieces with no alternate
+    # connection path (unlike every real post/boss/ear, which is grown
+    # from an already-large, continuously-connected Top/Bottom shell
+    # that stays connected around any local cut via its own walls) --
+    # confirmed live: the trim step alone left only the slab-side
+    # fragment after the collar's own combine_join, the riser/seat above
+    # silently orphaned. A plain collar (this coupon's short, isolated
+    # capsule has no wedge cross-section to begin with, so there is no
+    # tangent-seam defect for the trim step to fix here) avoids the
+    # whole class of problem.
+    wr_z_lo, wr_z_hi = z0 - ROOT_COLLAR_OVERLAP, z0 + ROOT_COLLAR_RISE
+    wr_r_lo, wr_r_hi = boss_r + ROOT_COLLAR_RISE, boss_r + ROOT_COLLAR_OVERLAP
+    wall_root_collar = cone_frustum_solid(root, x0, 0.0, wr_r_lo, wr_r_hi, wr_z_lo, wr_z_hi)
+    block = combine_join(root, block, [wall_root_collar])
+    block = dedupe_body(root, block, f'{name_prefix} Wall')
+
+    block = add_root_reinforcement(root, block, f'{name_prefix} Wall', f'{name_prefix}_seat',
+                                    x0, 0.0, boss_r, seat_z, direction='up')
+    block = _refetch_by_name(root, f'{name_prefix} Wall') or block
+    block = _cut_hole(block)
+    return block
+
+
+def export_mount_coupon(design, root, p, base_dir):
+    """Case pass 16, item 6: `export/coupons/pass16_mount_coupon.3mf` --
+    one ear's own seat/riser/collar mount point plus the S2 boss's own,
+    side by side on a single printable coupon (see build_mount_coupon_
+    point's own docstring for the construction and its simplifications)."""
+    out_dir = os.path.join(base_dir, 'export', 'coupons')
+    os.makedirs(out_dir, exist_ok=True)
+
+    coupon_occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+    coupon_occ.component.name = COMPONENT_MOUNT_COUPON
+    coupon_comp = coupon_occ.component
+
+    ear_body = build_mount_coupon_point(coupon_comp, p, 'Ear', 0.0)
+    s2_body = build_mount_coupon_point(coupon_comp, p, 'S2Boss', MOUNT_COUPON_GAP)
+    for label, body in (('ear', ear_body), ('s2_boss', s2_body)):
+        assert_export_body_size(body, f'mount_coupon_{label}', 40.0)
+
+    move = adsk.core.Matrix3D.create()
+    move.translation = adsk.core.Vector3D.create(*(v * MM for v in (60.0, 60.0, 0.0)))
+    coupon_occ.transform = move
+    if design.snapshots.hasPendingSnapshot:
+        design.snapshots.add()
+
+    remove_stray_generic_bodies(coupon_comp)
+
+    export_mgr = design.exportManager
+    stl_path = os.path.join(out_dir, 'pass16_mount_coupon.stl')
+    opts = export_mgr.createSTLExportOptions(coupon_comp, stl_path)
+    opts.isBinaryFormat = True
+    export_mgr.execute(opts)
+
+    mf_path = os.path.join(out_dir, 'pass16_mount_coupon.3mf')
+    mf_opts = export_mgr.createC3MFExportOptions(coupon_occ, mf_path)
+    export_mgr.execute(mf_opts)
+
+    return {'stl': stl_path, '3mf': mf_path}, coupon_occ
+
+
 def export_native_3mf_case(design, root, variant, base_dir):
     """Native 3MF export of the two Print components (2026-09-06, pass 6):
     createC3MFExportOptions' `geometry` argument takes a single BRepBody,
