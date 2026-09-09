@@ -74,6 +74,34 @@ PARAMS = {
     # per-variant via display_z_offset like every other display-relative
     # z value in this file.
     'battery_connector_bbox': {'x': (-11.32, -3.67), 'y': (32.80, 38.00), 'z': (14.20, 17.60)},
+    # pass 16 resumed (item 1, live-found the hard way): a SECOND real SMT
+    # connector on the display's own underside ('PITCH1MM-2PIN-SMT-
+    # HORIZONTAL', a 1mm-pitch 2-pin horizontal connector -- distinct from
+    # the battery socket above), sitting almost directly under the S3 ear's
+    # own arm run -- found live via a from-scratch check_interference(Top,
+    # display) after the STANDOFF_BARREL_* fix (above) cleared the other 8
+    # hits, leaving one real 17.8mm^3 Top-vs-display overlap here. Base
+    # (current-frame) bbox back-derived from the live-measured trim-world
+    # box (x (6.865,11.215), y (58.88,64.08), z (17.55,20.65)) by
+    # subtracting trim's own display_z_offset (3.0) from z, same convention
+    # as battery_connector_bbox above -- see secondary_conn_world_bbox.
+    'secondary_conn_bbox': {'x': (6.865, 11.215), 'y': (58.88, 64.08), 'z': (14.55, 17.65)},
+    # pass 16 resumed (item 1): five more small, real SMD-component hits
+    # (a resistor pair, an inductor 'L4_ASM', and two unidentified small
+    # parts) found live the same way as secondary_conn_bbox above, each
+    # a genuine but small (<4mm^3) Top-vs-display overlap where an ear's
+    # own wedge/riser passes close to the display's real component layer
+    # -- see check_interference's own live trace in the pass-16 README
+    # section. Base (current-frame) bboxes back-derived from the live-
+    # measured trim-world intersection boxes (0.4mm margin added on every
+    # side) the same way as secondary_conn_bbox.
+    'ear_wedge_component_keepouts': [
+        {'x': (8.245, 9.375), 'y': (66.435, 67.865), 'z': (16.90, 17.98)},
+        {'x': (15.435, 16.865), 'y': (58.255, 59.385), 'z': (16.90, 17.98)},
+        {'x': (-10.28, -8.04), 'y': (64.47, 67.37), 'z': (16.20, 18.00)},
+        {'x': (15.275, 16.365), 'y': (55.395, 56.505), 'z': (15.60, 17.50)},
+        {'x': (11.44, 14.88), 'y': (62.015, 64.945), 'z': (16.00, 17.50)},
+    ],
     'display_header': {'x': (11.5, 17.0), 'y': (43.7, 56.1)},
     'top_ceiling_underside_z': 23.0,
     'display_z_offset': 0.0,  # pass 7: trim overrides this to +3 (case grows 25->28mm)

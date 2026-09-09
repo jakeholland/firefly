@@ -1748,6 +1748,27 @@ BOSS_CORE_R = 2.6   # see clipped_pillar_with_reach -- < boss_dia/2 (3.0), > cou
 # matter here since the join happens BEFORE the hole/counterbore cuts.
 POST_CORE_R = 1.1   # < top_post_dia/2 (2.0), > top_post_pilot_dia/2 (0.81)
 
+# --- pass 16 resumed (item 1, live-found the hard way): the display's own
+# SMT standoff at each of S1/S2/S3 is a REAL physical component (Fusion
+# names it 'SMTSO-M2-3_5X2-3_5ET' -- an M2 SMT standoff, ~3.5mm OD), not
+# just a bare screw shaft -- live-measured bbox (both variants, all three
+# points): 3.53mm OD x 4.70mm tall, hanging DOWN from the display PCB, its
+# TOP flush with the live-measured standoff plane (Finding 2) and its own
+# BOTTOM 4.70mm below that. The old ear_standoff_hole_dia (2.4mm) is a
+# plain M2 clearance hole sized for the SCREW only -- it left solid ear/
+# boss material exactly where this barrel's own 3.53mm-OD body needs to
+# sit, confirmed live via a from-scratch check_interference(Top, all board
+# occurrences) run: 9 real Top-vs-display hits, three of them a full
+# 36.75mm^3 each, centered EXACTLY on S1/S2/S3 (bbox 3.5x3.5x3.0mm, right
+# at the barrel's own footprint) -- see the pass-16 README section for the
+# full live trace. Fixed with a stepped counterbore: the plain M2
+# clearance hole continues the FULL height (screw shaft access from
+# below), PLUS a short, wide counterbore right under the seat sized to
+# clear the real barrel -- see add_ear/add_s2_boss's own '_cut_hole'.
+STANDOFF_BARREL_DIA = 4.2      # mm -- measured 3.53mm OD + ~0.33mm radial clearance/side for print tolerance.
+STANDOFF_BARREL_DEPTH = 4.70   # mm -- the barrel's own live-measured height (both variants, all 3 points).
+STANDOFF_BARREL_MARGIN = 0.30  # mm -- extra depth clearance below the barrel's real measured bottom.
+
 # --- pass 14, item 1: lanyard-end corner blocks (A+B1 / C+B2) ---------------
 # Jake's sketch: the four free-standing Top-side bosses at the lanyard end
 # become TWO solid corner blocks, one per side -- "a buttress block the two
@@ -2324,8 +2345,16 @@ def add_ear(root, bodies, p, name, clip_tool=None):
     arm = oriented_stadium_prism(root, (mx, my, arm_z0), axis1, axis2, (0.0, 0.0, 1.0),
                                   seg_len + 2.0 * boss_r, 2.0 * boss_r, arm_z1 - arm_z0)
     arm = clip_to_inner_cavity(root, arm, p, clip_tool)
-    riser = cylinder_solid(root, tx, ty, BOSS_CORE_R, arm_z0, seat_z)
-    arm = combine_join(root, arm, [riser])
+    # pass 16 resumed (item 1): the riser's top band (wherever it overlaps
+    # the real standoff barrel's own clearance depth -- see
+    # STANDOFF_BARREL_* above) needs a real wall around the wider
+    # counterbore _cut_hole cuts there, so it widens from BOSS_CORE_R to
+    # the full boss_r for that band; the rest of the riser stays slim.
+    barrel_z0 = seat_z - STANDOFF_BARREL_DEPTH - STANDOFF_BARREL_MARGIN
+    riser_wide_z0 = max(arm_z0, barrel_z0)
+    riser = cylinder_solid(root, tx, ty, BOSS_CORE_R, arm_z0, riser_wide_z0)
+    riser_wide = cylinder_solid(root, tx, ty, boss_r, riser_wide_z0, seat_z)
+    arm = combine_join(root, arm, [riser, riser_wide])
 
     block = combine_join(root, root_block, [arm])
 
@@ -2337,7 +2366,13 @@ def add_ear(root, bodies, p, name, clip_tool=None):
 
     def _cut_hole(t):
         hole = cylinder_solid(root, tx, ty, p['ear_standoff_hole_dia'] / 2.0, arm_z0 - 0.5, seat_z + 0.5)
-        t = combine_cut(root, t, [hole])
+        # pass 16 resumed (item 1): a second, wider, SHORT counterbore
+        # right under the seat clears the display's real standoff barrel
+        # (see STANDOFF_BARREL_* above) -- the plain M2 hole above still
+        # runs the full height for the screw shaft.
+        barrel_clear = cylinder_solid(root, tx, ty, STANDOFF_BARREL_DIA / 2.0,
+                                       seat_z - STANDOFF_BARREL_DEPTH - STANDOFF_BARREL_MARGIN, seat_z + 0.5)
+        t = combine_cut(root, t, [hole, barrel_clear])
         return _refetch_by_name(root, 'Top') or t
 
     top = _cut_hole(top)
@@ -2436,8 +2471,15 @@ def add_s2_boss(root, bodies, p, clip_tool=None):
     target_core = cylinder_solid(root, tx, ty, BOSS_CORE_R, arm_z0, arm_z1)
     arm = combine_join(root, arm, [target_core])
 
-    if seat_z - arm_z1 > 1e-6:
-        pad = cylinder_solid(root, tx, ty, boss_r, arm_z1, seat_z)
+    # pass 16 resumed (item 1): the wide pad must reach down at least as
+    # far as the real standoff barrel's own clearance depth (see
+    # STANDOFF_BARREL_* above), not just down to arm_z1 -- otherwise the
+    # barrel counterbore _cut_hole cuts below arm_z1 would have nothing
+    # but the slim BOSS_CORE_R core around it.
+    barrel_z0 = seat_z - STANDOFF_BARREL_DEPTH - STANDOFF_BARREL_MARGIN
+    pad_z0 = min(arm_z1, barrel_z0)
+    if seat_z - pad_z0 > 1e-6:
+        pad = cylinder_solid(root, tx, ty, boss_r, pad_z0, seat_z)
         arm = combine_join(root, arm, [pad])
 
     top_in = _refetch_by_name(root, 'Top') or bodies['Top']
@@ -2448,7 +2490,13 @@ def add_s2_boss(root, bodies, p, clip_tool=None):
 
     def _cut_hole(t):
         hole = cylinder_solid(root, tx, ty, p['ear_standoff_hole_dia'] / 2.0, arm_z0 - 0.5, seat_z + 0.5)
-        t = combine_cut(root, t, [hole])
+        # pass 16 resumed (item 1): a second, wider, SHORT counterbore
+        # right under the seat clears the display's real standoff barrel
+        # (see STANDOFF_BARREL_* above) -- the plain M2 hole above still
+        # runs the full height for the screw shaft.
+        barrel_clear = cylinder_solid(root, tx, ty, STANDOFF_BARREL_DIA / 2.0,
+                                       seat_z - STANDOFF_BARREL_DEPTH - STANDOFF_BARREL_MARGIN, seat_z + 0.5)
+        t = combine_cut(root, t, [hole, barrel_clear])
         return _refetch_by_name(root, 'Top') or t
 
     top = _cut_hole(top)
@@ -2674,6 +2722,16 @@ def battery_connector_world_bbox(p):
     the real, live-probed footprint `add_s2_boss`/`verify_s2_boss_
     clearance` build the S2 boss's own hard keep-out against instead."""
     bb = p['battery_connector_bbox']
+    dz = p.get('display_z_offset', 0.0)
+    return bb['x'], bb['y'], (bb['z'][0] + dz, bb['z'][1] + dz)
+
+
+def secondary_conn_world_bbox(p):
+    """World bbox of the display module's second real SMT connector
+    ('PITCH1MM-2PIN-SMT-HORIZONTAL') -- see 'secondary_conn_bbox' in
+    params_current.py for the live-found story. Same display_z_offset
+    convention as battery_connector_world_bbox."""
+    bb = p['secondary_conn_bbox']
     dz = p.get('display_z_offset', 0.0)
     return bb['x'], bb['y'], (bb['z'][0] + dz, bb['z'][1] + dz)
 
@@ -5640,6 +5698,33 @@ def build(app, params):
     bodies = add_s2_boss(root, bodies, params, clip_tool=clip_tool)
     clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
 
+    # pass 16 resumed (item 1, live-found the hard way): an unconditional
+    # keep-out cut of the display's second real SMT connector footprint
+    # ('secondary_conn_bbox' -- see secondary_conn_world_bbox's own
+    # docstring) -- the S3 ear's own arm run passes close enough to it that
+    # a live check_interference(Top, display) found a real 17.8mm^3
+    # overlap here even after the standoff-barrel fix above cleared the
+    # other 8 hits. Same unconditional-cut pattern add_s2_boss already
+    # uses for the battery connector, applied generically to Top (not
+    # tied to which specific feature's material actually reaches this
+    # xy) so it stays correct even if the ear geometry shifts again.
+    scx, scy, scz = secondary_conn_world_bbox(params)
+    secondary_conn_keepout = box_solid(root, scx[0] - 0.5, scx[1] + 0.5, scy[0] - 0.5, scy[1] + 0.5,
+                                        scz[0] - 0.5, scz[1] + 0.5)
+    top_for_conn_cut = _refetch_by_name(root, 'Top') or bodies['Top']
+    bodies['Top'] = combine_cut(root, top_for_conn_cut, [secondary_conn_keepout])
+
+    # pass 16 resumed (item 1): same story, five more small real
+    # component keep-outs (see 'ear_wedge_component_keepouts' above).
+    dz_conn = params.get('display_z_offset', 0.0)
+    wedge_keepout_tools = []
+    for kb in params.get('ear_wedge_component_keepouts', []):
+        wedge_keepout_tools.append(box_solid(root, kb['x'][0], kb['x'][1], kb['y'][0], kb['y'][1],
+                                              kb['z'][0] + dz_conn, kb['z'][1] + dz_conn))
+    if wedge_keepout_tools:
+        top_for_wedge_cut = _refetch_by_name(root, 'Top') or bodies['Top']
+        bodies['Top'] = combine_cut(root, top_for_wedge_cut, wedge_keepout_tools)
+
     bodies = add_buttons(root, bodies, params, clip_tool=clip_tool)
 
     # pass 16 fix (live-found): the new S1 ear's wall-root wedge (D1,
@@ -7362,11 +7447,27 @@ def verify_bottom_openings(bodies_dict, p):
     closes it going forward: for each of A/B1/B2/C/D, probes the pilot
     hole's own axis at 3 depths (just below the collar's own z-band,
     inside it, and just above it -- the exact band a silent replug would
-    hide in) plus, for D only, a matching 3-depth sweep of the counterbore
-    itself (radius counterbore_ABC_dia/2 - 0.3, since a boss's OWN core
-    material legitimately fills the counterbore's outer rim closer to
-    its OD -- only the open BORE at the pilot's own radius is what must
-    stay hollow). Also re-checks the lanyard lug's own cord hole (Bottom,
+    hide in) plus a matching 3-depth sweep of the counterbore itself
+    (radius counterbore_ABC_dia/2 - 0.3, since a boss's OWN core material
+    legitimately fills the counterbore's outer rim closer to its OD --
+    only the open BORE at the pilot's own radius is what must stay
+    hollow).
+
+    RESUMED pass 16 (item 1, live-found the hard way): the counterbore
+    probe's 3rd depth used to be a flat 3.0mm, valid back when only boss
+    D had a counterbore and it was `counterbore_D_h`=4.0mm deep (3.0 sits
+    safely inside that). Pass 16 retired that D-specific deep counterbore
+    -- D1/D2 (now just D) use the SAME shallow `counterbore_ABC_h`
+    (2.2mm) as A/C -- so 3.0mm is now PAST every counterbore's own real
+    depth for all three screws (probing the plain, narrower pilot bore
+    above the counterbore, at the counterbore's own WIDER radius, which
+    is solid there BY DESIGN, not a defect: confirmed live, this false
+    failure hit A/C/D identically). The real replug risk window is where
+    the collar's own z-band (1.95..3.5) OVERLAPS the counterbore's own
+    depth (0..counterbore_ABC_h) -- i.e. 1.95..2.2 -- so the 3rd probe
+    depth is now anchored to `counterbore_ABC_h` (0.1mm short of its own
+    ceiling) instead of a stale flat number, staying correct if that
+    param ever changes again. Also re-checks the lanyard lug's own cord hole (Bottom,
     unrelated mechanism, included here as a second real "is this hole
     actually open" case per the same finding's own broader question) at
     3 depths through its own z-span. All lists empty = pass; this DOES
@@ -7389,10 +7490,11 @@ def verify_bottom_openings(bodies_dict, p):
                if probe_point_solid(bottom, P(cx, cy, z))]
         results[f'{name}_pilot_open'] = (not bad, bad)
     cb_r = p['counterbore_ABC_dia'] / 2.0 - 0.3
+    cb_h = p['counterbore_ABC_h']
     for s in all_case_screws:
         cx, cy = s['xy']
         name = s['name']
-        cb_bad = [z for z in (0.5, 1.9, 3.0)
+        cb_bad = [z for z in (0.5, 1.9, cb_h - 0.1)
                   if probe_point_solid(bottom, P(cx + cb_r, cy, z))]
         results[f'{name}_counterbore_open'] = (not cb_bad, cb_bad)
 
@@ -9037,7 +9139,7 @@ def _find_or_create_doc(app, doc_name):
         if d.name == doc_name:
             d.activate()
             return d
-    doc = app.documents.add(adsk.fusion.DocumentTypes.FusionDesignDocumentType)
+    doc = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
     doc.name = doc_name
     return doc
 
