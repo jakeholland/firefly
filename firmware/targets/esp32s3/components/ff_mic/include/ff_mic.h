@@ -159,6 +159,19 @@ typedef struct {
     uint32_t frames_read;
     uint32_t read_errors;
     uint32_t last_read_age_ms;
+    /* fix/s31-music-idle-drain (2026-09-09) power diagnostic: cumulative
+     * time (ms) this driver has spent actually running (I2S1 channel
+     * enabled) since boot — UNLIKE frames_read/read_errors just above,
+     * this is NEVER reset by ff_mic_start()/_stop(); it keeps
+     * accumulating across every start/stop cycle for the life of the
+     * process. Exists because this exact bug (the mic quietly running
+     * for 6.6 hours straight overnight, nobody watching) had no bench-
+     * visible answer to "how long has the mic actually been on, all
+     * session" until now — see docs/specs/S31-music-swarm.md's
+     * 2026-09-09 amendment. Surfaced on the bench `mic` console line and
+     * the DIAGNOSTICS page's MIC ON-TIME row (both device-only —
+     * ff_shell_set_mic_total_on_ms, app/include/ff_shell.h). */
+    uint32_t total_on_ms;
 } ff_mic_status_t;
 
 ff_mic_status_t ff_mic_status(void);

@@ -134,8 +134,11 @@ ff_apply_warnings(ff-sim-live-setup)
 # comment for the full design writeup. Needs lvgl (LVGL types + the
 # SDL2 headers/libs LV_USE_SDL already links PUBLIC onto lvgl::lvgl —
 # see the top-level CMakeLists.txt), ff-core (ff_idle.h), ff-app
-# (ff_app_state.h), and ff-sim-face-dispatch (ff_build_face_screen,
-# needed only by the .c file — PRIVATE).
+# (ff_app_state.h), ff-shell (fix/s31-music-idle-drain, 2026-09-09 —
+# sim_lifecycle.h now includes ff_shell.h for ff_shell_t/ff_shell_set_
+# screen_awake, a public header dependency so PUBLIC not PRIVATE), and
+# ff-sim-face-dispatch (ff_build_face_screen, needed only by the .c
+# file — PRIVATE).
 # ---------------------------------------------------------------------------
 add_library(ff-sim-lifecycle STATIC
     sim_lifecycle.c
@@ -146,6 +149,7 @@ target_link_libraries(ff-sim-lifecycle
         lvgl::lvgl
         ff-core
         ff-app
+        ff-shell
     PRIVATE
         ff-sim-face-dispatch
 )
@@ -223,6 +227,31 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_idle_render_skip)
 
     add_test(NAME test_idle_render_skip COMMAND test_idle_render_skip)
+
+    # fix/s31-music-idle-drain (2026-09-09): reproduces the overnight
+    # bench bug (Jake's puck, main 51c5d16, left on Music — mic ran and
+    # the screen sat at 90% for 6.6 hours in an ordinary quiet room) in
+    # the sim: a synthetic steady-ambient mic stream with occasional
+    # louder events, Music face, no touch, 5 simulated minutes. Asserts
+    # DIM at 15s / OFF at 30s (S26's own timers, unmodified by loudness),
+    # the mic stops being fed and the swarm's own timer stops
+    # stepping/redrawing at DIM, and total mic-on time stays <= 15s.
+    add_executable(test_ctl_music_idle_drain
+        tests/test_ctl_music_idle_drain.c
+        screenshot.c
+    )
+    target_link_libraries(test_ctl_music_idle_drain PRIVATE
+        ff-sim-ctl-loop
+        ff-sim-ctl
+        ff-shell
+        ff-app-ui
+        ff-stb-image-write
+        lvgl::lvgl
+        unity
+    )
+    ff_apply_warnings(test_ctl_music_idle_drain)
+
+    add_test(NAME test_ctl_music_idle_drain COMMAND test_ctl_music_idle_drain)
 
     # S26 wake-only-touch amendment (docs/specs/S26-device-lifecycle.md
     # "(c) Inactivity -> dim -> screen off", 2026-09-02): a real ctl tap

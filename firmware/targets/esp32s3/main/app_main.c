@@ -1324,16 +1324,25 @@ static void dbgconsole_perf(void *hook_user, ff_dbgconsole_reply_fn reply, void 
 static void dbgconsole_mic_status_line(char *out, size_t cap)
 {
     ff_mic_status_t const st = ff_mic_status();
+    /* fix/s31-music-idle-drain (2026-09-09) power diagnostic — the
+     * cumulative on-time (whole seconds since boot, NEVER reset by a
+     * start/stop cycle — ff_mic_status_t.total_on_ms's own doc comment)
+     * printed on EVERY branch below, present or not: the whole point is
+     * to still show a stuck-on total after the mic has since gone
+     * quiet/absent, same reasoning ff_app_diag_t.mic_on_s's own doc
+     * comment gives for the matching DIAGNOSTICS row. */
+    unsigned const total_on_s = (unsigned)(st.total_on_ms / 1000u);
     if (!st.present) {
-        snprintf(out, cap, "dbg: mic present=0");
+        snprintf(out, cap, "dbg: mic present=0 total_on_s=%u", total_on_s);
         return;
     }
     ff_mic_level_t const lvl = ff_mic_level();
     snprintf(out, cap,
              "dbg: mic present=1 running=%d rate_hz=%u frames=%u errs=%u age_ms=%u rms_dbfs=%.1f peak_dbfs=%.1f "
-             "env_dbfs=%.1f",
+             "env_dbfs=%.1f total_on_s=%u",
              st.running ? 1 : 0, (unsigned)st.sample_rate_hz, (unsigned)st.frames_read, (unsigned)st.read_errors,
-             (unsigned)st.last_read_age_ms, (double)lvl.rms_dbfs, (double)lvl.peak_dbfs, (double)lvl.envelope_dbfs);
+             (unsigned)st.last_read_age_ms, (double)lvl.rms_dbfs, (double)lvl.peak_dbfs, (double)lvl.envelope_dbfs,
+             total_on_s);
 }
 
 /* `mic watch <secs>` — see ff_dbgconsole_mic_fn's own doc comment
@@ -1378,7 +1387,14 @@ static void dbgconsole_mic(void *hook_user, ff_dbgconsole_mic_action_t action, u
                             ff_dbgconsole_reply_fn reply, void *reply_user)
 {
     (void)hook_user;
-    char line[112];
+    /* fix/s31-music-idle-drain (2026-09-09) — widened from 112: the
+     * status line now also carries " total_on_s=<u32>" (see
+     * dbgconsole_mic_status_line's own doc comment), and GCC's
+     * -Wformat-truncation (this repo's build authority, CLAUDE.md) sizes
+     * against the worst-case digit width of every %u/%.1f field, not
+     * this driver's actual (much smaller) practical ranges. 192 clears
+     * that worst case with headroom. */
+    char line[192];
     switch (action) {
     case FF_DBGCONSOLE_MIC_STATUS:
         dbgconsole_mic_status_line(line, sizeof(line));
@@ -2649,6 +2665,14 @@ void app_main(void)
                 ff_mic_level_t const mlvl = ff_mic_level();
                 bool const has_level = mst.present && mst.running && (mst.frames_read > 0u);
                 ff_shell_set_mic_status(&s_shell, mst.present, mst.running, has_level, mlvl.envelope_dbfs);
+                /* fix/s31-music-idle-drain (2026-09-09) power diagnostic
+                 * — the cumulative on-time this bug's own bench evidence
+                 * needed and had none of; see ff_mic_status_t.total_on_ms
+                 * (ff_mic.h) and ff_shell_set_mic_total_on_ms's own doc
+                 * comment. Same 2s cadence as the status push just above
+                 * — this is a slow-changing bench fact, not a live number
+                 * a wearer would watch tick. */
+                ff_shell_set_mic_total_on_ms(&s_shell, mst.total_on_ms);
             }
         }
 
@@ -2682,23 +2706,35 @@ void app_main(void)
         bool const sleep_inhibit = usb_connected || ff_audio_busy() || ff_mic_status().running;
         ff_idle_state_t const idle_state = ff_idle_tick(&s_idle, now_ms, keep_awake, sleep_inhibit);
 
+        /* fix/s31-music-idle-drain (2026-09-09) — push this frame's idle
+         * verdict into the shell so scr_music.c's own per-frame timer can
+         * pause the swarm's stepping/redraw the instant the screen is
+         * not genuinely ACTIVE — see ff_shell_set_screen_awake's own doc
+         * comment (ff_shell.h) for why this lives right here (immediately
+         * after ff_idle_tick, same placement the sim's ff_sim_lifecycle_
+         * pump uses). */
+        ff_shell_set_screen_awake(&s_shell, idle_state == FF_IDLE_STATE_ACTIVE);
+
         /* S31 Music/Swarm — power policy (docs/specs/S31-music-swarm.md,
          * "Power policy": start on entering the face, stop on leaving
          * it, on DIM/OFF, and on the flare takeover; never running while
-         * another face is active). `music_wants_mic` is re-derived every
-         * iteration from facts this file already has in scope this
-         * frame (`v`, `idle_state`) — `s_music_wants_mic_prev` is only
-         * so `ff_mic_start`/`ff_mic_stop` (both idempotent, but each
-         * resets internal filter state on start — see ff_mic.h's own
-         * doc comment) are called exactly on the edge, not every
+         * another face is active). fix/s31-music-idle-drain (2026-09-09):
+         * `music_wants_mic` now comes from the ONE shared, host-tested
+         * predicate `ff_shell_music_wants_mic` (ff_shell.h) instead of
+         * being computed inline here a second time — see that function's
+         * own doc comment for why (the sim's ctl-harness regression test
+         * for THIS bug needs the exact same definition, never a second
+         * hand-copied one that could quietly drift). `s_music_wants_mic_
+         * prev` is only so `ff_mic_start`/`ff_mic_stop` (both idempotent,
+         * but each resets internal filter state on start — see ff_mic.h's
+         * own doc comment) are called exactly on the edge, not every
          * iteration. IMU fallback (`ff_compass_last_accel_board`)
          * engages automatically inside `ff_shell_set_beat_input`
          * whenever `mic_present` reads false — this file just supplies
          * BOTH honestly and lets that function pick, per its own doc
          * comment (ff_shell.h). */
         {
-            bool const music_wants_mic = (v->active_face == FF_APP_FACE_MUSIC) && !v->flare.takeover_active &&
-                                          (idle_state == FF_IDLE_STATE_ACTIVE);
+            bool const music_wants_mic = ff_shell_music_wants_mic(v, idle_state);
             if (music_wants_mic && !s_music_wants_mic_prev) {
                 ff_mic_start();
             } else if (!music_wants_mic && s_music_wants_mic_prev) {

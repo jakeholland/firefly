@@ -599,6 +599,29 @@ persistence (a concurrent, unrelated fix on `fix/diag-scroll-persist`
 owns that file's diagnostics area) — this fix's only settings-adjacent
 test presses the DISPLAY section's CLOCK toggle instead.
 
+**AMENDED 2026-09-09, fix/s31-music-idle-drain — "Music must never
+override the idle policy."** Slice (c)'s own keep-awake list above (AC1:
+"flare takeover pending, power menu open, calibration running") never
+named Music because Music was never supposed to be a keep-awake source
+at all — but S31's own implementation (`docs/specs/S31-music-swarm.md`)
+quietly added one anyway: a loudness-gated branch on `ff_shell_keep_awake`
+that, per bench evidence (Jake's puck, main `51c5d16`, left on Music
+overnight on USB), never actually released in an ordinary room — no DIM
+at 15s, no OFF at 30s, for 6.6 HOURS straight, screen at 90% the whole
+time. Root cause and full writeup: `docs/specs/S31-music-swarm.md`'s own
+"Power policy" > "Keep-awake (REMOVED, 2026-09-09 amendment)" section.
+Fix: that branch is deleted outright. Music now dims at `t_dim` and
+turns off at `t_off` exactly like every other face this slice already
+covers — the launcher's own "does NOT keep awake" precedent (this
+slice's amendments above) extended to a second face, this time by
+REMOVING a special case rather than by never having added one. Slice
+(c)'s own keep-awake source list (AC1) needed no correction: it was
+right all along; S31's own doc is where the stale claim lived and is
+where it has been fixed. Regression coverage: a unit test
+(`fix_s31_keep_awake_false_for_music_face_regardless_of_loudness`,
+`app/tests/test_shell.c`) and a sim ctl-harness reproduction of the
+overnight case itself (`targets/sim/tests/test_ctl_music_idle_drain.c`).
+
 ### (d) `ff_notify` + message banner
 Core `ff_notify` as above (queue depth 4, FIFO, expiry, `dismiss`, `pop`).
 Shell: an incoming MESSAGE / RALLY (paired sender) enqueues a BANNER; the

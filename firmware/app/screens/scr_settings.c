@@ -2330,6 +2330,17 @@ static void settings_build_diag_page(lv_obj_t *parent, ff_app_diag_t const *d)
         snprintf(buf, sizeof(buf), "%.0f dBFS", (double)d->mic_envelope_dbfs);
     }
     y = settings_diag_line(list, y, row_w, "MIC", buf);
+    /* fix/s31-music-idle-drain (2026-09-09) power diagnostic — a
+     * SEPARATE row from MIC just above, deliberately: this bug's own
+     * bench evidence was a mic that ran for 6.6 HOURS while the "MIC"
+     * row above would have honestly read a normal-looking "on"/dBFS the
+     * entire time — nothing about a single point-in-time status read
+     * hints at "and it has been like this all night". Unconditional
+     * (present or not, running or not — d->mic_on_s's own doc comment,
+     * ff_app_state.h) so a stuck-on total from a PRIOR session segment
+     * stays visible even after the mic itself has since gone quiet. */
+    snprintf(buf, sizeof(buf), "%us", (unsigned)d->mic_on_s);
+    y = settings_diag_line(list, y, row_w, "MIC ON-TIME", buf);
     (void)y; /* the final cursor value is only informative */
 
     /* fix/diag-scroll-persist — restore the offset the previous build left

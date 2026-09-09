@@ -943,6 +943,16 @@ typedef struct {
     bool  mic_running;   /* meaningful only when mic_present */
     bool  has_mic_level; /* true iff mic_present && mic_running && at least one frame has been read */
     float mic_envelope_dbfs; /* meaningful only when has_mic_level — the smoothed 300ms attack/release number */
+    /* fix/s31-music-idle-drain (2026-09-09) power diagnostic — the mic's
+     * cumulative on-time since boot, whole seconds. Unconditional (never
+     * gated on mic_present/mic_running the way the three fields above
+     * are): the whole point is to keep showing a stuck-on total even
+     * once the mic itself has since gone quiet/absent, so a session like
+     * this PR's own overnight bug (mic ran 6.6 hours, then eventually
+     * stopped) stays visible on the very next DIAGNOSTICS visit instead
+     * of silently resetting to 0. Same "%us" formatting as UPTIME just
+     * above (scr_settings.c's MIC ON-TIME row). */
+    uint32_t mic_on_s;
 } ff_app_diag_t;
 
 /* -------------------------------------------------------------------
@@ -1507,6 +1517,19 @@ typedef struct {
     uint32_t beat_count;  /* monotonic; ff_shell.c's render key zeroes this entirely — see that function's comment */
     float    bpm_estimate; /* 0 until a second beat has been seen; console-only ("music" command), not rendered on glass */
     uint32_t seed;          /* the swarm PRNG seed currently in effect — FF_SWARM_DEFAULT_SEED unless the bench console's "music seed <n>" changed it */
+    /* fix/s31-music-idle-drain (2026-09-09) — true while the S26 idle
+     * FSM reads ACTIVE (never DIM/OFF/SLEEP); ff_shell.c's render key
+     * zeroes this entirely, same as beat_count/bpm_estimate/loudness
+     * above (it flips on every DIM<->ACTIVE crossing and nothing the
+     * render key drives needs to react to it). scr_music.c's own
+     * per-frame LVGL timer reads this LIVE, straight off the view
+     * pointer it was built with, to pause the swarm's own stepping and
+     * redraw the instant the screen is not genuinely visible — mirrors
+     * the mic's own idle-ACTIVE-only gate (ff_shell_music_wants_mic,
+     * ff_shell.h), which independently stops FEEDING new samples; this
+     * field is the other half, stopping the swarm from still animating
+     * on stale samples while dark. */
+    bool     screen_awake;
 } ff_app_music_t;
 
 typedef struct {

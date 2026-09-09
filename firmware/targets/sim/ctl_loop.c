@@ -322,8 +322,8 @@ void ff_ctl_loop_pump(ff_ctl_loop_ctx_t *ctx)
      * in ONE place, sim_lifecycle.c's ff_sim_lifecycle_pump — see that
      * function's doc comment for the full step-by-step this used to
      * inline here. */
-    (void)ff_sim_lifecycle_pump(&ctx->idle, &ctx->rebuild_pending, &ctx->rebuild_count, now_ms, dirty, shell_wake,
-                                 finger_down, keep_awake, /* sleep_inhibit */ false, &ctx->state);
+    (void)ff_sim_lifecycle_pump(ctx->shell, &ctx->idle, &ctx->rebuild_pending, &ctx->rebuild_count, now_ms, dirty,
+                                 shell_wake, finger_down, keep_awake, /* sleep_inhibit */ false, &ctx->state);
 }
 
 void ff_ctl_loop_close(ff_ctl_loop_ctx_t *ctx)

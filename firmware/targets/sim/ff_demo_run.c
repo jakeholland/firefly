@@ -222,7 +222,7 @@ int ff_run_demo_window(void)
         bool const keep_awake = ff_shell_keep_awake(view, false); /* no blocking touch-cal flow in the sim */
 
         ff_idle_state_t const idle_state =
-            ff_sim_lifecycle_pump(&s_demo_lifecycle.idle, &s_demo_lifecycle.rebuild_pending,
+            ff_sim_lifecycle_pump(&shell, &s_demo_lifecycle.idle, &s_demo_lifecycle.rebuild_pending,
                                    &s_demo_lifecycle.rebuild_count, now_ms, dirty, shell_wake, finger_down,
                                    keep_awake, /* sleep_inhibit */ false, view);
         ff_sim_lifecycle_apply_blank_overlay(idle_state);
