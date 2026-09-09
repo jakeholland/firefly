@@ -1576,6 +1576,10 @@ PEG_COLLAR_RISE = 1.1    # mm; smaller footprint growth for the small (Ø2.7/Ø3
                          # still adds 0.7mm @ dz=0.4mm, comfortably >= the 0.6mm gate
 ROOT_COLLAR_OVERLAP = 0.05  # mm; both collar ends overlap real material instead of exactly touching it (avoids a
                             # coincident-surface tessellation seam -- see add_root_reinforcement's own comment)
+ROOT_COLLAR_TRIM_MARGIN = 0.2  # mm; pass 16 item 1 fix -- how far past the collar's own max radius/z-band the
+                            # pre-join trim cut reaches, so the cut strictly CONTAINS the collar's own profile
+                            # (no sliver of old wedge/pillar face left exactly at the boundary) -- see
+                            # add_root_reinforcement's own comment for the full derivation.
 ROOT_FILLET_REPORT = []  # [(feature_name, method, radius_or_rise), ...] -- reset in build(), read by run()
 # 2026-09-07 pass 13: ALSO append every decision to a small JSON-lines file
 # on disk, one line per add_root_reinforcement call, tagged with the
@@ -1708,6 +1712,59 @@ def add_root_reinforcement(root, body, base_name, feature_name, cx, cy, r, z_roo
     else:
         z_lo, z_hi = z_root - ROOT_COLLAR_OVERLAP, z_root + collar_rise
         r_lo, r_hi = r + collar_rise, r + ROOT_COLLAR_OVERLAP
+
+    # Pass 16, item 1 fix (5 live-found non-manifold mesh edges in the
+    # exported Top.stl, offline_stl_check.py's check_manifold): root-caused
+    # to A/C/D's corner blocks and S1/S3's ear wall-roots specifically --
+    # the only add_root_reinforcement call sites whose underlying pillar is
+    # a WEDGE cross-section (capsule + oriented_box_prism, see
+    # add_single_corner_block/add_ear), not a plain circular post/boss. The
+    # collar itself (cone_frustum_solid) is always a clean solid of
+    # revolution -- manifold on its own, and a manifold union with any OTHER
+    # solid of revolution sharing its own axis (every plain post/boss,
+    # confirmed clean) -- but a wedge's flat box faces are NOT solids of
+    # revolution: over part of the angular range they sit exactly
+    # tangent/coplanar with the collar's own circular sweep, two
+    # independently-correct surfaces meeting along a seam that tessellates
+    # into a sliver (the exact class of defect this function's own
+    # docstring already documents for the earlier fillet-vs-collar case).
+    #
+    # Fix: TRIM first, then join -- cut away whatever solid the body
+    # already has within the collar's own full radial footprint (radius up
+    # to r_hi, expanded by a small ROOT_COLLAR_TRIM_MARGIN so the cut
+    # strictly contains the collar's own profile even at a wedge's own box
+    # corners) BEFORE joining the collar, over EXACTLY the collar's own
+    # z-band (z_lo..z_hi, NOT expanded -- a first version of this fix also
+    # expanded the z-band by the same margin and live-broke EVERY feature,
+    # not just the wedge ones: a minimal plain-cylinder repro showed the
+    # cut's lower face landing BELOW z_lo, i.e. below where the collar
+    # itself starts, opening a genuine margin-height GAP with no collar
+    # material to fill it -- combine_join of two solids that no longer
+    # share ANY real volume is exactly the "silently no-op" failure this
+    # file's own docstrings warn about elsewhere, confirmed live: the
+    # collar never actually joined, the cut alone stood, and EVERY probe
+    # ring came back hollow. Matching the z-band exactly avoids that: the
+    # collar -- a FILLED solid of revolution all the way to the axis (see
+    # cone_frustum_solid's own docstring: its profile has two corners AT
+    # the axis) -- exactly refills the cut's own footprint at every z in
+    # that band with a real 3-D volume (radius 0..r(z), same as the cut's
+    # own radius 0..trim_r, since r(z) <= trim_r throughout by
+    # construction), a true overlap rather than a boundary touch. This
+    # becomes the SOLE surface bridging body/collar over that whole
+    # footprint, with no pre-existing wedge face left inside it to form a
+    # tangent seam. For a plain circular post/boss (every OTHER call
+    # site), the pillar already has no material beyond its own radius r
+    # at z_root, well inside trim_r, so this cut removes nothing real --
+    # confirmed live (see the README's pass-16 section) with the minimal
+    # repro above once the z-band bug was fixed: their own already-clean
+    # manifold/root_fillets gates are unaffected by construction, not just
+    # by test.
+    trim_r = max(r_lo, r_hi) + ROOT_COLLAR_TRIM_MARGIN
+    trim_z0, trim_z1 = min(z_lo, z_hi), max(z_lo, z_hi)
+    trim_cut = cylinder_solid(root, cx, cy, trim_r, trim_z0, trim_z1)
+    body = combine_cut(root, body, [trim_cut])
+    body = _refetch_by_name(root, base_name) or body
+
     collar = cone_frustum_solid(root, cx, cy, r_lo, r_hi, z_lo, z_hi)
     body = combine_join(root, body, [collar])
     body = dedupe_body(root, body, base_name)
@@ -1837,6 +1894,24 @@ STANDOFF_BARREL_MARGIN = 0.30  # mm -- extra depth clearance below the barrel's 
 CORNER_BLOCK_PAD = 0.0             # mm added to boss_dia/2 -- see the module comment above: 0 keeps the
                                     # capsule/wedge at exactly the old proven-safe boss radius; verify_root_
                                     # fillets is satisfied by the collar (added unconditionally below), not this.
+CORNER_BLOCK_WEDGE_OVERLAP = 0.5   # mm -- pass 16 item 1 fix (live-found, minimal repro): the wedge's own
+                                    # near (axis2=boss_r) face is only TANGENT to the capsule cylinder at a
+                                    # single point (axis1=0) -- the box's flat face and the circle's curve
+                                    # touch along one line, not a real 2-D area, over the wedge's own full
+                                    # z-height (confirmed by a from-scratch minimal capsule+wedge repro, NO
+                                    # collar involved at all: exactly 1 non-manifold edge, at that tangent
+                                    # line, present even before add_root_reinforcement ever runs). This is
+                                    # the real root cause of most of the 5 live-found non-manifold edges
+                                    # (A/C/D's corner blocks + S1/S3's ear wall-roots -- every add_single_
+                                    # corner_block/add_ear wedge, the only wedge-shaped call sites), not
+                                    # (only) the collar-vs-wedge seam the original investigation assumed.
+                                    # Fixed by growing the wedge's own near edge OVERLAP mm PAST the tangent
+                                    # point (into the capsule's own interior), while holding the FAR edge
+                                    # (the wall-ward reach, boss_r + CORNER_BLOCK_REACH) fixed -- confirmed
+                                    # live: 0.5mm converts the single-point tangency into a real, non-trivial
+                                    # 2-D overlap lens, and the same from-scratch repro (with vs without the
+                                    # add_root_reinforcement collar) comes back with 0 non-manifold edges
+                                    # either way once this is applied.
 CORNER_BLOCK_REACH = 10.0          # mm -- deliberately oversized outward-wedge reach: clipped by
                                     # clip_to_inner_cavity (the true shell) and CORNER_BLOCK_RING_CLEARANCE below,
                                     # so the block's REAL reach is whichever boundary is actually closer.
@@ -2251,11 +2326,17 @@ def add_single_corner_block(root, bodies, p, screw, clip_tool=None):
     z1 = _ear_root_z1(p, cx, cy, boss_r + CORNER_BLOCK_REACH, z1_nominal)
 
     capsule = cylinder_solid(root, cx, cy, boss_r, z0, z1)
-    wedge_offset = boss_r + CORNER_BLOCK_REACH / 2.0
+    # pass 16 item 1 fix: wedge_len/wedge_offset grow the wedge's own NEAR
+    # edge CORNER_BLOCK_WEDGE_OVERLAP mm past the tangent point with the
+    # capsule (holding the FAR edge, boss_r + CORNER_BLOCK_REACH, fixed) --
+    # see that constant's own comment for the live-found non-manifold
+    # tangent-line defect this closes.
+    wedge_len = CORNER_BLOCK_REACH + CORNER_BLOCK_WEDGE_OVERLAP
+    wedge_offset = boss_r + CORNER_BLOCK_REACH / 2.0 - CORNER_BLOCK_WEDGE_OVERLAP / 2.0
     wedge_center = (cx + axis2[0] * wedge_offset, cy + axis2[1] * wedge_offset, z0)
     wedge = oriented_box_prism(
         root, wedge_center, axis1, axis2, (0.0, 0.0, 1.0),
-        2.0 * boss_r, CORNER_BLOCK_REACH, z1 - z0)
+        2.0 * boss_r, wedge_len, z1 - z0)
     wide = combine_join(root, capsule, [wedge])
     wide = clip_to_inner_cavity(root, wide, p, clip_tool)
 
@@ -2349,10 +2430,14 @@ def add_ear(root, bodies, p, name, clip_tool=None):
     # (1) wall-anchored root (capped, no pilot)
     axis1w, axis2w = _wall_outward_axes(p, rx, ry)
     root_capsule = cylinder_solid(root, rx, ry, boss_r, z0, root_z1)
-    wedge_offset = boss_r + CORNER_BLOCK_REACH / 2.0
+    # pass 16 item 1 fix: see add_single_corner_block's identical comment
+    # and CORNER_BLOCK_WEDGE_OVERLAP's own docstring -- same tangent-line
+    # non-manifold defect, same fix, at the ear's own wall-root wedge.
+    wedge_len = CORNER_BLOCK_REACH + CORNER_BLOCK_WEDGE_OVERLAP
+    wedge_offset = boss_r + CORNER_BLOCK_REACH / 2.0 - CORNER_BLOCK_WEDGE_OVERLAP / 2.0
     wedge_center = (rx + axis2w[0] * wedge_offset, ry + axis2w[1] * wedge_offset, z0)
     wedge = oriented_box_prism(root, wedge_center, axis1w, axis2w, (0.0, 0.0, 1.0),
-                                2.0 * boss_r, CORNER_BLOCK_REACH, root_z1 - z0)
+                                2.0 * boss_r, wedge_len, root_z1 - z0)
     root_wide = combine_join(root, root_capsule, [wedge])
     root_wide = clip_to_inner_cavity(root, root_wide, p, clip_tool)
     ring_limit_r = _corner_block_ring_limit_r(p, rx, ry)
