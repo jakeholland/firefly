@@ -196,19 +196,77 @@ PARAMS = {
     # pass 16, item A/B (candidate 5, owner's chosen display mount):
     # screw D (0,60), its Screen Plate post, and its deeper 4.0mm
     # counterbore are all RETIRED -- there is no Screen Plate any more.
-    # D1/D2 sit at the two EARS' own wall roots, ABSOLUTE mm, from the
-    # mechanical review's own live-recomputed rho_from_spine numbers
-    # (review-mechanical.md, S3.1): (+-19, 64) reaches the true wall by
-    # 3.42mm (trim) / 4.40mm (current) -- comfortably inside the proven
-    # CORNER_BLOCK_REACH=10mm wedge. Same M2x12 pilot spec as A/C
+    # D1/D2 ORIGINALLY sat at the two EARS' own wall roots (+-19, 64) --
+    # see git history on this branch. Same M2x12 pilot spec as A/C
     # (top_pilot_dia/top_pilot_z, unchanged) and the SAME shallow
     # counterbore_ABC_dia/h (2.2mm) -- there is no plate post any more to
-    # need a deeper counterbore, so D1/D2's Bottom-side boss is now
-    # IDENTICAL in construction to A/C's (see add_case_boss, which no
-    # longer has an is_D branch).
+    # need a deeper counterbore, so D1/D2's Bottom-side boss is IDENTICAL
+    # in construction to A/C's (see add_case_boss, which has no is_D
+    # branch).
+    #
+    # RELOCATED pass 16 (resumed, owner call on Finding 1): at (+-19, 64)
+    # the D1 wall-root pillar was found, live, to be a genuine ~304mm^3
+    # geometric enclosure with the Home button's own real cap/shaft body
+    # -- the button's real solid completely fills the exact wall
+    # cross-section `verify_post_walls` requires around the pilot, at
+    # every sampled angle/z within the pilot's own engagement depth (see
+    # README's pass-16 Finding 1 for the full live-probe trail). No
+    # keepout radius/z-band can satisfy both the pilot-wall requirement
+    # and the button's real geometry at that xy. Owner decision: D1/D2
+    # LEAVE the ear roots (the ears keep their own independent wall
+    # anchor at the old (+-19, 64) point -- see 'ears', below -- now with
+    # no pilot through it).
+    #
+    # FALLBACK TAKEN (this pass): the owner's own first-choice relocation
+    # -- two screws NORTH of the ears, hugging the dome wall around
+    # (+-14, 71) -- was searched exhaustively, pure-Python, BEFORE any
+    # Fusion build (per the brief's own instruction), against every
+    # required clearance: real wall material behind the boss
+    # (`true_wall_distance_along_ray`), the FPC relief pocket, the ears'
+    # own wall-root/standoff footprints, and both switch housing bboxes.
+    # That search caught a REAL constraint the brief's own clearance list
+    # didn't name explicitly: `add_lip_anchor_reliefs`' own
+    # `MIN_RELIEF_CLEARANCE` (every case screw needs a clean relief cut
+    # through the lip/anchor ring, which independently requires >=1.6mm
+    # of real wall skin at the boss's own OD, not just the 0.6mm
+    # `verify_post_walls` alone would ask for) -- found the HARD WAY, by
+    # a live `add_lip_anchor_reliefs` assertion failure on the first
+    # build attempt at the brief's own (+-14, 71) target. Re-running the
+    # full joint search (both variants) with the CORRECT constraint:
+    # north of the ears (y >= 64, respecting every clearance above)
+    # has ZERO feasible positions on the east/S3 side at all, and the
+    # west/S1 side's own best joint position ((-12.6, 71.5)) clears by
+    # only ~0.015mm -- not a real, buildable margin, effectively also
+    # zero. Per the brief's own instruction ("If NO position on either
+    # side satisfies every clearance, fall back to ONE dome-end screw D
+    # ... report why, do not leave an interference"): D1/D2 are RETIRED,
+    # replaced by a SINGLE screw 'D', keeping the list name 'screws_D12'
+    # unchanged (every gate/helper in firefly_case.py already iterates
+    # this list generically -- see the README's pass-16 section for the
+    # full list of call sites confirmed to need no further change beyond
+    # this one now holding a single entry).
+    #
+    # 'D' position: the literal dome TIP (the true apex, y approaching
+    # spine_b + outer_radius) turns out to have the SAME failure mode --
+    # the same search at x=0, y=73-80 (past the FPC pocket) finds
+    # `MIN_RELIEF_CLEARANCE` goes negative well before the FPC pocket's
+    # own 0.5mm clearance is satisfied, for the same underlying reason
+    # (the profile's own top chamfer starts curving the wall inward well
+    # before the true apex) -- so "the tip" cannot mean the literal apex
+    # either. The real thickest-wall margin near the north end, live-
+    # searched (both variants) over the full dome-cap region, is on the
+    # EAST FLANK south of the FPC pocket and clear of both buttons (which
+    # are west-only) and both ears: (18.0, 58.0) -- `MIN_RELIEF_CLEARANCE`
+    # margin saturates at its own cap (both variants), `verify_post_
+    # walls`' shell-skin margin >=5.3mm (trim) / 5.8mm (current), >=12mm
+    # to the FPC pocket, >=27mm to either switch housing bbox, and 3.8mm
+    # (trim/current, xy-identical) to the nearer ear (S3) -- comfortably
+    # real margins, not a razor's edge like the north-of-the-ears
+    # attempt. Also confirmed clear of the comms stack (`bay.stack3`,
+    # y <= -1.5), the GPS patch/battery (`bay.gps_patch`/`bay.battery`,
+    # y <= 31), and screws A/C (y=-8) -- no XY overlap with any of them.
     'screws_D12': [
-        {'name': 'D1', 'xy': (-19.0, 64.0)},
-        {'name': 'D2', 'xy': (19.0, 64.0)},
+        {'name': 'D', 'xy': (18.0, 58.0)},
     ],
     'usb_shell_z': 14.35,             # screw tip must stay <= 14.1
 
@@ -226,23 +284,59 @@ PARAMS = {
     #     version overlapped the battery connector's own clearance window
     #     by 3.2mm in Y and fully in Z) reaching to S2 -- add_s2_boss().
     #   - `ear_seat_offset`: each seat is printed this much SHORT of the
-    #     display module's own real standoff plane (taken as the OLD
-    #     Screen Plate's own top face, `plate_z[1]` -- the value this
-    #     design already carried for exactly this purpose across 9 prior
-    #     passes -- 14.1 current / 17.1 trim, see params_trim.py's own
-    #     comment) so the WINDOW SEAT, not S1/S2/S3, takes the assembly
-    #     preload (mech review F5's #1 recommendation) -- a 0.3-0.5mm
-    #     closed-cell foam disc goes under each standoff at assembly to
-    #     take up the rest of the gap (`ear_foam_disc`, BOM note only,
-    #     not modeled).
-    'ear_seat_z': 14.1 - 0.25,   # == old plate_z[1] - ear_seat_offset (current); trim overrides below
+    #     display module's own real standoff plane.
+    #
+    #     RE-DERIVED pass 16 (resumed, owner call on Finding 2): the
+    #     original number above (`plate_z[1]`, inherited unmodified from
+    #     the old Screen Plate across 9 prior passes) was live-probed by
+    #     `verify_seat_heights` to be 4.9mm off the display module's own
+    #     REAL standoff plane -- the plate had its own separate standoff
+    #     posts bridging up to the board, so its top face was never
+    #     actually required to equal this plane; the ears/S2-boss seat
+    #     DIRECTLY under the board's own standoffs, so they must. Owner
+    #     decision: stop inheriting `plate_z[1]`, derive `ear_seat_z`
+    #     straight from a live measurement of the real standoff plane
+    #     instead.
+    #
+    #     Live-measured (this pass): `insert_display_pcba()` + a
+    #     `find_ceiling_z_at` downward scan (0.002mm step, the same
+    #     technique `verify_seat_heights` uses) directly above S1/S2/S3 --
+    #     all three read IDENTICALLY, both variants (confirming a flat
+    #     standoff plane, as the old comment assumed): **18.80mm current /
+    #     21.80mm trim** (world frame; exactly 3.00mm apart, matching
+    #     `_DZ_TOP` -- the plane is a fixed property of the display module
+    #     itself, shifted by the same amount as everything else tied to
+    #     it). This supersedes the coarser 21.75mm figure Finding 2's
+    #     own write-up quoted (a 0.1mm-step scan starting from a
+    #     seat_z-relative offset landed one grid point low; the finer
+    #     0.002mm scan used here, run from a fixed absolute window, is
+    #     the trustworthy number).
+    #
+    #     `ear_seat_z` = standoff plane - `ear_seat_offset` (unchanged
+    #     0.25mm convention, mech review F5): 18.80 - 0.25 = 18.55
+    #     current; trim overrides below. Moving the seat up ~4.7mm (from
+    #     the old 13.85/16.85 numbers) also moves the ears/S2-boss arm up
+    #     by the same amount (`ear_arm_thickness` is unchanged, so the
+    #     arm's own z-band -- and therefore `_ear_root_z1`'s/
+    #     `PILOT_PROTECT_MARGIN`'s downstream caps -- shift with it; see
+    #     firefly_case.py's own re-run of those checks this pass).
+    'ear_seat_z': 18.80 - 0.25,   # live-measured standoff plane - ear_seat_offset (current); trim overrides below
     'ear_seat_offset': 0.25,
     'ear_foam_disc_mm': (0.3, 0.5),   # BOM note only -- not modeled in Fusion
     'ear_standoff_hole_dia': 2.4,     # M2 clearance -- M2x4 screwed UP from below into the display's own SMT standoff
     'ear_arm_thickness': 3.0,         # mm, the wall-to-standoff arm's own z-thickness below its seat face
+    # pass 16 (resumed, Finding 1 fix): each ear's own wall-root anchor is
+    # now DECOUPLED from the D1/D2 screws (which moved north, see
+    # 'screws_D12' above) -- 'root_xy' keeps the ear physically anchored
+    # at the SAME point the old D1/D2 screws used to sit ((+-19, 64), the
+    # mechanical review's own live-recomputed rho_from_spine numbers,
+    # review-mechanical.md S3.1: reaches the true wall by 3.42mm trim /
+    # 4.40mm current, comfortably inside CORNER_BLOCK_REACH=10mm) -- only
+    # the SCREW moved, not the ear's own structural attachment point.
+    # add_ear() no longer cuts an M2x12 pilot here at all.
     'ears': {
-        'S1': {'root': 'D1', 'target': 'S1'},
-        'S3': {'root': 'D2', 'target': 'S3'},
+        'S1': {'root_xy': (-19.0, 64.0), 'target': 'S1'},
+        'S3': {'root_xy': (19.0, 64.0), 'target': 'S3'},
     },
     's2_boss': {'target': 'S2', 'wall_side': 'west'},
     # mech review F6: keep the S2 boss's own arm a full `s2_battery_clear`

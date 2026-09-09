@@ -163,13 +163,16 @@ PARAMS['display_z_offset'] = _DZ_TOP
 PARAMS['fpc_relief'] = dict(PARAMS['fpc_relief'])
 PARAMS['fpc_relief']['z'] = tuple(z + _DZ_TOP for z in PARAMS['fpc_relief']['z'])
 
-# pass 16: 'ear_seat_z' (== the old plate_z[1], the display's own real
-# standoff plane -- see params_current.py's own comment on this param)
-# rides up with the display/Top ceiling by the SAME _DZ_TOP every other
-# display-relative z value on this list already does -- the ears/S2 boss
-# are display-mount hardware exactly like the old Screen Plate they
-# replace, and the display module itself shifts by this same amount
-# (`display_z_offset`, above).
+# pass 16 (resumed, Finding 2 re-derivation -- see params_current.py's own
+# comment on this param for the full story): 'ear_seat_z' rides up with
+# the display/Top ceiling by the SAME _DZ_TOP every other display-relative
+# z value on this list already does -- the ears/S2 boss are display-mount
+# hardware exactly like the old Screen Plate they replace, and the
+# display module itself shifts by this same amount (`display_z_offset`,
+# above). Cross-checked: 18.55 (current, live-measured) + 3.0 = 21.55,
+# which independently matches trim's OWN live-measured standoff plane
+# (21.80) minus `ear_seat_offset` (0.25) exactly -- the plane really is a
+# fixed property of the display module, shifted uniformly by _DZ_TOP.
 PARAMS['ear_seat_z'] = PARAMS['ear_seat_z'] + _DZ_TOP
 
 PARAMS['usb_receptacle'] = dict(PARAMS['usb_receptacle'])
