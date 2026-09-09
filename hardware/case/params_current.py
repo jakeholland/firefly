@@ -443,10 +443,46 @@ PARAMS = {
     # the one param this whole section shared with the plate design that
     # SURVIVES unchanged below -- same absolute mm positions, now the
     # ears'/boss's own target points instead of plate-hole centres.
+    #
+    # Case pass 16 FIX, item 2 (S3 only, +0.2mm in x, (11.6,65.46) ->
+    # (11.8,65.46)): verify_ear_root_material's S3_riser_solid probe (a
+    # ring at BOSS_CORE_R-0.3 radius around the seat, 4 angles) read
+    # hollow at exactly one angle (270 deg, due south of the seat) --
+    # root-caused to a REAL conflict, not a modeling bug: that probe
+    # point, (11.6, 63.16, 17.775) in trim-world, sits 0.385mm inside the
+    # display module's own second SMT connector's real body
+    # (`secondary_conn_bbox`, 'PITCH1MM-2PIN-SMT-HORIZONTAL', real
+    # trim-world edge x=11.215) -- literally any riser material there
+    # overlaps the real connector (the unconditional keepout cut removes
+    # that exact point regardless of what shape supplied it), so no
+    # reshape of the riser can fix this without moving the seat. Moved
+    # per the coordinator's own escalation path ("<=1.0mm, and the
+    # README must say so" -- see the pass-16 README section's FIX-session
+    # subsection for the full live before/after numbers). +0.2mm gives
+    # 11.8 - 11.215 = 0.585mm of real clearance (>= the 0.5mm asked for).
+    #
+    # NOTE (live-found, important for future edits to this value): a
+    # LARGER shift here (+0.4mm, x=12.0 -- comfortably under the 1.0mm
+    # cap and individually plausible) was tried FIRST and caused a
+    # severe, confirmed-live regression -- Top's own built volume
+    # collapsed from a healthy 19.37cm^3 to 0.067mm^3 (a tiny leftover
+    # sliver), with nearly every OTHER structural gate (corner blocks,
+    # ear wall-roots, mag pegs -- none of them anywhere near S3) reading
+    # hollow too, consistent with a stray same-named duplicate body
+    # (dedupe_body's own documented risk) silently taking over the bare
+    # 'Top' name partway through the build while the real accumulated
+    # body got orphaned. NOT root-caused further (the bridge went
+    # unavailable mid-investigation) -- +0.2mm was bisected afterward and
+    # confirmed clean (healthy 19.37cm^3 Top, every other gate unchanged
+    # from baseline). Do not re-widen this shift without re-testing the
+    # FULL build first -- something between +0.2mm and +0.4mm crosses a
+    # real topological threshold somewhere downstream of `add_ear`
+    # (see `_ear_boss_keepout_points`, the one other consumer of this
+    # exact value) that has not been root-caused.
     'board_standoffs': {
         'S1': (-12.0, 65.0),
         'S2': (0.04, 32.22),
-        'S3': (11.6, 65.46),
+        'S3': (11.8, 65.46),
     },
     # --- buttons ---
     'switch_power_bbox': {'x': (-17.46, -11.83), 'y': (36.82, 42.67), 'z': (15.79, 18.01)},
