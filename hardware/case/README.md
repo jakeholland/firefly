@@ -5015,3 +5015,83 @@ paths, coupon export paths, and screenshot paths. A clean run ends with
 `assert_export_body_size` runs silently inside `export_stls`/`export_
 coupons` at export time — no line unless it fails (in which case it
 raises, same as every other `verify()` assertion).
+
+## 2026-09-09: headless build123d port, phase 1 (parallel effort, does not touch this file's own Fusion generator)
+
+Per the coordinator's own spike (`docs/hardware/cad-tooling-spike.md`,
+branch `spike/headless-cad`, draft PR #250 — timing table, ~19% Fusion-
+quirk classification, a working shell/lip/corner-block slice) and the
+owner's "yes, start the port now in parallel" decision, a new package,
+`hardware/case/gen/` (headless [build123d](https://github.com/gumyr/build123d),
+OpenCascade under the hood), ports `firefly_case.py` feature-by-feature.
+**This file (`firefly_case.py`) and its own Fusion-driven workflow above
+are completely unchanged by this effort** — `gen/` is a parallel,
+independent package; nothing here required editing the generator this
+README otherwise documents. Full details, every function's port status,
+and the phase 2/3 plan: `docs/hardware/headless-port-plan.md`. Regression
+numbers against the case-pass16 branch's own exports (the newest
+generator; not yet merged to `main`, see below):
+`docs/hardware/headless-port-parity.md`.
+
+**Ported this phase:** Top/Bottom shell (pill outline, R8 ceiling fillet,
+2mm wall, both variants), the window bore + print-orientation chamfer +
+glass-seat chamfer, the pass-16 continuous-taper lip/anchor ring, case
+screws A/C/D (Bottom boss + counterbore, Top single-pilot corner block,
+the 45-degree root-reinforcement collar on all 6 boss/block roots), the
+USB-C tunnel + liner, the FPC relief pocket, and the lanyard lug. STEP
+import + empirically-derived placement of the display module
+(`gen/components.py`) reproduces the documented standoff-plane numbers
+(18.80mm current / 21.80mm trim) exactly from the real STEP geometry —
+see that module's own docstring for the derivation. Gates ported:
+all-pairs interference, pilot-wall/root-fillet/corner-block/bottom-
+opening probes against live OCC solids, and the lip-ring-profile +
+manifold/body-count/overhang scan against the exported STL (the latter
+via `tools/offline_stl_check.py`, reused unchanged — it already needed
+no porting, being pure Python). All gates pass clean, both variants,
+from a from-scratch rebuild. Cycle time (build + gates + export +
+render, trim, warm venv): under 8 seconds, against Jake's own observed
+5-10 minutes per Fusion-MCP rebuild+gate cycle.
+
+**Source-of-truth note:** this port's own architecture (A/C/D as
+single-pilot corner blocks, D relocated to (18, 58), ears/S2-boss
+deferred to phase 2) matches the **case-pass16** branch's own
+"candidate 5" display-mount design, not this file's own pre-pass-16
+state (paired B1/B2 corner blocks, a Screen Plate + P1-P4 posts, D at
+(0, 60)) — pass 16 has not merged to `main` yet. `params_current.py`/
+`params_trim.py`/`tools/offline_stl_check.py` in this repo were pulled
+forward from `case-pass16` (pure data + a pure-Python tool, neither
+Fusion-dependent) so `gen/params.py` imports them unchanged, per the
+port brief's own instruction to reuse the existing params files where
+possible.
+
+**Component models:** `hardware/models/` now holds the STEP exports
+this port's `gen/components.py` imports directly (no git-lfs configured
+in this repo, so these are committed as plain blobs): `ESP32-S3-Touch-
+LCD-1_46.step` (14.8 MB, display module with cover), `XIAO-ESP32S3_v3.step`
+(2.9 MB), `L76K_GNSS_for_XIAO_v1.step` (3.5 MB), `Wio-SX1262_for_XIAO_V2.step`
+(1.5 MB) — all staged for phase 2's comms-stack port. `GY-273_compass_
+module.f3d` (1.6 MB) is also included for reference, but is a Fusion
+archive, not importable headlessly; the port brief's own instruction is
+to model the compass module as a plain box from params instead (phase 2).
+
+**Not ported this phase** (see `docs/hardware/headless-port-plan.md`
+for the full 217-function breakdown): the S1/S3 ears + S2 boss (display
+mount proper), buttons, comms stack/GPS frame/battery bay, the compass
+module, antenna channels, and the wordmark deboss — each is a real,
+scoped phase-2/3 item, not an oversight.
+
+### How to run the headless build
+
+```
+cd hardware/case
+uv venv gen/.venv --python 3.12 && source gen/.venv/bin/activate
+uv pip install build123d trimesh matplotlib numpy rtree pytest
+python3 -m gen.cli build --variant trim --gates --export --render
+python3 -m pytest gen/tests -v   # gates-as-tests + parity vs. the case-pass16 goldens
+```
+
+`gen/.venv` and `gen/out/` are git-ignored (see `gen/.gitignore`) —
+recreate the venv with the commands above; `gen/out/` and
+`renders/gen/` are scratch build output, not committed exports (this
+port does not yet touch `export/<variant>/`, the Fusion generator's own
+canonical export directory / regression-golden location).
