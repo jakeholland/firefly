@@ -1634,7 +1634,8 @@ def cone_frustum_solid(root, cx, cy, r_lo, r_hi, z_lo, z_hi):
 
 
 def add_root_reinforcement(root, body, base_name, feature_name, cx, cy, r, z_root, direction,
-                            fillet_r=ROOT_FILLET_R, collar_rise=ROOT_COLLAR_RISE, tol=0.15):
+                            fillet_r=ROOT_FILLET_R, collar_rise=ROOT_COLLAR_RISE, tol=0.15,
+                            needs_trim=False):
     """Reinforce a post/boss root against snap-off (pass 13, item 1).
 
     INVESTIGATED LIVE (this is the "investigate why" the task asked for,
@@ -1729,41 +1730,56 @@ def add_root_reinforcement(root, body, base_name, feature_name, cx, cy, r, z_roo
     # into a sliver (the exact class of defect this function's own
     # docstring already documents for the earlier fillet-vs-collar case).
     #
-    # Fix: TRIM first, then join -- cut away whatever solid the body
-    # already has within the collar's own full radial footprint (radius up
-    # to r_hi, expanded by a small ROOT_COLLAR_TRIM_MARGIN so the cut
-    # strictly contains the collar's own profile even at a wedge's own box
-    # corners) BEFORE joining the collar, over EXACTLY the collar's own
-    # z-band (z_lo..z_hi, NOT expanded -- a first version of this fix also
-    # expanded the z-band by the same margin and live-broke EVERY feature,
-    # not just the wedge ones: a minimal plain-cylinder repro showed the
-    # cut's lower face landing BELOW z_lo, i.e. below where the collar
-    # itself starts, opening a genuine margin-height GAP with no collar
-    # material to fill it -- combine_join of two solids that no longer
-    # share ANY real volume is exactly the "silently no-op" failure this
-    # file's own docstrings warn about elsewhere, confirmed live: the
-    # collar never actually joined, the cut alone stood, and EVERY probe
-    # ring came back hollow. Matching the z-band exactly avoids that: the
-    # collar -- a FILLED solid of revolution all the way to the axis (see
-    # cone_frustum_solid's own docstring: its profile has two corners AT
-    # the axis) -- exactly refills the cut's own footprint at every z in
-    # that band with a real 3-D volume (radius 0..r(z), same as the cut's
-    # own radius 0..trim_r, since r(z) <= trim_r throughout by
-    # construction), a true overlap rather than a boundary touch. This
-    # becomes the SOLE surface bridging body/collar over that whole
-    # footprint, with no pre-existing wedge face left inside it to form a
-    # tangent seam. For a plain circular post/boss (every OTHER call
-    # site), the pillar already has no material beyond its own radius r
-    # at z_root, well inside trim_r, so this cut removes nothing real --
-    # confirmed live (see the README's pass-16 section) with the minimal
-    # repro above once the z-band bug was fixed: their own already-clean
-    # manifold/root_fillets gates are unaffected by construction, not just
-    # by test.
-    trim_r = max(r_lo, r_hi) + ROOT_COLLAR_TRIM_MARGIN
-    trim_z0, trim_z1 = min(z_lo, z_hi), max(z_lo, z_hi)
-    trim_cut = cylinder_solid(root, cx, cy, trim_r, trim_z0, trim_z1)
-    body = combine_cut(root, body, [trim_cut])
-    body = _refetch_by_name(root, base_name) or body
+    # Fix (item 1, WEDGE call sites only -- needs_trim=True): TRIM first,
+    # then join -- cut away whatever solid the body already has within the
+    # collar's own full radial footprint (radius up to r_hi, expanded by a
+    # small ROOT_COLLAR_TRIM_MARGIN so the cut strictly contains the
+    # collar's own profile even at a wedge's own box corners) BEFORE
+    # joining the collar, over EXACTLY the collar's own z-band (z_lo..z_hi,
+    # NOT expanded -- a first version of this fix also expanded the z-band
+    # and live-broke EVERY feature, not just the wedge ones: a minimal
+    # plain-cylinder repro showed the cut's lower face landing BELOW z_lo,
+    # opening a genuine margin-height gap with no collar material to fill
+    # it, so the collar join silently no-opped). The collar -- a FILLED
+    # solid of revolution all the way to the axis (see cone_frustum_
+    # solid's own docstring) -- exactly refills the cut's own footprint at
+    # every z in that band (radius 0..r(z) <= trim_r throughout), a true
+    # overlap rather than a boundary touch, becoming the SOLE surface
+    # bridging body/collar with no pre-existing wedge face left inside it
+    # to form a tangent seam.
+    #
+    # needs_trim defaults to False -- NOT a safe universal no-op as a
+    # first version of this fix assumed. Live-found (this pass, AFTER
+    # that assumption already shipped): for a SHORT, nearly-isolated
+    # member whose own height is comparable to the collar's own z-band
+    # (collar_rise + overlap) -- the compass mag pegs/pads (a bare
+    # PEG_COLLAR_RISE=1.1mm-tall collar on a peg barely taller than that)
+    # and this coupon's own wall-root capsule (see build_mount_coupon_
+    # point) -- the trim cut can remove the member's ENTIRE cross-section
+    # over its own z-band, genuinely SEVERING it into two disconnected
+    # pieces with no alternate connection path (unlike every real post/
+    # boss/ear/corner-block, grown from an already-large, continuously-
+    # connected Top/Bottom shell that stays connected via its own walls
+    # around any local cut). `combine_cut`'s own return value then tracks
+    # only ONE of the resulting disjoint pieces, so the collar's later
+    # join silently reconnects nothing -- confirmed live: mag_peg/mag_pad
+    # lost their own upper shaft material this way once needs_trim
+    # defaulted to True everywhere (verify_mag_pocket's own `pegs_have_
+    # material`/`pads_have_material` went red -- a regression THIS pass
+    # introduced and then caught via the full gate sweep, not a
+    # pre-existing issue). Scoped instead to the 2 call sites that are
+    # actually wedge-shaped (add_single_corner_block, add_ear's own
+    # wall-root) -- see their own call sites for `needs_trim=True`; every
+    # other call site (plain bosses/posts, ear/S2-boss SEAT collars, mag
+    # pegs/pads, this coupon's own wall-root) uses the plain, original,
+    # trim-free join, which was never the source of any non-manifold
+    # defect in the first place (only the wedge cross-section was).
+    if needs_trim:
+        trim_r = max(r_lo, r_hi) + ROOT_COLLAR_TRIM_MARGIN
+        trim_z0, trim_z1 = min(z_lo, z_hi), max(z_lo, z_hi)
+        trim_cut = cylinder_solid(root, cx, cy, trim_r, trim_z0, trim_z1)
+        body = combine_cut(root, body, [trim_cut])
+        body = _refetch_by_name(root, base_name) or body
 
     collar = cone_frustum_solid(root, cx, cy, r_lo, r_hi, z_lo, z_hi)
     body = combine_join(root, body, [collar])
@@ -2368,7 +2384,7 @@ def add_single_corner_block(root, bodies, p, screw, clip_tool=None):
 
     top = _cut_pilot(top)
     top = add_root_reinforcement(root, top, 'Top', f'corner_block_{screw["name"]}', cx, cy, boss_r,
-                                  z1, direction='up')
+                                  z1, direction='up', needs_trim=True)
     top = _refetch_by_name(root, 'Top') or top
     # pass-15 item 8 lesson: re-cut the pilot AFTER the collar joins (a
     # solid-to-the-axis collar can silently replug a hole in its own band).
@@ -2521,7 +2537,8 @@ def add_ear(root, bodies, p, name, clip_tool=None):
 
     top = _cut_hole(top)
 
-    top = add_root_reinforcement(root, top, 'Top', f'ear_{name}_wall_root', rx, ry, boss_r, root_z1, direction='up')
+    top = add_root_reinforcement(root, top, 'Top', f'ear_{name}_wall_root', rx, ry, boss_r, root_z1, direction='up',
+                                  needs_trim=True)
     top = _refetch_by_name(root, 'Top') or top
     top = add_root_reinforcement(root, top, 'Top', f'ear_{name}_seat', tx, ty, boss_r, seat_z, direction='up')
     top = _refetch_by_name(root, 'Top') or top
