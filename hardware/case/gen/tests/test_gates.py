@@ -153,21 +153,13 @@ def test_ear_root_material(built):
     result = gates_mod.verify_ear_root_material(bodies, p, standoffs)
     bad = {k: v for k, v in result.items()
            if isinstance(v, tuple) and not v[0]}
-    # KNOWN FINDING (both variants, live-found this port): the S3
-    # riser's own off-axis probe at angle 270 (pointing south, toward
-    # y-) lands inside `ear_wedge_component_keepouts[4]` (x 11.44-14.88,
-    # y 62.015-64.945 base frame) -- a real, live-found-in-pass-16 SMD
-    # component keep-out (see components.apply_known_component_keepouts)
-    # this port ported unchanged. The riser is thin (BOSS_CORE_R=2.6mm)
-    # at this z-band by design (it only widens to the full boss OD
-    # nearer the seat, see add_ear's own riser_wide_z0) -- the real
-    # component keep-out shaves its south face at exactly this probe
-    # angle. Tracked in docs/hardware/headless-port-parity.md; not
-    # observed at any of the other 7 probe points for either ear.
-    KNOWN_KEY = 'S3_riser_solid'
-    unexpected = {k: v for k, v in bad.items()
-                  if not (k == KNOWN_KEY and v[1][1] == [True, True, True, False])}
-    assert not unexpected, f'{variant}: unexpected ear root/material failures: {unexpected}'
+    # Was a known S3_riser_solid finding (the real display connector
+    # conflict Firefly's own `main` branch root-caused and fixed the same
+    # day, bf2703d) -- resolved by features/ears.py's own
+    # S3_CONNECTOR_CLEARANCE_DX/DY (see that module's own comment), which
+    # applies the identical live-verified clearance delta from this
+    # port's measured baseline. Clean, both variants, since that fix.
+    assert not bad, f'{variant}: ear root/material failures: {bad}'
 
 
 def test_s2_boss_clearance(built):

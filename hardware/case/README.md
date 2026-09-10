@@ -5109,24 +5109,37 @@ of Top against the display's own real sub-bodies, bounded below by
 `top_pilot_z[1] + PILOT_PROTECT_MARGIN` so it can never undercut a screw
 pilot) and `components.apply_known_component_keepouts` (two more
 already-live-found-in-pass-16 component keep-outs). Both are now
-ported; real interference is down to a single 0.0007mm³ residual on
-`trim`. A separate, genuine Top-vs-Bottom interference (0.126mm³,
+ported; real interference is down to zero hits on `trim` (was ~20 hits/
+~600mm³). A separate, genuine Top-vs-Bottom interference (0.126mm³,
 `current` variant — an ear's root collar could dip below `split_z` when
 button-height capping left it little headroom) is fixed with a new
 `z_floor` clamp on `features/corner_blocks.py`'s
 `add_root_reinforcement`.
 
-Two known, narrow trade-offs remain on `trim` (deliberately kept RED but
+A second real conflict (`verify_ear_root_material`'s `S3_riser_solid`,
+hollow at 1 of 4 probes) was independently confirmed by Firefly's own
+`main` branch, which merged a companion Fusion-side fix the same day
+(bf2703d) root-causing the identical probe point to a real overlap with
+the display's own second SMT connector, and moving the typed
+`board_standoffs['S3']` by +0.2mm for clearance. This port targets the
+*measured* barrel position instead (per the brief), which sits even
+closer to the connector than Fusion's own pre-fix value — so it hit the
+same conflict. `features/ears.py` now applies the identical
+live-verified clearance delta on top of its own measured baseline
+(`S3_CONNECTOR_CLEARANCE_DX`/`DY`, the one named exception to "measured,
+not typed"); both `verify_ear_root_material` and `check_display_
+interference_near_ears` are clean on both variants.
+
+One known, narrow trade-off remains on `trim` (deliberately kept RED but
 carved out with an inline comment in `gen/tests/test_gates.py`, not
 silently passed — see `docs/hardware/headless-port-parity.md`'s "Phase
 2 update" section for the full account): `corner_block_D_top`'s root
 collar loses a sliver at 2 of 8 probe angles (the real display module
 reaches slightly higher there than the typed `display_bbox` assumed —
 the *same* probe the case-pass16 golden itself is already documented
-red on, for an unrelated Fusion-kernel reason), and the S3 ear's riser
-is shaved at 1 of 4 probe angles by an already-known pass-16 SMD
-keep-out. `current` (never the variant actually printed) has several
-additional open findings not root-caused this pass.
+red on, for an unrelated Fusion-kernel reason). `current` (never the
+variant actually printed) has several additional open findings not
+root-caused this pass.
 
 **S2 boss overhang, reported honestly:** the S2 arm is a flat-bottomed
 horizontal cantilever from the west wall. A best-effort 45°-ish edge

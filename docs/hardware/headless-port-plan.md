@@ -198,7 +198,7 @@ revision: +8 -- `ear_root_cap_z1`, `add_ear`, `add_s2_boss`,
 | 2213 | `_nearer_spine_y` | ported | geometry.py |
 | 2232 | `_corner_block_ring_limit_r` | ported | features/corner_blocks.py |
 | 2293 | `add_single_corner_block` | ported | features/corner_blocks.py |
-| 2381 | `add_ear` | ported | features/ears.py -- target xy/seat_z come from `components.measure_standoffs` (measured), not the typed `board_standoffs`/`ear_seat_z`, per the port brief |
+| 2381 | `add_ear` | ported | features/ears.py -- target xy/seat_z come from `components.measure_standoffs` (measured), not the typed `board_standoffs`/`ear_seat_z`, per the port brief; S3 carries one named exception (`S3_CONNECTOR_CLEARANCE_DX`/`DY`, matching a real component-clearance fix live-verified the same day on Firefly's own `main` branch, bf2703d) |
 | 2536 | `add_s2_boss` | ported | features/ears.py -- same measured-standoff sourcing as add_ear; adds a best-effort underside edge chamfer (no source equivalent, see its own docstring for the honest "still needs support" finding) |
 | 2681 | `_refetch_by_name` | deleted-as-quirk | Fusion stale-reference workaround -- OCC's +/-/& return the real result directly, no name-based re-fetch needed |
 | 2702 | `add_case_boss` | ported | features/corner_blocks.py |

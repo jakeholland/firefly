@@ -70,7 +70,7 @@ unchanged (ears/S2-boss add no Bottom material). `current` Top:
 18,145mm³ (its own golden comparison is still not a strict bar -- see
 below, the golden itself documents a `current`-only defect).
 
-**Three real bugs found by this phase's own new gates, fixed, kept
+**Four real bugs found by this phase's own new gates, fixed, kept
 fixed by the gate re-run below (not by relaxing anything):**
 
 1. **`verify_seat_heights` sign bug (this port's own gate, not the
@@ -123,9 +123,29 @@ fixed by the gate re-run below (not by relaxing anything):**
    (tessellation-scale, the same class `check_interference_pairs`' own
    1e-4mm³ touch tolerance already accepts elsewhere in this file, just a
    hair looser here for a genuinely negligible residual).
+4. **A real S3-ear-vs-display-connector overlap** (the last remaining
+   `check_display_interference_near_ears` hit above, plus `verify_ear_
+   root_material`'s own `S3_riser_solid` probe) -- independently
+   confirmed by Firefly's own `main` branch, which merged a companion
+   Fusion-side fix the same day (bf2703d, "Case pass 16 FIX item 2",
+   live-verified in Fusion) root-causing the identical probe point to a
+   real overlap with the display's second SMT connector ("no reshape of
+   the riser can fix this without moving the seat") and moving the
+   *typed* `board_standoffs['S3']` by +0.2mm in x for 0.585mm of
+   clearance. This port's own S3 target comes from the *measured*
+   barrel position instead (per the port brief), which sits even closer
+   to the connector than Fusion's own pre-fix value -- so it hit the
+   identical conflict. Fixed by applying the identical live-verified
+   delta on top of this port's own measured baseline
+   (`features/ears.py`'s `S3_CONNECTOR_CLEARANCE_DX`/`DY`) -- the one
+   named exception to "measured, not typed," for the one real component
+   conflict already root-caused and verified safe by a second,
+   independent source. Both gates are now clean, both variants (`check_
+   display_interference_near_ears`: zero hits, not just below the noise
+   floor).
 
-**Two known, narrow, live-found trade-offs remain (both `trim`, both
-kept RED-but-carved-out in `gen/tests/test_gates.py` with an inline
+**One known, narrow, live-found trade-off remains (`trim`, kept
+RED-but-carved-out in `gen/tests/test_gates.py` with an inline
 explanation, not silently passed):**
 
 - `verify_root_fillets`: `corner_block_D_top` reads hollow at 2 of 8
@@ -143,11 +163,27 @@ explanation, not silently passed):**
   reason -- this port now lands on the same real design weak point via
   a different, OCC-specific mechanism, not a regression against a
   clean baseline.
-- `verify_ear_root_material`: `S3_riser_solid` reads hollow at 1 of 4
-  off-axis probes (angle 270°) -- the same real, pass-16-live-found SMD
-  keep-out (`ear_wedge_component_keepouts[4]`) shaves the riser's own
-  thin (`BOSS_CORE_R`=2.6mm) south face at exactly this probe height, by
-  design (the riser only widens to the full boss OD nearer the seat).
+
+**A second trade-off, `verify_ear_root_material`'s `S3_riser_solid`
+(hollow at 1 of 4 off-axis probes, angle 270°), was found AND FIXED
+this session** -- and independently confirmed real by a second source:
+Firefly's own `main` branch merged a companion Fusion-side fix
+(bf2703d, "Case pass 16 FIX item 2", live-verified in Fusion the same
+day) root-causing the identical probe point to a real overlap with the
+display's own second SMT connector body ("no reshape of the riser can
+fix this without moving the seat"), and moving the *typed*
+`board_standoffs['S3']` by +0.2mm in x (11.6→11.8mm) for 0.585mm of
+clearance. This port's own S3 target comes from the *measured* barrel
+position (~11.54mm, per the port brief) rather than the typed one,
+which sits even closer to the connector than Fusion's own
+pre-fix 11.6mm -- so this port hit the identical real conflict.
+`features/ears.py` now applies the identical live-verified clearance
+delta on top of this port's own measured baseline
+(`S3_CONNECTOR_CLEARANCE_DX`/`DY`) -- the one named exception to
+"measured, not typed," for the one real component conflict already
+root-caused and verified safe elsewhere. `verify_ear_root_material` and
+`check_display_interference_near_ears` are now clean on both variants
+with zero hits (not just below the noise floor).
 
 **`current` variant has several additional open findings, not fully
 root-caused this pass** (`gen/tests/test_gates.py` carves each out with
@@ -226,10 +262,10 @@ than silently passed):
 | offline `scan_stl_overhangs` (real whitelist) | `bad_clusters_mm2: []`, both (S2 boss underside included, see above) | not asserted this pass (see `current`'s open findings above) |
 | `verify_lip_ring_profile` | clean: 133 real facets, 0.095mm worst flat cluster | 2.065mm worst flat cluster (known, not root-caused) |
 | `verify_seat_heights` (new, phase 2) | clean, all 3 (+0.25±0.05mm gap) | clean, all 3 |
-| `verify_ear_root_material` (new, phase 2) | 1 known finding (`S3_riser_solid`, 1/4 angles -- see above) | same known finding |
+| `verify_ear_root_material` (new, phase 2) | clean, all 8 probes × both ears (fixed this session -- see above) | clean |
 | `verify_s2_boss_clearance` (new, phase 2) | clean (battery keep-out hollow; GPS clearance 1.0mm ≥ 0.5mm) | clean |
 | `verify_display_to_stack_clearance` (new, phase 2) | clean (no `stack3`/GPS-patch XY overlap yet; battery clearance 13.3mm) | clean |
-| `check_display_interference_near_ears` (new, this port only) | clean (1 hit, 0.0007mm³, below the 0.001mm³ noise floor) | 7 real hits, up to 88mm³ (known, see above) |
+| `check_display_interference_near_ears` (new, this port only) | **clean, zero hits** (fixed this session -- see above) | 7 real hits, up to 87mm³ (known, see above) |
 
 **Worth flagging as a real, positive discrepancy, not a bug (phase 1,
 still true of A/C/D's own untouched geometry):** the case-pass16

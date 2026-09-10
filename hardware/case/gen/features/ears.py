@@ -48,9 +48,40 @@ def ear_root_cap_z1(p, cx, cy, r, z1_nominal):
     return min(cb._ear_root_z1(p, cx, cy, r, z1_nominal), _ear_wedge_wall_touch_z1(p))
 
 
+# S3 real-connector clearance nudge -- NOT a measurement correction (see
+# components.py's own module docstring: the measured world_xy IS the
+# real barrel position). Firefly's own `main` branch (bf2703d, "Case
+# pass 16 FIX item 2", live-verified in Fusion the same day this port
+# was worked): `verify_ear_root_material`'s S3_riser_solid probe reads
+# hollow at one angle because that exact point sits inside the display's
+# own second SMT connector's real body -- "no reshape of the riser can
+# fix this without moving the seat". Fusion's own fix moves the TYPED
+# `board_standoffs['S3']` by +0.2mm in x (11.6->11.8mm) for 0.585mm of
+# real clearance; the measured world_xy this port targets instead
+# (~11.54mm, per components.measure_standoffs) sits even closer to the
+# connector than Fusion's own original (unfixed) 11.6mm value, so this
+# port hits the identical real conflict (see docs/hardware/headless-
+# port-parity.md's "Phase 2 update"). Applying the SAME live-verified
+# delta here, from this port's own measured baseline rather than
+# Fusion's typed one, targets the identical real clearance without
+# abandoning "measured, not typed" as the general rule -- this is the
+# one named exception, for the one real component conflict Jake's own
+# session already root-caused and verified safe (a smaller +0.2mm shift
+# already tested; a larger +0.4mm one caused a severe, unexplained
+# Fusion-side regression per that commit -- OCC has no dedupe_body/
+# same-named-orphan mechanism to reproduce that particular failure mode,
+# but this port keeps the SAME conservative, verified-safe magnitude
+# rather than pushing further on its own judgement).
+S3_CONNECTOR_CLEARANCE_DX = 0.2565  # mm -- (11.8 - 11.5435507), see comment above
+S3_CONNECTOR_CLEARANCE_DY = 0.0127  # mm -- (65.46 - 65.44729454)
+
+
 def _target_xy_seat_z(p, standoffs, name):
     m = standoffs[name]
     tx, ty = m['world_xy']
+    if name == 'S3':
+        tx += S3_CONNECTOR_CLEARANCE_DX
+        ty += S3_CONNECTOR_CLEARANCE_DY
     seat_z = m['standoff_plane_z'] - p['ear_seat_offset']
     return tx, ty, seat_z
 
