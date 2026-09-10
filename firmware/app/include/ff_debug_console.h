@@ -251,11 +251,20 @@ typedef void (*ff_dbgconsole_mic_fn)(void *user, ff_dbgconsole_mic_action_t acti
  * `>= 0` on success), NOT the own-lines shape `perf`/`mic` use: this is
  * one more fact about the SAME `music` reply line, not a family of new
  * lines of its own. `out` is filled with an already-space-joined
- * fragment, e.g. `"frame_ms=32.87 canvas_us=410"` — the Music screen's
- * own per-frame timer's last-CLOSED-second rolling average frame
- * period (ms) and canvas composite draw time (us); see `scr_music.h`'s
- * `ff_scr_music_debug_frame_stats` for exactly what is averaged and
- * over what window.
+ * fragment, e.g. `"frame_ms=32.87 canvas_us=410 lvgl_refresh_avg_us=1120
+ * lvgl_refresh_max_us=4310"` — the Music screen's own per-frame timer's
+ * last-CLOSED-second rolling average frame period (ms) and canvas
+ * composite draw time (us); see `scr_music.h`'s `ff_scr_music_debug_
+ * frame_stats` for exactly what is averaged and over what window. The
+ * trailing `lvgl_refresh_*` pair (fix/mic-dump-device-path, "one line
+ * tells the whole story") is `app_main.c`'s own `dbgconsole_music_
+ * frame`, not `scr_music.c` — it folds the SAME window `perf`'s own
+ * `lvgl_refresh` line reports (`ff_display_perf_get`) in here too, so a
+ * slow music frame's cause (this screen's own canvas cost vs. LVGL's
+ * broader refresh/flush cost underneath it — the exact distinction
+ * this hook's own history above, "the 145ms/frame regression found via
+ * perf's own lvgl_refresh line", once needed two separate commands to
+ * draw) reads off ONE line.
  *
  * Unlike `i2c`/`perf`/`mic`, this is NOT device-only data with "no home
  * in ff_shell_t" — `scr_music.c` is ordinary shared `firmware/app/`

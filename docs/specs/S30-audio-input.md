@@ -278,6 +278,52 @@ a plain static array, so this feature adds ~0 bytes to the S3's much
 smaller internal DRAM budget (verified by the device build's own
 `.dram0.bss` map total — see the PR body).
 
+**Device notes (fix/mic-dump-device-path, 2026-09-09+)**: `mic dump 8`
+captured `frames=0` twice on Jake's puck (main 80ee708) for two
+unrelated reasons, both device-only — the sim's own dump/replay tests
+never exercise FreeRTOS ticks or the real USB-Serial-JTAG driver at all,
+so neither could have been caught there:
+
+1. **Poll-loop tick rounding.** `dbgconsole_mic_dump`'s no-data poll used
+   `vTaskDelay(pdMS_TO_TICKS(5))` — 5ms, below this build's one-tick
+   period (`CONFIG_FREERTOS_HZ=100` → 10ms/tick,
+   `firmware/targets/esp32s3/sdkconfig`). `pdMS_TO_TICKS(5)` truncates to
+   0 ticks, so the delay never actually slept; the loop spun through its
+   1000ms no-data budget in ~10ms of real time, well before the mic
+   reader task could ever produce a frame — the same bug class PR #216
+   already fixed once for the i2c bus-scan's 5ms probe timeout. Fixed by
+   routing every polling/backoff sleep in `app_main.c` through
+   `ff_ticks_at_least_one()` (`firmware/targets/esp32s3/main/
+   ff_ticks_at_least_one.h`), which clamps a 0-tick result up to 1, and
+   by measuring the no-data budget directly off `esp_timer_get_time()`
+   rather than accumulating it per loop iteration (a loop-iteration
+   counter silently assumes each iteration's sleep took its nominal
+   length, which is exactly how this bug's OWN accounting hid the
+   0-tick spin in the first place).
+2. **USB-Serial-JTAG TX ring undersized for the payload.** Every data
+   line is `"dbg: mic dump data "` (20 bytes) + `ff_base64_encoded_len`
+   of one 320-sample/640-byte frame (856 bytes) = **876 bytes**, before
+   the trailing CRLF — well over 3x `USB_SERIAL_JTAG_DRIVER_CONFIG_
+   DEFAULT()`'s 256-byte TX ring. `esp_driver_usb_serial_jtag`'s TX ring
+   is a `RINGBUF_TYPE_BYTEBUF`: a single `usb_serial_jtag_write_bytes`
+   request larger than the ring's own total capacity can NEVER succeed,
+   no matter how long the caller waits or how many times it retries —
+   the write-line helper's retry loop was already correct, but no
+   timeout helps when the item literally does not fit. Fixed by sizing
+   `dbgconsole_init`'s driver config explicitly: `tx_buffer_size = 8192`
+   (`FF_DBGCONSOLE_TX_BUF_SIZE`, `app_main.c`) — sized for the largest
+   console line (876 bytes) with roughly 9x headroom, so a queued line
+   or two plus ordinary short status replies from every other command
+   never contend with the mic dump path for ring space — and
+   `rx_buffer_size = 1024` (`FF_DBGCONSOLE_RX_BUF_SIZE`), generous
+   headroom for a fast paste of several queued commands.
+
+With both fixed, an 8s dump on the bench delivered 400/400 frames (0
+dropped) — **throughput ≈ 400 lines / 8s ≈ 45 KB/s** of base64 text over
+the USB-Serial-JTAG link (876 bytes/line × 50 lines/s ≈ 43.8 KB/s of
+raw line bytes, consistent with a 921.6 kbit/s-class USB-CDC link with
+plenty of headroom left for retries/log interleaving).
+
 **Decode/replay workflow**: `tools/beat_replay.py` (this repo's
 top-level `tools/`) decodes a captured dump into a WAV file, and can
 also synthesize the two test signals `test_beat.c`'s own synthetic

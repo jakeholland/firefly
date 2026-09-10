@@ -192,6 +192,7 @@
 #else
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h" /* fix/mic-dump-device-path — portMUX_TYPE for s_frame_stats_lock, below */
 #endif
 
 #include "ff_swarm.h"
@@ -364,6 +365,46 @@ typedef struct {
 #define FF_SCR_MUSIC_FRAME_STATS_KEEP_MS 30000u
 
 static music_frame_stats_t s_frame_stats;
+
+/* fix/mic-dump-device-path — root cause of the device-only "`music`
+ * console line's frame_ms/canvas_us always read n/a" bug (never
+ * reproduced in the sim: see below for why). `s_frame_stats` is a
+ * cross-task producer/consumer on the esp32s3 target: `music_timer_cb`
+ * (below) writes it from ONE task — esp_lvgl_port's own "taskLVGL",
+ * inside an `lv_timer_handler()` pass — while `ff_scr_music_debug_
+ * frame_stats()` is read from a COMPLETELY DIFFERENT task (app_main.c's
+ * render loop, via the `music` console command's `dbgconsole_music_
+ * frame` hook) with NO synchronization at all. That is exactly the
+ * shape `ff_display.c`'s own "2026-09-08 QA hardening item 2" comment
+ * already documents and guards for its sibling `lvgl_refresh`/`flush`
+ * perf windows (`s_refresh_perf`/`s_flush_perf`, guarded by a
+ * `portMUX_TYPE` spinlock) — this file's `s_frame_stats` was simply
+ * never given the same treatment when it was added (2026-09-09 S31
+ * canvas renderer), so an unlucky read (most concretely: the very FIRST
+ * window ever closing, `valid` flipping false->true while the several
+ * fields it's paired with are written in sequence, not atomically) can
+ * observe a torn combination. A short critical section (not
+ * `ff_display_lock()`/`lvgl_port_lock()`: the producer runs INSIDE an
+ * `lv_timer` callback that esp_lvgl_port already runs under ITS OWN
+ * lock, so taking a second, different lock around a few-word struct
+ * update would be redundant nesting for no benefit — a spinlock is the
+ * right tool for "protect a few words for a few instructions", same
+ * reasoning `esp_lcd_touch_spd2010.c`'s own `portENTER_CRITICAL(&tp->
+ * data.lock)` documents for its identical shape) protects every touch
+ * point: this reset, `music_frame_stats_add`, and the getter's read.
+ * Compiled out on `FF_TARGET_SIM`: the sim is single-threaded for this
+ * state (no LVGL port task — see "Golden determinism" above), so a lock
+ * there would be pure overhead with nothing to protect against; this is
+ * also exactly why a sim test could never have caught this class of bug
+ * in the first place. */
+#if defined(FF_TARGET_SIM)
+#define FF_MUSIC_STATS_LOCK() ((void)0)
+#define FF_MUSIC_STATS_UNLOCK() ((void)0)
+#else
+static portMUX_TYPE s_frame_stats_lock = portMUX_INITIALIZER_UNLOCKED;
+#define FF_MUSIC_STATS_LOCK() portENTER_CRITICAL(&s_frame_stats_lock)
+#define FF_MUSIC_STATS_UNLOCK() portEXIT_CRITICAL(&s_frame_stats_lock)
+#endif
 
 /* Same 0deg-is-top, clockwise convention `scr_launcher.c`'s own
  * `launcher_deg_to_offset` uses (this file's independent copy — see
@@ -672,7 +713,9 @@ static uint32_t music_redraw_canvas(void)
 
 static void music_frame_stats_reset(void)
 {
+    FF_MUSIC_STATS_LOCK();
     memset(&s_frame_stats, 0, sizeof(s_frame_stats));
+    FF_MUSIC_STATS_UNLOCK();
 }
 
 /* Folds one REAL per-frame timer tick's (period, draw-time) pair into
@@ -682,6 +725,7 @@ static void music_frame_stats_reset(void)
  * `music_timer_cb`'s own early-return, which never reaches this). */
 static void music_frame_stats_add(uint32_t period_ms, uint32_t draw_us, uint32_t now_ms)
 {
+    FF_MUSIC_STATS_LOCK();
     if (!s_frame_stats.have_window_start) {
         s_frame_stats.window_start_ms = now_ms;
         s_frame_stats.have_window_start = true;
@@ -702,6 +746,7 @@ static void music_frame_stats_add(uint32_t period_ms, uint32_t draw_us, uint32_t
         s_frame_stats.sum_draw_us = 0u;
         s_frame_stats.n_samples = 0u;
     }
+    FF_MUSIC_STATS_UNLOCK();
 }
 
 static uint32_t music_period_ms(int8_t batt_pct)
@@ -896,6 +941,19 @@ void ff_scr_music_build(ff_app_state_t const *state)
      * passes a stable pointer for the single settle step above, and
      * never drains the timer queue at all (see "Golden determinism"). */
     s_period_ms = music_period_ms(state->radar.batt_pct);
+    /* fix/mic-dump-device-path — defensive: lv_timer_create can return
+     * NULL on allocation failure (the timer struct itself, from LVGL's
+     * own heap) same as any other LVGL allocation this file already
+     * checks (s_canvas_buf/s_sprites just above/below) — this feature
+     * has a real history of tight internal-RAM headroom on device (PR
+     * #253, "device out of internal RAM" from this same S31 canvas
+     * renderer's sprite table). Without this timer the swarm simply
+     * never steps/redraws past the one build-time settle frame and the
+     * frame-stats window never closes (an honest n/a from
+     * ff_scr_music_debug_frame_stats — never a hang), same silent-and-
+     * safe posture music_ensure_canvas_buf's own NULL handling takes;
+     * `music_content_delete_cb` already null-checks its `timer` user
+     * pointer so passing NULL through here is safe either way. */
     lv_timer_t *timer = lv_timer_create(music_timer_cb, s_period_ms, (void *)state);
     s_last_tick_ms = lv_tick_get();
     lv_obj_add_event_cb(puck, music_content_delete_cb, LV_EVENT_DELETE, (void *)timer);
@@ -909,17 +967,35 @@ uint32_t ff_scr_music_debug_render_ticks(void)
 ff_scr_music_frame_stats_t ff_scr_music_debug_frame_stats(void)
 {
     ff_scr_music_frame_stats_t out = {0};
-    if (!s_frame_stats.valid) return out; /* honest: no window has ever closed this session */
+
+    /* Snapshot the three fields this getter needs UNDER the lock (fix/
+     * mic-dump-device-path — see s_frame_stats_lock's own doc comment
+     * above for why this cross-task read needs one at all), then do the
+     * age-vs-KEEP_MS honesty check against the snapshot, not the live
+     * struct, outside it — keeps the critical section to a handful of
+     * word-copies, never a snprintf-adjacent computation. */
+    bool valid;
+    uint32_t last_valid_ms;
+    float frame_period_avg_ms;
+    uint32_t canvas_draw_avg_us;
+    FF_MUSIC_STATS_LOCK();
+    valid = s_frame_stats.valid;
+    last_valid_ms = s_frame_stats.last_valid_ms;
+    frame_period_avg_ms = s_frame_stats.last_frame_period_avg_ms;
+    canvas_draw_avg_us = s_frame_stats.last_canvas_draw_avg_us;
+    FF_MUSIC_STATS_UNLOCK();
+
+    if (!valid) return out; /* honest: no window has ever closed this session */
 
     /* 2026-09-09 amendment — see FF_SCR_MUSIC_FRAME_STATS_KEEP_MS's own
      * doc comment: stale beyond the keep window reports the same honest
      * n/a as "never populated", never an arbitrarily old number. */
-    uint32_t const age_ms = lv_tick_get() - s_frame_stats.last_valid_ms; /* wraparound-safe over any real session length */
+    uint32_t const age_ms = lv_tick_get() - last_valid_ms; /* wraparound-safe over any real session length */
     if (age_ms > FF_SCR_MUSIC_FRAME_STATS_KEEP_MS) return out;
 
     out.valid = true;
-    out.frame_period_avg_ms = s_frame_stats.last_frame_period_avg_ms;
-    out.canvas_draw_avg_us = s_frame_stats.last_canvas_draw_avg_us;
+    out.frame_period_avg_ms = frame_period_avg_ms;
+    out.canvas_draw_avg_us = canvas_draw_avg_us;
     return out;
 }
 

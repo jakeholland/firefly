@@ -279,6 +279,25 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_ctl_music_frame_stats COMMAND test_ctl_music_frame_stats)
 
+    # fix/mic-dump-device-path — ff_ticks_at_least_one_calc() (the pure
+    # arithmetic behind app_main.c's `ff_ticks_at_least_one`, the "sleep
+    # at least one tick" helper the mic-dump poll-loop bug needed). The
+    # esp32s3 target's app_main.c itself is device-only and cannot be
+    # built here — same shape as test_transport_uart_accept just above
+    # in ../meshclient/CMakeLists.txt, which this mirrors: no link
+    # against any ff-* library, the header is self-contained
+    # (stdint.h only).
+    add_executable(test_ticks_at_least_one
+        ${CMAKE_CURRENT_SOURCE_DIR}/../esp32s3/main/tests/test_ticks_at_least_one.c
+    )
+    target_include_directories(test_ticks_at_least_one PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../esp32s3/main
+    )
+    target_link_libraries(test_ticks_at_least_one PRIVATE unity)
+    ff_apply_warnings(test_ticks_at_least_one)
+
+    add_test(NAME test_ticks_at_least_one COMMAND test_ticks_at_least_one)
+
     # S26 wake-only-touch amendment (docs/specs/S26-device-lifecycle.md
     # "(c) Inactivity -> dim -> screen off", 2026-09-02): a real ctl tap
     # that BEGINS while idle is DIM/OFF must wake ACTIVE and deliver
