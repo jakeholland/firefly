@@ -81,6 +81,14 @@ idf_component_register(
     # ff_core: ff_app_state.h transitively needs ff_radar.h.
     # lvgl: every scr_*.c includes lvgl.h.
     REQUIRES ff_app ff_core lvgl
+    # esp_timer (2026-09-09 S31 canvas renderer): scr_music.c's own
+    # music_now_us() calls esp_timer_get_time() on this target (a
+    # FF_TARGET_SIM-gated alternative body uses POSIX clock_gettime in
+    # the sim build instead — see that function's own doc comment).
+    # PRIV_REQUIRES, not REQUIRES: no header this component publishes to
+    # its own callers (main, via ff_app_ui's INCLUDE_DIRS) mentions
+    # esp_timer.h — this is scr_music.c's own implementation detail.
+    PRIV_REQUIRES esp_timer
 )
 
 # libm (sinf/cosf/fmodf in radar/flare geometry) is part of the xtensa
