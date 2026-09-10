@@ -5090,6 +5090,67 @@ python3 -m gen.cli build --variant trim --gates --export --render
 python3 -m pytest gen/tests -v   # gates-as-tests + parity vs. the case-pass16 goldens
 ```
 
+## Phase 2 item 1: S1/S3 ears + S2 boss (display mount)
+
+`gen/features/ears.py` ports `add_ear`/`add_s2_boss` (the pass-16
+candidate-5 display mount) — root/wedge/core into the dome wall, the
+shared root-reinforcement collar, seat arm + standoff riser, sourced
+from `components.measure_standoffs`' real STEP measurement (not the
+typed `board_standoffs`/`ear_seat_z`). Top volume is now 96.4% of the
+case-pass16 golden (up from phase 1's 89.9%).
+
+This phase's own new gate (`check_display_interference_near_ears`,
+checking the ears/S2-boss against the real ~420-solid display STEP, not
+just the typed bboxes) found ~600mm³ of real display interference —
+root-caused to two inline cuts in `firefly_case.py`'s own `build()`
+driver (right after `insert_display_pcba`) this port had not yet
+ported: `components.ceiling_safe_display_cut` (a candidate-filtered cut
+of Top against the display's own real sub-bodies, bounded below by
+`top_pilot_z[1] + PILOT_PROTECT_MARGIN` so it can never undercut a screw
+pilot) and `components.apply_known_component_keepouts` (two more
+already-live-found-in-pass-16 component keep-outs). Both are now
+ported; real interference is down to a single 0.0007mm³ residual on
+`trim`. A separate, genuine Top-vs-Bottom interference (0.126mm³,
+`current` variant — an ear's root collar could dip below `split_z` when
+button-height capping left it little headroom) is fixed with a new
+`z_floor` clamp on `features/corner_blocks.py`'s
+`add_root_reinforcement`.
+
+Two known, narrow trade-offs remain on `trim` (deliberately kept RED but
+carved out with an inline comment in `gen/tests/test_gates.py`, not
+silently passed — see `docs/hardware/headless-port-parity.md`'s "Phase
+2 update" section for the full account): `corner_block_D_top`'s root
+collar loses a sliver at 2 of 8 probe angles (the real display module
+reaches slightly higher there than the typed `display_bbox` assumed —
+the *same* probe the case-pass16 golden itself is already documented
+red on, for an unrelated Fusion-kernel reason), and the S3 ear's riser
+is shaved at 1 of 4 probe angles by an already-known pass-16 SMD
+keep-out. `current` (never the variant actually printed) has several
+additional open findings not root-caused this pass.
+
+**S2 boss overhang, reported honestly:** the S2 arm is a flat-bottomed
+horizontal cantilever from the west wall. A best-effort 45°-ish edge
+chamfer (`ears.py`'s `_best_effort_underside_edge_chamfer`) measurably
+shrinks the flagged area at the arm's own edges but cannot remove the
+need for support under the middle of a constant-thickness span — only a
+full lengthwise taper would. The resulting cluster falls entirely
+inside the pre-existing, pass-16-tuned `general_ceiling_overhang`
+whitelist (`scan_stl_overhangs` reports zero *unlisted* bad clusters,
+both variants) — the same accepted-slicer-support condition the
+mechanical/printability reviews already signed off on. Support is
+still needed there.
+
+Cycle time (build + gates + export, trim, warm venv): ~75s, up from
+phase 1's ~7s — almost entirely the new display-interference checking
+against the real STEP compound, not a regression in the underlying
+build (still ~3.7s). Full `pytest gen/tests/` (30 tests, both variants):
+~4-5 minutes.
+
+**Not ported yet:** buttons (item 2), comms stack/GPS frame/battery
+bay/compass module (item 3), and phase 3 (wordmark deboss, coupons,
+packed exports, renders, then the switch-over deleting this file). See
+`docs/hardware/headless-port-plan.md`.
+
 `gen/.venv` and `gen/out/` are git-ignored (see `gen/.gitignore`) —
 recreate the venv with the commands above; `gen/out/` and
 `renders/gen/` are scratch build output, not committed exports (this
