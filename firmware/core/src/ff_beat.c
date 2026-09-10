@@ -90,14 +90,16 @@ float ff_beat_level_dbfs(ff_beat_sample_t const *sample)
 }
 
 /* Median of `n` floats, via an in-place insertion sort — `n` is always
- * FF_BEAT_MUSIC_FLUX_WINDOW_N (75) or up to FF_BEAT_BPM_HISTORY_N (5) in
+ * FF_BEAT_MUSIC_FLUX_WINDOW_N (50) or up to FF_BEAT_BPM_HISTORY_N (5) in
  * this file, small enough that an O(n^2) sort is cheaper (and far
  * simpler to get right) than a partial-selection algorithm at either
- * 50Hz (flux) or once-per-beat (BPM) call rates — see ff_beat.h's own
- * "Beat/onset detection" doc comment for why a MEDIAN, not a mean, is
- * the right statistic here (resistant to the very transients/outliers
- * it exists to detect against). `arr` is sorted in place — always the
- * CALLER's own scratch copy, never a live history ring itself. */
+ * 50Hz (flux, called twice per band per sample for the median+MAD
+ * threshold — see `band_tracker_update` below) or once-per-beat (BPM)
+ * call rates — see ff_beat.h's own "Beat/onset detection" doc comment
+ * for why a MEDIAN, not a mean, is the right statistic here (resistant
+ * to the very transients/outliers it exists to detect against). `arr`
+ * is sorted in place — always the CALLER's own scratch copy, never a
+ * live history ring itself. */
 static float median_of(float *arr, size_t n)
 {
     for (size_t i = 1; i < n; i++) {
@@ -112,15 +114,16 @@ static float median_of(float *arr, size_t n)
     return arr[n / 2u];
 }
 
-/* One band's onset-flux update (2026-09-09 amendment) — see
- * ff_beat_band_tracker_t's own doc comment (ff_beat.h) for the state
- * this owns, and ff_beat.h's top comment ("Beat/onset detection",
- * "WHY FLUX") for why a frame-to-frame RISE, not a level-vs-median
- * comparison, correctly ignores a slow swell while still catching a
- * real attack. Returns true iff THIS band's flux just cleared its own
- * adaptive threshold — the caller ORs this across both bands
- * (`ff_beat_update` below) rather than this function knowing anything
- * about the other band. */
+/* One band's onset-flux update (2026-09-09 amendment fix/s31-beat-
+ * real-audio, threshold RE-TUNED by the 2026-09-09 amendment fix/s31-
+ * beat-real-captures) — see ff_beat_band_tracker_t's own doc comment
+ * (ff_beat.h) for the state this owns, and ff_beat.h's top comment
+ * ("Beat/onset detection", "WHY FLUX") for why a frame-to-frame RISE,
+ * not a level-vs-median comparison, correctly ignores a slow swell
+ * while still catching a real attack. Returns true iff THIS band's
+ * flux just cleared its own adaptive threshold — the caller ORs this
+ * across both bands (`ff_beat_update` below) rather than this function
+ * knowing anything about the other band. */
 static bool band_tracker_update(ff_beat_band_tracker_t *t, float level_db)
 {
     float flux_db = 0.0f;
@@ -142,11 +145,27 @@ static bool band_tracker_update(ff_beat_band_tracker_t *t, float level_db)
         t->next = (uint8_t)((t->next + 1u) % FF_BEAT_MUSIC_FLUX_WINDOW_N);
     }
 
+    /* MEDIAN + k*MAD (median absolute deviation), not a fixed dB margin
+     * — see FF_BEAT_MUSIC_FLUX_MAD_K's own doc comment (ff_beat.h) for
+     * why a real capture's own per-band flux noise floor needs an
+     * honestly-measured bar, not an assumed constant. Two median passes
+     * over the same window: one for the level (median_flux_db), one for
+     * the typical DEVIATION around it (median of |flux[i] -
+     * median_flux_db|) — both O(n^2) insertion sorts, the same cost
+     * tradeoff `median_of`'s own doc comment already accepts at this
+     * window size. */
     float sorted[FF_BEAT_MUSIC_FLUX_WINDOW_N];
     memcpy(sorted, t->flux_history_db, sizeof(sorted));
     float const median_flux_db = median_of(sorted, FF_BEAT_MUSIC_FLUX_WINDOW_N);
 
-    float adaptive_threshold_db = median_flux_db + FF_BEAT_MUSIC_FLUX_MARGIN_DB;
+    float deviations[FF_BEAT_MUSIC_FLUX_WINDOW_N];
+    for (size_t i = 0; i < FF_BEAT_MUSIC_FLUX_WINDOW_N; i++) {
+        float const d = t->flux_history_db[i] - median_flux_db;
+        deviations[i] = (d < 0.0f) ? -d : d;
+    }
+    float const mad_db = median_of(deviations, FF_BEAT_MUSIC_FLUX_WINDOW_N);
+
+    float adaptive_threshold_db = median_flux_db + FF_BEAT_MUSIC_FLUX_MAD_K * mad_db;
     if (adaptive_threshold_db < FF_BEAT_MUSIC_FLUX_MIN_DB) adaptive_threshold_db = FF_BEAT_MUSIC_FLUX_MIN_DB;
 
     return flux_db >= adaptive_threshold_db;
@@ -166,13 +185,18 @@ static float fold_bpm_to_range(float bpm)
 }
 
 /* Register one beat: bump the monotonic counter, arm the shared
- * refractory window, and update the BPM estimate (2026-09-09 amendment:
+ * refractory window, update the BPM estimate (2026-09-09 amendment:
  * median-of-recent-intervals, octave-folded — see ff_beat.h's own top
  * comment) from the interval since the previous beat (only once a prior
  * beat actually exists — `beat_count` is checked BEFORE incrementing,
  * so this reads "was there a prior beat", not "will there be one after
- * this"). */
-static void beat_fire(ff_beat_t *b, uint32_t now_ms)
+ * this"), and drive the beat-tracker's own lock/prediction state
+ * (2026-09-09 amendment fix/s31-beat-real-captures — see ff_beat.h's
+ * top comment, "Beat-tracking" section). `predicted` is true iff THIS
+ * beat came from the tracker's own prediction rather than a confirmed
+ * band onset (the caller — `ff_beat_update` — is the only one who
+ * knows which). */
+static void beat_fire(ff_beat_t *b, uint32_t now_ms, bool predicted)
 {
     if (b->beat_count > 0u) {
         uint32_t const interval_ms = now_ms - b->last_beat_ms; /* short-session subtraction; see ff_beat.h's top comment */
@@ -184,12 +208,39 @@ static void beat_fire(ff_beat_t *b, uint32_t now_ms)
             float sorted[FF_BEAT_BPM_HISTORY_N];
             memcpy(sorted, b->ioi_history_ms, (size_t)b->ioi_count * sizeof(float));
             float const median_ioi_ms = median_of(sorted, b->ioi_count);
+            b->period_ms = median_ioi_ms; /* raw/unfolded — see ff_beat_t's own field comment */
             b->bpm_estimate = fold_bpm_to_range(60000.0f / median_ioi_ms);
+
+            if (!predicted) {
+                /* Real evidence: (re)establish the lock and reset the
+                 * "how long have we been coasting on predictions alone"
+                 * counter — see FF_BEAT_TRACK_MAX_PREDICTED's own doc
+                 * comment. */
+                b->tracker_locked = true;
+                b->consecutive_predicted = 0u;
+            }
         }
     }
+
+    if (predicted) {
+        b->consecutive_predicted++;
+        if (b->consecutive_predicted >= FF_BEAT_TRACK_MAX_PREDICTED) {
+            /* Coasted on predictions alone for too long with no
+             * confirming onset — drop the lock rather than keep
+             * confidently guessing a tempo that may no longer be
+             * playing. A future real onset re-locks from scratch via
+             * the `!predicted` branch above. */
+            b->tracker_locked = false;
+        }
+    }
+
     b->beat_count++;
     b->last_beat_ms = now_ms;
     b->refractory_until_ms = now_ms + FF_BEAT_REFRACTORY_MS;
+    b->last_beat_predicted = predicted;
+    if (b->period_ms > 0.0f) {
+        b->predicted_next_ms = now_ms + (uint32_t)b->period_ms;
+    }
 }
 
 void ff_beat_update(ff_beat_t *b, ff_beat_sample_t const *sample, uint32_t dt_ms, uint32_t now_ms)
@@ -236,11 +287,36 @@ void ff_beat_update(ff_beat_t *b, ff_beat_sample_t const *sample, uint32_t dt_ms
          * comment, "Beat/onset detection" (2026-09-09 amendment). Both
          * trackers are always updated (a band's own history must keep
          * moving every sample regardless of whether the OTHER band just
-         * fired), and the beat fires on EITHER clearing its threshold. */
+         * fired), and a RAW onset candidate fires on EITHER clearing
+         * its threshold. */
         bool const low_onset = band_tracker_update(&b->mic_low_track, sample->low_band_dbfs);
         bool const mid_onset = band_tracker_update(&b->mic_mid_track, sample->mid_band_dbfs);
-        if ((low_onset || mid_onset) && now_ms >= b->refractory_until_ms) {
-            beat_fire(b, now_ms);
+        bool const raw_onset = low_onset || mid_onset;
+        bool const refractory_ok = now_ms >= b->refractory_until_ms;
+
+        /* Beat-tracking / prediction (2026-09-09 amendment fix/s31-
+         * beat-real-captures) — see ff_beat.h's top comment, "Beat-
+         * tracking" section. A confirmed raw onset ALWAYS wins, on its
+         * own schedule, regardless of the tracker's own prediction —
+         * real evidence is never rejected for arriving "off-schedule".
+         * Only when NO onset confirms the beat by the predicted time
+         * does the tracker fire one on its own, bounded by
+         * FF_BEAT_TRACK_MAX_PREDICTED consecutive un-confirmed guesses
+         * (enforced inside beat_fire itself). */
+        if (raw_onset && refractory_ok) {
+            beat_fire(b, now_ms, /*predicted=*/false);
+        } else if (b->tracker_locked && b->consecutive_predicted < FF_BEAT_TRACK_MAX_PREDICTED && refractory_ok) {
+            /* Grace period before falling back to a guess: wait an
+             * extra FF_BEAT_TRACK_WINDOW_FRAC (20%) of the period past
+             * the predicted instant so an onset arriving slightly LATE
+             * (but still "on tempo") gets caught by the raw_onset
+             * branch above — as a CONFIRMED beat — rather than being
+             * preempted by a predicted one on the exact predicted tick.
+             * See ff_beat.h's own "Beat-tracking" doc comment. */
+            uint32_t const grace_ms = (uint32_t)(b->period_ms * FF_BEAT_TRACK_WINDOW_FRAC);
+            if (now_ms >= b->predicted_next_ms + grace_ms) {
+                beat_fire(b, now_ms, /*predicted=*/true);
+            }
         }
     } else { /* FF_BEAT_SOURCE_IMU */
         /* Vertical-axis bounce peak-picking, one-sample-lagged local
@@ -250,14 +326,17 @@ void ff_beat_update(ff_beat_t *b, ff_beat_sample_t const *sample, uint32_t dt_ms
          * bounce is closer to a single roughly-sinusoidal excursion on
          * ONE channel already, so a plain rising-then-falling peak test
          * is the better-fitting primitive here — see ff_beat.h's top
-         * comment. */
+         * comment. No beat-tracking prediction on this path — a bounce
+         * is directly, continuously observed (no compressed/masked
+         * onsets to fill gaps for), so there is nothing for a predictor
+         * to add. */
         if (b->imu_have_prev) {
             if (sample->accel_mag_g > b->imu_prev_mag_g) {
                 b->imu_rising = true;
             } else {
                 if (b->imu_rising && b->imu_prev_mag_g >= FF_BEAT_IMU_PEAK_THRESHOLD_G &&
                     now_ms >= b->refractory_until_ms) {
-                    beat_fire(b, now_ms);
+                    beat_fire(b, now_ms, /*predicted=*/false);
                 }
                 b->imu_rising = false;
             }

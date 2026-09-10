@@ -1,7 +1,10 @@
 # S31 — Music/Swarm: the fifth launcher app
 
 Status: draft (2026-09-08, amended 2026-09-09 — canvas renderer, see
-"2026-09-09 amendment" below "Frame budget / renderer choice"). Builds
+"2026-09-09 amendment" below "Frame budget / renderer choice"; further
+amended 2026-09-09, fix/s31-beat-real-captures — beat-tracking +
+median/MAD retuning against real captures, see "2026-09-09 amendment
+(fix/s31-beat-real-captures)" below "S31 polish"). Builds
 on [S30](S30-audio-input.md) (mic
 bring-up — `ff_mic`, `ff_miclevel.h`), [S26](S26-device-lifecycle.md)
 (the launcher's N-agnostic satellite layout, keep-awake), [S16](S16-app-shell.md)
@@ -335,6 +338,203 @@ FF_SWARM_TWINKLE_RATE))` — a slow, per-firefly phase-offset brightness
 oscillation that keeps a firefly visibly alive even when the shared
 envelope has fully decayed between beats. See `ff_swarm.h`'s own doc
 comments for every constant's exact value and provenance.
+
+## 2026-09-09 amendment (fix/s31-beat-real-captures): tuning against
+## REAL captures — beat-tracking, median/MAD thresholds, the capture ->
+## replay -> tune loop
+
+The previous amendment (immediately above) replaced the broadband
+envelope detector with a band-limited onset-flux one and validated it
+against SYNTHETIC signals only. This amendment closes that gap with two
+real 10s captures of a live dubstep set (Crankdat, played from a
+speaker near Jake's puck, no subwoofer) and retunes the detector
+against what they actually showed.
+
+### The captures, and what PR #254's detector did with them
+
+`mic dump 10` (docs/specs/S30-audio-input.md's own dated addition) +
+`tools/beat_replay.py decode` produced two 16kHz/16-bit mono WAV files,
+now committed as `firmware/core/tests/fixtures/audio/mic_dump_set_1.wav`
+/ `mic_dump_set_2.wav` (~320KB each; their raw console transcripts are
+NOT committed — only the decoded WAVs and the ground-truth onset
+timestamps derived from them, see below). Run through PR #254's
+detector (`firmware/core/tools/beat_sim_replay`), capture 1 produced:
+
+```
+done: 500 frames, 2 beats, final bpm_estimate=81.9
+```
+
+— 2 beats in 10s of continuously-playing music, loudness reading a
+healthy 0.8-1.0 throughout (`beat_sim_replay`'s own status lines) —
+i.e. the same class of failure PR #254 itself fixed for the broadband
+detector, now showing up again one level down: the band-limited
+detector's fixed 6dB-over-median flux margin was ALSO tuned against a
+signal louder/cleaner than a real mic capture of a real room actually
+produces.
+
+### Root cause: a fixed margin assumes a flux noise floor no real
+### capture actually has
+
+`low_dbfs`/`mid_dbfs` on these captures sit far quieter and jitter far
+less per-frame than the synthetic click-train/kick signals PR #254's
+own tests validate against (the captures' own low-band flux swings
+roughly HALF what a synthesized -8dBFS kick produces — see
+`FF_BEAT_MUSIC_FLUX_MAD_K`'s own doc comment, `ff_beat.h`, for the
+exact numbers). A flat 6dB bar tuned against the louder synthetic
+signal sat comfortably ABOVE what real onsets in these captures ever
+produced.
+
+### The fix
+
+Four changes, all in `firmware/core/ff_beat.h`/`.c` unless noted (see
+that header's own "Beat-tracking / real-capture retuning" doc comment
+for the full design each constant's doc comment expands on):
+
+1. **Median + MAD, not a fixed dB margin.** Each band's onset threshold
+   is now `median + FF_BEAT_MUSIC_FLUX_MAD_K * MAD` (median absolute
+   deviation) over its own rolling window — each band's OWN honestly-
+   measured typical deviation, not an assumed constant. (Caveat, noted
+   for a future reader: a real onset-flux signal is naturally sparse —
+   most frames sit near zero flux, only a real onset spikes — so a
+   window's MEDIAN is usually exactly 0 and its MAD is small; in
+   practice `FF_BEAT_MUSIC_FLUX_MIN_DB`'s absolute floor ends up doing
+   most of the real work for these two captures specifically, with
+   `FF_BEAT_MUSIC_FLUX_MAD_K` mattering more on louder/busier material.
+   Both terms stay in the formula — MAD is not always zero, and a
+   future louder/noisier capture will exercise it.)
+2. **Shorter adaptive window**: `FF_BEAT_MUSIC_FLUX_WINDOW_N` 75 -> 50
+   samples (~1.5s -> ~1.0s) — a loud beat sitting inside a longer
+   window drags that window's own median up, quietly raising the bar
+   against the very next beat.
+3. **A beat-tracking/prediction stage** (`ff_beat_t.tracker_locked`/
+   `period_ms`/`predicted_next_ms`/`consecutive_predicted`/
+   `last_beat_predicted`, new fields): once a period estimate exists
+   (>=2 confirmed beats), the tracker predicts the next beat time and,
+   if no raw onset confirms it within a grace period
+   (`FF_BEAT_TRACK_WINDOW_FRAC`, 20% of the period, past the predicted
+   instant), fires a PREDICTED beat anyway — bounded to
+   `FF_BEAT_TRACK_MAX_PREDICTED` (2) consecutive un-confirmed guesses
+   before the lock drops. This is what turns "occasionally detects an
+   onset" into "the swarm keeps pulsing steadily through the one the
+   threshold missed" — see item 4 below for how this reaches the swarm.
+4. **BPM history widened** 5 -> 21 intervals
+   (`FF_BEAT_BPM_HISTORY_N`): a real capture's onset-to-onset spacing
+   is far noisier than a synthetic click train's (see "Establishing the
+   dominant periodicity" below) — a 5-deep median still visibly rides
+   that noise; 21 (close to "most of a 10s capture's own beats at this
+   tempo") converges to one value and holds it.
+
+### Establishing the dominant periodicity, honestly, per file
+
+Two independent analyses of the SAME two captures' LOW band, neither
+of them the detector being tuned:
+
+- **FFT-based** (20ms frames, Hann-windowed, summed bin power 60-200Hz)
+  — capture 1's low-band onset-flux autocorrelation peaks at a 0.52s
+  lag (~115 BPM); its MID band (200-2000Hz — snare/clap/vocal
+  transients, the more usual "downbeat" marker) suggests a slower
+  ~88 BPM instead. Low-band level swing: mean -53.8dBFS, p5/p95
+  -59.7/-46.6 (13.1dB swing); mid-band mean -37.4dBFS, 7.8dB swing.
+- **This module's own filter** (`ff_bandenergy.c`'s actual one-pole
+  cascade, less selective than the idealized FFT bandpass above) shows
+  a DIFFERENT but highly reproducible signature in BOTH captures: a
+  clean 0.82s (~73 BPM) autocorrelation peak — landing in the same
+  slower-pulse territory the FFT method's MID band hinted at, not the
+  FFT method's own LOW-band number.
+
+Read together: there is a slower, ~73-90 BPM structural pulse (a
+half-time downbeat) UNDER a busier, individually-audible ~110-160 BPM
+layer of onsets (the kick/bass pattern) in both captures — genuine
+half-time-feel dubstep, not a single clean tempo.
+
+**Decision (flagged per AGENTS.md's "note the interpretation" rule):
+the puck flares on the KICK PULSE, not the inferred half-time
+downbeat.** The kick pulse is what this detector actually, separately
+OBSERVES (every firing is a real detected energy rise, never an
+inferred "every other beat" construct) and what a dancer reacts to
+event-by-event; inventing a slower downbeat the low band does not
+cleanly, independently mark would mean fabricating structure the
+capture does not honestly show. `FF_BEAT_BPM_MIN`/`_MAX` (`[70,180]`,
+UNCHANGED) is consistent with this either way: both captures' tuned
+kick-pulse tempo (see below) sits centrally inside that range, and a
+quieter passage that only shows the slower ~73-90 BPM downbeat layer
+would ALSO fold cleanly inside it — no forced doubling needed for
+either reading.
+
+With the four changes above, run end-to-end
+(`firmware/core/tools/beat_sim_replay`, and `test_beat_captures.c` as a
+permanent regression), `bpm_estimate` on each real capture:
+
+- **Capture 1**: settles to a stable **125.0 BPM** from beat #6 onward
+  (t=2.7s), holding it for beats #10-21 (t=4.72s-9.58s) with zero
+  variance — 21 beats total over the 10s capture (PR #254's own
+  baseline: 2).
+- **Capture 2**: settles to a stable **142.9 BPM** from beat #6 onward
+  (t=2.7s), holding it for the large majority of beats #12-24
+  (t=5.22s-9.96s) — 24 beats total over the 10s capture.
+
+### Onset detection rate
+
+`test_beat_captures.c`'s own ground truth: LOCAL MAXIMA of each
+capture's own low-band onset flux (the SAME `ff_bandenergy.c` filter
+the shipped detector runs, analyzed OFFLINE by `tools/
+beat_capture_onsets.py` — deliberately a MORE permissive picker than
+the shipped detector's own threshold, so it answers "what onsets are
+honestly there", not "what does the shipped detector already catch")
+that clear their own median+2*MAD (or a 0.5dB floor) and sit >=350ms
+apart — i.e. "the low-band onsets the [flux's own] autocorrelation
+implies", per the deliverable's own wording:
+
+| capture | ground-truth onsets | detected (+-150ms) | rate |
+|---|---|---|---|
+| `mic_dump_set_1.wav` | 16 | 13 | 81% |
+| `mic_dump_set_2.wav` | 18 | 15 | 83% |
+
+Both clear the deliverable's 80% bar. Full detected-beat-vs-onset
+timestamp listings are in this PR's own description (and reproducible
+any time via `beat_sim_replay <wav> <onsets.txt>`'s own SUMMARY line —
+see below).
+
+### Feeding the beat-tracker's prediction into the swarm (deliverable
+### item 4)
+
+No `ff_swarm.c`/`scr_music.c` code changed for this. `ff_beat_update`'s
+predicted-beat fallback (above) advances the SAME `beat_count` a
+confirmed onset would — `scr_music.c`'s existing
+`beat_now = (state->music.beat_count != s_last_beat_count)` diff (this
+file's own "Music face" section) cannot tell a predicted beat from a
+confirmed one, and does not need to: the swarm's flare/pull already
+fires on every `beat_count` increment, so a predicted beat reaches the
+swarm exactly like a real one, automatically, the moment
+`ff_beat_update` decides to fire one. `ff_beat_t.last_beat_predicted`
+exists purely as a diagnostic (`beat_sim_replay` tags predicted BEAT
+lines `(predicted)` in its own output) — no consumer needs to branch on
+it.
+
+### The capture -> replay -> tune loop (for the coordinator, or a
+### future capture)
+
+1. On the puck's bench console: `mic dump <secs>` (10s is plenty for a
+   tempo estimate at typical dance tempos).
+2. `python3 tools/beat_replay.py decode <log.txt> -o capture.wav`.
+3. (Optional, for a NEW capture's own regression fixture) `python3
+   tools/beat_capture_onsets.py capture.wav -o capture_onsets.txt` —
+   see that script's own header for the exact peak-picking method.
+4. `build/beat_sim_replay capture.wav [capture_onsets.txt]` — prints
+   per-100ms status lines, a `BEAT` line the instant each one fires
+   (tagged `(predicted)` when the beat-tracker filled a gap), and a
+   one-line `SUMMARY beats=... mean_interval_ms=... bpm=...
+   matched=X/Y (Z%)` at the end — the single line to paste into a PR
+   description or bench log when re-validating a tuning change against
+   an existing capture.
+5. If the SUMMARY's BPM or match rate looks wrong: adjust
+   `FF_BEAT_MUSIC_FLUX_MAD_K`/`_MIN_DB`/`_WINDOW_N`/`FF_BEAT_BPM_
+   HISTORY_N` (`ff_beat.h`), rebuild, re-run step 4. `test_beat_
+   captures.c` pins the two committed fixtures' own numbers as a
+   regression floor — a real tuning improvement should only ever move
+   those numbers up (or keep them, while fixing something else); a
+   drop means something regressed and the pinned expectations need
+   re-deriving, not silently loosening.
 
 ## Frame budget / renderer choice
 
@@ -1043,6 +1243,28 @@ after `tests/run_goldens.sh --update-golden`).
   "cheap" per the task's own wording, not a considered domain limit —
   a bench operator wanting a specific larger seed can extend the parser
   later if that ever matters.
+- **(2026-09-09, fix/s31-beat-real-captures) Kick pulse vs. half-time
+  downbeat.** The two real captures show a slower ~73-90 BPM structural
+  pulse under a busier ~110-160 BPM individually-audible onset layer —
+  genuine half-time-feel material, but NOT a clean, confirmable half/
+  double relationship between the two (see `ff_beat.h`'s own "Beat-
+  tracking" doc comment and this file's own "Establishing the dominant
+  periodicity" section above for the full evidence). The call to flare
+  on the kick pulse rather than inventing a half-time downbeat is
+  Claude's own judgment from that evidence, not an owner-approved
+  design decision — flagged for Jake to confirm against how the swarm
+  actually FEELS on the bench with real material (a half-time flare
+  might read as calmer/more "musical" even if the honest onset evidence
+  favors the busier pulse). `FF_BEAT_MUSIC_FLUX_MAD_K` (3.5), `_MIN_DB`
+  (3.0dB, unchanged), `_WINDOW_N` (50), `FF_BEAT_BPM_HISTORY_N` (21),
+  `FF_BEAT_TRACK_WINDOW_FRAC` (20%), and `FF_BEAT_TRACK_MAX_PREDICTED`
+  (2) are ALL judgment calls tuned against exactly two 10s captures of
+  one artist's one set — the same "plausible, not provably correct"
+  posture the constants list at the top of this section already
+  carries; a future capture from a different genre/mix may well need
+  different values, which is exactly what `tools/beat_capture_
+  onsets.py` + `beat_sim_replay`'s SUMMARY line (this file's own
+  "capture -> replay -> tune loop" above) exist to re-derive quickly.
 
 ## Acceptance criteria
 
@@ -1108,6 +1330,26 @@ after `tests/run_goldens.sh --update-golden`).
   works; the ESP32-S3 device build (bench sdkconfig, minus `CONFIG_
   FREERTOS_USE_TRACE_FACILITY`, plus `CONFIG_FF_DEBUG_CONSOLE=y` and
   `CONFIG_FF_COMPASS=y`) is warning-clean.
+- **AC11** (2026-09-09 amendment, fix/s31-beat-real-captures) — run
+  end-to-end against the two committed real-capture fixtures
+  (`firmware/core/tests/fixtures/audio/mic_dump_set_{1,2}.wav`,
+  `test_beat_captures.c`, `beat_sim_replay`): each capture's
+  `bpm_estimate` settles to a STABLE value (zero-variance for at least
+  the last 6 detected beats) within ±3 BPM of that capture's own
+  honestly-established number (125.0 / 142.9 — see "Establishing the
+  dominant periodicity, honestly, per file" above) and detects at least
+  80% of that capture's own low-band onset-flux peaks (81% / 83%
+  measured); the beat-tracker's predicted-beat fallback is bounded to
+  `FF_BEAT_TRACK_MAX_PREDICTED` (2) consecutive un-confirmed beats
+  before its lock drops; all pre-existing `test_beat.c` synthetic cases
+  (128 BPM click train, silence, slow swell, 2Hz IMU bounce, the 128
+  BPM synthetic-music kick + its phone-speaker variant) still pass
+  unmodified; clang and gcc-14 sim builds stay warning-clean, `ctest`
+  stays green (including the S16 churn budgets, idle-drain, and the new
+  `test_beat_captures` suite), all 102 goldens stay byte-identical
+  (this amendment touches no rendering path); the ESP32-S3 device build
+  (bench sdkconfig, same substitutions as AC10) is warning-clean and
+  its DRAM budget check passes.
 
 ## Bench acceptance protocol (for the coordinator)
 

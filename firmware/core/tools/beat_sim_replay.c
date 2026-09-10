@@ -16,16 +16,34 @@
  * Reads a 16-bit mono PCM WAV file (16kHz — this module's own
  * `ff_bandenergy.h` dependency is fixed at that rate, matching the
  * real mic HAL's one supported rate, docs/specs/S30-audio-input.md's
- * own "Format" section), feeds it through the EXACT SAME per-frame
- * pipeline `ff_mic.c`'s reader task runs on real hardware (DC-remove
- * -> RMS/peak/envelope -> band energy -> `ff_beat_update`) at the
- * real 20ms/50Hz frame cadence, and prints:
+ * own "Format" section) via `ff_wav.h` (2026-09-09 amendment,
+ * fix/s31-beat-real-captures — the parser used to live inline here;
+ * it moved to `firmware/core/include/ff_wav.h` so the SAME parsing
+ * code also serves `test_beat_captures.c`'s real-capture regression
+ * tests, see that header's own top comment), feeds it through the
+ * EXACT SAME per-frame pipeline `ff_mic.c`'s reader task runs on real
+ * hardware (DC-remove -> RMS/peak/envelope -> band energy ->
+ * `ff_beat_update`) at the real 20ms/50Hz frame cadence, and prints:
  *   - a status line every ~100ms (`t=... loudness=... low_dbfs=...
  *     mid_dbfs=... bpm=...`);
  *   - a `BEAT` line the instant `beat_count` increments (never delayed
  *     to the next status line — a bench engineer wants beats visible
  *     to their own real timing, not sampled at this tool's print
- *     cadence).
+ *     cadence) — tagged `(predicted)` when this beat came from the
+ *     beat-tracker's own period prediction rather than a confirmed
+ *     band onset (`ff_beat.h`'s "Beat-tracking" section, 2026-09-09
+ *     amendment fix/s31-beat-real-captures);
+ *   - a one-line SUMMARY at the end (2026-09-09 amendment,
+ *     fix/s31-beat-real-captures — the deliverable's own "one-line
+ *     summary ... so the coordinator can re-run it on future
+ *     captures"): beat count, mean inter-beat interval, final BPM
+ *     estimate, and — only when a ground-truth onsets file is given as
+ *     the optional 2nd argument (one flux-peak timestamp in seconds
+ *     per line, e.g. `firmware/core/tests/fixtures/audio/`, _onsets.txt)
+ *     — the fraction of those onsets this run actually matched (a
+ *     detected beat within +-20% of the run's own mean inter-beat
+ *     interval of the onset timestamp — the same acceptance-window
+ *     convention `ff_beat.c`'s own beat-tracker uses).
  *
  * Sim-only CLI tool (not part of ctest — no pass/fail assertion of its
  * own; it prints for a human to read, mirroring `compare_png`'s own
@@ -44,92 +62,12 @@
 #include "ff_bandenergy.h"
 #include "ff_beat.h"
 #include "ff_miclevel.h"
+#include "ff_wav.h"
 
 #define FRAME_SAMPLES FF_MICLEVEL_FRAME_SAMPLES /* 320 — 20ms at 16kHz */
 #define STATUS_PERIOD_MS 100u
-
-typedef struct {
-    uint32_t sample_rate_hz;
-    uint16_t bits_per_sample;
-    uint16_t channels;
-    int16_t const *samples; /* points into the caller's own file buffer */
-    size_t n_samples;
-} wav_t;
-
-/* Minimal canonical RIFF/WAVE parser — see this file's own top comment
- * for why this deliberately does not handle every real-world WAV
- * variant (extra chunks, non-PCM formats, etc.). Returns 0 on success;
- * a negative value (with a message already printed to stderr) on any
- * parse failure. `file_bytes` is owned by the caller and must outlive
- * `out->samples`. */
-static int wav_parse(uint8_t const *file_bytes, size_t file_len, wav_t *out)
-{
-    memset(out, 0, sizeof(*out));
-    if (file_len < 44u || memcmp(file_bytes, "RIFF", 4) != 0 || memcmp(file_bytes + 8, "WAVE", 4) != 0) {
-        fprintf(stderr, "not a RIFF/WAVE file\n");
-        return -1;
-    }
-
-    size_t pos = 12u;
-    bool have_fmt = false;
-    while (pos + 8u <= file_len) {
-        char id[5] = {0};
-        memcpy(id, file_bytes + pos, 4);
-        uint32_t chunk_size;
-        memcpy(&chunk_size, file_bytes + pos + 4u, 4);
-        size_t const body = pos + 8u;
-        if (body + chunk_size > file_len) {
-            fprintf(stderr, "truncated '%s' chunk\n", id);
-            return -1;
-        }
-
-        if (memcmp(id, "fmt ", 4) == 0) {
-            if (chunk_size < 16u) {
-                fprintf(stderr, "fmt chunk too small\n");
-                return -1;
-            }
-            uint16_t audio_format, channels, bits_per_sample;
-            uint32_t sample_rate;
-            memcpy(&audio_format, file_bytes + body + 0u, 2);
-            memcpy(&channels, file_bytes + body + 2u, 2);
-            memcpy(&sample_rate, file_bytes + body + 4u, 4);
-            memcpy(&bits_per_sample, file_bytes + body + 14u, 2);
-            if (audio_format != 1u /* PCM */) {
-                fprintf(stderr, "only PCM WAV is supported (audio_format=%u)\n", (unsigned)audio_format);
-                return -1;
-            }
-            out->sample_rate_hz = sample_rate;
-            out->channels = channels;
-            out->bits_per_sample = bits_per_sample;
-            have_fmt = true;
-        } else if (memcmp(id, "data", 4) == 0) {
-            if (!have_fmt) {
-                fprintf(stderr, "'data' chunk arrived before 'fmt '\n");
-                return -1;
-            }
-            out->samples = (int16_t const *)(file_bytes + body);
-            out->n_samples = chunk_size / sizeof(int16_t);
-        }
-
-        pos = body + chunk_size + (chunk_size & 1u); /* chunks are word-aligned */
-    }
-
-    if (!have_fmt || out->samples == NULL) {
-        fprintf(stderr, "missing 'fmt ' or 'data' chunk\n");
-        return -1;
-    }
-    if (out->channels != 1u || out->bits_per_sample != 16u) {
-        fprintf(stderr, "only 16-bit mono PCM is supported (channels=%u, bits=%u)\n", (unsigned)out->channels,
-                (unsigned)out->bits_per_sample);
-        return -1;
-    }
-    if (out->sample_rate_hz != FF_BANDENERGY_SAMPLE_RATE_HZ) {
-        fprintf(stderr, "only %uHz is supported (file is %uHz)\n", (unsigned)FF_BANDENERGY_SAMPLE_RATE_HZ,
-                (unsigned)out->sample_rate_hz);
-        return -1;
-    }
-    return 0;
-}
+#define MAX_ONSETS 4096u
+#define MAX_BEATS 4096u
 
 static uint8_t *read_whole_file(char const *path, size_t *out_len)
 {
@@ -160,12 +98,35 @@ static uint8_t *read_whole_file(char const *path, size_t *out_len)
     return buf;
 }
 
+/* Loads a ground-truth onsets file (one timestamp in seconds per line,
+ * blank lines and '#'-prefixed comments ignored) — see this file's own
+ * top comment. Returns the count loaded (0 on a missing/empty file,
+ * never an error — the summary line just reports "n/a" for the match
+ * fraction then). */
+static size_t load_onsets(char const *path, float *out, size_t cap)
+{
+    FILE *f = fopen(path, "r");
+    if (f == NULL) return 0u;
+    size_t n = 0u;
+    char line[128];
+    while (n < cap && fgets(line, sizeof(line), f) != NULL) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '\n' || *p == '#') continue;
+        out[n++] = strtof(p, NULL);
+    }
+    fclose(f);
+    return n;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s <capture.wav>\n", argv[0]);
+    if (argc != 2 && argc != 3) {
+        fprintf(stderr, "usage: %s <capture.wav> [onsets.txt]\n", argv[0]);
         fprintf(stderr, "  16-bit mono PCM WAV @ %uHz — see tools/beat_replay.py (decode/synth)\n",
                 (unsigned)FF_BANDENERGY_SAMPLE_RATE_HZ);
+        fprintf(stderr, "  onsets.txt: optional ground-truth onset timestamps (seconds, one per\n");
+        fprintf(stderr, "  line) — the SUMMARY line reports what fraction this run matched.\n");
         return 2;
     }
 
@@ -176,15 +137,29 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    wav_t wav;
-    if (wav_parse(file_bytes, file_len, &wav) != 0) {
+    ff_wav_t wav;
+    if (ff_wav_parse(file_bytes, file_len, &wav) != 0) {
+        fprintf(stderr, "'%s': not a valid RIFF/WAVE file\n", argv[1]);
+        free(file_bytes);
+        return 1;
+    }
+    if (!ff_wav_is_16bit_mono_at(&wav, FF_BANDENERGY_SAMPLE_RATE_HZ)) {
+        fprintf(stderr, "'%s': need 16-bit mono PCM @ %uHz (got channels=%u bits=%u rate=%u)\n", argv[1],
+                (unsigned)FF_BANDENERGY_SAMPLE_RATE_HZ, (unsigned)wav.channels, (unsigned)wav.bits_per_sample,
+                (unsigned)wav.sample_rate_hz);
         free(file_bytes);
         return 1;
     }
 
+    static float onsets_s[MAX_ONSETS];
+    size_t const n_onsets = (argc == 3) ? load_onsets(argv[2], onsets_s, MAX_ONSETS) : 0u;
+
     size_t const n_frames = wav.n_samples / FRAME_SAMPLES;
     printf("beat_sim_replay: %s — %zu samples (%.2fs @ %uHz), %zu frames\n", argv[1], wav.n_samples,
            (double)wav.n_samples / (double)wav.sample_rate_hz, (unsigned)wav.sample_rate_hz, n_frames);
+    if (argc == 3) {
+        printf("  ground truth: %zu onset(s) from '%s'\n", n_onsets, argv[2]);
+    }
 
     ff_miclevel_dc_state_t dc;
     ff_miclevel_envelope_t env;
@@ -199,6 +174,9 @@ int main(int argc, char **argv)
     uint32_t now_ms = 0u;
     uint32_t last_status_ms = 0u;
     uint32_t last_beat_count = 0u;
+
+    static float beat_times_s[MAX_BEATS];
+    size_t n_beats = 0u;
 
     for (size_t f = 0; f < n_frames; f++) {
         int16_t const *raw = wav.samples + f * FRAME_SAMPLES;
@@ -225,8 +203,9 @@ int main(int argc, char **argv)
 
         if (beat.beat_count != last_beat_count) {
             last_beat_count = beat.beat_count;
-            printf("  BEAT   t=%7.3fs  #%-4u  bpm=%.1f\n", (double)now_ms / 1000.0, (unsigned)beat.beat_count,
-                   (double)beat.bpm_estimate);
+            if (n_beats < MAX_BEATS) beat_times_s[n_beats++] = (float)now_ms / 1000.0f;
+            printf("  BEAT   t=%7.3fs  #%-4u  bpm=%.1f%s\n", (double)now_ms / 1000.0, (unsigned)beat.beat_count,
+                   (double)beat.bpm_estimate, beat.last_beat_predicted ? "  (predicted)" : "");
         }
 
         if (now_ms - last_status_ms >= STATUS_PERIOD_MS) {
@@ -236,8 +215,47 @@ int main(int argc, char **argv)
         }
     }
 
+    float mean_interval_ms = 0.0f;
+    if (n_beats >= 2u) {
+        mean_interval_ms = (beat_times_s[n_beats - 1u] - beat_times_s[0]) * 1000.0f / (float)(n_beats - 1u);
+    }
+
     printf("done: %zu frames, %u beats, final bpm_estimate=%.1f\n", n_frames, (unsigned)beat.beat_count,
            (double)beat.bpm_estimate);
+
+    /* SUMMARY line — 2026-09-09 amendment (fix/s31-beat-real-captures),
+     * the deliverable's own "one-line summary ... so the coordinator
+     * can re-run it on future captures". Match window: a FIXED 150ms —
+     * roughly 20% of the ~500-750ms beat period these captures (and
+     * ordinary 80-150 BPM dance tempos generally) actually show. A
+     * window derived from the onsets file's own local gaps was tried
+     * and rejected: real, syncopated low-band onsets are NOT evenly
+     * spaced (see docs/specs/S31-music-swarm.md's dated amendment), so
+     * a median-of-local-gaps window swings with exactly the same
+     * irregularity the match check is trying to look past. A fixed,
+     * documented tolerance is simpler and does not get tighter or
+     * looser depending on which onsets happen to sit next to each
+     * other in the ground-truth file. */
+    if (n_onsets > 0u) {
+        float const window_s = 0.15f;
+        size_t matched = 0u;
+        for (size_t i = 0; i < n_onsets; i++) {
+            for (size_t j = 0; j < n_beats; j++) {
+                float const diff = beat_times_s[j] - onsets_s[i];
+                float const adiff = (diff < 0.0f) ? -diff : diff;
+                if (adiff <= window_s) {
+                    matched++;
+                    break;
+                }
+            }
+        }
+        printf("SUMMARY beats=%zu mean_interval_ms=%.1f bpm=%.1f matched=%zu/%zu (%.0f%%)\n", n_beats,
+               (double)mean_interval_ms, (double)beat.bpm_estimate, matched, n_onsets,
+               (double)matched * 100.0 / (double)n_onsets);
+    } else {
+        printf("SUMMARY beats=%zu mean_interval_ms=%.1f bpm=%.1f matched=n/a (no onsets file given)\n", n_beats,
+               (double)mean_interval_ms, (double)beat.bpm_estimate);
+    }
 
     free(file_bytes);
     return 0;

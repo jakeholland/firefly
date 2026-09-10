@@ -61,4 +61,5 @@ set(FF_CORE_SOURCES
     src/ff_bandenergy.c      # S31 amendment (2026-09-09) — low/mid band-limited energy (real-music onset input)
     src/ff_beat.c             # S31 — Music/Swarm beat/loudness detector (auto-ranging + onset)
     src/ff_swarm.c            # S31 — Music/Swarm 60-particle deterministic simulation
+    src/ff_wav.c              # 2026-09-09 amendment (fix/s31-beat-real-captures) — pure RIFF/WAVE parser, shared by beat_sim_replay + test_beat_captures
 )

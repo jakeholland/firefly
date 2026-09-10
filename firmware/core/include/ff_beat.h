@@ -86,19 +86,20 @@
  * number. Each band's OWN per-frame ENERGY RISE (a half-wave-rectified
  * frame-to-frame delta in dB — "spectral flux" collapsed to two bands,
  * per the deliverable's own "spectral-flux or band-limited energy
- * onset" framing) is compared against an ADAPTIVE threshold: the
- * MEDIAN of that band's own flux over the last ~1.5s
+ * onset" framing) is compared against an ADAPTIVE threshold: that
+ * band's own rolling MEDIAN flux plus `FF_BEAT_MUSIC_FLUX_MAD_K` times
+ * its own rolling MAD (median absolute deviation), over the last ~1.0s
  * (`FF_BEAT_MUSIC_FLUX_WINDOW_N` samples at the ~50Hz nominal input
- * rate) plus a fixed margin (`FF_BEAT_MUSIC_FLUX_MARGIN_DB`), floored
- * at an absolute minimum (`FF_BEAT_MUSIC_FLUX_MIN_DB`) so a truly flat/
- * silent signal (median flux ~0) cannot trip on ordinary numerical
- * jitter. A beat fires when EITHER band's flux clears its own threshold
- * AND the shared refractory window (`FF_BEAT_REFRACTORY_MS`, 250ms,
- * UNCHANGED) has elapsed — "either", not "both", because different
- * genres/mixes push the audible onset into different bands (a
- * four-on-the-floor kick into LOW; a claps/snare-forward mix more into
- * MID) and requiring both would miss real beats a working ear calls
- * obvious.
+ * rate — RE-TUNED from 6dB-fixed-margin/~1.5s by the 2026-09-09
+ * amendment fix/s31-beat-real-captures below), floored at an absolute
+ * minimum (`FF_BEAT_MUSIC_FLUX_MIN_DB`) so a truly flat/silent signal
+ * (median flux ~0, MAD ~0) cannot trip on ordinary numerical jitter. A
+ * beat fires when EITHER band's flux clears its own threshold AND the
+ * shared refractory window (`FF_BEAT_REFRACTORY_MS`, 250ms, UNCHANGED)
+ * has elapsed — "either", not "both", because different genres/mixes
+ * push the audible onset into different bands (a four-on-the-floor kick
+ * into LOW; a claps/snare-forward mix more into MID) and requiring both
+ * would miss real beats a working ear calls obvious.
  *
  * WHY FLUX (a frame-to-frame DELTA), NOT a level-vs-median comparison:
  * a slow swell (loudness rising/falling over several SECONDS — this
@@ -134,6 +135,90 @@
  * shared machinery for BOTH sources — MIC's band-onset and IMU's
  * peak-pick each just call the same `beat_fire`, per this header's
  * "IMU path" section below.
+ *
+ * ## Beat-tracking / real-capture retuning — 2026-09-09 amendment
+ * (fix/s31-beat-real-captures, docs/specs/S31-music-swarm.md's dated
+ * amendment)
+ *
+ * PR #254's band-limited onset-flux detector (immediately above) was
+ * never validated against a real, sustained dance-music capture — only
+ * synthetic signals. Two real 10s captures of a live dubstep set
+ * (Crankdat, played from a speaker near the puck, `mic dump 10` +
+ * `tools/beat_replay.py`, now `firmware/core/tests/fixtures/audio/
+ * mic_dump_set_{1,2}.wav`) showed PR #254's detector reporting only 2
+ * beats in 10s (bpm_estimate 81.9) on capture 1. Two things were wrong,
+ * both fixed here:
+ *
+ * 1. **The fixed-dB flux margin was tuned too high for a real mic
+ *    capture.** A real room/speaker/mic chain has a lower, noisier flux
+ *    baseline than the synthetic click/kick signals PR #254 validated
+ *    against — see `FF_BEAT_MUSIC_FLUX_MAD_K`'s own doc comment for the
+ *    measured swing comparison. Replacing the fixed 6dB margin with
+ *    `median + FF_BEAT_MUSIC_FLUX_MAD_K * MAD` (each band's own
+ *    honestly-measured typical deviation, not an assumed constant) and
+ *    shortening the adaptive window to ~1.0s (`FF_BEAT_MUSIC_FLUX_
+ *    WINDOW_N`) raises the real captures' own detection rate from that
+ *    2-in-10s baseline to 13/16 (81%) and 15/18 (83%) of each capture's
+ *    own low-band onset-flux peaks (`test_beat_captures.c`,
+ *    `firmware/core/tests/fixtures/audio/mic_dump_set_{1,2}_onsets.txt`
+ *    — see that fixture's own header comment for exactly how those
+ *    ground-truth peaks were picked).
+ * 2. **Raw per-onset detection alone still leaves gaps** — a real
+ *    capture's onsets vary in level (a wobble bassline is not a
+ *    metronome), so even a well-tuned threshold still misses some. A
+ *    NEW beat-tracking stage closes this: once `ff_beat_t.
+ *    tracker_locked` (a period estimate exists — `period_ms`, the
+ *    median of recent inter-onset intervals, UNFOLDED — see
+ *    `ff_beat_t`'s own field comments), the tracker predicts the next
+ *    beat at `last_beat_ms + period_ms`. A raw band onset arriving
+ *    at ANY time still confirms the beat exactly as before — a real
+ *    onset is never rejected for arriving off-schedule. The tracker
+ *    waits an extra grace period, `FF_BEAT_TRACK_WINDOW_FRAC` (20%) of
+ *    the period, PAST the predicted instant (so an onset arriving
+ *    slightly late, but still "on tempo", is caught as a CONFIRMED beat
+ *    rather than preempted by a guess); only once that grace period
+ *    ALSO elapses with no onset does the tracker fire a PREDICTED beat
+ *    (`ff_beat_t.last_beat_predicted`), advancing `beat_count`/
+ *    `bpm_estimate`/the caller's swarm pulse exactly as a confirmed
+ *    beat would — "turns 2 detections into a steady pulse", per the
+ *    deliverable's own wording. Bounded: `FF_BEAT_TRACK_MAX_PREDICTED`
+ *    (2) CONSECUTIVE predicted beats with no confirming onset between
+ *    them, then the lock drops (`tracker_locked` -> false) until a new
+ *    real onset re-establishes a period estimate — a detector that
+ *    has genuinely gone quiet (a track ends, the mic is covered) must
+ *    not keep confidently inventing a pulse forever.
+ *
+ * **Kick pulse vs. half-time downbeat — the octave-folding decision.**
+ * Two independent looks at the same captures' LOW band both find a
+ * SLOWER, ~73-115 BPM structural pulse UNDER a busier, individually-
+ * audible ~110-160 BPM layer of onsets: an idealized FFT-based
+ * analysis (20ms frames) of capture 1 finds its low band's flux
+ * autocorrelation peaking at a 0.52s lag (~115 BPM), with the MID band
+ * (snare/clap/vocal transients — the more usual "downbeat" marker)
+ * suggesting a slower ~88 BPM; independently, THIS module's own actual
+ * (less selective, one-pole-cascade) `ff_bandenergy.h` LOW band shows a
+ * different but highly reproducible signature in BOTH captures — a
+ * clean 0.82s (~73 BPM) autocorrelation peak, matching that same
+ * slower-pulse territory. Taken together this reads as genuine
+ * half-time-feel dubstep: a slow structural downbeat with a busier,
+ * syncopated bass/kick layer riding on top, not a single clean tempo.
+ * Per this file's own "note the interpretation" flag: the puck flares
+ * on the KICK PULSE — the busier, individually-audible onset layer —
+ * not the inferred half-time downbeat, because the kick pulse is what
+ * this detector actually, honestly OBSERVES (each firing is a real,
+ * separately-detected energy rise, never an inferred "every other
+ * beat" construct), and it is what a listener/dancer reacts to
+ * event-by-event. `FF_BEAT_BPM_MIN`/`_MAX` (`[70,180]`) is UNCHANGED
+ * and stays consistent with this choice either way: this repo's own
+ * tuned detector, run end-to-end against both fixtures
+ * (`test_beat_captures.c`), settles to a STABLE 125.0 BPM (capture 1)
+ * and 142.9 BPM (capture 2) — both comfortably inside that range
+ * already, no adjustment needed — and if a quieter passage ever left
+ * the detector catching only the slower ~73-90 BPM downbeat layer
+ * instead, that also falls inside `[70,180]` without any forced
+ * doubling, so folding never has to choose between the two readings.
+ * See docs/specs/S31-music-swarm.md's dated amendment for the full
+ * worked numbers from both analyses.
  *
  * IMU path (UNCHANGED by this amendment — the deliverable's own "keep
  * the IMU path" instruction): vertical-axis bounce PEAK-picking on
@@ -198,18 +283,49 @@ typedef struct {
 
 #define FF_BEAT_REFRACTORY_MS     250u
 
-/** MIC onset detection (2026-09-09 amendment) — see this header's top
- *  comment, "Beat/onset detection", for the full design. Each band's
- *  own rolling window of past FLUX values (half-wave-rectified
- *  frame-to-frame dB deltas) this many samples deep, at the ~50Hz
- *  nominal input rate -> ~1.5s of history. */
-#define FF_BEAT_MUSIC_FLUX_WINDOW_N 75u
-/** A band's flux must clear its own rolling MEDIAN flux by at least
- *  this many dB to count as an onset. */
-#define FF_BEAT_MUSIC_FLUX_MARGIN_DB 6.0f
-/** ...or this ABSOLUTE floor, whichever is higher — guards a flat/
- *  silent signal (median flux ~0) from tripping on ordinary numerical
- *  jitter, where "0 + margin" would otherwise be a near-zero bar. */
+/** MIC onset detection (2026-09-09 amendment fix/s31-beat-real-audio,
+ *  RE-TUNED 2026-09-09 amendment fix/s31-beat-real-captures — see this
+ *  header's top comment, "Beat/onset detection", for the full design.
+ *  Each band's own rolling window of past FLUX values (half-wave-
+ *  rectified frame-to-frame dB deltas) this many samples deep, at the
+ *  ~50Hz nominal input rate -> ~1.0s of history. SHORTENED from 75
+ *  (~1.5s) by fix/s31-beat-real-captures: real dubstep captures (Jake's
+ *  puck, `mic dump 10`, see docs/specs/S31-music-swarm.md's dated
+ *  amendment) showed the low band's own true periodicity landing
+ *  around 115 BPM (~520ms/beat) — a 1.5s window spans nearly 3 beats,
+ *  so a genuinely LOUD beat sitting inside that window drags the
+ *  window's own median up, quietly raising the bar against the NEXT
+ *  beat too. A ~1.0s window (a little under 2 beats at that tempo)
+ *  reacts faster to a real tempo's own dynamics while still being long
+ *  enough to average over a single onset's own attack/decay shape. */
+#define FF_BEAT_MUSIC_FLUX_WINDOW_N 50u
+/** A band's flux must clear its own rolling window's MEDIAN by at
+ *  least this many MEDIAN-ABSOLUTE-DEVIATIONS (MAD) to count as an
+ *  onset — REPLACES the fixed-dB-margin design (fix/s31-beat-real-
+ *  captures amendment). A flat dB margin assumes every band, every
+ *  track, and every mic gain setting produces roughly the same flux
+ *  NOISE FLOOR around its median; real captures prove that false: the
+ *  two real dubstep captures this amendment adds as regression fixtures
+ *  have low-band flux swings roughly HALF the synthetic click-train's
+ *  own (a real mic capturing a real room is quieter and noisier per
+ *  band than a synthesized -8dBFS click), so a fixed 6dB margin tuned
+ *  against the synthetic signal was comfortably clearing genuine kicks
+ *  in that test while sitting ABOVE what real onsets in the captures
+ *  ever produced — the root cause of PR #254's own "2 beats in 10s"
+ *  finding on `mic_dump_set_1.wav`. MAD (median of |flux[i] - median|
+ *  over the same window) is the band's own honestly-measured typical
+ *  DEVIATION, not an assumed constant — a band that is naturally
+ *  jitterier (louder mix, busier bassline) gets a proportionally larger
+ *  bar; a quiet, calm band gets a small one. Median/MAD (not mean/
+ *  stddev) for the same "resistant to the very transients it exists to
+ *  detect against" reason `median_of`'s own doc comment already gives
+ *  for the median threshold this replaces. */
+#define FF_BEAT_MUSIC_FLUX_MAD_K 3.5f
+/** ...or this ABSOLUTE floor (dB) above the median, whichever is
+ *  higher — guards a flat/silent signal (median flux ~0, MAD ~0) from
+ *  tripping on ordinary numerical jitter, where "0 + k*0" would
+ *  otherwise be a zero bar. UNCHANGED value from the fixed-margin
+ *  design; still the right floor for "no real dynamic range at all". */
 #define FF_BEAT_MUSIC_FLUX_MIN_DB 3.0f
 
 /** BPM estimator (2026-09-09 amendment) — see this header's top
@@ -219,10 +335,60 @@ typedef struct {
  *  a real onset detector's raw interval inevitably sometimes reads a
  *  half-note/double-time subdivision instead of the true beat; both
  *  bounds are ordinary dance-music tempo territory, per the
- *  deliverable's own "octave folding into 70-180 BPM" instruction. */
-#define FF_BEAT_BPM_HISTORY_N 5u
+ *  deliverable's own "octave folding into 70-180 BPM" instruction.
+ *  WIDENED 5 -> 21 by the 2026-09-09 amendment (fix/s31-beat-real-
+ *  captures): a real capture's individual inter-onset intervals are far
+ *  noisier than a synthetic click train's (a real bassline's
+ *  syncopation genuinely varies onset-to-onset, not just detector
+ *  error) — a median over only 5 intervals still visibly rides that
+ *  per-onset noise, swinging bpm_estimate across a wide range beat to
+ *  beat (measured on `mic_dump_set_1.wav`/`_2.wav`, `test_beat_
+ *  captures.c`: a 5-deep median wandered ~94-158 BPM over the 10s
+ *  capture with no clear settling point). A 21-deep median — close to
+ *  "most of the beats in a 10s capture at this tempo" — instead
+ *  converges to a single stable value partway through each capture and
+ *  STAYS there (measured: 125.0 BPM and 142.9 BPM respectively, each
+ *  held for the back half of its own 10s capture) — this is the
+ *  "stable BPM" the deliverable asks for. A perfectly periodic
+ *  synthetic signal (the click train / synthetic kick tests) medians to
+ *  the exact same value at either window size, so this widening has no
+ *  effect on those; it only trades RESPONSIVENESS to a genuine tempo
+ *  CHANGE (a DJ mixing into a new track) for stability within one, a
+ *  trade this module's own "the swarm follows the beat, not the
+ *  printed number" split already affords — see this header's top
+ *  comment, "Beat-tracking" section, `last_beat_predicted`'s own
+ *  paragraph: the swarm's actual pulse timing comes from individual
+ *  `beat_count` increments (fast, per-onset), never from
+ *  `bpm_estimate` (slow, a display/console number only). */
+#define FF_BEAT_BPM_HISTORY_N 21u
 #define FF_BEAT_BPM_MIN 70.0f
 #define FF_BEAT_BPM_MAX 180.0f
+
+/** Beat-tracking / prediction (2026-09-09 amendment,
+ *  fix/s31-beat-real-captures) — see this header's top comment,
+ *  "Beat-tracking" section, for the full design and rationale. Once the
+ *  tracker has a period estimate (the MEDIAN inter-onset interval,
+ *  `ff_beat_t.period_ms` — the SAME statistic `bpm_estimate` folds,
+ *  just unfolded/raw), a PREDICTED fallback beat (see
+ *  `FF_BEAT_TRACK_MAX_PREDICTED` below) only fires after waiting this
+ *  fraction of the period PAST the predicted instant — a grace period
+ *  that gives a real onset arriving slightly late (but still "on
+ *  tempo") a chance to be caught as a CONFIRMED beat first. A raw band
+ *  onset at ANY time still confirms a beat exactly as always — this
+ *  constant is never used to REJECT one; see that section for why. */
+#define FF_BEAT_TRACK_WINDOW_FRAC 0.20f
+/** With the tracker locked (a period estimate exists) and no
+ *  confirming raw onset arrives by the predicted time, the tracker
+ *  fires a PREDICTED beat anyway (`ff_beat_t.last_beat_predicted`) —
+ *  this is what "turns 2 detections into a steady pulse" per the
+ *  deliverable's own wording, and what lets the swarm keep pulsing
+ *  through one missed onset instead of visibly stalling. Bounded: this
+ *  many CONSECUTIVE predicted beats without an intervening confirmed
+ *  (real-onset) beat, and the lock drops — an onset detector that has
+ *  gone quiet for that long is more likely tracking silence/a
+ *  section break than a tempo the puck should keep confidently
+ *  guessing at forever. */
+#define FF_BEAT_TRACK_MAX_PREDICTED 2u
 
 /** Reference g for the IMU's pseudo-dBFS conversion (see this header's
  *  top comment) — a bounce this size (an ordinary steady bob) reads as
@@ -305,6 +471,23 @@ typedef struct {
     float ioi_history_ms[FF_BEAT_BPM_HISTORY_N]; /* ring of recent inter-onset intervals */
     uint8_t ioi_next;                            /* ring write cursor */
     uint8_t ioi_count;                           /* valid entries so far, saturates at FF_BEAT_BPM_HISTORY_N */
+
+    /* Beat-tracking / prediction (2026-09-09 amendment,
+     * fix/s31-beat-real-captures) — see this header's top comment,
+     * "Beat-tracking" section, and FF_BEAT_TRACK_*'s own doc comments. */
+    bool     tracker_locked;      /* a period estimate exists (>=2 confirmed beats seen); false until then, and
+                                      dropped again after FF_BEAT_TRACK_MAX_PREDICTED consecutive predicted beats
+                                      with no confirming onset */
+    float    period_ms;           /* current period estimate — the SAME median-of-ioi_history_ms statistic
+                                      bpm_estimate folds, kept here UNFOLDED (raw ms) since prediction needs the
+                                      actual observed spacing, not the display octave */
+    uint32_t predicted_next_ms;   /* absolute time of the next PREDICTED beat, meaningful only while tracker_locked */
+    uint8_t  consecutive_predicted; /* consecutive predicted beats fired with no confirming real onset in between;
+                                        resets to 0 on every real-onset-confirmed beat */
+    bool     last_beat_predicted; /* true iff the MOST RECENT beat_count increment came from the tracker's own
+                                      prediction rather than a confirmed band onset — diagnostic only (beat_sim_
+                                      replay prints it); consumers that just diff beat_count (scr_music.c's
+                                      beat_now) do not need to care which kind a beat was */
 
     /* output */
     ff_beat_source_t source;
