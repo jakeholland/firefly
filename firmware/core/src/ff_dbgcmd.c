@@ -323,6 +323,25 @@ ff_dbgcmd_status_t ff_dbgcmd_parse(char const *line, size_t line_len, ff_dbgcmd_
             out->kind = FF_DBGCMD_MIC_WATCH;
             return FF_DBGCMD_ERR_OK;
         }
+        /* 2026-09-09 amendment — "mic dump <secs>": identical shape to
+         * "mic watch <secs>" just above (one bounded decimal argument),
+         * its own tighter range (FF_DBGCMD_MIC_DUMP_MIN_S/_MAX_S). */
+        if (tok_eq(buf, arg_start, sub_end, "dump")) {
+            size_t const secs_start = skip_space(buf, sub_end, end);
+            if (secs_start >= end) return FF_DBGCMD_ERR_BAD_ARGS; /* no duration */
+            size_t const secs_end = token_end(buf, secs_start, end);
+            uint32_t secs = 0u;
+            if (!parse_u32_dec(buf + secs_start, secs_end - secs_start, &secs)) {
+                return FF_DBGCMD_ERR_BAD_ARGS;
+            }
+            if (skip_space(buf, secs_end, end) < end) return FF_DBGCMD_ERR_BAD_ARGS; /* trailing garbage */
+            if (secs < FF_DBGCMD_MIC_DUMP_MIN_S || secs > FF_DBGCMD_MIC_DUMP_MAX_S) {
+                return FF_DBGCMD_ERR_BAD_ARGS;
+            }
+            out->u.mic_dump_secs = secs;
+            out->kind = FF_DBGCMD_MIC_DUMP;
+            return FF_DBGCMD_ERR_OK;
+        }
         return FF_DBGCMD_ERR_BAD_ARGS;
     }
 
@@ -385,6 +404,7 @@ char const *ff_dbgcmd_kind_name(ff_dbgcmd_kind_t kind)
     case FF_DBGCMD_MIC_ON: return "MIC_ON";
     case FF_DBGCMD_MIC_OFF: return "MIC_OFF";
     case FF_DBGCMD_MIC_WATCH: return "MIC_WATCH";
+    case FF_DBGCMD_MIC_DUMP: return "MIC_DUMP";
     case FF_DBGCMD_MUSIC: return "MUSIC";
     case FF_DBGCMD_MUSIC_SEED: return "MUSIC_SEED";
     }

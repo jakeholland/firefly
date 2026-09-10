@@ -166,6 +166,138 @@ All constants are `#define`s in `ff_beat.h`, flagged per AGENTS.md as
 interpretation calls (no existing spec pinned any of these before this
 change).
 
+## 2026-09-09 amendment (fix/s31-beat-real-audio): the MIC detector never
+## fires on real music — replaced with band-limited onset-flux
+
+### On-device evidence
+
+Jake's puck, main `a853bb5` + coordinator hotfix, real music playing
+from a speaker (no subwoofer), 15s Music session:
+
+```
+music source=mic loudness=0.82 bpm=0.0 frame_ms=n/a canvas_us=n/a
+```
+
+for the ENTIRE set — `loudness` honestly tracked the mix (0.82, LOUD),
+but `bpm_estimate` stayed 0.0 throughout: the onset detector above
+never fired a single beat. Mic level during the set: RMS -55 dBFS, peak
+-45 dBFS, envelope -54 dBFS (`mic watch` reading, mic channel
+independent of the beat detector's own auto-ranging).
+
+Also observed: the `music` console line's `frame_ms`/`canvas_us`
+fragment never populated (`n/a` throughout) — a separate bug, fixed
+below under "Frame stats hook", unrelated to the detector itself.
+
+**Root cause**: the fast/slow envelope detector above was tuned
+against (and only ever tested against) a click train — a genuine
+broadband transient riding on near-silence. Real, mastered music is
+dynamic-range-COMPRESSED: the track sits near a limiter's ceiling
+throughout, so a kick drum's actual energy punch barely moves the ONE
+broadband RMS/envelope number the old detector watched, even though
+that same number (correctly) reads as loud on the auto-ranged
+loudness scale. A click-train bench test structurally cannot catch
+this failure mode.
+
+### The fix — band-limited onset-flux, not a broadband threshold
+
+New module `ff_bandenergy.h`/`.c` (`firmware/core`) computes a LOW
+(~60-200Hz — a kick/bass note's fundamental) and a MID (~200-2000Hz — a
+snare/clap/other percussive-or-melodic transient) band RMS dBFS per
+20ms frame, via two cascaded one-pole (RC) lowpass filters differenced
+at each band's edges (`LP(f_hi) - LP(f_lo)`) — unconditionally stable
+(real poles only), not a resonant/biquad bandpass, a deliberate
+"stable over surgical" tradeoff for a detector that only needs "energy
+rose sharply in roughly this range", not a precise spectral picture.
+
+`ff_beat.c`'s MIC onset path now runs on these two bands instead of the
+broadband envelope:
+
+- **Flux, not level**: each band's per-frame FLUX (a half-wave-
+  rectified frame-to-frame delta in dB — "spectral flux" collapsed to
+  two bands) is the onset feature, not the raw level compared to a
+  slow-moving statistic. This is what correctly ignores a slow swell
+  (a multi-second rise still produces a tiny per-frame delta — a few
+  tenths of a dB at 20ms/frame even at a fast swell rate) while still
+  catching a real attack (tens of dB within one or two frames). An
+  earlier draft compared LEVEL against a trailing median directly and
+  reintroduced false positives on a slow swell purely from the
+  median's own lag — flux avoids that class of bug entirely.
+- **Adaptive threshold**: a band's flux must clear the MEDIAN of its
+  own last ~1.5s of flux history (`FF_BEAT_MUSIC_FLUX_WINDOW_N` = 75
+  samples at the ~50Hz nominal rate) plus a fixed margin
+  (`FF_BEAT_MUSIC_FLUX_MARGIN_DB` = 6dB), floored at an absolute
+  minimum (`FF_BEAT_MUSIC_FLUX_MIN_DB` = 3dB) so a flat/silent signal
+  (median flux ~0) cannot trip on numerical jitter. A MEDIAN, not a
+  mean, because it is not dragged toward the very transients it exists
+  to detect against.
+- **Either band fires it**: a beat fires when LOW's flux OR MID's flux
+  clears its own threshold (never "both required") — different
+  genres/mixes push the audible onset into different bands (a
+  four-on-the-floor kick into LOW; a claps/snare-forward mix more into
+  MID), and requiring both would miss real beats.
+- **Refractory unchanged**: still the shared `FF_BEAT_REFRACTORY_MS`
+  (250ms).
+- **IMU path unchanged**: still the peak-picker described above — a
+  bounce is already a single-channel excursion, not a multi-band audio
+  mixture needing frequency separation.
+- **Loudness auto-ranging unchanged**: still driven by the broadband
+  envelope exactly as before — the loudness reading was never the
+  broken part; only the onset detector was.
+
+**BPM estimator**: also amended — `bpm_estimate` is now the MEDIAN of
+the last `FF_BEAT_BPM_HISTORY_N` (5) inter-onset intervals (resistant
+to one missed/doubled beat), converted to BPM and OCTAVE-FOLDED (
+repeated doubling/halving) into `[FF_BEAT_BPM_MIN, FF_BEAT_BPM_MAX]` =
+`[70, 180]` — a real onset detector inevitably sometimes catches a
+half-note/double-time subdivision instead of the true beat, and
+folding into one canonical octave is the honest way to report "the
+tempo" rather than a fabricated exact multiple.
+
+### Test results (`firmware/core/tests/test_beat.c`)
+
+Two new synthetic-signal tests (a 128 BPM four-on-the-floor kick with a
+sustained bass line, compressed broadband envelope — only a 3-5dB
+swing, mirroring a mastered track near a limiter's ceiling — and a
+"phone speaker" variant with the LOW band's kick bump suppressed
+entirely, `peak_db=0`, forcing detection through MID alone) both pass
+against the real, unmocked `ff_beat_update`:
+
+- beats land within **±40ms** of the synthesized kick times;
+- `bpm_estimate` settles within **±3** of 128;
+- the phone-speaker variant proves the LOW/MID OR-fusion actually
+  matters (a "MID is ignored" bug would fail ONLY that test, not the
+  LOW-band one).
+
+All pre-existing acceptance cases still pass unmodified in behavior:
+the 128 BPM click train (±30ms), silence (0 beats), a slow swell (0
+beats), and the 2Hz IMU bounce (2 beats/s) — `mic_sample()`'s test
+helper was updated to also populate the new `low_band_dbfs`/
+`mid_band_dbfs` fields (mirroring `env_dbfs`, since a click/swell is a
+genuine broadband event that shows up identically in every band for
+these synthetic single-number signals), with no change to any test's
+own assertions.
+
+New module `ff_bandenergy.h`/`.c` has its own dedicated coverage
+(`test_bandenergy.c`): a 100Hz tone reads louder in LOW than MID (and
+vice versa for a 1000Hz tone), a 6kHz tone reads quiet in both, silence
+floors both, and NULL/empty inputs are safe.
+
+### Dump/replay workflow (bench capture -> detector validation)
+
+The bench console's `mic dump <secs>` command (docs/specs/
+S30-audio-input.md's own dated addition, same amendment) streams a raw
+16kHz mono capture off a real puck. `tools/beat_replay.py` (this
+repo's top-level `tools/`) decodes that capture into a WAV file, and
+can also synthesize the same two test signals described above (128 BPM
+kick + bass, plain and phone-speaker-high-passed) as standalone WAV
+files. `firmware/core/tools/beat_sim_replay.c` is a small sim-only CLI
+tool, linked against the REAL `ff_miclevel`/`ff_bandenergy`/`ff_beat`
+implementations, that reads a 16-bit mono WAV, feeds it through the
+full pipeline at the real 20ms/50Hz frame cadence, and prints loudness,
+detected beats, and the running BPM estimate over time — the
+coordinator's own tool for validating a real capture against this same
+detector without flashing new firmware for every experiment.
+
 ### Core: `ff_swarm.h`/`.c` (`firmware/core`)
 
 The 60-particle simulation, ALSO pure/host-testable/deterministic, but
@@ -637,6 +769,42 @@ app_main.c) is UNCHANGED by this PR and remains the tool that found the
 145ms/frame regression in the first place — it is what a bench engineer
 should watch after this fix to confirm the canvas renderer actually
 brought that number back down on real hardware.
+
+**2026-09-09 amendment (fix/s31-beat-real-audio)**: on-device evidence
+(this file's own "On-device evidence" section above) showed
+`frame_ms=n/a canvas_us=n/a` for an ENTIRE 15s real-music session —
+this fragment never populated at all on real hardware, despite
+`loudness`/`bpm` reading correctly off the same live session. Two
+changes:
+
+- `scr_music.c`'s frame-stats accumulator (`s_frame_stats`) now stamps
+  `last_valid_ms` (`lv_tick_get()`) every time a window closes, and
+  `ff_scr_music_debug_frame_stats()` reports the honest `n/a` (not the
+  real numbers) once more than `FF_SCR_MUSIC_FRAME_STATS_KEEP_MS`
+  (30s) has passed since the last close — before this fix, a value
+  that HAD populated was kept until the NEXT face build with no upper
+  bound at all (not itself a correctness bug, but nothing previously
+  guaranteed the console showed a RECENT number rather than an
+  arbitrarily old one from a session long over). This is the concrete
+  form of the deliverable's own "keep the last values for 30s after
+  leaving the face so a console read after the session still shows
+  them" — before this fix there was no expiry logic at all to test.
+- A new sim regression (`firmware/targets/sim/tests/
+  test_ctl_music_frame_stats.c`) builds Music for real (a real
+  `ff_ctl_loop_pump` session) and drives its per-frame timer with real
+  `lv_timer_handler()` calls under a mock clock, then reads
+  `ff_scr_music_debug_frame_stats()` directly — proving it reports
+  real, non-n/a numbers after ~2s of a real build+timer run (and
+  honestly n/a immediately before the first window closes), and that
+  those numbers survive leaving the face for a few seconds before
+  correctly expiring back to n/a past the 30s keep window. This sim
+  test PASSES against the current mechanism — the accumulation/getter
+  logic itself is verified correct end-to-end in the sim; the
+  on-device "never populates for 15 real seconds" symptom could not be
+  reproduced here and remains open as a hardware-only observation (a
+  real puck's LVGL tick/render-loop timing, not this code path, is the
+  likely remaining suspect — flagged per AGENTS.md rather than claimed
+  fixed without evidence).
 
 | Command | Effect |
 |---|---|

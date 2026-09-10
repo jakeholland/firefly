@@ -59,6 +59,7 @@
 #include "ff_gesture_glue.h" /* S28 slice b — on-glass BACK/HOME/long-press-flare */
 #include "ff_idle.h"       /* S26 slices c+f — core: inactivity -> dim -> screen off -> light sleep */
 #include "ff_intent.h"
+#include "ff_base64.h"     /* 2026-09-09 amendment — pure base64 encoder, `mic dump <secs>` */
 #include "ff_mic.h"        /* S30 — onboard I2S1 mic HAL */
 #include "ff_nvs_store.h" /* S21 §4 — the real NVS-backed store */
 #include "ff_power.h"      /* S25 — battery keep-alive latch (must fire first) + S26b PWR/BOOT sampling */
@@ -1384,7 +1385,123 @@ static void dbgconsole_mic_watch(uint32_t watch_secs, ff_dbgconsole_reply_fn rep
     reply(reply_user, "dbg: mic watch done");
 }
 
-static void dbgconsole_mic(void *hook_user, ff_dbgconsole_mic_action_t action, uint32_t watch_secs,
+/* `mic dump <secs>` data line — writes ONE already-CRLF-terminated line
+ * directly to the USB-Serial-JTAG port, BLOCKING (unlike
+ * `dbgconsole_reply_write`'s deliberately best-effort `ticks_to_wait=0`)
+ * until every byte is accepted or a generous overall stall budget
+ * (`FF_MIC_DUMP_WRITE_STALL_LIMIT_MS`) is exceeded. A dump line carries
+ * real audio data — silently dropping bytes the way the ordinary
+ * fire-and-forget reply path does for a short status line would corrupt
+ * the capture, not just cost a cosmetic redraw — so this is the ONE
+ * write path in this file that blocks the calling (render-loop) task on
+ * purpose, mirroring `dbgconsole_mic_watch`'s own "this command is a
+ * deliberate, bounded, bench-only exception" reasoning. Returns false
+ * if the stall budget was exceeded (host not draining — e.g. no
+ * terminal actually attached), so the caller can abort the dump rather
+ * than spend its own remaining budget writing into a wall. Feeds this
+ * task's own TWDT subscription while it retries. */
+static bool dbgconsole_mic_dump_write_line(char const *line, size_t len)
+{
+    enum { FF_MIC_DUMP_WRITE_RETRY_MS = 20u, FF_MIC_DUMP_WRITE_STALL_LIMIT_MS = 2000u };
+    size_t written = 0u;
+    uint32_t stalled_ms = 0u;
+    while (written < len) {
+        int const n = usb_serial_jtag_write_bytes(line + written, len - written, pdMS_TO_TICKS(FF_MIC_DUMP_WRITE_RETRY_MS));
+        if (n > 0) {
+            written += (size_t)n;
+            stalled_ms = 0u;
+            continue;
+        }
+        esp_task_wdt_reset();
+        stalled_ms += FF_MIC_DUMP_WRITE_RETRY_MS;
+        if (stalled_ms >= FF_MIC_DUMP_WRITE_STALL_LIMIT_MS) return false;
+    }
+    (void)usb_serial_jtag_write_bytes("\r\n", 2, pdMS_TO_TICKS(FF_MIC_DUMP_WRITE_STALL_LIMIT_MS));
+    return true;
+}
+
+/* `mic dump <secs>` (2026-09-09 amendment, fix/s31-beat-real-audio) —
+ * see `ff_dbgconsole_mic_fn`'s own doc comment (ff_debug_console.h,
+ * `FF_DBGCONSOLE_MIC_DUMP`) for the full design this implements:
+ *   - forces the mic on for the duration (restoring whatever state it
+ *     was actually in before, once done) so this command works even
+ *     with Music not open;
+ *   - streams `ff_mic_dump_pop`'s ring, one already-base64-encoded
+ *     20ms/320-sample frame per line, with a header (rate/bits/expected
+ *     frame count) and a trailer (frames actually delivered + dropped —
+ *     both honest counts, never fabricated);
+ *   - gives up (reporting present=0, or an early "stalled" trailer) if
+ *     the hardware isn't there or the host stops draining, rather than
+ *     hanging the render loop forever.
+ * Blocks the calling task for up to `dump_secs` seconds, same bench-
+ * only tradeoff as `dbgconsole_mic_watch` above (this codebase's
+ * console only exists at all with a bench USB cable plugged in). */
+static void dbgconsole_mic_dump(uint32_t dump_secs, ff_dbgconsole_reply_fn reply, void *reply_user)
+{
+    bool const was_running = ff_mic_status().running;
+    if (!was_running) ff_mic_start();
+
+    if (!ff_mic_status().present) {
+        reply(reply_user, "dbg: mic dump present=0");
+        if (!was_running) ff_mic_stop();
+        return;
+    }
+
+    ff_mic_dump_start();
+
+    /* One frame = FF_MIC_FRAME_SAMPLES (320) samples = 20ms at
+     * FF_MIC_SAMPLE_RATE_HZ (16kHz) — the mic's own nominal frame rate,
+     * so "frames" here is directly "dump_secs * 50". */
+    uint32_t const target_frames = (dump_secs * 1000u) / 20u;
+    {
+        char header[96];
+        snprintf(header, sizeof(header), "dbg: mic dump rate_hz=%u bits=16 frames=%u",
+                  (unsigned)FF_MIC_SAMPLE_RATE_HZ, (unsigned)target_frames);
+        reply(reply_user, header);
+    }
+
+    /* base64 line buffer: "dbg: mic dump data " (20 bytes) + the
+     * base64 text (ff_base64_encoded_len(640) = 856 bytes) + NUL. 896
+     * clears that with headroom. */
+    char const *const prefix = "dbg: mic dump data ";
+    size_t const prefix_len = strlen(prefix);
+    char line[896];
+    memcpy(line, prefix, prefix_len);
+
+    uint32_t delivered = 0u;
+    bool stalled = false;
+    enum { FF_MIC_DUMP_POLL_MS = 5u, FF_MIC_DUMP_NO_DATA_LIMIT_MS = 1000u };
+    uint32_t no_data_ms = 0u;
+    while (delivered < target_frames && no_data_ms < FF_MIC_DUMP_NO_DATA_LIMIT_MS) {
+        esp_task_wdt_reset();
+        ff_mic_dump_frame_t frame;
+        if (!ff_mic_dump_pop(&frame)) {
+            vTaskDelay(pdMS_TO_TICKS(FF_MIC_DUMP_POLL_MS));
+            no_data_ms += FF_MIC_DUMP_POLL_MS;
+            continue;
+        }
+        no_data_ms = 0u;
+        bool const encoded = ff_base64_encode((uint8_t const *)frame.samples, sizeof(frame.samples),
+                                               line + prefix_len, sizeof(line) - prefix_len);
+        if (!encoded) continue; /* should never happen (buffer sized exactly) — never write a garbled line */
+        if (!dbgconsole_mic_dump_write_line(line, prefix_len + strlen(line + prefix_len))) {
+            stalled = true;
+            break;
+        }
+        delivered++;
+    }
+
+    ff_mic_dump_stats_t const stats = ff_mic_dump_stats();
+    ff_mic_dump_stop();
+    if (!was_running) ff_mic_stop();
+
+    char trailer[96];
+    snprintf(trailer, sizeof(trailer), "dbg: mic dump done frames=%u dropped=%u%s", (unsigned)delivered,
+              (unsigned)stats.frames_dropped, stalled ? " stalled=1" : "");
+    reply(reply_user, trailer);
+}
+
+static void dbgconsole_mic(void *hook_user, ff_dbgconsole_mic_action_t action, uint32_t secs,
                             ff_dbgconsole_reply_fn reply, void *reply_user)
 {
     (void)hook_user;
@@ -1412,7 +1529,10 @@ static void dbgconsole_mic(void *hook_user, ff_dbgconsole_mic_action_t action, u
         reply(reply_user, line);
         return;
     case FF_DBGCONSOLE_MIC_WATCH:
-        dbgconsole_mic_watch(watch_secs, reply, reply_user);
+        dbgconsole_mic_watch(secs, reply, reply_user);
+        return;
+    case FF_DBGCONSOLE_MIC_DUMP:
+        dbgconsole_mic_dump(secs, reply, reply_user);
         return;
     }
 }
@@ -2771,8 +2891,8 @@ void app_main(void)
                 ff_vec3_t const accel = (ff_vec3_t){0.0f, 0.0f, 1.0f};
                 bool const imu_present = false;
 #endif
-                ff_shell_set_beat_input(&s_shell, mst.present, mlvl.rms_dbfs, mlvl.envelope_dbfs, imu_present,
-                                         accel.z, now_ms);
+                ff_shell_set_beat_input(&s_shell, mst.present, mlvl.rms_dbfs, mlvl.envelope_dbfs, mlvl.low_band_dbfs,
+                                         mlvl.mid_band_dbfs, imu_present, accel.z, now_ms);
             }
         }
 

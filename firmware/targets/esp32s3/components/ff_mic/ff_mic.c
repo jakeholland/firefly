@@ -63,6 +63,7 @@
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
@@ -70,7 +71,8 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
-#include "ff_miclevel.h" /* firmware/core — pure level math, shared with the host test */
+#include "ff_bandenergy.h" /* firmware/core — low/mid band energy, 2026-09-09 amendment (fix/s31-beat-real-audio) */
+#include "ff_miclevel.h"   /* firmware/core — pure level math, shared with the host test */
 
 static const char *TAG = "ff_mic";
 
@@ -130,9 +132,35 @@ static bool s_has_last_frame = false;
 
 static ff_miclevel_dc_state_t s_dc;
 static ff_miclevel_envelope_t s_env;
+static ff_bandenergy_t s_bandenergy; /* 2026-09-09 amendment — low/mid band tracker for the SAME frame s_dc/s_env cover */
 
 static bool s_stuck_logged = false;
 static uint32_t s_stuck_ms = 0;
+
+/* -----------------------------------------------------------------
+ * `mic dump <secs>` (2026-09-09 amendment, fix/s31-beat-real-audio) —
+ * see ff_mic.h's own "mic dump" doc comment section for the full
+ * producer/consumer design. `s_dump_ring` is allocated ONCE from PSRAM
+ * (`heap_caps_malloc(..., MALLOC_CAP_SPIRAM)`, this codebase's own
+ * established pattern for a buffer this size — `app_main.c`'s
+ * `s_shell_p`/`s_demo_pack`/`s_field_pack` all do the identical thing)
+ * — 64 frames * 320 samples * 2 bytes = 40,960 bytes deliberately kept
+ * OFF the S3's much smaller internal DRAM budget, never a plain static
+ * array. `s_dump_active`/head/tail/count/frames_captured/
+ * frames_dropped are all guarded by the SAME `s_lock` every other field
+ * in this section already uses (the reader task writes, the console's
+ * drain loop — a different task — reads). A NULL `s_dump_ring` (the
+ * allocation failed) makes `ff_mic_dump_start` a no-op and every pushed
+ * frame count as dropped — the same "log once, degrade honestly, never
+ * fatal" posture as every other HAL bring-up path in this file. */
+static int16_t *s_dump_ring = NULL; /* FF_MIC_DUMP_RING_FRAMES * FF_MIC_FRAME_SAMPLES int16 samples, PSRAM */
+static bool s_dump_ring_alloc_failed_logged = false;
+static bool s_dump_active = false;
+static uint32_t s_dump_head = 0;   /* next slot the reader task writes */
+static uint32_t s_dump_tail = 0;   /* next slot ff_mic_dump_pop reads */
+static uint32_t s_dump_count = 0;  /* frames currently queued, <= FF_MIC_DUMP_RING_FRAMES */
+static uint32_t s_dump_frames_captured = 0;
+static uint32_t s_dump_frames_dropped = 0;
 
 /* fix/s31-music-idle-drain (2026-09-09) — cumulative on-time tracking;
  * see ff_mic_status_t.total_on_ms's own doc comment (ff_mic.h) for what
@@ -232,16 +260,40 @@ static void ff_mic_process_frame(uint32_t now_ms, uint32_t dt_ms)
     ff_miclevel_frame_compute(s_float_buf, FF_MIC_FRAME_SAMPLES, &frame);
     ff_miclevel_envelope_update(&s_env, frame.rms_dbfs, dt_ms);
 
+    /* 2026-09-09 amendment — low/mid band energy for the real-music
+     * onset detector (ff_beat.h's own top comment); same DC-removed
+     * samples the broadband RMS/peak above were computed from. */
+    ff_bandenergy_frame_t band;
+    ff_bandenergy_frame_compute(&s_bandenergy, s_float_buf, FF_MIC_FRAME_SAMPLES, &band);
+
     ff_mic_lock();
     s_frames_read++;
     s_last_read_ms = now_ms;
     s_level.rms_dbfs = frame.rms_dbfs;
     s_level.peak_dbfs = frame.peak_dbfs;
     s_level.envelope_dbfs = s_env.value_dbfs;
+    s_level.low_band_dbfs = band.low_dbfs;
+    s_level.mid_band_dbfs = band.mid_dbfs;
     for (size_t i = 0; i < FF_MIC_FRAME_SAMPLES; i++) {
         s_last_frame[i] = (int16_t)s_float_buf[i];
     }
     s_has_last_frame = true;
+
+    /* `mic dump` — see this file's own top-of-file state-block comment
+     * for the ring's design. A frame is copied out (or counted as
+     * dropped) HERE, still under s_lock, so the console's own
+     * ff_mic_dump_pop never races a partially-written slot. */
+    if (s_dump_active) {
+        if (s_dump_ring != NULL && s_dump_count < FF_MIC_DUMP_RING_FRAMES) {
+            memcpy(&s_dump_ring[s_dump_head * FF_MIC_FRAME_SAMPLES], s_last_frame,
+                   sizeof(int16_t) * FF_MIC_FRAME_SAMPLES);
+            s_dump_head = (s_dump_head + 1u) % FF_MIC_DUMP_RING_FRAMES;
+            s_dump_count++;
+            s_dump_frames_captured++;
+        } else {
+            s_dump_frames_dropped++;
+        }
+    }
 
     if (stuck || all_zero_first_frame) {
         s_stuck_ms += dt_ms;
@@ -355,8 +407,24 @@ esp_err_t ff_mic_init(void)
     s_level.rms_dbfs = FF_MICLEVEL_FLOOR_DBFS;
     s_level.peak_dbfs = FF_MICLEVEL_FLOOR_DBFS;
     s_level.envelope_dbfs = FF_MICLEVEL_FLOOR_DBFS;
+    s_level.low_band_dbfs = FF_MICLEVEL_FLOOR_DBFS;
+    s_level.mid_band_dbfs = FF_MICLEVEL_FLOOR_DBFS;
     ff_miclevel_dc_reset(&s_dc);
     ff_miclevel_envelope_reset(&s_env);
+    ff_bandenergy_reset(&s_bandenergy);
+
+    /* `mic dump` ring — PSRAM, allocated once, never freed (this HAL
+     * lives for the process' lifetime) — see this file's own state-block
+     * comment for the "why PSRAM, why heap_caps_malloc" reasoning. A
+     * failed allocation is non-fatal, same posture as every other
+     * failure path in this function: `ff_mic_dump_start` becomes a
+     * permanent no-op and every push counts as dropped, logged once. */
+    size_t const dump_ring_bytes = (size_t)FF_MIC_DUMP_RING_FRAMES * FF_MIC_FRAME_SAMPLES * sizeof(int16_t);
+    s_dump_ring = heap_caps_malloc(dump_ring_bytes, MALLOC_CAP_SPIRAM);
+    if (s_dump_ring == NULL) {
+        ESP_LOGW(TAG, "mic dump ring allocation failed (%u bytes PSRAM) — `mic dump` will capture 0 frames, all dropped",
+                 (unsigned)dump_ring_bytes);
+    }
 
     BaseType_t const rc =
         xTaskCreate(ff_mic_task_fn, "ff_mic", FF_MIC_TASK_STACK_BYTES, NULL, FF_MIC_TASK_PRIORITY, &s_task);
@@ -396,8 +464,11 @@ void ff_mic_start(void)
     s_level.rms_dbfs = FF_MICLEVEL_FLOOR_DBFS;
     s_level.peak_dbfs = FF_MICLEVEL_FLOOR_DBFS;
     s_level.envelope_dbfs = FF_MICLEVEL_FLOOR_DBFS;
+    s_level.low_band_dbfs = FF_MICLEVEL_FLOOR_DBFS;
+    s_level.mid_band_dbfs = FF_MICLEVEL_FLOOR_DBFS;
     ff_miclevel_dc_reset(&s_dc);
     ff_miclevel_envelope_reset(&s_env);
+    ff_bandenergy_reset(&s_bandenergy);
     s_have_prev_raw = false;
     ff_mic_unlock();
 
@@ -470,7 +541,8 @@ ff_mic_status_t ff_mic_status(void)
 
 ff_mic_level_t ff_mic_level(void)
 {
-    ff_mic_level_t out = {FF_MICLEVEL_FLOOR_DBFS, FF_MICLEVEL_FLOOR_DBFS, FF_MICLEVEL_FLOOR_DBFS};
+    ff_mic_level_t out = {FF_MICLEVEL_FLOOR_DBFS, FF_MICLEVEL_FLOOR_DBFS, FF_MICLEVEL_FLOOR_DBFS,
+                           FF_MICLEVEL_FLOOR_DBFS, FF_MICLEVEL_FLOOR_DBFS};
     if (!s_initialized) return out;
 
     ff_mic_lock();
@@ -492,4 +564,59 @@ size_t ff_mic_last_frame(int16_t *dst, size_t n)
     memcpy(dst, s_last_frame, copy_n * sizeof(int16_t));
     ff_mic_unlock();
     return copy_n;
+}
+
+/* `mic dump` — see ff_mic.h's own doc comment section and this file's
+ * top-of-file state-block comment for the full design. */
+
+void ff_mic_dump_start(void)
+{
+    if (!s_initialized) return;
+    ff_mic_lock();
+    s_dump_head = 0u;
+    s_dump_tail = 0u;
+    s_dump_count = 0u;
+    s_dump_frames_captured = 0u;
+    s_dump_frames_dropped = 0u;
+    s_dump_active = true;
+    if (s_dump_ring == NULL && !s_dump_ring_alloc_failed_logged) {
+        ESP_LOGW(TAG, "mic dump started with no ring buffer (allocation failed at init) — every frame will drop");
+        s_dump_ring_alloc_failed_logged = true;
+    }
+    ff_mic_unlock();
+}
+
+void ff_mic_dump_stop(void)
+{
+    if (!s_initialized) return;
+    ff_mic_lock();
+    s_dump_active = false;
+    ff_mic_unlock();
+}
+
+bool ff_mic_dump_pop(ff_mic_dump_frame_t *out)
+{
+    if (out == NULL || !s_initialized) return false;
+    bool got = false;
+    ff_mic_lock();
+    if (s_dump_ring != NULL && s_dump_count > 0u) {
+        memcpy(out->samples, &s_dump_ring[s_dump_tail * FF_MIC_FRAME_SAMPLES],
+               sizeof(int16_t) * FF_MIC_FRAME_SAMPLES);
+        s_dump_tail = (s_dump_tail + 1u) % FF_MIC_DUMP_RING_FRAMES;
+        s_dump_count--;
+        got = true;
+    }
+    ff_mic_unlock();
+    return got;
+}
+
+ff_mic_dump_stats_t ff_mic_dump_stats(void)
+{
+    ff_mic_dump_stats_t st = {0};
+    if (!s_initialized) return st;
+    ff_mic_lock();
+    st.frames_captured = s_dump_frames_captured;
+    st.frames_dropped = s_dump_frames_dropped;
+    ff_mic_unlock();
+    return st;
 }

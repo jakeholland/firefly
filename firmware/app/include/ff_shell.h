@@ -621,8 +621,28 @@ typedef struct {
  * DIAGNOSTICS' page did). A ~40.5 KB static shell remains comfortable in
  * the S3's 512 KB SRAM; this stays a runaway-growth tripwire, not a
  * hardware limit.
+ *
+ * RAISED 40.5 KB -> 41.5 KB for the real-music beat detector fix
+ * (fix/s31-beat-real-audio, 2026-09-09 — docs/specs/S31-music-swarm.md's
+ * dated amendment, on-device evidence: bpm=0.0 at loudness=0.82 for an
+ * entire 15s real-music set), deliberately, per this comment's own
+ * instruction. `ff_beat_t` (firmware/core/include/ff_beat.h) gained two
+ * `ff_beat_band_tracker_t` onset-flux trackers (MIC low/mid band, each
+ * carrying a `float flux_history_db[FF_BEAT_MUSIC_FLUX_WINDOW_N]` — 75
+ * samples, ~1.5s of history at the detector's own ~50Hz nominal rate —
+ * plus a handful of small scalar fields) replacing the old two-scalar
+ * fast/slow envelope state, plus a 5-entry inter-onset-interval ring for
+ * the new median-smoothed, octave-folded BPM estimate. `sh->beat` is a
+ * SINGLE copy (live detector state, not view-model data doubled by the
+ * `view`/`prev_key` render-key pair), so this growth lands once, not
+ * twice — unlike most of this budget's own history above. Measured, not
+ * estimated: sizeof(shell_t) is 41,720 B against the old 41,472 B
+ * budget (a hard compile failure). 41.5 KB (42,496 B) clears it with
+ * ~776 B headroom, back in this budget's own usual ~600 B-1 KB range. A
+ * ~41.5 KB static shell remains comfortable in the S3's 512 KB SRAM;
+ * this stays a runaway-growth tripwire, not a hardware limit.
  */
-#define FF_SHELL_BYTES 41472u
+#define FF_SHELL_BYTES 42496u
 
 /** Alignment of the opaque payload. 8 covers every member the shell
  *  holds today (the widest are `double` inside `ff_latlon_t` and
@@ -1489,18 +1509,29 @@ bool ff_shell_music_wants_mic(ff_app_state_t const *view, ff_idle_state_t idle_s
  * "honesty: the source shown is the source used" rule S31's spec
  * states: `mic_present` wins whenever true (MIC); otherwise
  * `imu_present` (IMU fallback); otherwise NONE — never both, never
- * blended. `mic_rms_dbfs`/`mic_env_dbfs` are meaningful only when
- * `mic_present`; `accel_z_g` (board-frame Z, GRAVITY-INCLUSIVE — this
- * function subtracts the assumed 1g baseline itself, see `ff_compass_
+ * blended. `mic_rms_dbfs`/`mic_env_dbfs`/`mic_low_band_dbfs`/
+ * `mic_mid_band_dbfs` are meaningful only when `mic_present`;
+ * `accel_z_g` (board-frame Z, GRAVITY-INCLUSIVE — this function
+ * subtracts the assumed 1g baseline itself, see `ff_compass_
  * last_accel_board`'s own doc comment for the board-frame convention)
  * only when `imu_present`. `now_ms` is the shell's own clock reading
  * (`ff_shell_now_ms`'s convention), used for the onset detector's
  * refractory window and BPM estimate.
  *
+ * `mic_low_band_dbfs`/`mic_mid_band_dbfs` (2026-09-09 amendment,
+ * fix/s31-beat-real-audio) are the `ff_bandenergy.h` band energies for
+ * THIS frame — see `ff_beat.h`'s own top comment, "Beat/onset
+ * detection", for why the onset detector now runs on these instead of
+ * the broadband `mic_env_dbfs` (which stays exactly as before, still
+ * driving loudness auto-ranging only). The esp32s3 target computes
+ * both from the same raw mic frame `ff_mic_level_t`'s existing fields
+ * come from (`ff_mic.h`'s own doc comment).
+ *
  * `sh == NULL` is a safe no-op.
  */
 void ff_shell_set_beat_input(ff_shell_t *sh, bool mic_present, float mic_rms_dbfs, float mic_env_dbfs,
-                              bool imu_present, float accel_z_g, uint32_t now_ms);
+                              float mic_low_band_dbfs, float mic_mid_band_dbfs, bool imu_present, float accel_z_g,
+                              uint32_t now_ms);
 
 /**
  * ff_shell_music_debug_t / ff_shell_music_debug — [api] S31: a one-shot

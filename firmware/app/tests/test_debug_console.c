@@ -880,6 +880,7 @@ static void fake_mic_ok(void *user, ff_dbgconsole_mic_action_t action, uint32_t 
     case FF_DBGCONSOLE_MIC_ON: name = "on"; break;
     case FF_DBGCONSOLE_MIC_OFF: name = "off"; break;
     case FF_DBGCONSOLE_MIC_WATCH: name = "watch"; break;
+    case FF_DBGCONSOLE_MIC_DUMP: name = "dump"; break;
     }
     snprintf(line, sizeof(line), "dbg: mic fake action=%s watch_secs=%u", name, (unsigned)watch_secs);
     reply(reply_user, line);
@@ -905,6 +906,10 @@ static void dbgconsole_mic_unavailable_without_a_hook(void)
     TEST_ASSERT_EQUAL_STRING("dbg: mic unavailable on this target", cap.lines[0]);
 
     dispatch("mic watch 5", &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: mic unavailable on this target", cap.lines[0]);
+
+    dispatch("mic dump 5", &cap);
     TEST_ASSERT_EQUAL_INT(1, cap.n);
     TEST_ASSERT_EQUAL_STRING("dbg: mic unavailable on this target", cap.lines[0]);
 }
@@ -980,6 +985,40 @@ static void dbgconsole_mic_watch_out_of_range_never_reaches_the_hook(void)
     TEST_ASSERT_EQUAL_STRING("dbg: ? try help", cap.lines[0]);
 }
 
+/* 2026-09-09 amendment (fix/s31-beat-real-audio) — `mic dump <secs>`:
+ * same routing-through-the-hook shape as `mic watch <secs>` above. */
+static void dbgconsole_mic_dump_passes_seconds_through(void)
+{
+    harness_init(1000);
+    s_mic_hook = fake_mic_ok;
+
+    capture_t cap;
+    dispatch("mic dump 7", &cap);
+
+    TEST_ASSERT_EQUAL_INT(FF_DBGCONSOLE_MIC_DUMP, s_mic_last_action);
+    TEST_ASSERT_EQUAL_UINT32(7u, s_mic_last_watch_secs);
+    TEST_ASSERT_EQUAL_STRING("dbg: mic fake action=dump watch_secs=7", cap.lines[0]);
+}
+
+static void dbgconsole_mic_dump_out_of_range_never_reaches_the_hook(void)
+{
+    /* Rejected at the PARSER — mic dump's own tighter 1-10s range (unlike
+     * mic watch's 1-30s), same "hook never has to re-validate" contract
+     * dbgconsole_mic_watch_out_of_range_never_reaches_the_hook pins for
+     * watch. 30 is valid for watch but not dump — exactly the boundary a
+     * copy-pasted range check could get wrong. */
+    harness_init(1000);
+    s_mic_hook = fake_mic_ok;
+    s_mic_call_count = 0;
+
+    capture_t cap;
+    dispatch("mic dump 30", &cap);
+
+    TEST_ASSERT_EQUAL_INT(0, s_mic_call_count);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: ? try help", cap.lines[0]);
+}
+
 static void dbgconsole_mic_bad_sub_verb_rejected_end_to_end(void)
 {
     harness_init(1000);
@@ -1026,7 +1065,7 @@ static void dbgconsole_music_reports_mic_source_and_loudness(void)
     uint32_t now = ff_shell_now_ms(&H.shell);
     for (int i = 0; i < 100; i++) {
         now += 20u;
-        ff_shell_set_beat_input(&H.shell, true, -20.0f, -20.0f, false, 0.0f, now);
+        ff_shell_set_beat_input(&H.shell, true, -20.0f, -20.0f, -20.0f, -20.0f, false, 0.0f, now);
     }
     capture_t cap;
     dispatch("music", &cap);
@@ -1490,6 +1529,8 @@ int main(void)
     RUN_TEST(dbgconsole_mic_off_routes_to_the_hook);
     RUN_TEST(dbgconsole_mic_watch_passes_seconds_through);
     RUN_TEST(dbgconsole_mic_watch_out_of_range_never_reaches_the_hook);
+    RUN_TEST(dbgconsole_mic_dump_passes_seconds_through);
+    RUN_TEST(dbgconsole_mic_dump_out_of_range_never_reaches_the_hook);
     RUN_TEST(dbgconsole_mic_bad_sub_verb_rejected_end_to_end);
 
     RUN_TEST(dbgconsole_music_reports_no_source_by_default);

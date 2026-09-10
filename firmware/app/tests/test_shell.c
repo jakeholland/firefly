@@ -10919,7 +10919,7 @@ static void churn_setup_add_live_peer(void)
  *  enough for the whole 60s run. */
 static void churn_setup_add_music_input(void)
 {
-    ff_shell_set_beat_input(&H.shell, true, -20.0f, -20.0f, false, 0.0f, H.clk.t);
+    ff_shell_set_beat_input(&H.shell, true, -20.0f, -20.0f, -20.0f, -20.0f, false, 0.0f, H.clk.t);
 }
 
 /** Drain the one-time dirty tick(s) setup/navigation itself leaves
@@ -11061,7 +11061,7 @@ static void S31_music_loudness_never_dirties_render_key(void)
      * must dirty, exactly once, before the "loudness alone never
      * dirties" assertions below. */
     advance(20u);
-    ff_shell_set_beat_input(&H.shell, true, -55.0f, -55.0f, false, 0.0f, H.clk.t);
+    ff_shell_set_beat_input(&H.shell, true, -55.0f, -55.0f, -55.0f, -55.0f, false, 0.0f, H.clk.t);
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                              "the MIC source appearing did not dirty the render key");
 
@@ -11069,7 +11069,7 @@ static void S31_music_loudness_never_dirties_render_key(void)
      * (see ff_beat_update's own auto-ranging doc comment). */
     for (int i = 0; i < 99; i++) {
         advance(20u);
-        ff_shell_set_beat_input(&H.shell, true, -55.0f, -55.0f, false, 0.0f, H.clk.t);
+        ff_shell_set_beat_input(&H.shell, true, -55.0f, -55.0f, -55.0f, -55.0f, false, 0.0f, H.clk.t);
     }
     TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                               "a settled quiet MUSIC loudness churned the render key");
@@ -11084,7 +11084,7 @@ static void S31_music_loudness_never_dirties_render_key(void)
     uint32_t dirty_ticks = 0u;
     for (int i = 0; i < 75; i++) {
         advance(20u);
-        ff_shell_set_beat_input(&H.shell, true, -20.0f, -20.0f, false, 0.0f, H.clk.t);
+        ff_shell_set_beat_input(&H.shell, true, -20.0f, -20.0f, -20.0f, -20.0f, false, 0.0f, H.clk.t);
         if (ff_shell_tick(&H.shell, H.clk.t)) dirty_ticks++;
     }
     TEST_ASSERT_GREATER_OR_EQUAL_FLOAT_MESSAGE(

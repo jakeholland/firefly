@@ -7236,7 +7236,8 @@ bool ff_shell_music_wants_mic(ff_app_state_t const *view, ff_idle_state_t idle_s
 }
 
 void ff_shell_set_beat_input(ff_shell_t *sh_pub, bool mic_present, float mic_rms_dbfs, float mic_env_dbfs,
-                              bool imu_present, float accel_z_g, uint32_t now_ms)
+                              float mic_low_band_dbfs, float mic_mid_band_dbfs, bool imu_present, float accel_z_g,
+                              uint32_t now_ms)
 {
     if (sh_pub == NULL) return;
     shell_t *sh = shell_of(sh_pub);
@@ -7253,10 +7254,14 @@ void ff_shell_set_beat_input(ff_shell_t *sh_pub, bool mic_present, float mic_rms
     ff_beat_sample_t sample = {0};
     if (mic_present) {
         /* Honesty: mic wins whenever present — see this function's own
-         * doc comment, ff_shell.h. */
+         * doc comment, ff_shell.h. `low_band_dbfs`/`mid_band_dbfs`
+         * (2026-09-09 amendment) are what the onset detector actually
+         * runs on now — see ff_beat.h's own top comment. */
         sample.source = FF_BEAT_SOURCE_MIC;
         sample.rms_dbfs = mic_rms_dbfs;
         sample.env_dbfs = mic_env_dbfs;
+        sample.low_band_dbfs = mic_low_band_dbfs;
+        sample.mid_band_dbfs = mic_mid_band_dbfs;
     } else if (imu_present) {
         sample.source = FF_BEAT_SOURCE_IMU;
         /* Board-frame Z is gravity-inclusive (~+1g when level, see

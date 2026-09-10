@@ -186,12 +186,13 @@ size_t ff_mic_last_frame(int16_t *dst, size_t n); /* for future consumers — no
 
 ## Console (`CONFIG_FF_DEBUG_CONSOLE`)
 
-Four commands, one platform hook (`ff_dbgconsole_mic_fn`,
+Five commands, one platform hook (`ff_dbgconsole_mic_fn`,
 `firmware/app/include/ff_debug_console.h`) mirroring `perf`'s own
 "handed the reply sink directly" shape — see that header's doc comment
-for the full rationale, including why `mic watch` deliberately BLOCKS
-the calling task for its whole duration rather than ticking
-asynchronously (a small, explicitly-bounded, bench-only tradeoff).
+for the full rationale, including why `mic watch`/`mic dump` both
+deliberately BLOCK the calling task for their whole duration rather
+than ticking asynchronously (a small, explicitly-bounded, bench-only
+tradeoff).
 
 | Command | Effect |
 |---|---|
@@ -199,8 +200,9 @@ asynchronously (a small, explicitly-bounded, bench-only tradeoff).
 | `mic on` | start the I2S1 channel + reader task |
 | `mic off` | stop them |
 | `mic watch <secs>` | print RMS/peak/envelope once per 250ms, for 1-30 seconds (bounds enforced by the parser, `ff_dbgcmd.h`), then stop |
+| `mic dump <secs>` | stream raw 16kHz mono PCM as base64 text, 1-10 seconds (2026-09-09 amendment, fix/s31-beat-real-audio) — see below |
 
-All four honestly report `present=0` on a target with no mic hardware
+All five honestly report `present=0` on a target with no mic hardware
 (the sim) or a real, absent-for-either-reason mic. Example session:
 
 ```
@@ -219,6 +221,74 @@ dbg: mic watch done
 mic off
 dbg: mic present=1 running=0 rate_hz=0 frames=1203 errs=0 age_ms=0 rms_dbfs=-58.1 peak_dbfs=-49.0 env_dbfs=-57.9
 ```
+
+### `mic dump <secs>` — 2026-09-09 amendment (fix/s31-beat-real-audio)
+
+Motivation: `docs/specs/S31-music-swarm.md`'s dated amendment names the
+root cause this command exists to let the coordinator diagnose without
+guessing — the beat detector produced ZERO beats against 15s of real
+music on Jake's puck, and the only way to actually validate a fix is a
+real capture, not another synthetic bench click train. `mic dump`
+streams exactly that off a real puck, without needing a
+purpose-built recording rig.
+
+**Format**: a header line, one data line per captured 20ms/320-sample
+frame (base64, standard alphabet, no line wrapping), and a trailer:
+
+```
+mic dump 10
+dbg: mic dump rate_hz=16000 bits=16 frames=500
+dbg: mic dump data <base64 of 320 int16 samples, little-endian>
+dbg: mic dump data <base64 of 320 int16 samples, little-endian>
+... (up to 500 data lines for a 10s dump) ...
+dbg: mic dump done frames=497 dropped=3
+```
+
+`frames=` in the header is the REQUESTED count (`secs * 50`, the mic's
+own nominal 20ms frame period); `frames=`/`dropped=` in the trailer are
+what ACTUALLY happened — `frames` is the count of data lines really
+sent, `dropped` is every frame the reader task's own ring buffer had no
+room for (see "Ring buffer" below) — both honest, independently
+measured counts, never inferred from one another. A puck with no mic
+hardware at all replies `dbg: mic dump present=0` and nothing else,
+mirroring `mic`/`mic watch`'s own honesty contract; a host that stops
+draining the USB-Serial-JTAG port mid-dump gets a trailer with
+`stalled=1` appended instead of running forever.
+
+**Works even with Music not open**: unlike every other mic command,
+`mic dump` FORCES the mic channel on for its own duration if it was not
+already running (e.g. Music is not even the active face — the ordinary
+case for a bench engineer who just wants a quick capture), and restores
+whatever state the mic was actually in before the dump started, once it
+finishes. A bench engineer should not first have to open Music and keep
+it open just to run this command.
+
+**Ring buffer, not a blocking reader**: the mic reader task (`ff_mic.c`)
+must never block — it copies each captured frame into a small ring
+buffer (`FF_MIC_DUMP_RING_FRAMES` = 64 frames, ~1.28s of headroom at
+20ms/frame) the console's own drain loop pops from at its own pace
+(base64-encoding and writing each line, which can legitimately take
+longer than one 20ms frame period on a slow terminal). A frame the ring
+has no room for is DROPPED, never blocks the reader — the drop count is
+the trailer's own `dropped=` field, never silently absorbed. The ring
+itself is allocated from PSRAM (`heap_caps_malloc(...,
+MALLOC_CAP_SPIRAM)`, this codebase's own established pattern for a
+buffer this size — see `app_main.c`'s `s_shell_p`/`s_demo_pack`), never
+a plain static array, so this feature adds ~0 bytes to the S3's much
+smaller internal DRAM budget (verified by the device build's own
+`.dram0.bss` map total — see the PR body).
+
+**Decode/replay workflow**: `tools/beat_replay.py` (this repo's
+top-level `tools/`) decodes a captured dump into a WAV file, and can
+also synthesize the two test signals `test_beat.c`'s own synthetic
+tests use (a 128 BPM four-on-the-floor kick with a sustained bass line
+and a compressed dynamic range, plus a phone-speaker-high-passed
+variant) as standalone WAV files for manual inspection.
+`firmware/core/tools/beat_sim_replay.c` (a small sim-only CLI, linked
+against the REAL `ff_miclevel`/`ff_bandenergy`/`ff_beat` code) replays
+a WAV file through the actual detector at the real 20ms/50Hz cadence
+and prints loudness, detected beats, and the running BPM estimate over
+time.
 
 ## DIAGNOSTICS (Settings → DIAGNOSTICS)
 
@@ -335,6 +405,15 @@ puck on the bench, USB connected:
   an unbounded (`portMAX_DELAY`) timeout, and self-subscribes to the
   task watchdog (PR #239's log-only policy), resetting it every loop
   iteration whether idle or running.
+- **AC11** (2026-09-09 amendment, fix/s31-beat-real-audio) — `mic dump
+  <secs>` bounds `<secs>` to [1, 10] at the parser; streams
+  frame-aligned base64 with an honest header (requested frame count)
+  and trailer (delivered + dropped counts, never fabricated); forces
+  the mic on and restores its prior running state; works with Music not
+  open; the reader task never blocks on the dump ring (a full ring
+  drops, never stalls the reader); and the ring buffer itself is PSRAM-
+  allocated, verified against the device build's own `.dram0.bss` map
+  total (the PR body).
 
 ## Questions
 

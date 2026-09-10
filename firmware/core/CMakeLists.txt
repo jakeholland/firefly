@@ -477,6 +477,55 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_miclevel COMMAND test_miclevel)
 endif()
 
+# S31 amendment (2026-09-09, fix/s31-beat-real-audio) — core/bandenergy:
+# low/mid band-limited energy (the real-music onset detector's input,
+# split out of ff_beat.c). Pure C11, no I/O, host-testable. See
+# ff_bandenergy.h.
+if(FF_BUILD_TESTS)
+    add_executable(test_bandenergy
+        tests/test_bandenergy.c
+    )
+    target_link_libraries(test_bandenergy PRIVATE ff-core unity)
+    if(UNIX)
+        target_link_libraries(test_bandenergy PRIVATE m)
+    endif()
+    ff_apply_warnings(test_bandenergy)
+
+    add_test(NAME test_bandenergy COMMAND test_bandenergy)
+endif()
+
+# 2026-09-09 amendment (fix/s31-beat-real-audio) — core/base64: pure
+# base64 encoder for the `mic dump <secs>` bench console command. Pure
+# C11, no I/O, host-testable. See ff_base64.h.
+if(FF_BUILD_TESTS)
+    add_executable(test_base64
+        tests/test_base64.c
+    )
+    target_link_libraries(test_base64 PRIVATE ff-core unity)
+    ff_apply_warnings(test_base64)
+
+    add_test(NAME test_base64 COMMAND test_base64)
+endif()
+
+# 2026-09-09 amendment (fix/s31-beat-real-audio) — beat_sim_replay: the
+# sim test harness tool (deliverable's own "feeds a WAV/raw capture
+# through ff_miclevel + ff_beat at the real 50Hz cadence and prints
+# loudness, detected beats and the BPM estimate over time"). Not part
+# of ctest — a tool for a human to run and read, mirroring
+# firmware/tools/compare_png's own "tool, not a test" role. Always
+# built (like compare_png), landing at build/beat_sim_replay so
+# tools/beat_replay.py's own documented workflow can find it the same
+# way tests/run_goldens.sh finds compare_png.
+add_executable(beat_sim_replay
+    tools/beat_sim_replay.c
+)
+set_target_properties(beat_sim_replay PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+target_link_libraries(beat_sim_replay PRIVATE ff-core)
+if(UNIX)
+    target_link_libraries(beat_sim_replay PRIVATE m)
+endif()
+ff_apply_warnings(beat_sim_replay)
+
 # S31 — core/beat: Music/Swarm beat + loudness detector (auto-ranging
 # floor/ceiling, MIC fast/slow onset, IMU peak-pick onset). Pure C11, no
 # I/O, host-testable. See ff_beat.h.
