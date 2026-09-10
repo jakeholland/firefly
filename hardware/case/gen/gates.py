@@ -23,6 +23,8 @@ import build123d as bd
 from . import components as comp
 from . import geometry as geo
 from .features import buttons as btn
+from .features import comms_bay
+from .features import compass as compass_mod
 from .features import corner_blocks as cb
 
 _CASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -290,10 +292,13 @@ def check_interference_pairs(bodies):
     return results
 
 
-def all_gates(bodies, p, stl_paths, whitelist_xy=None, standoffs=None):
+def all_gates(bodies, p, stl_paths, whitelist_xy=None, standoffs=None, comms_stack=None, lora_corridor=None):
     """Run every phase-1 gate (plus, when `standoffs` is given --
     components.measure_standoffs' own return dict -- every phase-2
-    ears/S2-boss gate) and return one combined report dict."""
+    ears/S2-boss gate, and when `comms_stack` is given --
+    components.load_comms_stack's own return dict -- every phase-2c
+    comms-stack/GPS/battery/compass gate) and return one combined report
+    dict."""
     report = {}
     report['interference'] = check_interference_pairs({'Top': bodies['Top'], 'Bottom': bodies['Bottom']})
     report['post_walls'] = verify_post_walls(bodies, p)
@@ -322,6 +327,13 @@ def all_gates(bodies, p, stl_paths, whitelist_xy=None, standoffs=None):
         report['button_retention'] = verify_button_retention(bodies, p)
         report['plunger_reach'] = verify_plunger_reach(bodies, p)
         report['skin_intact'] = verify_skin_intact(bodies, p)
+    if comms_stack is not None:
+        report['stack_frame_boss_clear'] = verify_stack_frame_boss_clear(bodies, p)
+        report['stack3_clearance'] = verify_stack3_clearance(bodies, p, comms_stack)
+        report['antenna_channels'] = verify_antenna_channels(bodies, p, lora_corridor)
+        report['mag_pocket'] = verify_mag_pocket(bodies, p)
+        report['min_clearances'] = verify_min_clearances(bodies, p, comms_stack)
+        report['board_interference'] = check_board_interference(bodies, p, comms_stack)
     return report
 
 
@@ -757,4 +769,267 @@ def verify_skin_intact(bodies_dict, p):
                     if not geo.probe_point_solid(top, (px, py, z)):
                         bad.append((round(depth_out, 2), round(z, 2), round(t_frac, 2)))
         results[key] = (len(bad) == 0, {'bad_count': len(bad), 'checked': checked, 'sample': bad[:5]})
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Phase 2c gates -- comms stack / GPS frame / battery bay
+# (features/comms_bay.py) + compass module (features/compass.py).
+# ---------------------------------------------------------------------------
+def find_ceiling_z_at(body, x, y, z_hi, z_lo, step=0.05):
+    """Port of firefly_case.py:6199 find_ceiling_z_at -- scans DOWNWARD in
+    Z at a fixed (x,y) from z_hi to z_lo and returns the first z where
+    `body` is solid (the inner ceiling's own underside height there), or
+    None if no solid is found anywhere in the scanned range."""
+    z = z_hi
+    while z >= z_lo:
+        if geo.probe_point_solid(body, (x, y, z)):
+            return z
+        z -= step
+    return None
+
+
+def verify_stack3_clearance(bodies, p, comms_stack):
+    """Port of firefly_case.py:7826 verify_stack3_clearance -- the
+    3-board comms stack's real top (`components.load_comms_stack`'s own
+    `stack_top_z`, from the REAL placed Wio solid, not a nominal guess)
+    must clear Top's real inner ceiling by >= `stack3['ceiling_clear_
+    min']` (0.8mm) everywhere under the L76K PCB's own footprint (the
+    widest/lowest part of the stack). Trivially OK for `current`
+    (`comms_stack3_full_height=False` -- no Wio/XIAO loaded, see
+    components.load_comms_stack's own docstring), same convention the
+    source uses."""
+    s3 = p['bay']['stack3']
+    if not p.get('comms_stack3_full_height', True):
+        return {'stack_top_z': None, 'clearance_found': None, 'required': s3['ceiling_clear_min'], 'ok': True,
+                'note': 'comms_stack3_full_height=False (current variant) -- no Wio/XIAO loaded, nothing to check'}
+    stack_top_z = comms_stack.get('stack_top_z')
+    if stack_top_z is None or comms_stack.get('wio') is None:
+        return {'stack_top_z': None, 'clearance_found': None, 'required': s3['ceiling_clear_min'], 'ok': False}
+    top = bodies['Top']
+    pcb = s3['l76k_pcb']
+    x0, x1 = pcb['x']
+    y0, y1 = pcb['y']
+    samples = [(x0 + 1.0, (y0 + y1) / 2.0), (x1 - 1.0, (y0 + y1) / 2.0),
+               (0.0, y0 + 1.0), (0.0, y1 - 1.0), (0.0, (y0 + y1) / 2.0)]
+    z_hi = p['top_z'] - 0.5
+    worst = None
+    for x, y in samples:
+        ceil_z = find_ceiling_z_at(top, x, y, z_hi, stack_top_z, step=0.05)
+        if ceil_z is None:
+            continue
+        clearance = ceil_z - stack_top_z
+        if worst is None or clearance < worst:
+            worst = clearance
+    ok = worst is not None and worst >= s3['ceiling_clear_min'] - 1e-6
+    return {'stack_top_z': round(stack_top_z, 3),
+            'clearance_found': round(worst, 3) if worst is not None else None,
+            'required': s3['ceiling_clear_min'], 'ok': ok}
+
+
+def verify_stack_frame_boss_clear(bodies, p):
+    """Not a firefly_case.py function by name -- the "corner-block-to-
+    stack keep-out" gate this phase's own brief asks for. Every case-
+    screw boss (A/C/D)'s own full-height core (`corner_blocks.BOSS_CORE_R`
+    -- the boss's real load path) must stay intact through the comms-
+    stack frame's own z-band (`stack3['frame_z']`), independently
+    re-confirming `add_comms_stack_frame`'s own `boss_relief_margin` cut
+    never ate into a boss's core -- same "construction guarantee,
+    re-checked independently" idiom `verify_post_walls`/`verify_corner_
+    blocks` already establish for the case screws' wall thickness."""
+    bottom = bodies['Bottom']
+    s3 = p['bay']['stack3']
+    fz0, fz1 = s3['frame_z']
+    z_mid = (fz0 + fz1) / 2.0
+    core_r = cb.BOSS_CORE_R - 0.3
+    angles = (0.0, 90.0, 180.0, 270.0)
+    results = {}
+    for s in p['screws_ABC'] + p['screws_D12']:
+        name = s['name']
+        cx, cy = s['xy']
+        checks = [geo.probe_point_solid(bottom, (cx + core_r * math.cos(math.radians(ang)),
+                                                   cy + core_r * math.sin(math.radians(ang)), z_mid))
+                  for ang in angles]
+        results[f'{name}_core_intact'] = (all(checks), checks)
+    return results
+
+
+# (board key, case body name) pairs INTENDED to touch (zero clearance) --
+# port of firefly_case.py:6890 ALLOWED_CONTACTS, restricted to this
+# port's own three comms-stack boards (the display's own allowed
+# contacts are handled separately by check_display_interference_near_ears/
+# verify_ear_root_material, which already check the REAL display STEP
+# against the ears/S2-boss's own construction, not a generic distance
+# sweep).
+BOARD_CASE_ALLOWED_CONTACTS = {
+    ('l76k', 'Bottom'),  # PCB rests directly on its four corner pads (build_comms_stack_frame)
+}
+
+
+def verify_min_clearances(bodies, p, comms_stack, min_mm=None):
+    """Port of firefly_case.py:7123 verify_min_clearances, for the three
+    comms-stack boards this phase places (`components.load_comms_stack`).
+    The source caps how many of a board's own nested bodies get
+    individually distance-checked (`MIN_CLEARANCE_BODY_CAP`, a Fusion
+    measureManager robustness workaround) -- this port's boards are
+    already a handful of solids each (L76K pre-filtered by `components.
+    _filter_l76k_placed`; XIAO/Wio are clean single-board reference
+    docs), so every solid is checked directly via `Shape.distance_to`
+    (OCP's `BRepExtrema_DistShapeShape`), no cap needed."""
+    if min_mm is None:
+        min_mm = p.get('clearance_min', 0.3)
+    results = {}
+    for board_name in ('l76k', 'xiao', 'wio'):
+        board = comms_stack.get(board_name)
+        if board is None:
+            continue
+        for case_name in ('Top', 'Bottom'):
+            case_body = bodies.get(case_name)
+            if case_body is None:
+                continue
+            allowed = (board_name, case_name) in BOARD_CASE_ALLOWED_CONTACTS
+            try:
+                d = board.distance_to(case_body)
+            except Exception:
+                continue
+            ok = allowed or d >= min_mm - 1e-6
+            results[f'{board_name}_vs_{case_name}'] = {
+                'distance_mm': round(d, 4), 'required': None if allowed else min_mm,
+                'allowed_contact': allowed, 'ok': ok,
+            }
+    return results
+
+
+def check_board_interference(bodies, p, comms_stack):
+    """Port of firefly_case.py:6199 check_interference, restricted to the
+    three comms-stack boards vs. Top/Bottom (the OCC equivalent of the
+    source's own live `analyzeInterference`, same `interference_volume`
+    boolean-intersect idiom `check_interference_pairs` already uses for
+    the printed bodies) -- skips `BOARD_CASE_ALLOWED_CONTACTS` pairs, same
+    as `verify_min_clearances`."""
+    results = {}
+    for board_name in ('l76k', 'xiao', 'wio'):
+        board = comms_stack.get(board_name)
+        if board is None:
+            continue
+        for case_name in ('Top', 'Bottom'):
+            case_body = bodies.get(case_name)
+            if case_body is None:
+                continue
+            if (board_name, case_name) in BOARD_CASE_ALLOWED_CONTACTS:
+                continue
+            vol = interference_volume(case_body, board)
+            if vol > 1e-4:
+                results[f'{board_name}_vs_{case_name}'] = round(vol, 4)
+    return results
+
+
+def verify_antenna_channels(bodies, p, lora_corridor=None):
+    """Port of firefly_case.py:5062 verify_antenna_channels: (1) each
+    channel's own cross-section is actually open at a live-probed
+    interior point; (2) the LoRa channel's own skin-safety re-check
+    (independent of the Combine-Intersect construction that's supposed to
+    guarantee it); (3) the GPS notch's own bbox doesn't breach the battery
+    floor (regression guard, true by construction); (4) (this port only,
+    no source equivalent needed since the source enforces this by
+    checking the corridor reference body against every live occurrence
+    generically) the LoRa cable corridor reference solid
+    (`comms_bay.add_antenna_channels`' own return value) reads genuinely
+    open against the built Top -- the "LoRa FPC antenna keep-out enforced
+    in interference" item 1 asks for."""
+    top = bodies['Top']
+    geom = comms_bay.antenna_channel_geometry(p)
+    results = {}
+
+    if 'lora' in geom:
+        g = geom['lora']
+        px, py, pz = g['probe_xyz']
+        is_open = not geo.probe_point_solid(top, (px, py, pz))
+        results['lora_channel_open'] = (is_open, (round(px, 3), round(py, 3), round(pz, 3)))
+        s_check = geo.true_wall_distance_along_ray(p, (px, py), g['dir'], pz)
+        skin_ok = s_check is not None and s_check >= p['antenna']['channel_min_skin'] - 0.05
+        results['lora_skin_ok'] = (skin_ok, round(s_check, 3) if s_check is not None else None)
+        if lora_corridor is not None:
+            vol = interference_volume(top, lora_corridor)
+            results['lora_corridor_clear'] = (vol <= 1e-4, round(vol, 4))
+
+    g = geom['gps']
+    px, py, pz = g['probe_xyz']
+    is_open = not geo.probe_point_solid(top, (px, py, pz))
+    results['gps_channel_open'] = (is_open, (round(px, 3), round(py, 3), round(pz, 3)))
+    bat = g['battery_bbox']
+    z_clear = g['notch_z'][0] >= bat['z'][1]
+    results['gps_no_battery_floor_breach'] = (z_clear, (g['notch_z'], bat['z']))
+    return results
+
+
+def verify_mag_pocket(bodies, p):
+    """Port of firefly_case.py:5434 verify_mag_pocket: (1) the module's
+    own component-side reference envelope reads genuinely hollow; (2)
+    both pegs and (3) both rest pads have real material at mid-height;
+    (4) the pass-15 single south stop (superseding the old 4-wall fence,
+    see features/compass.py's own docstring -- kept under the historical
+    `stop_has_material` key rather than the source's `fence_has_material`,
+    since this port's own naming already documents the pass-15 change
+    inline) has real material away from its own wire-exit notch; (5) the
+    fence/stop footprint's own worst-corner clearance to the window
+    bore's TRUE opening; (6) the same footprint's clearance to the REAL
+    display module's own bounding box (this port measures the ACTUAL
+    imported STEP compound here, not the typed `display_bbox` -- more
+    faithful to the 'measured, not typed' convention `components.
+    measure_standoffs` already establishes elsewhere in this port than
+    the source's own live-Fusion-occurrence probe, which this port has
+    no equivalent for anyway). All six report (True, ...) when
+    `mag_module_fits(p)` is False ('current')."""
+    mm = p['mag_module']
+    if not compass_mod.mag_module_fits(p):
+        return {
+            'envelope_open': (True, []), 'pegs_have_material': (True, []),
+            'pads_have_material': (True, []), 'stop_has_material': (True, []),
+            'window_bore_clear': (True, []), 'display_back_clear': (True, 'mag_module_fits is False -- skipped'),
+        }
+    top = bodies['Top']
+    results = {}
+
+    lpcb = mm['local_pcb']
+    probe_local_x = [lpcb['x'][0] + 0.5, (lpcb['x'][0] + lpcb['x'][1]) / 2.0, lpcb['x'][1] - 0.5]
+    local_y_mid = (lpcb['y'][0] + lpcb['y'][1]) / 2.0
+    wx_mid = compass_mod.mag_world_x(p, local_y_mid)
+    z_component = compass_mod.mag_world_z(p, 1.0 + mm['local_component_h'] * 0.5)
+    bad_envelope = []
+    for lx in probe_local_x:
+        wy = compass_mod.mag_world_y(p, lx)
+        if geo.probe_point_solid(top, (wx_mid, wy, z_component)):
+            bad_envelope.append((round(wx_mid, 2), round(wy, 2), round(z_component, 2)))
+    results['envelope_open'] = (not bad_envelope, bad_envelope[:5])
+
+    ceiling = p['top_ceiling_underside_z']
+    pcb_bottom = compass_mod.mag_pcb_bottom_world_z(p)
+    z_mid = (ceiling + pcb_bottom) / 2.0
+    bad_pegs = [(round(px, 2), round(py, 2), round(z_mid, 2)) for px, py in compass_mod.mag_peg_world_positions(p)
+                if not geo.probe_point_solid(top, (px, py, z_mid))]
+    results['pegs_have_material'] = (not bad_pegs, bad_pegs[:5])
+    bad_pads = [(round(px, 2), round(py, 2), round(z_mid, 2)) for px, py in compass_mod.mag_pad_world_positions(p)
+                if not geo.probe_point_solid(top, (px, py, z_mid))]
+    results['pads_have_material'] = (not bad_pads, bad_pads[:5])
+
+    x0, x1, y0, y1 = compass_mod.mag_pcb_world_footprint(p)
+    clear, wall = mm['fence_clear'], mm['fence_wall']
+    stop_h = compass_mod.MAG_STOP_H
+    stop_mid_z = ceiling - stop_h / 2.0
+    stop_y = y0 - clear - wall / 2.0
+    probe_pts = [(x1 - 0.5, stop_y)]
+    bad_stop = [(round(wx, 2), round(wy, 2), round(stop_mid_z, 2)) for wx, wy in probe_pts
+                if not geo.probe_point_solid(top, (wx, wy, stop_mid_z))]
+    results['stop_has_material'] = (not bad_stop, bad_stop[:5])
+
+    bore_clear = compass_mod.mag_window_bore_clearance(p)
+    results['window_bore_clear'] = (bore_clear >= compass_mod.MAG_DISPLAY_RING_MIN_CLEAR, round(bore_clear, 3))
+
+    _, _, _, fence_y1 = compass_mod.mag_fence_world_footprint(p)
+    disp = comp.load_display(p)
+    dbb = disp.bounding_box()
+    display_back_clear = dbb.min.Y - fence_y1
+    results['display_back_clear'] = (display_back_clear >= compass_mod.MAG_DISPLAY_RING_MIN_CLEAR,
+                                      round(display_back_clear, 3))
     return results

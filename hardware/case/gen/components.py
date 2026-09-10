@@ -50,6 +50,9 @@ from . import geometry as geo
 
 _MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'models'))
 DISPLAY_STEP = os.path.join(_MODELS_DIR, 'ESP32-S3-Touch-LCD-1_46.step')
+XIAO_STEP = os.path.join(_MODELS_DIR, 'XIAO-ESP32S3_v3.step')
+WIO_STEP = os.path.join(_MODELS_DIR, 'Wio-SX1262_for_XIAO_V2.step')
+L76K_STEP = os.path.join(_MODELS_DIR, 'L76K_GNSS_for_XIAO_v1.step')
 
 # Local-frame -> world-frame transform, derived empirically (see module
 # docstring). Only Z depends on the variant (via top_z); X/Y are a fixed
@@ -129,6 +132,241 @@ def _load_compound():
     except OSError:
         pass  # a read-only gen/out/ (e.g. CI) just means no cache, not a build failure
     return compound
+
+
+def _step_hash_of(step_path):
+    """Generalization of `_step_hash` (item 3's own cache-key idiom) for
+    an arbitrary STEP file, not just the display -- used by the comms
+    board loaders below."""
+    h = hashlib.sha256()
+    with open(step_path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()[:8]
+
+
+@functools.lru_cache(maxsize=8)
+def _load_step_compound_cached(step_path):
+    """Same BREP-cache idiom as `_load_compound` (item 3), generalized to
+    any STEP file -- used for the three comms-stack boards (phase 2 item
+    3, this port's own numbering: comms stack / GPS frame / battery bay).
+    Each board's STEP is small (1.5-3.7MB, vs. the display's 14.8MB) so
+    the raw-import cost this cache removes is smaller per-file, but the
+    same per-process-only `lru_cache` limitation applies across the
+    separate CLI/pytest processes a normal build-check loop runs, so the
+    BREP round-trip is still worth it."""
+    stem = os.path.splitext(os.path.basename(step_path))[0]
+    cache_path = os.path.join(_CACHE_DIR, f'{stem}_{_step_hash_of(step_path)}.brep')
+    if os.path.exists(cache_path):
+        try:
+            return _brep_read(cache_path, bd.Compound)
+        except Exception:
+            pass
+    compound = bd.import_step(step_path)
+    try:
+        _brep_write(compound, cache_path)
+    except OSError:
+        pass
+    return compound
+
+
+def find_pcb_like_body(compound, lo=15.0, hi=24.0, max_thick=3.0):
+    """Port of firefly_case.py:5636 find_pcb_like_body -- scans every
+    solid in `compound` (its own local/native frame) for the largest-area
+    body shaped like a small PCB (two extents in [lo,hi]mm, the third
+    <= max_thick), returning (solid, area, thin_axis) or None. Used to
+    find the L76K assembly's own real PCB body among its other solids
+    (the GPS patch antenna on its own cable, a stray lead, ...) -- see
+    load_l76k's own docstring for why this matters (positioning by the
+    whole compound's own aggregate bbox would put the real board outside
+    the case entirely, same finding the source's own 2026-09-05 fix
+    documents)."""
+    best = None
+    for s in compound.solids():
+        bb = s.bounding_box()
+        dx = bb.max.X - bb.min.X
+        dy = bb.max.Y - bb.min.Y
+        dz = bb.max.Z - bb.min.Z
+        extents = {'x': dx, 'y': dy, 'z': dz}
+        thin_axis = min(extents, key=extents.get)
+        thin = extents[thin_axis]
+        others = sorted(v for k, v in extents.items() if k != thin_axis)
+        if thin <= max_thick and lo <= others[0] <= hi and lo <= others[1] <= hi:
+            area = others[0] * others[1]
+            if best is None or area > best[1]:
+                best = (s, area, thin_axis)
+    return best
+
+
+# Rotation-matrix columns for each `flatten_transform` mode -- (to_x, to_y,
+# to_z), i.e. where each NATIVE axis direction ends up in world space.
+# Verbatim port of firefly_case.py:5598 flatten_transform's own
+# Matrix3D.setToAlignCoordinateSystems table (see that function's own
+# per-mode comments for the physical reasoning -- 'y90' in particular
+# exists so a board's long native axis lands on world Y, not world X).
+_FLATTEN_AXES = {
+    'z': ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+    'y': ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, -1.0, 0.0)),
+    'y90': ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+    'y90neg': ((0.0, -1.0, 0.0), (0.0, 0.0, 1.0), (-1.0, 0.0, 0.0)),
+    'x': ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0)),
+}
+
+
+def flatten_transform(native_center, thin_axis, target_center):
+    """Port of firefly_case.py:5598 flatten_transform -- a rigid transform
+    that rotates the object's own NATIVE axes onto the world axes named by
+    `_FLATTEN_AXES[thin_axis]` (pivoting about `native_center`, its own
+    center in its native frame) and then relocates that same pivot to
+    `target_center`. Fusion's `Matrix3D.setToAlignCoordinateSystems`
+    (native frame -> target frame) has an exact OCP equivalent,
+    `gp_Trsf.SetDisplacement(from_ax3, to_ax3)` -- documented to do
+    exactly this (map FromSystem's origin/X/Y/Z onto ToSystem's), so no
+    hand-rolled matrix math is needed. Returns a build123d Location;
+    apply as `flatten_transform(...) * compound`."""
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pnt, gp_Trsf
+
+    to_x, to_y, to_z = _FLATTEN_AXES[thin_axis]
+    from_ax3 = gp_Ax3(gp_Pnt(*native_center), gp_Dir(0, 0, 1), gp_Dir(1, 0, 0))
+    to_ax3 = gp_Ax3(gp_Pnt(*target_center), gp_Dir(*to_z), gp_Dir(*to_x))
+    trsf = gp_Trsf()
+    trsf.SetDisplacement(from_ax3, to_ax3)
+    return bd.Location(trsf)
+
+
+def load_l76k_raw():
+    """Raw (local-frame) L76K GNSS module compound (PCB + GPS patch
+    antenna on its own cable + a stray lead -- see find_pcb_like_body's
+    own docstring)."""
+    return _load_step_compound_cached(L76K_STEP)
+
+
+def load_xiao_raw():
+    return _load_step_compound_cached(XIAO_STEP)
+
+
+def load_wio_raw():
+    return _load_step_compound_cached(WIO_STEP)
+
+
+L76K_STRAY_BODY_RADIUS_MM = 20.0  # firefly_case.py:5789 -- see _filter_l76k_placed's own docstring
+
+
+def _filter_l76k_placed(placed, target_xy):
+    """Port of insert_comms_boards' own `_hide_leaf_bodies` (:5789) --
+    NOT one of firefly_case.py's 217 named functions, but load-bearing:
+    the L76K reference STEP's own GPS-patch-antenna-on-a-cable
+    sub-assembly (see find_pcb_like_body's own docstring) is native-
+    authored with a cable trace reaching ~49mm away from the PCB in the
+    native frame's OWN thin (Z) axis -- under this board's 'y90' rotation
+    that native Z axis lands on WORLD X, so the raw placed compound's own
+    bbox balloons to roughly (-40, 9) in X, nowhere near the real stack's
+    actual ~18x21mm footprint (confirmed empirically importing the real
+    STEP for this port). The source works around the identical problem by
+    setting `isLightBulbOn=False` directly on every leaf body more than
+    `L76K_STRAY_BODY_RADIUS_MM` from the target XY (except the PCB body
+    itself, never hidden) -- a live, physically-real GPS patch antenna
+    that in the ACTUAL assembly is wired separately and mounted in its
+    own bay.gps_patch frame (add_gps_reference_box), not physically
+    riding along with this board. This port's equivalent: keep only the
+    solids of the PLACED compound whose own bbox centre (world XY) falls
+    within that same radius of the stack's target centre -- the PCB body
+    is always kept (its own centre is exactly the target by
+    construction, distance 0)."""
+    tx, ty = target_xy
+    kept = []
+    for s in placed.solids():
+        bb = s.bounding_box()
+        cx = (bb.min.X + bb.max.X) / 2.0
+        cy = (bb.min.Y + bb.max.Y) / 2.0
+        if math.hypot(cx - tx, cy - ty) <= L76K_STRAY_BODY_RADIUS_MM:
+            kept.append(s)
+    assert kept, 'L76K stray-body filter left nothing -- target_xy or radius is wrong'
+    return bd.Compound(kept) if len(kept) > 1 else kept[0]
+
+
+def load_comms_stack(p):
+    """Port of firefly_case.py:5695 insert_comms_boards -- places the real
+    3-board direct-solder/B2B stack (L76K bottom -> XIAO middle -> Wio
+    top) in world space, each board's Z derived from the ACTUAL measured
+    thickness/top of the board below it (xiao_gap/wio_gap are the only
+    fixed numbers in PARAMS; every Z builds on a live measurement of the
+    board actually loaded), exactly like the source. Returns a dict:
+    {'l76k': compound, 'l76k_top_z': z,
+     'xiao': compound_or_None, 'xiao_top_z': z_or_None,
+     'wio': compound_or_None, 'stack_top_z': z}  -- `stack_top_z` is
+    Wio's own top when present, else XIAO's, else L76K's (matches the
+    source's own "whichever board is physically highest" convention).
+    `comms_stack3_full_height=False` ('current' variant) loads ONLY the
+    L76K, same as the source's own insert_comms_boards -- 'current' is
+    the M1 probe-table comparison variant, not one meant to carry real
+    electronics (see params_current.py's own comment)."""
+    s3 = p['bay']['stack3']
+    pcb = s3['l76k_pcb']
+    cx = (pcb['x'][0] + pcb['x'][1]) / 2.0
+    cy = (pcb['y'][0] + pcb['y'][1]) / 2.0
+    full_height = p.get('comms_stack3_full_height', True)
+    out = {'l76k': None, 'l76k_top_z': None, 'xiao': None, 'xiao_top_z': None, 'wio': None, 'stack_top_z': None}
+
+    # --- L76K: position by its own real PCB body, not the whole
+    # assembly's aggregate bbox (the GPS patch antenna-on-a-cable would
+    # otherwise dominate it -- see find_pcb_like_body's docstring). ---
+    raw = load_l76k_raw()
+    match = find_pcb_like_body(raw)
+    assert match is not None, 'no ~18x21mm PCB-like body found in the L76K assembly'
+    pcb_body, _area, _thin_axis = match
+    bb = pcb_body.bounding_box()
+    native_center = ((bb.min.X + bb.max.X) / 2.0, (bb.min.Y + bb.max.Y) / 2.0, (bb.min.Z + bb.max.Z) / 2.0)
+    # thin_axis from find_pcb_like_body is the SHAPE's own thin axis
+    # ('y' here, matching the source's own live-measured finding) -- the
+    # ROTATION MODE passed to flatten_transform is 'y90' regardless (see
+    # that function's own module-level table): 'y90' still maps native Y
+    # (the 1.54mm PCB thickness) onto world Z for the thickness lookup
+    # below, but ALSO rotates 90deg about world Z so native X (the PCB's
+    # long ~20.95mm axis) lands on world Y, not world X -- see
+    # flatten_transform's own 'y90' comment for why (a live Fusion build
+    # found the plain 'y' mode put the long axis backwards, on world X).
+    pcb_thickness = bb.max.Y - bb.min.Y
+    l76k_bottom_z = s3['l76k_bottom_z']
+    target_pcb_center = (cx, cy, l76k_bottom_z + pcb_thickness / 2.0)
+    loc = flatten_transform(native_center, 'y90', target_pcb_center)
+    placed = loc * raw
+    out['l76k'] = _filter_l76k_placed(placed, (cx, cy))
+    out['l76k_top_z'] = l76k_bottom_z + pcb_thickness
+
+    if not full_height:
+        out['stack_top_z'] = out['l76k_top_z']
+        return out
+
+    # --- XIAO: positioned by its own WHOLE-compound bbox (the source's
+    # own insert_and_place uses the occurrence's aggregate bbox here, not
+    # a sub-body search -- XIAO's reference doc is a single clean board,
+    # no antenna-on-a-cable complication). thin_axis='y90' (native Y ->
+    # world Z, native X -> world Y) -- USB-C end toward +Y, matching the
+    # L76K's own long axis below it (per the source's own comment: "the
+    # spec's XIAO USB-C end toward +Y"). ---
+    xiao_raw = load_xiao_raw()
+    xbb = xiao_raw.bounding_box()
+    x_native_center = ((xbb.min.X + xbb.max.X) / 2.0, (xbb.min.Y + xbb.max.Y) / 2.0, (xbb.min.Z + xbb.max.Z) / 2.0)
+    xiao_thickness = xbb.max.Y - xbb.min.Y  # native Y is XIAO's thin axis (per Jake, matching the source)
+    xiao_bottom_z = out['l76k_top_z'] + s3['xiao_gap']
+    x_target_center = (cx, cy, xiao_bottom_z + xiao_thickness / 2.0)
+    xloc = flatten_transform(x_native_center, 'y90', x_target_center)
+    out['xiao'] = xloc * xiao_raw
+    out['xiao_top_z'] = xiao_bottom_z + xiao_thickness
+
+    # --- Wio: native bbox is already thinnest in Z (module face up, as
+    # authored) -- thin_axis='z' is a pure translation, no rotation. ---
+    wio_raw = load_wio_raw()
+    wbb = wio_raw.bounding_box()
+    w_native_center = ((wbb.min.X + wbb.max.X) / 2.0, (wbb.min.Y + wbb.max.Y) / 2.0, (wbb.min.Z + wbb.max.Z) / 2.0)
+    wio_thickness = wbb.max.Z - wbb.min.Z
+    wio_bottom_z = out['xiao_top_z'] + s3['wio_gap']
+    w_target_center = (cx, cy, wio_bottom_z + wio_thickness / 2.0)
+    wloc = flatten_transform(w_native_center, 'z', w_target_center)
+    out['wio'] = wloc * wio_raw
+    out['stack_top_z'] = wio_bottom_z + wio_thickness
+    return out
 
 
 def load_display(p):

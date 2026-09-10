@@ -23,7 +23,7 @@ from . import components as components_mod
 from . import export as export_mod
 from . import gates as gates_mod
 from . import shell
-from .features import buttons, corner_blocks, ears, fpc_relief, lug, usb_tunnel
+from .features import buttons, comms_bay, compass, corner_blocks, ears, fpc_relief, lug, usb_tunnel
 from .params import get_params
 
 _CASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -97,8 +97,20 @@ def build(variant='trim', exact_display=False):
     bodies = lug.add_lug(bodies, p)
     t['lug'] = time.perf_counter() - t0
 
+    t0 = time.perf_counter()
+    bodies = comms_bay.add_comms_bay(bodies, p)
+    t['comms_bay'] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    bodies, lora_corridor = comms_bay.add_antenna_channels(bodies, p)
+    t['antenna_channels'] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    bodies = compass.add_mag_module(bodies, p)
+    t['mag_module'] = time.perf_counter() - t0
+
     t['total_build'] = sum(v for v in t.values() if isinstance(v, (int, float)))
-    return p, bodies, t, standoffs
+    return p, bodies, t, standoffs, lora_corridor
 
 
 def main():
@@ -117,7 +129,7 @@ def main():
     args = ap.parse_args()
 
     t_all0 = time.perf_counter()
-    p, bodies, timings, standoffs = build(args.variant, exact_display=args.exact_display)
+    p, bodies, timings, standoffs, lora_corridor = build(args.variant, exact_display=args.exact_display)
     print(f'--- build ({args.variant}) ---')
     print(json.dumps(timings, indent=2))
     print('Top volume mm3', bodies['Top'].volume)
@@ -138,7 +150,9 @@ def main():
         t0 = time.perf_counter()
         from .tools_bridge import top_whitelist, bottom_whitelist
         wl = top_whitelist() if 'Top' in stl_paths else None
-        report = gates_mod.all_gates(bodies, p, stl_paths, whitelist_xy=wl, standoffs=standoffs)
+        comms_stack = components_mod.load_comms_stack(p)
+        report = gates_mod.all_gates(bodies, p, stl_paths, whitelist_xy=wl, standoffs=standoffs,
+                                      comms_stack=comms_stack, lora_corridor=lora_corridor)
         print('gates_s', time.perf_counter() - t0)
         print(json.dumps(report, indent=2, default=str))
 

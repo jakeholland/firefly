@@ -5,6 +5,7 @@ import os
 
 import pytest
 
+from .. import components as components_mod
 from .. import export as export_mod
 from .. import gates as gates_mod
 from ..cli import build
@@ -30,24 +31,25 @@ CURRENT_PHASE2_KNOWN_TIGHT = 'current'
 @pytest.fixture(scope='module', params=VARIANTS)
 def built(request, tmp_path_factory):
     variant = request.param
-    p, bodies, timings, standoffs = build(variant)
+    p, bodies, timings, standoffs, lora_corridor = build(variant)
     out_dir = tmp_path_factory.mktemp(f'gates_{variant}')
     stl_paths = {}
     for name in ('Top', 'Bottom', 'Power Button', 'Home Button'):
         path = os.path.join(out_dir, f'{name}.stl')
         export_mod.export_stl(bodies[name], path)
         stl_paths[name] = path
-    return variant, p, bodies, stl_paths, standoffs
+    comms_stack = components_mod.load_comms_stack(p)
+    return variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor
 
 
 def test_no_interference(built):
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.check_interference_pairs({'Top': bodies['Top'], 'Bottom': bodies['Bottom']})
     assert result == {}, f'{variant}: real interference found: {result}'
 
 
 def test_post_walls(built):
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.verify_post_walls(bodies, p)
     bad = {k: v for k, v in result.items() if v}
     if variant == CURRENT_PHASE2_KNOWN_TIGHT:
@@ -64,7 +66,7 @@ def test_post_walls(built):
 
 
 def test_root_fillets(built):
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.verify_root_fillets(bodies, p)
     bad = {k: v for k, v in result.items() if v}
     # KNOWN FINDING (trim only, live-found this port): corner_block_D's
@@ -87,21 +89,26 @@ def test_root_fillets(built):
 
 
 def test_corner_blocks(built):
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.verify_corner_blocks(bodies, p)
-    bad = {k: v for k, (ok, detail) in result.items() if not ok}
+    # pre-existing bug fixed in passing (phase 2c): `v` was never bound in
+    # this comprehension -- it silently never fired because every prior
+    # phase's own gate report happened to be all-True here, until phase
+    # 2c's new `verify_bottom_openings` failure below (a real, since-
+    # fixed regression) exposed the identical pattern's own NameError.
+    bad = {k: detail for k, (ok, detail) in result.items() if not ok}
     assert not bad, f'{variant}: corner-block failures: {bad}'
 
 
 def test_bottom_openings(built):
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.verify_bottom_openings(bodies, p)
-    bad = {k: v for k, (ok, detail) in result.items() if not ok}
+    bad = {k: detail for k, (ok, detail) in result.items() if not ok}
     assert not bad, f'{variant}: bottom-opening failures: {bad}'
 
 
 def test_offline_manifold_and_overhang(built):
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     down_z_bed = {'Top': (1.0, p['top_z']), 'Bottom': (-1.0, p['bottom_z'])}
     wl = {'Top': top_whitelist(), 'Bottom': bottom_whitelist()}
     for name in ('Top', 'Bottom'):
@@ -127,7 +134,7 @@ def test_offline_manifold_and_overhang(built):
 
 
 def test_lip_ring_profile(built):
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.verify_lip_ring_profile(stl_paths['Top'], p)
     assert result['mid_overhang_found'][0], f'{variant}: no real taper facet found in the lip/anchor ring band'
     if variant == CURRENT_PHASE2_KNOWN_TIGHT:
@@ -143,14 +150,14 @@ def test_lip_ring_profile(built):
 # Phase 2 -- ears (S1/S3) + S2 boss.
 # ---------------------------------------------------------------------------
 def test_seat_heights(built):
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.verify_seat_heights(p, standoffs)
     bad = {k: v for k, v in result.items() if not v['ok']}
     assert not bad, f'{variant}: seat height(s) outside +0.25+/-0.05mm gap: {bad}'
 
 
 def test_ear_root_material(built):
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.verify_ear_root_material(bodies, p, standoffs)
     bad = {k: v for k, v in result.items()
            if isinstance(v, tuple) and not v[0]}
@@ -164,20 +171,20 @@ def test_ear_root_material(built):
 
 
 def test_s2_boss_clearance(built):
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.verify_s2_boss_clearance(bodies, p, standoffs)
     assert result['battery_clear_ok'][0], f'{variant}: S2 boss intrudes on the battery connector: {result}'
     assert result['gps_clear_ok'], f'{variant}: S2 boss GPS-frame clearance below 0.5mm: {result}'
 
 
 def test_display_to_stack_clearance(built):
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.verify_display_to_stack_clearance(p)
     assert result['ok'], f'{variant}: display-to-stack clearance failure: {result}'
 
 
 def test_display_interference_near_ears(built):
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.check_display_interference_near_ears(bodies, p, standoffs)
     if variant == 'current':
         # KNOWN, OPEN FINDING ('current' only -- see docs/hardware/
@@ -202,7 +209,7 @@ def test_display_interference_near_ears(built):
 def test_interference_including_top_bottom_after_ears(built):
     """The phase-1 no-interference gate, re-run after phase-2 adds real
     material -- Top/Bottom must still never overlap."""
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.check_interference_pairs({'Top': bodies['Top'], 'Bottom': bodies['Bottom']})
     assert result == {}, f'{variant}: real interference found: {result}'
 
@@ -222,7 +229,7 @@ def test_button_interference(built):
     docs/hardware/headless-port-parity.md) -- same noise-floor class
     `check_display_interference_near_ears` already names and accepts
     elsewhere in this file."""
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.check_interference_pairs(bodies)
     real = {k: v for k, v in result.items() if v > gates_mod.BUTTON_INTERFERENCE_NOISE_FLOOR_MM3}
     assert not real, f'{variant}: real interference found: {real}'
@@ -232,38 +239,91 @@ def test_button_insertion(built):
     """Must be 0/125 bad for both buttons, both variants -- Jake's own
     live-print regression target (pass-16 FIX item 4, the S2-boss
     tab-relief lane extension)."""
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.verify_button_insertion(bodies, p)
     bad = {k: detail for k, (ok, detail) in result.items() if not ok}
     assert not bad, f'{variant}: button insertion failures: {bad}'
 
 
 def test_button_retention(built):
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.verify_button_retention(bodies, p)
     bad = {k: v for k, v in result.items() if isinstance(v, tuple) and not v[0]}
     assert not bad, f'{variant}: button retention failures: {bad}'
 
 
 def test_plunger_reach(built):
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.verify_plunger_reach(bodies, p)
     bad = {k: v for k, v in result.items() if isinstance(v, tuple) and not v[0]}
     assert not bad, f'{variant}: plunger reach failures: {bad}'
 
 
 def test_skin_intact(built):
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     result = gates_mod.verify_skin_intact(bodies, p)
     bad = {k: detail for k, (ok, detail) in result.items() if not ok}
     assert not bad, f'{variant}: skin-intact failures (interior cut reaching the outer skin): {bad}'
+
+
+# ---------------------------------------------------------------------------
+# Phase 2c -- comms stack / GPS frame / battery bay (features/comms_bay.py)
+# + compass module (features/compass.py).
+# ---------------------------------------------------------------------------
+def test_stack_frame_boss_clear(built):
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
+    result = gates_mod.verify_stack_frame_boss_clear(bodies, p)
+    bad = {k: v for k, v in result.items() if not v[0]}
+    assert not bad, f'{variant}: a case-screw boss core is not intact through the stack frame: {bad}'
+
+
+def test_stack3_clearance(built):
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
+    result = gates_mod.verify_stack3_clearance(bodies, p, comms_stack)
+    assert result['ok'], f'{variant}: comms-stack-to-ceiling clearance failure: {result}'
+
+
+def test_antenna_channels(built):
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
+    result = gates_mod.verify_antenna_channels(bodies, p, lora_corridor)
+    bad = {k: v for k, v in result.items() if isinstance(v, tuple) and not v[0]}
+    assert not bad, f'{variant}: antenna channel failures: {bad}'
+
+
+def test_mag_pocket(built):
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
+    result = gates_mod.verify_mag_pocket(bodies, p)
+    bad = {k: v for k, v in result.items() if isinstance(v, tuple) and not v[0]}
+    assert not bad, f'{variant}: compass module pocket failures: {bad}'
+
+
+def test_board_interference(built):
+    """check_interference against all three comms-stack boards (item 1's
+    own gate list) -- also doubles as this phase's "USB-C and FPC
+    re-check": XIAO is the board whose real USB-C connector this checks
+    against the built Top/Bottom (the tunnel's own target), and a real
+    breach here would show up as XIAO-vs-case interference."""
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
+    result = gates_mod.check_board_interference(bodies, p, comms_stack)
+    assert not result, f'{variant}: real board-vs-case interference found: {result}'
+
+
+def test_min_clearances(built):
+    """USB-C/FPC re-check, generalized: minimum clearance from each real
+    placed board (L76K/XIAO/Wio) to Top/Bottom must clear
+    PARAMS['clearance_min'] (0.3mm) everywhere except the one intended
+    contact (the L76K resting on its own frame pads)."""
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
+    result = gates_mod.verify_min_clearances(bodies, p, comms_stack)
+    bad = {k: v for k, v in result.items() if not v['ok']}
+    assert not bad, f'{variant}: board clearance below {p.get("clearance_min", 0.3)}mm: {bad}'
 
 
 def test_button_manifold(built):
     """The cap parts export as their own clean, manifold, single-body
     STLs (they are separate printed parts -- assembled by hand, not
     solvent-welded to Top/Bottom)."""
-    variant, p, bodies, stl_paths, standoffs = built
+    variant, p, bodies, stl_paths, standoffs, comms_stack, lora_corridor = built
     for name in ('Power Button', 'Home Button'):
         report = gates_mod.manifold_and_overhang_check(stl_paths[name], down_z=1.0, bed_z=0.0)
         assert report['manifold']['manifold'], f'{variant} {name}: non-manifold edges {report["manifold"]}'

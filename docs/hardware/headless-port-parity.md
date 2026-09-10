@@ -568,3 +568,164 @@ eligible. A further pass could plausibly get `gates_s` down too (caching
 step) but was not attempted this session, to keep this item's own scope
 to what item 3's brief actually named (the display-interference/
 ceiling-cut check) rather than open-ending into every gate's own cost.
+
+## Phase 2c (comms stack / GPS frame / battery bay / compass module)
+
+`features/comms_bay.py` (battery bay + retention rails/straps/end-stop;
+the comms-stack frame -- 4 corner pads + a clipped, floor-bridged
+perimeter wall around the L76K PCB; the GPS patch hanging frame; the
+LoRa Wio-u.FL-to-dome-wall channel (`trim` only) + its own live-checked
+reference corridor; the L76K-u.FL-to-GPS-frame south-wall notch, both
+variants) and `features/compass.py` (the full `mag_*` family --
+ceiling-hung pegs/pads + the pass-15 single south stop, `trim` only,
+`mag_module_fits` is `False` for `current`) land this pass, plus
+`components.load_comms_stack` (places the real XIAO/Wio-SX1262/L76K
+STEPs -- see below) and six new gates (`verify_stack_frame_boss_clear`,
+`verify_stack3_clearance`, `verify_antenna_channels`, `verify_mag_
+pocket`, `verify_min_clearances`, `check_board_interference`).
+
+**Real board placement (`components.load_comms_stack`):** each board's
+own Z is derived from the ACTUAL measured thickness/top of the board
+below it (L76K -> XIAO -> Wio, direct solder/board-to-board stack, no
+separate tray), not a nominal guess. Two new, real port mechanisms
+needed, both reclassified from `deleted-as-quirk` on closer reading
+(see the plan doc's own function-table note): `flatten_transform`
+(`gp_Trsf.SetDisplacement`, an exact OCP equivalent of Fusion's
+`Matrix3D.setToAlignCoordinateSystems`) and `find_pcb_like_body` (a
+plain shape scan for the ~18x21mm, <=3mm-thick body among a compound's
+own solids). The latter is load-bearing: the L76K's own reference STEP
+is a sub-assembly (PCB + a GPS patch antenna riding its own ~49mm cable
++ a stray lead), and positioning by the whole compound's aggregate bbox
+would put the real board well outside the case -- `find_pcb_like_body`
+finds the real PCB solid directly, and a new stray-body filter
+(`components._filter_l76k_placed`, radius-from-target-XY, no
+`firefly_case.py` name -- the source's own equivalent hides leaf bodies
+by name on a live Fusion occurrence tree, which this port has no
+equivalent for) discards the antenna/cable sub-bodies from the PLACED
+compound before it reaches any gate or export.
+
+**Two real bugs found by the full pytest re-run, fixed, kept fixed by
+that same re-run (not by relaxing anything):**
+
+1. **`tools/offline_stl_check.py`'s own `scan_stl_overhangs` crashed
+   with `ZeroDivisionError`** (`gen/tests/test_gates.py::
+   test_offline_manifold_and_overhang`, both variants). Root cause: a
+   flagged (steep-down-facing) triangle whose STORED STL normal read as
+   a valid overhang direction even though its own 3 vertices were
+   coincident/collinear -- a genuinely zero-area triangle, a
+   tessellator artifact, not real overhang surface. A cluster made up
+   only of such triangles summed to a total area of exactly `0.0`, and
+   the centroid division (`s[0] / s[2]`) raised. Fixed by dropping
+   zero-area triangles before they reach the flagged list (`_tri_area(
+   ...) > 1e-9`) -- they carry nothing for a slicer to support either
+   way.
+2. **Once that crash no longer hid it, the SAME triangle turned out to
+   sit at a REAL non-manifold defect** (both variants, `Top`: 20
+   non-manifold edges/10 degenerate triangles on `trim`, 12/6 on
+   `current`, all at the identical local coordinates -- the GPS u.FL
+   notch's own filleted corners). Root-caused to `features/comms_bay.py`'s
+   `_best_effort_channel_fillet`: filleting all 12 edges of the small
+   (2.0 x 1.3 x 2.0mm) notch cutting-tool box at 0.3mm radius produced a
+   solid that reported `Shape.is_valid` **True** in isolation, and
+   `top - <filleted tool>` ALSO reported `is_valid` **True** -- yet the
+   exported STL still tessellated to a non-manifold mesh at the
+   fillet's own corners. Confirmed by direct A/B (monkeypatching the
+   fillet helper to a no-op and re-running the same build): 0 non-
+   manifold edges/0 degenerate triangles with the fillet skipped, both
+   variants, everything else byte-for-bit unchanged. This is an OCC
+   MESHER (tessellation-quality) artifact at a near-tangent boolean
+   boundary -- neither B-rep validity check available to this port
+   (`Shape.is_valid` on the tool alone, or on the cut result) can see
+   it, so no "check, then fall back" safety net was possible short of a
+   full triangulate-and-inspect round trip for a purely cosmetic 0.3mm
+   rounding. Fixed by dropping the fillet outright (the function's own
+   docstring already documented it as "cosmetic only, never
+   load-bearing on a cutting tool's own edges" -- true before this
+   finding and still true after).
+
+**Gate results, both variants, from a from-scratch rebuild
+(`python3 -m gen.cli build --variant <v> --gates --export`), and the
+full `pytest gen/tests/` suite (54 tests, both variants -- 54 passed):**
+
+| gate | trim | current |
+|---|---|---|
+| `verify_stack_frame_boss_clear` | clean, all 3 bosses (A/C/D) x 4 angles | clean, all 3 x 4 |
+| `verify_stack3_clearance` | clean -- stack top z=22.942, 4.158mm clearance found (>= 0.8mm required) | trivially ok (`comms_stack3_full_height=False`, no Wio/XIAO loaded, same convention as every other `current`-skips-the-stack gate) |
+| `verify_antenna_channels` | clean -- LoRa channel open + skin 3.395mm clear (>= 1.2mm), LoRa reference corridor clear (0mm³ interference), GPS notch open, no battery-floor breach | clean -- GPS notch open, no battery-floor breach (LoRa route skipped, `trim`-only by design) |
+| `verify_mag_pocket` | clean, all 6 checks -- window-bore clearance 3.955mm, display-back clearance 3.765mm (both >= the 3.0mm `MAG_DISPLAY_RING_MIN_CLEAR` floor) | all 6 report `(True, ...)` by construction (`mag_module_fits` is `False`, module skipped entirely -- see `params_current.py`'s own comment on why `current`'s ceiling never grew the 3mm `trim` did) |
+| `verify_min_clearances` (L76K/XIAO/Wio vs. Top/Bottom) | clean, all 6 pairs -- tightest is `wio_vs_Top` at 0.505mm (>= 0.3mm required); L76K-vs-Bottom is the one intended contact (0.02mm, allowed) | clean, both pairs checked (only L76K loaded) -- L76K-vs-Top 4.457mm, L76K-vs-Bottom 0.02mm (allowed contact) |
+| `check_board_interference` (L76K/XIAO/Wio vs. Top/Bottom) | `{}` (clean) | `{}` (clean) |
+| everything from phase 1/2/2b (re-run, unchanged) | clean except the 2 already-known, already-documented findings below | clean except the 3 already-known, already-documented findings below |
+
+**No new findings from this phase's own gates on either variant** --
+the two bugs above were both in shared/legacy code (`tools/
+offline_stl_check.py`, `features/comms_bay.py`'s cosmetic fillet
+helper), not in a phase-2c gate reporting a real geometric problem with
+the new features themselves. The pre-existing, already-documented
+findings reproduce identically, confirming phase 2c did not disturb
+them: `corner_block_D_top` (`trim` only, 2/8 angles, 135°/180° @
+22.4mm -- unchanged from phase 2a/2b, same Fusion-kernel-specific
+non-finding discussed above), the `Top_vs_Home Button` noise-floor
+residual (both variants, ~0.0009mm³, unchanged from phase 2b), and
+`current`'s own three open findings (`D_pilot_wall`, `verify_lip_ring_
+profile`'s 2.109mm flat-patch cluster, `display_interference_near_ears`'s
+7 real hits up to 87.4mm³ -- all pre-existing, not root-caused this
+pass, unchanged).
+
+**Volume/bbox vs. the case-pass16 golden** (same method as every prior
+phase; `trim`/Top is the primary bar, `current` a secondary,
+informational check -- see the file header):
+
+| body | bbox max |diff| (mm) | volume % of golden (trim) | volume % of golden (current) |
+|---|---|---|---|
+| Top | 0.056 | **103.69%** (20,059.9 vs 19,347.0mm³) | **102.78%** (19,219.2 vs 18,698.4mm³) |
+| Bottom | 0.060 / 0.084 | **103.52%** (14,780.4 vs 14,278.2mm³) | **104.03%** (16,033.4 vs 15,412.2mm³) |
+
+Both bodies still comfortably clear the <=0.1mm bbox target (unchanged
+by this phase -- comms-bay/compass geometry is purely additive, inside
+the existing shell, none of it reaches the outer envelope). Volume is
+the real headline change: for the first time this port's own bodies
+are volumetrically LARGER than the golden on every body/variant pairing
+(phase 2b's own comparison: 94.79%/98.70% trim, 95.64%/98.25% current --
+always short). Phase 2c is almost entirely additive material (battery
+rails/straps/end-stop, the comms-stack frame's wall+pads, the GPS
+frame ring, the compass module's pegs/pads/stop, plus every root-
+reinforcement collar those add), so crossing 100% once the last major
+additive gap closes is the expected shape of this curve, not a defect
+-- the remaining gap to phase 3 (wordmark deboss, coupons) is a small
+net REMOVAL (the debossed logo) and pure export/packaging work, not
+more retained volume. Not reconciled further per this doc's own
+established convention (informational, not gated).
+
+**Cycle time (`build --gates --export`, warm venv/cache, this Mac,
+both variants run back-to-back):**
+
+| stage | trim (s) | current (s) |
+|---|---|---|
+| `comms_bay` (battery bay + stack frame + GPS frame) | 1.04 | 1.21 |
+| `antenna_channels` (LoRa route + corridor, `trim`; GPS notch, both) | 0.45 | 0.08 |
+| `mag_module` (pegs/pads/stop; no-op for `current`) | 1.31 | 0.00001 |
+| `total_build` (shell..mag_module, all phase-1+2+2b+2c features) | 15.4 | 15.5 |
+| `export_s` (4 STLs + 1 packed 3MF) | 3.5 | 3.0 |
+| `gates_s` (all gates, incl. the 6 new phase-2c gates) | 135.5 | 94.7 |
+| **full cycle (build + gates + export)** | **154.6** | **113.7** |
+
+Compare to phase 2b's own post-caching numbers (172.5s trim / 89.4s
+current): `trim` is actually **faster** despite six new gates (a
+warmer `ceiling_safe_display_cut` cache this run -- 3.6s vs. phase 2b's
+own 6.0s measurement -- more than offset the new gates' added cost);
+`current` is **+24.3s** (65.5s -> 94.7s in `gates_s` alone, +29.2s --
+the six new gates' own real cost: each does at least one fresh STEP
+load via `components.load_comms_stack` plus several `Shape.distance_to`/
+interference-volume boolean checks against the real placed boards, none
+of it cache-eligible the way the display ceiling-cut is). `total_build`
+alone is essentially unchanged from phase 2b (~15.4-15.5s here vs.
+~19-21s there -- both readings are "warm cache, this Mac," the spread
+is ordinary run-to-run OS-file-cache variance, not a regression).
+
+Full `pytest gen/tests/` (54 tests, both variants, module-scoped
+fixture so each variant builds once): **321.6s (0:05:21), all passing**
+-- up from phase 2b's 235.7s (the 6 new gates x 2 variants, plus the
+`test_parity.py`/`test_gates.py` tuple-unpack fix for `build`'s new
+5th return value, `lora_corridor` -- no behavior change there, just
+keeping the two test files in sync with `cli.build`'s own signature).

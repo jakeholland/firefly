@@ -134,13 +134,36 @@ def inner_profile_geometry(p):
 
 
 def inner_rho_at_z(p, z):
-    """firefly_case.py:6297 inner_rho_at_z."""
+    """firefly_case.py:6313 inner_rho_at_z.
+
+    Phase 2c bug fix (live-found while debugging the comms-stack frame's
+    own inner-cavity clip): the flat/arc branch boundary here was wrong
+    -- it compared `z` against `top_flat_z`/`bot_flat_z` (the OUTER edges
+    of each fillet arc, where it meets the flat cap) instead of
+    `top_c_z`/`bot_c_z` (the fillet centers, where the arc meets the
+    straight wall), matching the SOURCE's own actual branch structure
+    (`if z >= top_c_z: <top arc>`, `if z >= bot_c_z: <flat>`, else
+    `<bottom arc>`). The old, wrong version made the flat branch fire for
+    `bot_flat_z <= z <= top_flat_z` -- which INCLUDES the entire arc
+    region -- so the arc formula was only ever evaluated outside its own
+    valid domain (where `abs(z - center) > inner_r` always), permanently
+    clamped to 0 by the `max(..., 0.0)` guard: `inner_rho_at_z` returned
+    a constant `fc_rho` for the ENTIRE bottom cap (any z below
+    `bot_flat_z`) instead of a smooth quarter-circle rising from `fc_rho`
+    at `bot_flat_z` to `inner_wall_rho` at `bot_c_z` -- a real
+    discontinuity at `z == bot_flat_z` (20mm vs. 28mm, 'current') this
+    function's own docstring/name ('a PLAIN quarter-round fillet') never
+    intended. Not caught earlier because nothing in `gen/` called this
+    function until phase 2c went looking to understand the comms-stack
+    frame's own inner-cavity clip behavior -- the actual 3D solid
+    (`build_inner_pill_solid`/`_inner_half_points`) builds its own arc
+    directly from points/`ThreePointArc`, sidestepping this bug
+    entirely, so no built geometry was ever wrong from this."""
     g = inner_profile_geometry(p)
-    top_flat, bot_flat = g['top_flat_z'], g['bot_flat_z']
-    if bot_flat <= z <= top_flat:
-        return g['inner_wall_rho']
-    if z > top_flat:
+    if z >= g['top_c_z']:
         dz = z - g['top_c_z']
+    elif z >= g['bot_c_z']:
+        return g['inner_wall_rho']
     else:
         dz = z - g['bot_c_z']
     return g['fc_rho'] + math.sqrt(max(g['inner_r'] ** 2 - dz ** 2, 0.0))
