@@ -94,3 +94,21 @@ jobs:
           target: esp32s3
           path: firmware/targets/esp32s3
           command: idf.py -DSDKCONFIG_DEFAULTS="${{ matrix.sdkconfig_defaults }}" build
+
+      # fix/s31-sprites-psram (2026-09-09): the regression this PR fixes
+      # (scr_music.c's glow-sprite table quietly grew internal .dram0.bss
+      # until esp_lvgl_port could no longer allocate its own display
+      # buffers — puck parked forever on the boot splash, see that file's
+      # own top comment, "Renderer") built clean under every gate THIS
+      # job already ran and was invisible on the sim besides — a build-
+      # only esp32 CI job with no size check would have let it merge
+      # exactly as it did the first time. tools/check_dram_budget.py
+      # (firmware/tools/, own top comment has the full budget derivation)
+      # sums .dram0.data + .dram0.bss from this leg's own map file and
+      # fails the job if it exceeds the documented budget. Runs on BOTH
+      # matrix legs (harmless on "defaults": that config links no LVGL/
+      # display/screens code at all, so its static footprint sits far
+      # under the budget every time) rather than adding a leg-conditional
+      # step for one config.
+      - name: Check internal-RAM (.dram0) budget
+        run: python3 firmware/tools/check_dram_budget.py firmware/targets/esp32s3/build/firefly_esp32s3.map

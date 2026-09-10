@@ -684,6 +684,32 @@ if(FF_BUILD_TESTS)
 endif()
 
 # ---------------------------------------------------------------------------
+# fix/s31-sprites-psram (2026-09-09) — the sim-side regression test for the
+# internal-RAM boot-parking bug this PR fixes (scr_music.c's glow-sprite
+# table used to be plain internal .bss; on esp32s3 that starved the LVGL
+# display port of internal/DMA RAM at boot). The sim has no internal-RAM/
+# PSRAM distinction to exhaust — tools/check_dram_budget.py (wired into the
+# esp32 CI job) is the real regression test for THAT — so this proves the
+# other half: `music_ensure_sprites`'s allocation failure path is NULL-safe
+# all the way through the per-frame draw loop, via the sim-only injection
+# hook `ff_scr_music_debug_force_sprite_alloc_fail`. See test_scr_music_
+# sprite_alloc_fail.c's own header comment for the full writeup.
+# ---------------------------------------------------------------------------
+if(FF_BUILD_TESTS)
+    add_executable(test_scr_music_sprite_alloc_fail
+        tests/test_scr_music_sprite_alloc_fail.c
+    )
+    target_link_libraries(test_scr_music_sprite_alloc_fail PRIVATE
+        ff-app-ui
+        lvgl::lvgl
+        unity
+    )
+    ff_apply_warnings(test_scr_music_sprite_alloc_fail)
+
+    add_test(NAME test_scr_music_sprite_alloc_fail COMMAND test_scr_music_sprite_alloc_fail)
+endif()
+
+# ---------------------------------------------------------------------------
 # S14 hardening pass, item 3 — ff_bench: sim micro-benchmark target. See
 # targets/sim/bench/ff_bench_main.c's header for what it measures and why
 # it lives here (needs ff-sim-face-dispatch/ff-sim-ctl-loop's real,

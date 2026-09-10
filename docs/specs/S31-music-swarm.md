@@ -353,6 +353,120 @@ three objects total, independent of firefly count. `scr_music.c`'s own
 "Object count is bounded by the LVGL heap" section is superseded the
 same way "Frame budget / renderer choice" above is.
 
+## 2026-09-09 amendment: internal-RAM boot-parking regression —
+## sprite table moved to PSRAM
+
+**The bench evidence.** A puck flashed with the canvas renderer above
+(main a853bb5, PR #252) never got past the boot splash. Serial log:
+`E LVGL: lvgl_port_add_disp_priv(389): Not enough memory for LVGL
+buffer (buf2) allocation!` -> `ff_display: lvgl_port_add_disp failed`
+-> `firefly: parked: LVGL display bring-up failed`. Console dead, no
+further diagnostics. The immediately preceding main (3ecaae7) booted
+fine — this canvas renderer's own PR is what changed.
+
+**Root cause.** The "Renderer" section above already documents the
+canvas PIXEL BUFFER as PSRAM-only (`s_canvas_buf`, `heap_caps_malloc(...,
+MALLOC_CAP_SPIRAM)`) — that part was never the problem. What that
+section's own prose undersold is the SPRITE table: `static music_
+sprite_t s_sprites[FF_SCR_MUSIC_GLOW_STEPS][2]` — 8 pre-rendered
+45x45 RGB565+alpha sprites, `sizeof(music_sprite_t) == 6075` bytes each
+— 48,608 bytes of plain `static`, i.e. ordinary INTERNAL `.dram0.bss`
+(confirmed byte-for-byte against a real device build's own link map,
+`firefly_esp32s3.map`: `.bss.s_sprites` at exactly `0xbde0` = 48,608
+bytes). On the esp32s3 target, internal RAM is not just "the fast RAM"
+— it is ALSO the ONLY RAM `esp_lvgl_port`'s own display buffers can
+come from (`MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA` — the panel's QSPI
+DMA engine cannot reach PSRAM). `ff_display.c`'s own `disp_cfg` asks
+for TWO (`double_buffer = true`) buffers of `FF_LCD_H_RES(412) *
+FF_LVGL_STRIP_LINES(40) * 2 bytes/px` = 32,960 bytes each — ~65.9KB
+total — out of whatever `dram0_0_seg` (341,760 bytes total, this
+target's whole internal-DRAM linker region) has left after every
+`static` in the image plus every other `MALLOC_CAP_INTERNAL` consumer
+(task stacks, driver buffers, IDF's own housekeeping) has taken its
+share. A real before/after device build (same sdkconfig, `CONFIG_FF_
+BRINGUP_STAGE_3`, both matched against this same map-file method) pins
+the exact numbers:
+
+| | `.dram0.data` | `.dram0.bss` | total static |
+|---|---|---|---|
+| before (a853bb5) | 15,680 | 167,968 | **183,648** |
+| after (this PR)  | 15,680 | 119,360 | **135,040** |
+
+— a difference of exactly 48,608 bytes: `s_sprites` and nothing else.
+That 48.6KB was enough to starve `buf2`'s allocation of a large-enough
+contiguous block on the maintainer's own bench puck.
+
+**The fix.** `s_sprites` is now a pointer (`static music_sprite_t
+(*s_sprites)[2]`), lazily allocated by `music_ensure_sprites` from
+PSRAM (`heap_caps_calloc(..., MALLOC_CAP_SPIRAM)` on-device, plain
+`calloc` on the sim) the first time `music_build_sprites` runs — the
+identical NULL-safe, lazy, process-lifetime-cached shape `music_ensure_
+canvas_buf` already established for `s_canvas_buf` one section up. A
+failed allocation leaves `s_sprites == NULL`; `music_build_sprites`
+then simply never sets `s_sprites_ready`, and `music_composite_particle`
+(this file's own per-firefly blit) no-ops on a NULL `s_sprites` rather
+than dereference it — the swarm draws zero fireflies onto an otherwise
+normal cleared-plus-ring canvas rather than crash. Unlike the canvas
+PIXEL buffer (one big sequential clear + scattered small blits, already
+reasoned as PSRAM-bandwidth-friendly in "Measured cost" above), the
+sprite table is read-only after the one-time build — PSRAM's higher
+per-access latency costs nothing here since nothing re-renders the
+sprites themselves per frame, only reads already-computed alpha/color
+bytes out of them.
+
+**Audited, not just this one table.** Every other `static` over 8KB in
+`firmware/app` + `firmware/targets/esp32s3` was checked against a real
+device build's own map file (`firefly_esp32s3.map`, byte-accurate, not
+estimated): only one other candidate exists, `scr_map.c`'s `s_draw_ops`
+(`map_draw_op_t s_draw_ops[FF_SCR_MAP_MAX_DRAW_OPS]`, 650 * 36 bytes =
+23,400 bytes, confirmed in the map as `.bss.s_draw_ops` = `0x5b68`).
+**Decision: left internal, not moved, in this PR.** Reasoning: (1) it
+is not part of this regression — the 48,608 bytes this PR frees already
+restores ~28.8KB of headroom past the documented CI budget (`tools/
+check_dram_budget.py`) below, comfortably more than `s_draw_ops`'s own
+23.4KB; (2) unlike the sprite table (read-only after one build),
+`s_draw_ops` is read by LVGL's OWN draw call chain for the Map screen
+every frame it is dirty, inside LVGL's draw-dispatch critical path —
+a genuinely different access pattern than "read a handful of large
+sequential blocks once per firefly per frame," and one this PR has not
+measured; (3) this S3 board's octal PSRAM at 80MHz has ample raw
+bandwidth for either pattern, so moving it later under the exact same
+lazy/NULL-safe shape `music_ensure_sprites` establishes is a real,
+available option if internal RAM ever gets tight again — just not a
+change this urgent, narrowly-scoped regression fix should also be
+making without measuring it first. Every OTHER static candidate found
+(mic/audio sample buffers, the boot-edge ring, the debug-console line
+buffer, radar's line/triangle pools, flare's ray-mark points) is under
+2KB — no concern.
+
+**The CI gate this regression should always have tripped.**
+`tools/check_dram_budget.py` (firmware/tools/) sums `.dram0.data` +
+`.dram0.bss` from the esp32s3 build's own map file and fails the build
+if the total exceeds 163,840 bytes (160 KiB) — a budget derived from
+the exact before/after numbers above: comfortably above this PR's own
+135,040-byte total (~17.6% headroom) while sitting well below the
+183,648-byte total that actually broke boot, and leaving 177,920 bytes
+of `dram0_0_seg` for the heap at its own ceiling — more than double the
+~65.9KB the LVGL port's own double-buffered display buffers need. See
+that script's own top comment for the full derivation. Wired into
+`.github/workflows/esp32.yml`'s `esp32-build` job, both matrix legs (the
+"defaults" leg links no LVGL/display code at all, so it is always far
+under budget — the check is a no-op there, not a special case).
+
+**The diagnostic gate this regression should never have been silent
+under.** A failed `ff_display_lvgl_start()` used to `ff_park` — an
+infinite `vTaskDelay` loop with nothing but a heartbeat log, on a device
+whose console had not even been installed yet. `app_main.c`'s `ff_park_
+lvgl_failure` (this PR) instead logs the exact internal/DMA-RAM numbers
+at the moment of failure (`heap_caps_get_free_size`/`heap_caps_get_
+largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)` — the same
+capability mask `esp_lvgl_port` itself allocates from) and, with
+`CONFIG_FF_DEBUG_CONSOLE` on, keeps servicing the USB-Serial-JTAG bench
+console (moved `dbgconsole_init()` earlier in bring-up so it is already
+installed by the time this path can be reached) so the device can still
+be diagnosed and reflashed over the same wire — never silently bricked
+on this class of failure again.
+
 ## Render key: the particle state must NOT drive it
 
 Per S16's rule, the render key drives a FULL `lv_obj_clean`+rebuild on

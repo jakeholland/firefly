@@ -57,9 +57,22 @@
  * run produces bit-identical sprites) — a core-white blob plus a
  * radially-falling-off accent-tinted halo ring baked into one small
  * (45x45) RGB565-plus-8-bit-alpha buffer per (glow-quartile, accent
- * color) pair, 8 sprites total, a few KB, ordinary `.bss` (NOT the LVGL
- * heap, NOT PSRAM — nothing about this data needs either). Only the
- * SPRITE SIZE is quantized to one of 4 glow buckets; the per-firefly
+ * color) pair, 8 sprites total, ~47.5KB (`music_sprite_t` is 6075
+ * bytes: 2025px * (2-byte rgb565 + 1-byte alpha)). fix/s31-sprites-
+ * psram (2026-09-09): that table used to be a plain `static` — ordinary
+ * internal `.bss` — and on the esp32s3 target internal RAM is also
+ * where `esp_lvgl_port`'s own (DMA-capable) display buffers must come
+ * from; 47.5KB of sprite table pushed that allocation below what fit,
+ * and the device parked on the boot splash forever
+ * (`lvgl_port_add_disp_priv(389): Not enough memory for LVGL buffer`,
+ * bench evidence on main a853bb5, PR #252). `s_sprites` is now a
+ * pointer, lazily `heap_caps_calloc`'d from PSRAM on first use
+ * (`music_ensure_sprites`, NULL-safe exactly like `s_canvas_buf`/
+ * `music_ensure_canvas_buf` just below — same posture, same reasoning:
+ * this data is read every frame but never DMA'd to a display
+ * controller, so PSRAM's higher access latency costs nothing a human
+ * can see). The sim build uses plain `calloc`. Only the SPRITE SIZE is
+ * quantized to one of 4 glow buckets; the per-firefly
  * BRIGHTNESS still varies continuously (`scale = glow / bucket_center`,
  * applied to the sprite's own per-pixel alpha at blit time) so there is
  * no visible brightness banding — only a <=3px size step between
@@ -264,10 +277,34 @@ typedef struct {
  * constants — bit-identical every run, so goldens stay reproducible),
  * guarded by `s_sprites_ready` so a second/third Music session in the
  * same process (or the same sim binary running several fixtures) never
- * redoes the work. */
-static music_sprite_t s_sprites[FF_SCR_MUSIC_GLOW_STEPS][2];
+ * redoes the work.
+ *
+ * fix/s31-sprites-psram (2026-09-09): a pointer, not the table itself —
+ * lazily `heap_caps_calloc`'d from PSRAM by `music_ensure_sprites` on
+ * first use (this file's top comment, "Renderer", has the full boot-
+ * failure writeup). NULL-safe throughout the draw path exactly like
+ * `s_canvas_buf`: `music_build_sprites` bails out (never sets
+ * `s_sprites_ready`) if the allocation fails, and `music_composite_
+ * particle` no-ops if `s_sprites` is still NULL — the swarm simply
+ * never draws rather than crash, the same posture a failed canvas
+ * allocation already gets. */
+static music_sprite_t (*s_sprites)[2];
 static float s_sprite_glow_center[FF_SCR_MUSIC_GLOW_STEPS];
 static bool s_sprites_ready;
+
+#if defined(FF_TARGET_SIM)
+/* [test-only] fix/s31-sprites-psram (2026-09-09): lets a sim unit test
+ * exercise music_build_sprites' allocation-failure path without a real
+ * OOM (the sim's `calloc` essentially never fails, and there is no
+ * internal-RAM/PSRAM distinction to actually exhaust in the sim) — see
+ * `ff_scr_music_debug_force_sprite_alloc_fail`'s own doc comment,
+ * scr_music.h. Defaults false; a test that sets it true MUST restore it
+ * in its own teardown (mirrors this suite's "tests own their state"
+ * convention — test_ctl_music_idle_drain.c's tearDown comment). Not
+ * compiled into the esp32s3 target build at all, so it costs the device
+ * nothing and cannot be reached by any device code path. */
+static bool s_test_force_sprite_alloc_fail;
+#endif
 
 /* The canvas pixel buffer — allocated ONCE (lazily, on the first ever
  * `ff_scr_music_build`) and kept for the process lifetime; see this
@@ -402,9 +439,40 @@ static void music_build_sprite_shape(float glow_b, uint16_t core_rgb565, uint16_
     }
 }
 
+/* Lazily allocates the sprite table from PSRAM (device) / the ordinary
+ * heap (sim) — see the `s_sprites` declaration's own doc comment above
+ * for the boot-failure history this replaces. NULL-safe like `music_
+ * ensure_canvas_buf` just below: a failed allocation leaves `s_sprites
+ * == NULL` and every caller already tolerates that. `heap_caps_calloc`/
+ * `calloc` (zero-initialized) rather than `_malloc` purely so a
+ * still-zeroed sprite would fail safe (fully transparent, alpha==0)
+ * rather than show garbage pixels in the window between allocation and
+ * `music_build_sprite_shape` filling it in — belt-and-braces, since
+ * that window is one synchronous function call with no way for a draw
+ * to land inside it. */
+static void music_ensure_sprites(void)
+{
+    if (s_sprites != NULL) return;
+
+#if defined(FF_TARGET_SIM)
+    if (s_test_force_sprite_alloc_fail) return; /* [test-only] see s_test_force_sprite_alloc_fail's own comment */
+    music_sprite_t (*const sprites)[2] =
+        (music_sprite_t (*)[2])calloc((size_t)FF_SCR_MUSIC_GLOW_STEPS, sizeof(music_sprite_t) * 2u);
+#else
+    music_sprite_t (*const sprites)[2] = (music_sprite_t (*)[2])heap_caps_calloc(
+        (size_t)FF_SCR_MUSIC_GLOW_STEPS, sizeof(music_sprite_t) * 2u, MALLOC_CAP_SPIRAM);
+#endif
+    if (sprites == NULL) return;
+
+    s_sprites = sprites;
+}
+
 static void music_build_sprites(void)
 {
     if (s_sprites_ready) return;
+
+    music_ensure_sprites();
+    if (s_sprites == NULL) return; /* allocation failed — music_composite_particle stays NULL-safe */
 
     uint16_t const ink = music_rgb565_from_hex(FF_THEME_COLOR_INK);
     uint16_t const amber = music_rgb565_from_hex(FF_THEME_COLOR_AMBER);
@@ -487,6 +555,14 @@ static inline void music_canvas_add_px(uint16_t *canvas, uint32_t stride_px, int
  * by-brightness split. */
 static void music_composite_particle(uint16_t *canvas, uint32_t stride_px, ff_swarm_particle_t const *p)
 {
+    /* fix/s31-sprites-psram — NULL-safe: a failed sprite-table
+     * allocation (see `s_sprites`'s own doc comment) means `music_
+     * build_sprites` never set `s_sprites_ready`/populated `s_sprite_
+     * glow_center` either, so bail before touching any of it — the
+     * swarm simply draws no fireflies onto an otherwise-normal cleared-
+     * plus-ring canvas, rather than dereference a NULL pointer. */
+    if (s_sprites == NULL) return;
+
     float dx, dy;
     music_deg_to_offset(p->theta_deg, p->r_px, &dx, &dy);
     int32_t const cx = (int32_t)(FF_SCR_MUSIC_CANVAS_PX / 2u) + (int32_t)dx;
@@ -820,4 +896,16 @@ ff_scr_music_frame_stats_t ff_scr_music_debug_frame_stats(void)
     out.frame_period_avg_ms = s_frame_stats.last_frame_period_avg_ms;
     out.canvas_draw_avg_us = s_frame_stats.last_canvas_draw_avg_us;
     return out;
+}
+
+#if defined(FF_TARGET_SIM)
+void ff_scr_music_debug_force_sprite_alloc_fail(bool fail)
+{
+    s_test_force_sprite_alloc_fail = fail;
+}
+#endif
+
+bool ff_scr_music_debug_sprites_ready(void)
+{
+    return s_sprites_ready;
 }

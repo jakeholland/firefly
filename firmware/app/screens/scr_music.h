@@ -135,6 +135,43 @@ typedef struct {
 
 ff_scr_music_frame_stats_t ff_scr_music_debug_frame_stats(void);
 
+/**
+ * ff_scr_music_debug_sprites_ready — [test-only] fix/s31-sprites-psram
+ * (2026-09-09): true once the glow-sprite table (`music_build_sprites`,
+ * scr_music.c) has been both allocated AND filled in; false if it has
+ * never run yet OR its PSRAM/heap allocation failed. A test can force
+ * the failure path with `ff_scr_music_debug_force_sprite_alloc_fail`
+ * (sim-only, just below), build the face, and assert this reads false
+ * while confirming the draw path still ran without crashing — the sim
+ * regression test for the internal-RAM boot-parking bug this PR fixes
+ * (docs/specs/S31-music-swarm.md's dated amendment has the full boot
+ * failure writeup). Not read by any product code — mirrors `ff_scr_
+ * music_debug_render_ticks`'s own "test-only getter" role above.
+ */
+bool ff_scr_music_debug_sprites_ready(void);
+
+#if defined(FF_TARGET_SIM)
+/**
+ * ff_scr_music_debug_force_sprite_alloc_fail — [test-only, sim-only]
+ * fix/s31-sprites-psram (2026-09-09): while `fail` is true, EVERY
+ * subsequent `music_ensure_sprites` allocation attempt (not just the
+ * next one) acts as if it failed, without needing a real OOM condition
+ * (the sim's own `calloc` essentially never fails, and the sim has no
+ * internal-RAM/PSRAM distinction to actually exhaust — see this
+ * codebase's `docs/specs/S31-music-swarm.md` dated amendment: "the map-
+ * file check is the test" for the REAL internal-RAM exhaustion; this
+ * getter/setter pair is for exercising the NULL-safe draw path only).
+ * `false` is the default; a test that sets this `true` MUST set it back
+ * to `false` in its own teardown before the next test runs (mirrors
+ * this suite's "tests own their own state" convention — test_ctl_music_
+ * idle_drain.c's tearDown doc comment). COMPILED OUT of the esp32s3
+ * target build entirely (matches ff_shell.h's own "Sim-only dev
+ * affordances" block) — a device build has neither the declaration nor
+ * the underlying flag, so it cannot be reached by any device code path.
+ */
+void ff_scr_music_debug_force_sprite_alloc_fail(bool fail);
+#endif /* FF_TARGET_SIM */
+
 #ifdef __cplusplus
 }
 #endif
