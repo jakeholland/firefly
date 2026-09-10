@@ -18,6 +18,8 @@ import importlib.util
 import math
 import os
 
+import build123d as bd
+
 from . import components as comp
 from . import geometry as geo
 from .features import buttons as btn
@@ -488,7 +490,28 @@ def verify_display_to_stack_clearance(p):
     return results
 
 
-def check_display_interference_near_ears(bodies, p, standoffs, margin=6.0):
+def _display_near_ears_region(p, standoffs, margin):
+    xs, ys = [], []
+    for ear in p['ears'].values():
+        xs.append(ear['root_xy'][0])
+        ys.append(ear['root_xy'][1])
+    for m in standoffs.values():
+        xs.append(m['world_xy'][0])
+        ys.append(m['world_xy'][1])
+    return min(xs) - margin, max(xs) + margin, min(ys) - margin, max(ys) + margin
+
+
+def _near_ears_candidates(p, standoffs, margin):
+    x0, x1, y0, y1 = _display_near_ears_region(p, standoffs, margin)
+    disp = comp.load_display(p)
+    for s in disp.solids():
+        bb = s.bounding_box()
+        cx, cy = (bb.min.X + bb.max.X) / 2.0, (bb.min.Y + bb.max.Y) / 2.0
+        if x0 <= cx <= x1 and y0 <= cy <= y1:
+            yield s
+
+
+def check_display_interference_near_ears(bodies, p, standoffs, margin=6.0, exact=True, use_cache=True):
     """Not a firefly_case.py function by name -- the source's own
     `check_interference` walks Fusion's LIVE occurrence tree (every
     inserted board, including the display) against Top/Bottom; this port
@@ -502,26 +525,44 @@ def check_display_interference_near_ears(bodies, p, standoffs, margin=6.0):
     solid whose own bbox centre falls inside it is boolean-intersected
     against Top for real. Zero hits confirms the standoff through-holes/
     barrel counterbores genuinely clear the real barrels, not just the
-    idealized cylinder the barrel-clearance cut assumes."""
-    disp = comp.load_display(p)
-    top = bodies['Top']
+    idealized cylinder the barrel-clearance cut assumes.
 
-    xs, ys = [], []
-    for ear in p['ears'].values():
-        xs.append(ear['root_xy'][0])
-        ys.append(ear['root_xy'][1])
-    for m in standoffs.values():
-        xs.append(m['world_xy'][0])
-        ys.append(m['world_xy'][1])
-    x0, x1 = min(xs) - margin, max(xs) + margin
-    y0, y1 = min(ys) - margin, max(ys) + margin
+    Item 3 (this phase's own cycle-time brief) tried the SAME fused/
+    cached-tool speedup `components._fused_ceiling_cut_tool` uses here
+    too, in two forms, and abandoned both -- kept always-exact (the
+    `exact`/`use_cache` params exist only so callers/the CLI's own
+    `--exact-display` flag can pass them uniformly without a branch):
+    (1) fusing the REAL per-candidate solids (this check's own candidate
+    set is denser and each candidate individually more complex than the
+    ceiling-cut's simple `band & s` boxes) made the one-time fuse itself
+    run for MINUTES, not seconds -- not a usable one-time cost even
+    cached. (2) A box-per-candidate ("convex-hull-per-body", using the
+    simplest possible hull -- an axis-aligned bbox) prefilter, safe by
+    construction (`real solid ⊆ its own bbox`, so a clean box-union
+    result is a valid fast 'ok'), fused fast but triggered a real hit on
+    the packed near-ears geometry almost every time (live-measured: a
+    ~0.0007mm^3 REAL residual is real enough to blow well past any
+    sensible box-overlap tolerance too, since nearby SMT parts' own
+    bounding boxes routinely overlap the ear/riser material in a way the
+    real, smaller solids underneath do not) -- the fast check essentially
+    always fell through to the exact loop anyway, at which point it had
+    only added the box-fuse's own cost on top, net SLOWER than skipping
+    it. Left ported as originally shipped (phase 2a); not the cost this
+    phase's own cycle-time win targets (see `ceiling_safe_display_cut`
+    for the one that worked)."""
+    x0, x1, y0, y1 = _display_near_ears_region(p, standoffs, margin)
+    top = bodies['Top']
+    # boolean-cleanup/tessellation noise at a shared boundary (same class
+    # check_interference_pairs' own 1e-4mm^3 coincident-touch tolerance
+    # already accepts elsewhere in this file, just a hair looser here for
+    # a genuinely negligible residual -- live-checked, this port's own
+    # smallest real fix was ~1.16mm^3, five orders of magnitude above
+    # this floor).
+    NOISE_FLOOR_MM3 = 0.001
 
     hits = []
-    for s in disp.solids():
+    for s in _near_ears_candidates(p, standoffs, margin):
         bb = s.bounding_box()
-        cx, cy = (bb.min.X + bb.max.X) / 2.0, (bb.min.Y + bb.max.Y) / 2.0
-        if not (x0 <= cx <= x1 and y0 <= cy <= y1):
-            continue
         vol = interference_volume(top, s)
         if vol > 1e-4:
             hits.append({
@@ -529,16 +570,9 @@ def check_display_interference_near_ears(bodies, p, standoffs, margin=6.0):
                 'bbox_z': (round(bb.min.Z, 2), round(bb.max.Z, 2)),
                 'volume_mm3': round(vol, 4),
             })
-    # NOISE_FLOOR_MM3: boolean-cleanup/tessellation noise at a shared
-    # boundary (same class check_interference_pairs' own 1e-4mm^3
-    # coincident-touch tolerance already accepts elsewhere in this file,
-    # just a hair looser here for a genuinely negligible residual --
-    # live-checked, this port's own smallest real fix was ~1.16mm^3, five
-    # orders of magnitude above this floor).
-    NOISE_FLOOR_MM3 = 0.001
     real_hits = [h for h in hits if h['volume_mm3'] > NOISE_FLOOR_MM3]
     return {'ok': not real_hits, 'region_xy': (round(x0, 1), round(x1, 1), round(y0, 1), round(y1, 1)),
-            'hits': hits, 'real_hits': real_hits}
+            'hits': hits, 'real_hits': real_hits, 'mode': 'exact'}
 
 
 # ---------------------------------------------------------------------------

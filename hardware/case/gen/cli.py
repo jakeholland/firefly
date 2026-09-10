@@ -29,8 +29,19 @@ from .params import get_params
 _CASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 
-def build(variant='trim'):
-    """Build Top/Bottom for the given variant. Returns (p, bodies, timings, standoffs)."""
+def build(variant='trim', exact_display=False):
+    """Build Top/Bottom for the given variant. Returns (p, bodies, timings, standoffs).
+
+    `exact_display` (item 3, cycle-time caching -- default False, the
+    common/iteration path): when False, `components.ceiling_safe_
+    display_cut` uses its own cached, fused cutting tool (one BREP
+    round-trip + one boolean cut instead of ~30 sequential ones,
+    geometrically identical result -- see that function's own
+    docstring) rather than the original per-candidate algorithm. Pass
+    True (the CLI's own `--exact-display`) for the release-gate path,
+    which always re-derives the tool from the real STEP geometry with
+    the original per-candidate sliver-rejection safety net, ignoring
+    any cache."""
     p = get_params(variant)
     t = {}
 
@@ -69,7 +80,8 @@ def build(variant='trim'):
     t['known_component_keepouts'] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    bodies['Top'], ceiling_cut_stats = components_mod.ceiling_safe_display_cut(bodies['Top'], p)
+    bodies['Top'], ceiling_cut_stats = components_mod.ceiling_safe_display_cut(
+        bodies['Top'], p, exact=exact_display)
     t['ceiling_safe_display_cut'] = time.perf_counter() - t0
     t['ceiling_safe_display_cut_stats'] = ceiling_cut_stats
 
@@ -97,10 +109,15 @@ def main():
     ap.add_argument('--export', action='store_true')
     ap.add_argument('--render', action='store_true')
     ap.add_argument('--out-dir', default=os.path.join(_CASE_DIR, 'gen', 'out'))
+    ap.add_argument('--exact-display', action='store_true',
+                     help='item 3 (cycle-time caching): re-derive the display ceiling-safe cut tool exactly '
+                          'from the real STEP geometry every time, ignoring the cached fused tool. Slower '
+                          '(~15-25s vs. a fraction of a second on a warm cache) -- use before cutting real '
+                          'plastic (the release-gate path), not for everyday iteration.')
     args = ap.parse_args()
 
     t_all0 = time.perf_counter()
-    p, bodies, timings, standoffs = build(args.variant)
+    p, bodies, timings, standoffs = build(args.variant, exact_display=args.exact_display)
     print(f'--- build ({args.variant}) ---')
     print(json.dumps(timings, indent=2))
     print('Top volume mm3', bodies['Top'].volume)

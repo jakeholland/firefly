@@ -37,10 +37,14 @@ Measured (this port, `uv run python -m gen.components measure`):
     the real barrel (see docs/hardware/headless-port-plan.md).
 """
 import functools
+import hashlib
 import math
 import os
 
 import build123d as bd
+from OCP.BRep import BRep_Builder
+from OCP.BRepTools import BRepTools
+from OCP.TopoDS import TopoDS_Shape
 
 from . import geometry as geo
 
@@ -55,6 +59,9 @@ DISPLAY_STEP = os.path.join(_MODELS_DIR, 'ESP32-S3-Touch-LCD-1_46.step')
 _Y_OFFSET = 50.0
 STANDOFF_BARREL_TOP_LOCAL_Z = -6.2   # matches ear_seat_z's own "standoff plane" anchor, both variants, exactly
 
+_CASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+_CACHE_DIR = os.path.join(_CASE_DIR, 'gen', 'out', '_cache')
+
 
 def display_to_world(local_pt, top_z):
     lx, ly, lz = local_pt
@@ -62,8 +69,66 @@ def display_to_world(local_pt, top_z):
 
 
 @functools.lru_cache(maxsize=1)
+def _step_hash():
+    """First 8 hex chars of the STEP file's own sha256 -- a cache-key
+    fragment, not a security hash (item 3, this phase's own cycle-time
+    brief: 'persisted to gen/out/ keyed by STEP hash'). Cheap (~10ms for
+    a 14.8MB file, dominated by disk read, not hashing) and automatically
+    invalidates every cache entry below if `hardware/models/ESP32-S3-
+    Touch-LCD-1_46.step` is ever replaced."""
+    h = hashlib.sha256()
+    with open(DISPLAY_STEP, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()[:8]
+
+
+def _brep_write(shape, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + '.tmp'
+    BRepTools.Write_s(shape.wrapped, tmp)
+    os.replace(tmp, path)  # atomic -- a concurrent reader never sees a partial file
+
+
+def _brep_read(path, wrapper):
+    raw = TopoDS_Shape()
+    ok = BRepTools.Read_s(raw, path, BRep_Builder())
+    if not ok:
+        raise ValueError(f'corrupt BREP cache file: {path}')
+    return wrapper(raw)
+
+
+@functools.lru_cache(maxsize=1)
 def _load_compound():
-    return bd.import_step(DISPLAY_STEP)
+    """The raw (local-frame) 420-solid display compound. Item 3 (this
+    phase's own cycle-time brief): a plain `bd.import_step` of this
+    14.8MB file measured ~6.4s on its own (this port's dominant
+    per-process fixed cost every time the display is touched at all --
+    `measure_standoffs`/`ceiling_safe_display_cut`/`check_display_
+    interference_near_ears`/buttons' own `verify_plunger_reach` each
+    need it, and `functools.lru_cache` here only dedupes calls WITHIN
+    one process, not across the separate `python3 -m gen.cli`/pytest
+    processes a normal edit-build-check loop runs). Cached to a native
+    OCC BREP file (`gen/out/_cache/display_raw_<stephash>.brep`,
+    keyed by `_step_hash()` so a STEP-file change invalidates it
+    automatically) -- BREP is a lossless, near-instant round-trip
+    (~0.13s measured for this same 420-solid compound, ~50x faster than
+    the STEP import it replaces) unlike STEP's own text-based, unit-
+    converting, topology-rebuilding parse. `gen/out/` is already
+    git-ignored (`gen/.gitignore`), so this cache is pure scratch, safe
+    to delete any time (rebuilt transparently on the next miss)."""
+    cache_path = os.path.join(_CACHE_DIR, f'display_raw_{_step_hash()}.brep')
+    if os.path.exists(cache_path):
+        try:
+            return _brep_read(cache_path, bd.Compound)
+        except Exception:
+            pass  # fall through and rebuild from the real STEP file
+    compound = bd.import_step(DISPLAY_STEP)
+    try:
+        _brep_write(compound, cache_path)
+    except OSError:
+        pass  # a read-only gen/out/ (e.g. CI) just means no cache, not a build failure
+    return compound
 
 
 def load_display(p):
@@ -173,7 +238,68 @@ CEILING_CUT_FOOTPRINT_MIN_MM2 = 4.0  # firefly_case.py's own build() candidate f
 SPLIT_REJECT_VOLUME_MM3 = 0.5     # see ceiling_safe_display_cut's own docstring -- sliver vs. real sever
 
 
-def ceiling_safe_display_cut(top, p):
+def _ceiling_cut_candidates(p):
+    """The same candidate selection ceiling_safe_display_cut's own exact
+    path uses (footprint area + pilot-protect-z filter) -- factored out
+    so the fast path's own fused-tool cache and the exact path's own
+    per-candidate loop can never silently drift apart about which real
+    display sub-bodies qualify."""
+    pilot_protect_z = p['top_pilot_z'][1] + PILOT_PROTECT_MARGIN
+    disp = load_display(p)
+    for s in disp.solids():
+        bb = s.bounding_box()
+        if bb.max.Z <= pilot_protect_z:
+            continue
+        area = (bb.max.X - bb.min.X) * (bb.max.Y - bb.min.Y)
+        if area <= CEILING_CUT_FOOTPRINT_MIN_MM2:
+            continue
+        yield s
+
+
+def _fused_ceiling_cut_tool(p, use_cache=True):
+    """Item 3 (this phase's own cycle-time brief): fuses every
+    candidate's own `band & s` cutting tool (the exact same per-candidate
+    tool `ceiling_safe_display_cut`'s own exact path builds -- see
+    `_ceiling_cut_candidates`) into ONE solid, cached to a native BREP
+    file keyed by `_step_hash()` plus every band-defining PARAMS number
+    (`top_pilot_z`, `top_ceiling_underside_z`, `top_z` -- `load_display`'s
+    own world transform depends on `top_z` too), so a params edit
+    invalidates the cache automatically rather than silently serving a
+    stale tool. This is the ACTUAL material the exact path would remove
+    absent its own per-candidate sliver-rejection safety net (see that
+    function's own docstring) -- the fast default path below applies
+    this ONE fused tool in a SINGLE cut instead of ~30 sequential ones,
+    trading the per-candidate rejection's fine-grained safety margin for
+    speed; `exact=True` (the release-gate path) still runs the original,
+    unfused algorithm unchanged."""
+    key = f'{_step_hash()}_{p["top_z"]}_{p["top_pilot_z"][0]}_{p["top_pilot_z"][1]}_{p["top_ceiling_underside_z"]}'
+    cache_path = os.path.join(_CACHE_DIR, f'ceiling_cut_tool_{key}.brep')
+    if use_cache and os.path.exists(cache_path):
+        try:
+            return _brep_read(cache_path, bd.Solid)
+        except Exception:
+            pass
+    pilot_protect_z = p['top_pilot_z'][1] + PILOT_PROTECT_MARGIN
+    ceiling_z = p['top_ceiling_underside_z']
+    band = geo.box_solid(-100.0, 100.0, -100.0, 100.0, pilot_protect_z, ceiling_z + 0.3)
+    tool = None
+    for s in _ceiling_cut_candidates(p):
+        try:
+            piece = band & s
+        except Exception:
+            continue
+        if piece is None or piece.volume < 1e-6:
+            continue
+        tool = piece if tool is None else (tool + piece)
+    if tool is not None and use_cache:
+        try:
+            _brep_write(tool, cache_path)
+        except OSError:
+            pass
+    return tool
+
+
+def ceiling_safe_display_cut(top, p, exact=False, use_cache=True):
     """Port of the inline ceiling-safe cut in firefly_case.py's own
     `build()` (right after insert_display_pcba, ~:5997-6096) -- NOT one
     of the file's 217 named functions, but load-bearing: cuts Top against
@@ -211,19 +337,41 @@ def ceiling_safe_display_cut(top, p):
     avoided it) and is rolled back outright (skipped, counted in the
     returned stats), never silently accepted. See docs/hardware/
     headless-port-parity.md for how many of the source's own ~33 live
-    candidates this port actually applies vs. skips."""
+    candidates this port actually applies vs. skips.
+
+    `exact=False` (default, item 3 -- this phase's own cycle-time brief):
+    applies `_fused_ceiling_cut_tool`'s one cached, fused tool in a
+    SINGLE cut + one split-check, instead of ~30 sequential per-candidate
+    cuts -- ~15-25s down to a fraction of a second on a warm cache (the
+    STEP import/candidate-fuse itself is the one-time cost the cache
+    file absorbs). `exact=True` (the release-gate path -- pass this from
+    the CLI's own `--exact-display` flag) runs the original, unfused,
+    per-candidate algorithm unchanged, with its own finer-grained
+    sliver-vs-real-sever distinction per candidate rather than one
+    combined tool's -- use it before cutting real plastic."""
+    if not exact:
+        tool = _fused_ceiling_cut_tool(p, use_cache=use_cache)
+        stats = {'candidates': None, 'applied': 0, 'skipped_empty': 0, 'skipped_would_split': 0,
+                 'slivers_discarded': 0, 'mode': 'fast (fused, cached)'}
+        if tool is None or tool.volume < 1e-6:
+            stats['skipped_empty'] = 1
+            return top, stats
+        candidate = top - tool
+        sols = sorted(candidate.solids(), key=lambda sol: sol.volume, reverse=True)
+        if len(sols) > 1 and sum(sol.volume for sol in sols[1:]) > SPLIT_REJECT_VOLUME_MM3:
+            stats['skipped_would_split'] = 1
+            return top, stats
+        if len(sols) > 1:
+            stats['slivers_discarded'] = len(sols) - 1
+            candidate = sols[0]
+        stats['applied'] = 1
+        return candidate, stats
+
     pilot_protect_z = p['top_pilot_z'][1] + PILOT_PROTECT_MARGIN
     ceiling_z = p['top_ceiling_underside_z']
-    disp = load_display(p)
     stats = {'candidates': 0, 'applied': 0, 'skipped_empty': 0, 'skipped_would_split': 0,
-              'slivers_discarded': 0}
-    for s in disp.solids():
-        bb = s.bounding_box()
-        if bb.max.Z <= pilot_protect_z:
-            continue
-        area = (bb.max.X - bb.min.X) * (bb.max.Y - bb.min.Y)
-        if area <= CEILING_CUT_FOOTPRINT_MIN_MM2:
-            continue
+              'slivers_discarded': 0, 'mode': 'exact'}
+    for s in _ceiling_cut_candidates(p):
         stats['candidates'] += 1
         band = geo.box_solid(-100.0, 100.0, -100.0, 100.0, pilot_protect_z, ceiling_z + 0.3)
         try:

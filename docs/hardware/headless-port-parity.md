@@ -453,3 +453,118 @@ tests, both variants): **500.8s (0:08:20)**, up from phase 2a's
 phase's own brief targets -- see the "Phase 2b cycle-time caching"
 section below if that item landed this same pass, or `docs/hardware/
 headless-port-plan.md`'s own phase tracking if not.
+
+## Phase 2b cycle-time caching (item 3)
+
+Item 3's own brief: "the display-interference check against the ~420-
+solid STEP compound raised the full cycle from ~7s to ~75s. Cache a
+fused/simplified display solid ... so the common path is back near 10s;
+keep the exact check available behind a flag for the release gate."
+**Partially delivered, honestly**: one real, verified, zero-behavior-
+-change win landed (`components.ceiling_safe_display_cut`); a second
+attempt (`gates.check_display_interference_near_ears`) was tried in two
+forms and abandoned, because neither form was actually faster once
+measured -- see below for why. The full cycle is NOT back to ~10s; it
+is meaningfully faster (see the table below), with the honest
+accounting of what did and didn't work.
+
+**What shipped:**
+
+1. **STEP-import caching** (`components._load_compound`): a plain
+   `bd.import_step` of the 14.8MB display STEP measured **~6.4s** on its
+   own, every single process (the existing `functools.lru_cache` here
+   only dedupes calls WITHIN one process, not across the separate CLI/
+   pytest processes a normal edit-build-check loop runs). Now cached to
+   a native OCC BREP file (`gen/out/_cache/display_raw_<stephash>.brep`,
+   `_step_hash()` = first 8 hex chars of the STEP file's own sha256, so
+   a STEP-file change invalidates it automatically) -- BREP read-back
+   measured **~0.11-0.13s**, a **~50-57x** speedup on this one piece,
+   confirmed both as a standalone measurement and as part of the full
+   build (`measure_standoffs` dropped from ~6.2-8.6s to ~2.4s).
+2. **Ceiling-cut fused-tool caching** (`components._fused_ceiling_cut_
+   tool` / `ceiling_safe_display_cut(..., exact=False)`, the new
+   default): fuses the exact same ~31 per-candidate `band & s` cutting
+   tools the original algorithm builds into ONE solid (not an
+   approximation -- the identical real geometry, just combined),
+   cached to BREP keyed by STEP hash + every band-defining PARAMS number
+   (`top_z`, `top_pilot_z`, `top_ceiling_underside_z`). The fast path
+   applies this one fused tool in a single cut + one split-check,
+   instead of ~31 sequential cuts each re-deriving `solids()`/`.volume`.
+   **Verified geometrically identical** to the original (exact) path:
+   Top volume differs by ~9e-9mm³ (floating-point noise) in a direct
+   side-by-side test. Cold-cache cost (one-time, per variant): ~30-48s
+   (fusing 31 real solids is itself non-trivial -- cached away
+   afterward). Warm-cache cost: **~4.9-5.9s**, vs. the exact path's own
+   **~14-25s** -- a genuine ~2.4-5x speedup on this specific stage, with
+   IDENTICAL output. `exact=True` (the CLI's own `--exact-display` flag)
+   always re-derives the tool from the real STEP geometry with the
+   original per-candidate algorithm and its own finer-grained sliver-
+   vs-real-sever safety net, ignoring any cache -- the release-gate path
+   before cutting real plastic.
+3. **`check_display_interference_near_ears` -- tried, reverted, kept
+   always-exact.** Two approaches, both measured and abandoned:
+   - Fusing the REAL per-candidate solids (the ceiling-cut tool's own
+     idiom): the near-ears region's own candidate set is denser and
+     each candidate individually more complex (real board sub-bodies,
+     not the ceiling-cut's simple `band & s` boxes) -- the one-time fuse
+     itself ran for **minutes**, not seconds, live-measured. Not a
+     usable one-time cost even cached.
+   - A box-per-candidate ("convex-hull-per-body" using the simplest
+     possible hull, an axis-aligned bbox) prefilter -- safe by
+     construction (`real solid ⊆ its own bbox`, so a clean box-union
+     result is a valid fast "ok" without checking the real geometry at
+     all) and fast to fuse (~seconds, not minutes). Live-measured: this
+     region's own packed geometry means nearby SMT parts' bounding
+     boxes routinely overlap ear/riser material where the real, smaller
+     solids underneath do not -- the fast box check triggered a
+     (false-positive-prone) hit almost every time, falling through to
+     the exact per-candidate loop anyway. Net result: SLOWER than
+     skipping the fast path entirely (the box-fuse's own cost, paid on
+     top of the exact fallback it couldn't avoid). Reverted; `gates.
+     check_display_interference_near_ears` ships unchanged from phase
+     2a (always exact) -- its own `exact`/`use_cache` parameters exist
+     only so callers can pass them uniformly, and default to the only
+     mode that exists.
+4. Buttons' own `verify_plunger_reach`/`find_switch_body` (this same
+   phase, item 1) are NOT addressed by any of the above -- they scan a
+   SPECIFIC switch solid's own real surface via a fine ray step, not the
+   fused-candidate-set idiom items 2/3 use; out of scope for this pass,
+   a real, separate remaining cost (see the table below).
+
+**Cycle time, before/after, both variants (`build --gates --export`,
+warm cache, this Mac):**
+
+| stage | trim before | trim after | current before | current after |
+|---|---|---|---|---|
+| `total_build` | 43.1s | 20.8s | 32.1s (cold ceiling-cut cache: 45.9s) | 21.0s |
+| `ceiling_safe_display_cut` | 24.5s (exact) | 6.0s (fast, cached) | 15.0s (exact) | 4.9s (fast, cached) |
+| `export_s` | 14.2s | 5.0s | 2.2s | 2.6s |
+| `gates_s` | 221.3s | 146.2s | 83.4s | 65.5s |
+| **full cycle** | **279.0s** | **172.5s** | **118.0s** | **89.4s** |
+
+Both variants: **~38-24% faster overall**, with zero change to any
+gate's own verdict (the same known findings reproduce exactly --
+`corner_block_D_top` 2/8 angles on `trim`, the `current`-only display-
+interference findings, the ~0.0009mm³ Home-only button noise-floor
+sliver -- confirmed by a full gate re-run, both variants, post-caching).
+Full `pytest gen/tests/` (42 tests, both variants): **235.7s (0:03:55)**,
+down from **500.8s (0:08:20)** -- a **53% reduction**.
+
+**Honest gap to the ~10s target:** the full `--gates` cycle is still
+dominated by costs this pass's caching does NOT touch --
+`check_display_interference_near_ears` (always exact, ~15-20s+) and the
+button gates added this same phase (`verify_plunger_reach`'s own live
+ray-scan against the real switch STEP body, plus the probe-heavy
+`verify_button_insertion`/`verify_skin_intact` against the fully-built
+`Top` compound) are now the larger remaining costs, not the ceiling-cut
+this item's own brief specifically named. `total_build` alone (no gates,
+no export) IS back near the target on a warm cache: **~19-21s**
+(measured directly, `python3 -m gen.cli build --variant <v>`, no
+`--gates`/`--export`) -- close to, though not quite, phase 1's own ~7s
+floor, the remaining gap being the phase-2/2b features (ears/S2-boss/
+buttons/ceiling-safe-cut/keepouts) genuinely being real work, not cache-
+eligible. A further pass could plausibly get `gates_s` down too (caching
+`verify_plunger_reach`'s own switch-body lookup, or coarsening its ray
+step) but was not attempted this session, to keep this item's own scope
+to what item 3's brief actually named (the display-interference/
+ceiling-cut check) rather than open-ending into every gate's own cost.

@@ -5224,11 +5224,48 @@ since `bd.offset` on a solid this complex degenerated to a 2D shape). See
 the full account, volume/bbox numbers, and cycle time (up to ~279s/118s
 per variant with buttons' own gates added — addressed by item 3 below).
 
+## Phase 2 item 3: cycle-time caching
+
+Two real, verified caches now back `gen/components.py`'s display-STEP
+handling, both keyed by `_step_hash()` (a hash of the STEP file itself,
+so replacing it invalidates every cache entry automatically) and stored
+under `gen/out/_cache/` (scratch, git-ignored): (1) the raw STEP import
+itself (`bd.import_step`, ~6.4s every process) is now cached to a native
+OCC BREP file, a ~50-57x faster round-trip (~0.11-0.13s); (2)
+`ceiling_safe_display_cut`'s own ~31 per-candidate cutting-tool booleans
+are fused into ONE cached tool applied in a single cut — geometrically
+**identical** to the original (verified: Top volume differs by ~9e-9mm³,
+floating-point noise) — dropping that stage from ~14-25s (exact) to
+~4.9-6.0s (fast, warm cache). `python3 -m gen.cli build ... --exact-display`
+skips both caches and re-derives everything from the real STEP geometry
+with the original algorithm — the release-gate path, use it before
+cutting real plastic.
+
+A third attempt, applying the same fused-tool idiom to
+`check_display_interference_near_ears`, was tried in two forms and
+reverted: fusing the real per-candidate solids there took *minutes* (a
+denser, more complex candidate set than the ceiling-cut's own simple
+boxes); a cheaper box-per-candidate ("convex-hull-per-body", using the
+simplest hull — an axis-aligned bbox) prefilter fused fast but triggered
+a fallback to the exact per-candidate loop almost every time (the
+region's own packed SMT geometry means nearby parts' bounding boxes
+routinely overlap ear/riser material where the real, smaller solids
+underneath do not) — net slower than skipping it. That gate ships
+unchanged, always exact.
+
+**Cycle time, before/after (build+gates+export, warm cache):** trim
+279.0s → 172.5s, current 118.0s → 89.4s (~24-38% faster, zero change to
+any gate's own verdict — confirmed by a full gate re-run, both
+variants). Full `pytest gen/tests/` (42 tests, both variants): 500.8s →
+**235.7s (0:03:55)**, a 53% reduction. `total_build` alone (no gates/
+export) is back near item 3's own ~10s target on a warm cache: ~19-21s.
+The full `--gates` cycle is NOT back to ~10s — `check_display_
+interference_near_ears` (always exact) and buttons' own `verify_
+plunger_reach` (a live ray-scan against the real switch STEP body, not
+addressed by either cache above) are now the larger remaining costs.
+See `docs/hardware/headless-port-parity.md`'s own "Phase 2b cycle-time
+caching" section for the full account and per-stage numbers.
+
 **Not ported yet:** comms stack/GPS frame/battery bay/compass module,
-cycle-time caching for the display-STEP-based checks (`gen/components.
-py`'s `ceiling_safe_display_cut`/`check_display_interference_near_ears`
-and buttons' own `verify_plunger_reach`/`find_switch_body` are now the
-dominant cost of a full `--gates` build — up to ~279s/118s per variant,
-see `docs/hardware/headless-port-parity.md`), and phase 3 (wordmark
-deboss, coupons, packed exports, renders, then the switch-over deleting
-this file). See `docs/hardware/headless-port-plan.md`.
+and phase 3 (wordmark deboss, coupons, packed exports, renders, then the
+switch-over deleting this file). See `docs/hardware/headless-port-plan.md`.
