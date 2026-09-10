@@ -57,7 +57,7 @@ The middle one is the point of the whole project: most trackers keep pointing co
 | Set times, honestly | A flare arriving |
 |---|---|
 | <img src="docs/screens/lineup-tbd.png" width="200" alt="Lineup face listing Friday's Lost Lands lineup under a SET TIMES TBD banner"> | <img src="docs/screens/flare-takeover.png" width="200" alt="Full-screen takeover reading KEV IS FLARING, E - 40 m, above an amber chip reading GO DROPS LOCK - DANA — the disclosure that pressing GO costs you the navigation lock you already have"> |
-| Lost Lands hasn't published set times yet, so the puck says so and lists the day instead of inventing a schedule. | Press and hold, and your crew's pucks light up and point at you. If you were already navigating to someone else, it tells you what GO will cost you. |
+| Before a festival's set times are out, the puck says so and lists the day instead of inventing a schedule (screenshot predates publication — [Lost Lands' real 2026 set times landed on 2026-09-09](firmware/assets/field/README.md) and are embedded in the field pack now). | Press and hold, and your crew's pucks light up and point at you. If you were already navigating to someone else, it tells you what GO will cost you. |
 
 | Inbox | Typing, off-grid |
 |---|---|

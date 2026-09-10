@@ -72,29 +72,202 @@ static void S05_AC1_lost_lands_has_7_stages_exact_names_and_colors(void)
     }
 }
 
-static void S05_AC1_lost_lands_has_at_least_27_sets_all_times_null(void)
+/* 2026-09-09: Lost Lands published real set times (was 27 all-null
+ * placeholder sets; see docs/specs/S05-festpack.md's dated amendment).
+ * The fixture now carries the real 222-set grid, copied verbatim from
+ * fest-almanac's canonical pack. */
+static void S05_AC1_lost_lands_has_222_sets_real_times(void)
 {
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("lost-lands-2026.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
     fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
-    TEST_ASSERT_GREATER_OR_EQUAL_UINT16(27, pack.n_sets);
-    TEST_ASSERT_EQUAL_UINT16(27, pack.n_sets); /* exact count of the real fixture, today */
+    TEST_ASSERT_EQUAL_UINT16(222, pack.n_sets); /* exact count of the real fixture, today */
+    TEST_ASSERT_LESS_OR_EQUAL_UINT16(FP_MAX_SETS, pack.n_sets);
 
-    for (uint16_t i = 0; i < pack.n_sets; i++) {
-        TEST_ASSERT_EQUAL_INT16(-1, pack.sets[i].start_min);
-        TEST_ASSERT_EQUAL_INT16(-1, pack.sets[i].end_min);
-    }
-
-    /* Spot checks. */
-    TEST_ASSERT_EQUAL_STRING("Caspa", pack.sets[0].artist);
-    TEST_ASSERT_EQUAL_INT8(-1, pack.sets[0].stage_idx); /* stage: null */
+    /* Spot checks. An ordinary daytime set: plain "HH:MM" on its own
+     * `day`, `night` == `day`, no fold. `end` is null for all but one of
+     * the 222 — fest-almanac publishes start times, and ff_sched.c
+     * derives the end from the next set on the stage. */
+    TEST_ASSERT_EQUAL_STRING("Hevnfall", pack.sets[0].artist);
+    TEST_ASSERT_EQUAL_INT8(6, pack.sets[0].stage_idx); /* "grove" == stages[6] */
     TEST_ASSERT_EQUAL_UINT16(259, pack.sets[0].day_doy); /* 2026-09-16 */
+    TEST_ASSERT_EQUAL_INT16(13 * 60, pack.sets[0].start_min);  /* 13:00 */
+    TEST_ASSERT_EQUAL_INT16(-1, pack.sets[0].end_min);         /* end: null */
 
-    TEST_ASSERT_EQUAL_STRING("Excision", pack.sets[4].artist);
-    TEST_ASSERT_EQUAL_INT8(0, pack.sets[4].stage_idx); /* "prehistoric" == stages[0] */
-    TEST_ASSERT_EQUAL_UINT16(261, pack.sets[4].day_doy); /* 2026-09-18 */
+    /* The one set in the pack with an explicit `end` — and the only one
+     * carrying `end_day`, because that end lands on the NEXT calendar
+     * date. `end_day` is what makes 00:10 unambiguous: it folds to 1450
+     * (00:10 measured from Friday night's midnight), not to 10. */
+    TEST_ASSERT_EQUAL_STRING("Excision", pack.sets[42].artist);
+    TEST_ASSERT_EQUAL_INT8(0, pack.sets[42].stage_idx); /* "prehistoric" == stages[0] */
+    TEST_ASSERT_EQUAL_UINT16(261, pack.sets[42].day_doy); /* night 2026-09-18 */
+    TEST_ASSERT_EQUAL_INT16(22 * 60 + 10, pack.sets[42].start_min); /* 22:10 */
+    TEST_ASSERT_EQUAL_INT16(24 * 60 + 10, pack.sets[42].end_min);   /* end "00:10" +
+                                                                        end_day 2026-09-19 =
+                                                                        1450, i.e. 00:10 the
+                                                                        following morning, still
+                                                                        Friday's day_doy — the
+                                                                        published 2-hour set. */
+    TEST_ASSERT_TRUE(pack.sets[42].end_min > pack.sets[42].start_min); /* no sched_effective_end
+                                                                          fold needed: end_day
+                                                                          already resolved it */
+}
+
+/* 2026-09-09 (S05-festpack.md amendment) — a set that starts after
+ * actual local midnight carries the NEXT calendar date in `day` (plain
+ * ISO, plain "HH:MM" with HH <= 23) and names the festival night it is
+ * billed under in `night`. fp_parse_set_daytime folds the two into one
+ * day_doy (the night) with start_min measured from THAT night's
+ * midnight, i.e. >= 1440 — see fp_pack.h's fp_set_t doc comment. */
+static void S05_AC1_lost_lands_after_midnight_sets_fold_onto_festival_night(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("lost-lands-2026.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+
+    /* "The Resistance" (day 2026-09-18, 22:45) is Wompy Woods' last
+     * pre-midnight set of Friday night; "Sippy" (day 2026-09-19, 00:15,
+     * night 2026-09-18) is the first post-midnight one on the same
+     * stage; "Oliverse" (day 2026-09-19, 03:00, night 2026-09-18) is
+     * that stage's Friday-night closer. All three must share Friday's
+     * day_doy (261) — none may land on Saturday's (262). */
+    fp_set_t const *resistance = NULL, *sippy = NULL, *oliverse = NULL;
+    for (uint16_t i = 0; i < pack.n_sets; i++) {
+        if (strcmp(pack.sets[i].artist, "The Resistance") == 0) resistance = &pack.sets[i];
+        if (strcmp(pack.sets[i].artist, "Sippy") == 0) sippy = &pack.sets[i];
+        if (strcmp(pack.sets[i].artist, "Oliverse") == 0) oliverse = &pack.sets[i];
+    }
+    TEST_ASSERT_NOT_NULL(resistance);
+    TEST_ASSERT_NOT_NULL(sippy);
+    TEST_ASSERT_NOT_NULL(oliverse);
+
+    TEST_ASSERT_EQUAL_UINT16(261, resistance->day_doy);
+    TEST_ASSERT_EQUAL_INT16(22 * 60 + 45, resistance->start_min); /* night == day, no fold */
+
+    TEST_ASSERT_EQUAL_UINT16(261, sippy->day_doy); /* Friday night, NOT Saturday's 262 */
+    TEST_ASSERT_EQUAL_INT16(24 * 60 + 15, sippy->start_min); /* 00:15 folded to 1455 */
+    TEST_ASSERT_EQUAL_INT16(-1, sippy->end_min);             /* end: null, derived downstream */
+    TEST_ASSERT_TRUE(sippy->start_min > resistance->start_min); /* orders AFTER the pre-midnight
+                                                                    set on the same stage/day_doy
+                                                                    — the whole point of the fold;
+                                                                    see ff_sched.c's
+                                                                    sched_next_stage_start */
+
+    TEST_ASSERT_EQUAL_UINT16(261, oliverse->day_doy);
+    TEST_ASSERT_EQUAL_INT16(27 * 60, oliverse->start_min); /* 03:00 folded to 1620 */
+
+    /* Every after-midnight set in the pack, counted: exactly the 55 with
+     * night != day, all of them landing at start_min >= 1440 on the
+     * PREVIOUS calendar day's day_doy, and none at an hour the pack
+     * itself ever spells (fp_min_from_hhmm caps HH at 23). */
+    uint16_t folded = 0;
+    for (uint16_t i = 0; i < pack.n_sets; i++) {
+        if (pack.sets[i].start_min >= 1440) {
+            folded++;
+            TEST_ASSERT_TRUE(pack.sets[i].start_min < 1800); /* inside the festival-day window */
+        }
+    }
+    TEST_ASSERT_EQUAL_UINT16(55, folded);
+}
+
+/* The documented FALLBACK when a pack omits `night` (packs predating the
+ * field): a set starting before 06:00 local is folded onto the PREVIOUS
+ * calendar day's night; anything at or after 06:00 stays on its own day.
+ * See fp_pack.c's fp_parse_set_daytime. */
+static void S05_AC1_night_fold_fallback_when_night_absent(void)
+{
+    static char const json[] =
+        "{\"festpack\":\"0.1\","
+        "\"festival\":{\"name\":\"Fallback\",\"year\":2026,"
+        "\"venue\":{\"lat\":0.0,\"lon\":0.0}},"
+        "\"stages\":[{\"id\":\"main\",\"name\":\"Main\",\"color\":\"#ffffff\"}],"
+        "\"schedule\":["
+        /* [0] before 06:00, no night -> folds back onto 2026-09-18 */
+        "{\"artist\":\"Predawn\",\"stage\":\"main\",\"day\":\"2026-09-19\",\"start\":\"01:30\",\"end\":null},"
+        /* [1] exactly 06:00, no night -> stays on 2026-09-19 */
+        "{\"artist\":\"Dawn\",\"stage\":\"main\",\"day\":\"2026-09-19\",\"start\":\"06:00\",\"end\":null},"
+        /* [2] evening, no night -> stays on 2026-09-19 */
+        "{\"artist\":\"Evening\",\"stage\":\"main\",\"day\":\"2026-09-19\",\"start\":\"21:00\",\"end\":null},"
+        /* [3] Jan 1 before 06:00 -> wraps to the PREVIOUS year's last doy
+             (2025 was not a leap year, so 365) */
+        "{\"artist\":\"NewYear\",\"stage\":\"main\",\"day\":\"2026-01-01\",\"start\":\"02:00\",\"end\":null}"
+        "]}";
+
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(json, sizeof(json) - 1, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_UINT16(4, pack.n_sets);
+
+    TEST_ASSERT_EQUAL_UINT16(261, pack.sets[0].day_doy);          /* 2026-09-18, folded back */
+    TEST_ASSERT_EQUAL_INT16(1440 + 90, pack.sets[0].start_min);   /* 01:30 -> 1530 */
+
+    TEST_ASSERT_EQUAL_UINT16(262, pack.sets[1].day_doy);          /* 2026-09-19, its own day */
+    TEST_ASSERT_EQUAL_INT16(360, pack.sets[1].start_min);         /* 06:00, no fold */
+
+    TEST_ASSERT_EQUAL_UINT16(262, pack.sets[2].day_doy);
+    TEST_ASSERT_EQUAL_INT16(21 * 60, pack.sets[2].start_min);
+
+    TEST_ASSERT_EQUAL_UINT16(365, pack.sets[3].day_doy);          /* 2025-12-31 */
+    TEST_ASSERT_EQUAL_INT16(1440 + 120, pack.sets[3].start_min);
+}
+
+/* An explicit `night` always wins over the fallback — including the
+ * cases the fallback would get wrong on its own: a pre-06:00 set the
+ * pack deliberately bills under its OWN day, and a late-evening set the
+ * pack bills under the previous night. Out-of-contract `night` values
+ * (ahead of `day`, or more than one day behind it — both rejected by
+ * tools/festpack_lint.py) group under the authored night but must not
+ * shift the clock times by a bogus multi-day offset. */
+static void S05_AC1_explicit_night_overrides_fallback(void)
+{
+    static char const json[] =
+        "{\"festpack\":\"0.1\","
+        "\"festival\":{\"name\":\"Nights\",\"year\":2026,"
+        "\"venue\":{\"lat\":0.0,\"lon\":0.0}},"
+        "\"stages\":[{\"id\":\"main\",\"name\":\"Main\",\"color\":\"#ffffff\"}],"
+        "\"schedule\":["
+        /* [0] 02:00 but explicitly billed under its OWN day — the
+             fallback alone would have folded this back a day. */
+        "{\"artist\":\"OwnDay\",\"stage\":\"main\",\"day\":\"2026-09-19\",\"start\":\"02:00\","
+        "\"end\":null,\"night\":\"2026-09-19\"},"
+        /* [1] 00:45 billed under the previous night, with an end that
+             also lands post-midnight (end_day). */
+        "{\"artist\":\"Folded\",\"stage\":\"main\",\"day\":\"2026-09-19\",\"start\":\"00:45\","
+        "\"end\":\"01:45\",\"night\":\"2026-09-18\"},"
+        /* [2] a pre-midnight set whose END crosses into the next day —
+             end_day makes that explicit rather than relying on
+             ff_sched.c's end < start fold. */
+        "{\"artist\":\"Crosser\",\"stage\":\"main\",\"day\":\"2026-09-18\",\"start\":\"23:30\","
+        "\"end\":\"00:30\",\"night\":\"2026-09-18\",\"end_day\":\"2026-09-19\"},"
+        /* [3] out-of-contract: night is THREE days before day. Group by
+             the authored night; do not invent a 3-day clock shift. */
+        "{\"artist\":\"Bogus\",\"stage\":\"main\",\"day\":\"2026-09-19\",\"start\":\"01:00\","
+        "\"end\":null,\"night\":\"2026-09-16\"}"
+        "]}";
+
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(json, sizeof(json) - 1, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_UINT16(4, pack.n_sets);
+
+    TEST_ASSERT_EQUAL_UINT16(262, pack.sets[0].day_doy);        /* 2026-09-19, as authored */
+    TEST_ASSERT_EQUAL_INT16(120, pack.sets[0].start_min);       /* 02:00, NOT folded */
+
+    TEST_ASSERT_EQUAL_UINT16(261, pack.sets[1].day_doy);        /* 2026-09-18 */
+    TEST_ASSERT_EQUAL_INT16(1440 + 45, pack.sets[1].start_min); /* 00:45 -> 1485 */
+    TEST_ASSERT_EQUAL_INT16(1440 + 105, pack.sets[1].end_min);  /* 01:45 -> 1545 */
+
+    TEST_ASSERT_EQUAL_UINT16(261, pack.sets[2].day_doy);
+    TEST_ASSERT_EQUAL_INT16(23 * 60 + 30, pack.sets[2].start_min); /* 1410 */
+    TEST_ASSERT_EQUAL_INT16(1440 + 30, pack.sets[2].end_min);      /* 00:30 -> 1470, via end_day */
+    TEST_ASSERT_TRUE(pack.sets[2].end_min > pack.sets[2].start_min);
+
+    TEST_ASSERT_EQUAL_UINT16(259, pack.sets[3].day_doy);        /* grouped under 2026-09-16 */
+    TEST_ASSERT_EQUAL_INT16(60, pack.sets[3].start_min);        /* clock unshifted, not 60+3*1440 */
 }
 
 static void S05_AC1_lost_lands_festival_meta_and_utc_offset_default(void)
@@ -746,7 +919,10 @@ int main(void)
     UNITY_BEGIN();
 
     RUN_TEST(S05_AC1_lost_lands_has_7_stages_exact_names_and_colors);
-    RUN_TEST(S05_AC1_lost_lands_has_at_least_27_sets_all_times_null);
+    RUN_TEST(S05_AC1_lost_lands_has_222_sets_real_times);
+    RUN_TEST(S05_AC1_lost_lands_after_midnight_sets_fold_onto_festival_night);
+    RUN_TEST(S05_AC1_night_fold_fallback_when_night_absent);
+    RUN_TEST(S05_AC1_explicit_night_overrides_fallback);
     RUN_TEST(S05_AC1_lost_lands_festival_meta_and_utc_offset_default);
 
     RUN_TEST(S05_AC2_nulls_in_every_nullable_slot_parse);
