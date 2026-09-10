@@ -1574,6 +1574,58 @@ static void ff_park(const char *why)
     }
 }
 
+/* fix/s31-sprites-psram (2026-09-09): a dedicated park for the ONE
+ * bring-up failure this PR's own bug was — `ff_display_lvgl_start`
+ * returning NULL because `esp_lvgl_port` couldn't find internal/DMA RAM
+ * for its own display buffers (`lvgl_port_add_disp_priv(389): Not
+ * enough memory for LVGL buffer` — bench evidence, main a853bb5, PR
+ * #252's S31 canvas renderer; scr_music.c's own top comment, "Renderer",
+ * has the full writeup of what ate that RAM and how this PR frees it
+ * back up). Two things a plain `ff_park` could not give a maintainer
+ * staring at a dead splash screen:
+ *
+ * 1. The exact internal-RAM numbers, logged ONCE, in the same capability
+ *    mask (`MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA`) `esp_lvgl_port`
+ *    itself allocates from — so "not enough memory" becomes "X bytes
+ *    free, Y-byte largest block" without needing a JTAG debugger or a
+ *    guess.
+ * 2. A live console instead of a silent heartbeat sleep: `dbgconsole_
+ *    init()` now runs BEFORE this bring-up attempt (moved up from its
+ *    old spot right before the render loop — see that call site's own
+ *    comment) specifically so `dbgconsole_poll` can keep servicing
+ *    USB-Serial-JTAG here. A puck that hits this path is not bricked:
+ *    it can still be inspected (`i2c scan`, `heap`, etc. — whatever
+ *    `ff_dbgconsole_handle_line` already wires, app/include/ff_debug_
+ *    console.h) and reflashed over the exact same wire, with CONFIG_
+ *    FF_DEBUG_CONSOLE on. With the console compiled out (the default),
+ *    this degrades to exactly `ff_park`'s own sleep loop — never worse.
+ *
+ * `s_shell` is already initialized by this point in app_main (`ff_
+ * shell_init`, well above the STAGE 2+ LVGL section) so `dbgconsole_
+ * poll` has a valid shell to hand command hooks even though the display
+ * never came up. Never returns, same contract as `ff_park`. */
+static void ff_park_lvgl_failure(void)
+{
+    size_t const free_internal_dma = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    size_t const largest_internal_dma = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    ESP_LOGE(TAG, "parked: LVGL display bring-up failed");
+    ESP_LOGE(TAG,
+             "internal+DMA RAM at failure: %u bytes free, %u bytes largest contiguous block "
+             "(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA — the same pool esp_lvgl_port allocates its display buffers "
+             "from)",
+             (unsigned)free_internal_dma, (unsigned)largest_internal_dma);
+#if CONFIG_FF_DEBUG_CONSOLE
+    ESP_LOGE(TAG, "bench console still live over USB-Serial-JTAG — this puck can be diagnosed and reflashed");
+#endif
+
+    while (true) {
+#if CONFIG_FF_DEBUG_CONSOLE
+        dbgconsole_poll(&s_shell, ff_bringup_now_ms());
+#endif
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
 void app_main(void)
 {
     /* S25 — latch battery power ON before anything else. On battery the board
@@ -2091,10 +2143,22 @@ void app_main(void)
         }
     }
 
+#if CONFIG_FF_DEBUG_CONSOLE
+    /* Bench/debug console (default OFF) — install the USB-Serial-JTAG
+     * driver's RX side BEFORE the LVGL bring-up attempt just below, not
+     * after it succeeds (this call used to sit right before the render
+     * loop — see the comment left at that old call site). fix/s31-
+     * sprites-psram (2026-09-09): a failed LVGL bring-up now still
+     * serves this console (`ff_park_lvgl_failure`), which only works if
+     * the driver is already installed by the time that failure is
+     * detected. See dbgconsole_init's own doc comment above. */
+    dbgconsole_init();
+#endif
+
     /* ---- STAGE 2+: LVGL v9 up, render a real face ---- */
     lv_display_t *disp = ff_display_lvgl_start();
     if (disp == NULL) {
-        ff_park("LVGL display bring-up failed");
+        ff_park_lvgl_failure();
         return;
     }
 
@@ -2319,12 +2383,14 @@ void app_main(void)
      * it starts. See ff_configure_task_watchdog's own doc comment. */
     ff_configure_task_watchdog();
 
-#if CONFIG_FF_DEBUG_CONSOLE
-    /* Bench/debug console (default OFF) — install the USB-Serial-JTAG
-     * driver's RX side once, before the render loop can first poll it.
-     * See dbgconsole_init's own doc comment above. */
-    dbgconsole_init();
-#endif
+    /* fix/s31-sprites-psram (2026-09-09): dbgconsole_init() used to live
+     * HERE — moved up to right before the STAGE 2+ LVGL bring-up attempt
+     * (this file's earlier "STAGE 2+: LVGL v9 up" comment) so a bring-up
+     * failure there can still serve the console from `ff_park_lvgl_
+     * failure` below. Nothing else in this function depends on the
+     * ordering relative to `ff_configure_task_watchdog`/`ff_configure_
+     * light_sleep_wake` just above — it only installs the USB-Serial-
+     * JTAG driver's RX side, independent of both. */
 
     /* Render lifecycle mirrors the sim (targets/sim/ctl_loop.c): tick the
      * shell every frame, rebuild the LVGL tree ONLY on a dirty tick. The
