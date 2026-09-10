@@ -837,16 +837,30 @@ static void dbgconsole_music(ff_shell_t *sh, ff_dbgconsole_music_frame_fn music_
     char const *src_text =
         (d.source == FF_APP_MUSIC_SRC_MIC) ? "mic" : (d.source == FF_APP_MUSIC_SRC_IMU) ? "imu" : "none";
 
-    char frame_body[64];
+    /* fix/mic-dump-device-path — widened from 64: `music_frame` now also
+     * folds the `perf` command's own `lvgl_refresh_avg_us`/`_max_us`
+     * fields in (app_main.c's `dbgconsole_music_frame`, "one line tells
+     * the whole story"), on top of the original `frame_ms`/`canvas_us`
+     * pair. 128 clears GCC's -Wformat-truncation worst-case digit width
+     * for four %u/%.2f fields with headroom (this repo's build
+     * authority, CLAUDE.md — see `dbgconsole_mic_status_line`'s own
+     * doc comment for the identical sizing reasoning). */
+    char frame_body[128];
     bool const have_frame = (music_frame != NULL) && (music_frame(hook_user, frame_body, sizeof(frame_body)) >= 0);
 
-    char line[DBGCONSOLE_LINE_BUF];
+    /* Widened past DBGCONSOLE_LINE_BUF (not raised globally: every other
+     * command's line comfortably fits the shared 200-byte size, and this
+     * is the one place `frame_body`'s own worst case needs the extra
+     * room) — same "+N for one wider fragment" shape `ff_dbgcmd_line`'s
+     * own doc comment already uses elsewhere in this file. */
+    char line[DBGCONSOLE_LINE_BUF + sizeof(frame_body)];
     if (have_frame) {
         snprintf(line, sizeof(line), "dbg: music source=%s loudness=%.2f bpm=%.1f %s", src_text,
                   (double)d.loudness, (double)d.bpm_estimate, frame_body);
     } else {
-        snprintf(line, sizeof(line), "dbg: music source=%s loudness=%.2f bpm=%.1f frame_ms=n/a canvas_us=n/a",
-                  src_text, (double)d.loudness, (double)d.bpm_estimate);
+        snprintf(line, sizeof(line),
+                  "dbg: music source=%s loudness=%.2f bpm=%.1f frame_ms=n/a canvas_us=n/a lvgl_refresh=n/a", src_text,
+                  (double)d.loudness, (double)d.bpm_estimate);
     }
     reply_line(reply, user, line);
 }

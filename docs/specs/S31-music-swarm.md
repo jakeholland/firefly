@@ -920,9 +920,59 @@ changes:
   likely remaining suspect — flagged per AGENTS.md rather than claimed
   fixed without evidence).
 
+**2026-09-09+ amendment (fix/mic-dump-device-path) — root cause found:
+`s_frame_stats` was a cross-task producer/consumer with no lock at
+all.** The "hardware-only observation" flagged above is this: on the
+esp32s3 target, `music_timer_cb` (`scr_music.c`) — the code that WRITES
+`s_frame_stats` — only ever runs on `esp_lvgl_port`'s own task
+("taskLVGL"), inside an `lv_timer_handler()` pass. `ff_scr_music_debug_
+frame_stats()` — the getter the `music` console command READS through
+`dbgconsole_music_frame` — runs on a COMPLETELY DIFFERENT task
+(`app_main.c`'s render loop, the same task `dbgconsole_poll` is called
+from). Before this fix, that read had NO synchronization at all: the
+sim regression above cannot catch this class of bug even in principle
+— it is single-threaded (this file's own "Golden determinism" section:
+no LVGL port task exists there; the SAME thread that calls
+`lv_timer_handler()` is the one that then reads the getter), so there
+is no cross-task race for it to exercise regardless of how faithfully
+it drives the timer. This is exactly the shape `ff_display.c`'s own
+"2026-09-08 QA hardening item 2" comment already documents and guards
+for its sibling `lvgl_refresh`/`flush` perf windows (`s_refresh_perf`/
+`s_flush_perf`, a `portMUX_TYPE` spinlock) — `s_frame_stats` was simply
+never given the same treatment when it was added. Fixed by wrapping
+every touch point (`music_frame_stats_reset`, `music_frame_stats_add`,
+and the getter's read) in the identical `portMUX_TYPE`/
+`portENTER_CRITICAL`/`portEXIT_CRITICAL` discipline (compiled to a
+no-op on `FF_TARGET_SIM`, where there is nothing to protect against).
+Also hardened, defensively: `ff_scr_music_build`'s `lv_timer_create`
+call had no NULL check (this feature has a real history of tight
+internal-RAM headroom on device — PR #253, "device out of internal
+RAM" from this same S31 canvas renderer's own sprite table) — a failed
+allocation there would silently leave the swarm frozen after its one
+build-time settle frame and the stats window permanently unclosed,
+which would present identically to this bug from the console's point
+of view. Both are now documented inline (`scr_music.c`'s own
+`s_frame_stats_lock` and `lv_timer_create` comments) rather than left
+as an unexplained gap.
+
+**2026-09-09+ amendment (fix/mic-dump-device-path) — "one line tells
+the whole story"**: the `music` line now also folds in the `perf`
+command's own `lvgl_refresh` window (`ff_display_perf_get`, the SAME
+data `dbgconsole_perf`'s `lvgl_refresh` line already reports) whenever
+the frame stats are fresh — `lvgl_refresh_avg_us=<N> lvgl_refresh_max_
+us=<N>`, or `lvgl_refresh=n/a` if that window hasn't closed yet (the
+device's first `FF_PERF_WINDOW_MS` (5s) after boot, regardless of
+Music). A bench operator diagnosing a slow music frame no longer has to
+run `perf` separately to tell apart "the swarm's OWN canvas composite
+is slow" (`canvas_us`) from "LVGL's broader refresh/flush pass is slow
+underneath it" (`lvgl_refresh_*`, shared by every face) — the exact
+distinction this hook's own history above ("the 145ms/frame regression
+found via perf's own lvgl_refresh line") once needed two commands to
+draw.
+
 | Command | Effect |
 |---|---|
-| `music` | `dbg: music source=<mic\|imu\|none> loudness=X.XX bpm=XX.X frame_ms=<X.XX\|n/a> canvas_us=<N\|n/a>` |
+| `music` | `dbg: music source=<mic\|imu\|none> loudness=X.XX bpm=XX.X frame_ms=<X.XX\|n/a> canvas_us=<N\|n/a> lvgl_refresh_avg_us=<N\|n/a> lvgl_refresh_max_us=<N>` (the `lvgl_refresh_*` pair collapses to the single fragment `lvgl_refresh=n/a` when that window hasn't closed yet, and both `lvgl_refresh_*` fields are omitted entirely alongside a `frame_ms=n/a canvas_us=n/a` — see `dbgconsole_music`'s own doc comment) |
 | `music seed <n>` | reseeds the swarm (bench determinism); `dbg: music seed=<n>` |
 
 ## Sim fixtures

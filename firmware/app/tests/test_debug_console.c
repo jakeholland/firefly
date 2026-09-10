@@ -1052,7 +1052,7 @@ static void dbgconsole_music_reports_no_source_by_default(void)
     capture_t cap;
     dispatch("music", &cap);
     TEST_ASSERT_EQUAL_INT(1, cap.n);
-    TEST_ASSERT_EQUAL_STRING("dbg: music source=none loudness=0.00 bpm=0.0 frame_ms=n/a canvas_us=n/a",
+    TEST_ASSERT_EQUAL_STRING("dbg: music source=none loudness=0.00 bpm=0.0 frame_ms=n/a canvas_us=n/a lvgl_refresh=n/a",
                               cap.lines[0]);
 }
 
@@ -1148,7 +1148,7 @@ static void dbgconsole_music_frame_hook_present_but_not_closed_reports_na(void)
     dispatch("music", &cap);
 
     TEST_ASSERT_EQUAL_INT(1, cap.n);
-    TEST_ASSERT_EQUAL_STRING("dbg: music source=none loudness=0.00 bpm=0.0 frame_ms=n/a canvas_us=n/a",
+    TEST_ASSERT_EQUAL_STRING("dbg: music source=none loudness=0.00 bpm=0.0 frame_ms=n/a canvas_us=n/a lvgl_refresh=n/a",
                               cap.lines[0]);
 }
 

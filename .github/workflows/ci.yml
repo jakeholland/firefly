@@ -6,6 +6,27 @@ on:
     branches: [main]
 
 jobs:
+  # fix/mic-dump-device-path — a pure static-source check, no ESP-IDF
+  # toolchain and no sim build needed at all (unlike test_ticks_at_least_
+  # one, firmware/targets/sim/CMakeLists.txt, which only proves the
+  # HELPER's own arithmetic is correct — this proves nobody bypassed the
+  # helper with a bare literal anywhere in the esp32s3 tree). Its own
+  # native home would be esp32.yml (it only looks at
+  # firmware/targets/esp32s3/), but that workflow's ~1GB Docker
+  # toolchain pull makes it a slow place to get feedback on a one-line
+  # regex-catchable regression — a separate ~10s job here gives that
+  # feedback immediately without waiting on (or duplicating across) the
+  # esp32 build's two matrix legs. See check_no_subtick_sleeps.py's own
+  # top comment for the full "why".
+  subtick-sleep-check:
+    name: subtick-sleep-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: No bare sub-tick pdMS_TO_TICKS() literals
+        run: python3 firmware/tools/check_no_subtick_sleeps.py
+
   build-test:
     name: build-test
     runs-on: ubuntu-latest

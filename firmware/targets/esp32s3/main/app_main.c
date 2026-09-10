@@ -67,6 +67,7 @@
 #include "ff_settings.h"
 #include "ff_shell.h"
 #include "ff_sound_emit.h" /* S27 sounds — the screens-level TAP seam (ff_shell_sound_sink's bind target) */
+#include "ff_ticks_at_least_one.h" /* fix/mic-dump-device-path — the pure calc behind ff_ticks_at_least_one() below */
 #include "ff_touchcal.h"
 #include "scr_music.h" /* 2026-09-09 S31 canvas renderer — ff_scr_music_debug_frame_stats, the `music` console hook */
 
@@ -98,6 +99,37 @@
 #endif
 
 static const char *TAG = "firefly";
+
+/* fix/mic-dump-device-path — `pdMS_TO_TICKS(ms)` truncates toward zero,
+ * so any caller-supplied millisecond period shorter than one tick period
+ * (10ms on this build: CONFIG_FREERTOS_HZ=100 — see
+ * firmware/targets/esp32s3/sdkconfig) silently computes to 0 ticks.
+ * `vTaskDelay(0)` is a bare task-yield, not a sleep: a polling loop built
+ * on it never actually waits, so whatever "elapsed time" budget it is
+ * nominally advancing by `ms` each iteration burns down in near-zero
+ * wall-clock time instead of over `ms`-per-loop real time. That is
+ * exactly what happened to `mic dump`'s FF_MIC_DUMP_POLL_MS=5 poll (its
+ * 1000ms no-data budget elapsed in ~10ms of real time — see
+ * docs/specs/S30-audio-input.md, "mic dump device notes") and is the
+ * same bug class PR #216 fixed for the i2c bus-scan's 5ms retry. Every
+ * polling/backoff sleep in this file goes through this helper instead
+ * of a bare `vTaskDelay(pdMS_TO_TICKS(ms))` (or a bare
+ * `pdMS_TO_TICKS(ms)` timeout on a blocking driver call) so a period
+ * dropped below one tick later — a Kconfig edit, a constant tuned down —
+ * degrades to "sleeps one tick, still correct" rather than silently
+ * spinning.
+ *
+ * The actual arithmetic is `ff_ticks_at_least_one_calc`
+ * (ff_ticks_at_least_one.h), a header with zero FreeRTOS includes kept
+ * host-testable — see that header's own doc comment and
+ * tests/test_ticks_at_least_one.c for the coverage `pdMS_TO_TICKS`'s own
+ * tick-rounding can't be exercised on the sim/host build otherwise.
+ * This wrapper only supplies the live `configTICK_RATE_HZ` and narrows
+ * back to `TickType_t`. */
+static inline TickType_t ff_ticks_at_least_one(uint32_t ms)
+{
+    return (TickType_t)ff_ticks_at_least_one_calc(ms, (uint32_t)configTICK_RATE_HZ);
+}
 
 #if !CONFIG_FF_DEMO_MODE
 /* ff_clock_t — monotonic ms over esp_timer_get_time() (see slice a).
@@ -1054,9 +1086,33 @@ static bool s_usb_connected_logged = false;
 static char s_dbgconsole_line[FF_DBGCMD_LINE_MAX + 1];
 static size_t s_dbgconsole_line_len;
 
+/* fix/mic-dump-device-path — USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT()'s
+ * tx_buffer_size is 256 bytes, and esp_driver_usb_serial_jtag's TX ring
+ * (RINGBUF_TYPE_BYTEBUF, see usb_serial_jtag_driver_install) can never
+ * accept a single `usb_serial_jtag_write_bytes` item larger than its
+ * whole capacity — xRingbufferSend blocks for the FULL timeout and then
+ * fails, every single call, regardless of how long it waits or how many
+ * times it retries, once the write is bigger than the buffer. Every
+ * `mic dump` data line is exactly that: "dbg: mic dump data " (20 bytes)
+ * + ff_base64_encoded_len(sizeof frame.samples == 640) (856 bytes) =
+ * 876 bytes, before the trailing "\r\n" — already over 3x the default
+ * ring. That is bug #2 from the bench capture that reported frames=0:
+ * `dbgconsole_mic_dump_write_line`'s retry loop was doing the right
+ * thing, but no timeout ever helps when the item literally cannot fit.
+ * FF_DBGCONSOLE_TX_BUF_SIZE below is sized for that largest line (876
+ * bytes) with roughly 9x headroom, so a queued line or two — plus
+ * ordinary short status replies from every other command — never
+ * contends with the mic dump path for ring space. RX stays generous
+ * (typed/pasted command lines only, FF_DBGCMD_LINE_MAX-bounded) purely
+ * so a fast paste of several queued commands doesn't have to wait on
+ * this task's own ~20ms poll period to drain. */
+enum { FF_DBGCONSOLE_TX_BUF_SIZE = 8192u, FF_DBGCONSOLE_RX_BUF_SIZE = 1024u };
+
 static void dbgconsole_init(void)
 {
     usb_serial_jtag_driver_config_t cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    cfg.tx_buffer_size = FF_DBGCONSOLE_TX_BUF_SIZE;
+    cfg.rx_buffer_size = FF_DBGCONSOLE_RX_BUF_SIZE;
     esp_err_t const err = usb_serial_jtag_driver_install(&cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "usb_serial_jtag_driver_install failed: %s — bench console disabled this boot",
@@ -1368,7 +1424,7 @@ static void dbgconsole_mic_watch(uint32_t watch_secs, ff_dbgconsole_reply_fn rep
 
     for (uint32_t i = 0; i < n_prints; i++) {
         esp_task_wdt_reset();
-        vTaskDelay(pdMS_TO_TICKS(FF_MIC_WATCH_PERIOD_MS));
+        vTaskDelay(ff_ticks_at_least_one(FF_MIC_WATCH_PERIOD_MS));
 
         ff_mic_status_t const st = ff_mic_status();
         char line[112];
@@ -1399,24 +1455,36 @@ static void dbgconsole_mic_watch(uint32_t watch_secs, ff_dbgconsole_reply_fn rep
  * if the stall budget was exceeded (host not draining — e.g. no
  * terminal actually attached), so the caller can abort the dump rather
  * than spend its own remaining budget writing into a wall. Feeds this
- * task's own TWDT subscription while it retries. */
+ * task's own TWDT subscription while it retries.
+ *
+ * Stall accounting is real wall-clock time (esp_timer_get_time()), reset
+ * on every chunk that actually lands, NOT a count of retries times their
+ * nominal period: counting iterations silently assumes each blocking
+ * `usb_serial_jtag_write_bytes` call actually consumed its full timeout,
+ * which is exactly the accounting bug that shipped alongside the
+ * dbgconsole_mic_dump poll fix below (both were "count time by loop
+ * iterations" bugs, just on either side of a blocking call). Each retry
+ * still blocks for `FF_MIC_DUMP_WRITE_RETRY_MS` (the write's own
+ * timeout, guaranteed >= one tick by ff_ticks_at_least_one) so the task
+ * watchdog gets fed regularly instead of the whole stall budget being
+ * spent inside one call. */
 static bool dbgconsole_mic_dump_write_line(char const *line, size_t len)
 {
     enum { FF_MIC_DUMP_WRITE_RETRY_MS = 20u, FF_MIC_DUMP_WRITE_STALL_LIMIT_MS = 2000u };
+    TickType_t const retry_ticks = ff_ticks_at_least_one(FF_MIC_DUMP_WRITE_RETRY_MS);
     size_t written = 0u;
-    uint32_t stalled_ms = 0u;
+    int64_t stall_deadline_us = esp_timer_get_time() + (int64_t)FF_MIC_DUMP_WRITE_STALL_LIMIT_MS * 1000;
     while (written < len) {
-        int const n = usb_serial_jtag_write_bytes(line + written, len - written, pdMS_TO_TICKS(FF_MIC_DUMP_WRITE_RETRY_MS));
+        int const n = usb_serial_jtag_write_bytes(line + written, len - written, retry_ticks);
         if (n > 0) {
             written += (size_t)n;
-            stalled_ms = 0u;
+            stall_deadline_us = esp_timer_get_time() + (int64_t)FF_MIC_DUMP_WRITE_STALL_LIMIT_MS * 1000;
             continue;
         }
         esp_task_wdt_reset();
-        stalled_ms += FF_MIC_DUMP_WRITE_RETRY_MS;
-        if (stalled_ms >= FF_MIC_DUMP_WRITE_STALL_LIMIT_MS) return false;
+        if (esp_timer_get_time() >= stall_deadline_us) return false;
     }
-    (void)usb_serial_jtag_write_bytes("\r\n", 2, pdMS_TO_TICKS(FF_MIC_DUMP_WRITE_STALL_LIMIT_MS));
+    (void)usb_serial_jtag_write_bytes("\r\n", 2, retry_ticks);
     return true;
 }
 
@@ -1470,17 +1538,28 @@ static void dbgconsole_mic_dump(uint32_t dump_secs, ff_dbgconsole_reply_fn reply
 
     uint32_t delivered = 0u;
     bool stalled = false;
-    enum { FF_MIC_DUMP_POLL_MS = 5u, FF_MIC_DUMP_NO_DATA_LIMIT_MS = 1000u };
-    uint32_t no_data_ms = 0u;
-    while (delivered < target_frames && no_data_ms < FF_MIC_DUMP_NO_DATA_LIMIT_MS) {
+    /* FF_MIC_DUMP_POLL_MS=5 (below one 10ms tick on this build) used to
+     * feed a hand-rolled `no_data_ms += FF_MIC_DUMP_POLL_MS` counter that
+     * ASSUMED vTaskDelay(pdMS_TO_TICKS(5)) actually slept 5ms — it
+     * computed to 0 ticks (a bare yield), so the loop spun through ~200
+     * iterations in about 10ms of real time and the 1000ms no-data
+     * budget was gone before any hardware could ever produce a frame
+     * (`mic dump` always reported frames=0). Fixed two ways: the sleep
+     * itself now goes through ff_ticks_at_least_one (never zero ticks),
+     * and — since a loop-iteration counter drifts from wall-clock time
+     * the moment the sleep granularity and the nominal period disagree —
+     * the no-data budget is now measured directly off esp_timer_get_time()
+     * rather than accumulated per iteration. */
+    enum { FF_MIC_DUMP_POLL_MS = 10u, FF_MIC_DUMP_NO_DATA_LIMIT_MS = 1000u };
+    int64_t no_data_deadline_us = esp_timer_get_time() + (int64_t)FF_MIC_DUMP_NO_DATA_LIMIT_MS * 1000;
+    while (delivered < target_frames && esp_timer_get_time() < no_data_deadline_us) {
         esp_task_wdt_reset();
         ff_mic_dump_frame_t frame;
         if (!ff_mic_dump_pop(&frame)) {
-            vTaskDelay(pdMS_TO_TICKS(FF_MIC_DUMP_POLL_MS));
-            no_data_ms += FF_MIC_DUMP_POLL_MS;
+            vTaskDelay(ff_ticks_at_least_one(FF_MIC_DUMP_POLL_MS));
             continue;
         }
-        no_data_ms = 0u;
+        no_data_deadline_us = esp_timer_get_time() + (int64_t)FF_MIC_DUMP_NO_DATA_LIMIT_MS * 1000;
         bool const encoded = ff_base64_encode((uint8_t const *)frame.samples, sizeof(frame.samples),
                                                line + prefix_len, sizeof(line) - prefix_len);
         if (!encoded) continue; /* should never happen (buffer sized exactly) — never write a garbled line */
@@ -1544,13 +1623,41 @@ static void dbgconsole_mic(void *hook_user, ff_dbgconsole_mic_action_t action, u
  * CMakeLists.txt), so scr_music.h is directly reachable here, unlike
  * from ff_debug_console.c itself — see that typedef's own doc comment
  * for the full reasoning. Returns <0 (honest n/a) until the Music
- * screen's own per-frame timer has closed its first one-second window. */
+ * screen's own per-frame timer has closed its first one-second window
+ * — see scr_music.c's `s_frame_stats_lock` doc comment for the device-
+ * only cross-task race that used to make this read unreliable (fix/
+ * mic-dump-device-path).
+ *
+ * fix/mic-dump-device-path — "one line tells the whole story": folds the
+ * `perf` command's own `lvgl_refresh` window (`ff_display_perf_get`,
+ * `dbgconsole_perf` above) into this SAME line whenever the frame stats
+ * are fresh, so a bench operator reading `music` doesn't also have to
+ * run `perf` to tell apart "the swarm's OWN canvas composite is slow"
+ * (`canvas_us`, this screen's own cost) from "LVGL's broader refresh/
+ * flush pass is slow underneath it" (`lvgl_refresh_*`, esp_lvgl_port's
+ * cost, shared by every face) — the same distinction `dbgconsole_perf`'s
+ * own "frame" vs "lvgl_refresh" vs "flush" lines already draw, just
+ * co-located here instead of split across two commands while Music is
+ * the thing actually being diagnosed. Same honest-n/a convention as
+ * `dbgconsole_perf_window_line` for a window that has not closed yet
+ * (device boots with an empty lvgl_refresh window for its first 5s,
+ * FF_PERF_WINDOW_MS, regardless of Music). */
 static int dbgconsole_music_frame(void *hook_user, char *out, size_t cap)
 {
     (void)hook_user;
     ff_scr_music_frame_stats_t const st = ff_scr_music_debug_frame_stats();
     if (!st.valid) return -1;
-    snprintf(out, cap, "frame_ms=%.2f canvas_us=%" PRIu32, (double)st.frame_period_avg_ms, st.canvas_draw_avg_us);
+
+    ff_display_perf_t disp_perf;
+    ff_display_perf_get(&disp_perf);
+    if (disp_perf.refresh_count > 0u) {
+        snprintf(out, cap, "frame_ms=%.2f canvas_us=%" PRIu32 " lvgl_refresh_avg_us=%" PRIu32 " lvgl_refresh_max_us=%" PRIu32,
+                  (double)st.frame_period_avg_ms, st.canvas_draw_avg_us, disp_perf.refresh_avg_us,
+                  disp_perf.refresh_max_us);
+    } else {
+        snprintf(out, cap, "frame_ms=%.2f canvas_us=%" PRIu32 " lvgl_refresh=n/a", (double)st.frame_period_avg_ms,
+                  st.canvas_draw_avg_us);
+    }
     return 0;
 }
 
@@ -1690,7 +1797,7 @@ static void ff_park(const char *why)
 {
     ESP_LOGE(TAG, "parked: %s", why);
     while (true) {
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(ff_ticks_at_least_one(5000));
     }
 }
 
@@ -1742,7 +1849,7 @@ static void ff_park_lvgl_failure(void)
 #if CONFIG_FF_DEBUG_CONSOLE
         dbgconsole_poll(&s_shell, ff_bringup_now_ms());
 #endif
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(ff_ticks_at_least_one(20));
     }
 }
 
@@ -2217,7 +2324,7 @@ void app_main(void)
                   "docs/hardware/glass-offset.md to read dx/dy off it");
     while (true) {
         ESP_LOGI(TAG, "glass ruler: count the ticks hidden under the bezel on each side");
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(ff_ticks_at_least_one(1000));
     }
 #endif
 
@@ -2259,7 +2366,7 @@ void app_main(void)
          * the static test pattern stays on the panel. No LVGL, no redraw. */
         while (true) {
             (void)ff_shell_tick(&s_shell, ff_bringup_now_ms());
-            vTaskDelay(pdMS_TO_TICKS(20));
+            vTaskDelay(ff_ticks_at_least_one(20));
         }
     }
 
@@ -3176,7 +3283,7 @@ void app_main(void)
              * not "the render loop was slow". */
             int64_t const frame_end_us = esp_timer_get_time();
             ff_perf_window_record(&s_frame_perf, now_ms, (uint32_t)(frame_end_us - frame_start_us));
-            vTaskDelay(pdMS_TO_TICKS(20));
+            vTaskDelay(ff_ticks_at_least_one(20));
         }
     }
 }
