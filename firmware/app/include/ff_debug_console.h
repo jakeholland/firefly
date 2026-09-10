@@ -210,6 +210,44 @@ typedef void (*ff_dbgconsole_mic_fn)(void *user, ff_dbgconsole_mic_action_t acti
                                       ff_dbgconsole_reply_fn reply, void *reply_user);
 
 /**
+ * ff_dbgconsole_music_frame_fn — the `music` command's screen-timer
+ * hook (2026-09-09, S31 canvas renderer: the 145ms/frame regression
+ * found via `perf`'s own `lvgl_refresh` line, docs/specs/
+ * S31-music-swarm.md's dated amendment). Follows the single-line-
+ * fragment shape `i2c_health`/`compass_status` already use (`out`/`cap`,
+ * `>= 0` on success), NOT the own-lines shape `perf`/`mic` use: this is
+ * one more fact about the SAME `music` reply line, not a family of new
+ * lines of its own. `out` is filled with an already-space-joined
+ * fragment, e.g. `"frame_ms=32.87 canvas_us=410"` — the Music screen's
+ * own per-frame timer's last-CLOSED-second rolling average frame
+ * period (ms) and canvas composite draw time (us); see `scr_music.h`'s
+ * `ff_scr_music_debug_frame_stats` for exactly what is averaged and
+ * over what window.
+ *
+ * Unlike `i2c`/`perf`/`mic`, this is NOT device-only data with "no home
+ * in ff_shell_t" — `scr_music.c` is ordinary shared `firmware/app/`
+ * code, built for both targets identically — but it still needs a hook
+ * rather than a plain getter here: `ff-debug-console` (this file's own
+ * link target) deliberately does NOT depend on `ff-app-ui`/LVGL (see
+ * this header's own top comment, "stays as target-agnostic as the rest
+ * of firmware/app/"), so this dispatcher cannot call `scr_music.h`
+ * directly — only the WIRING layer that already links both (`app_main.c`
+ * on the esp32s3 target) can. The sim never calls `ff_dbgconsole_handle_
+ * line` at all today (only `test_debug_console.c` and the esp32s3
+ * target do), so `music_frame == NULL` is what every sim/test caller
+ * passes and is not itself a "sim can't do this" statement — see
+ * `dbgconsole_music`'s own doc comment for the exact fallback text.
+ *
+ * A negative return (no window has closed yet — e.g. the Music face was
+ * never opened this session, or was opened less than a second ago) is
+ * reported identically to `music_frame == NULL`: an honest `n/a`, never
+ * a fabricated `0.00`/`0` — `dbgconsole_perf_window_line`'s (app_main.c)
+ * own "n/a is not the same fact as an instant zero" rule, restated here
+ * for this hook.
+ */
+typedef int (*ff_dbgconsole_music_frame_fn)(void *user, char *out, size_t cap);
+
+/**
  * ff_dbgconsole_handle_line — parse one raw line (via
  * `ff_dbgcmd_parse`) and dispatch it against `sh`, emitting zero or
  * more `"dbg: "`-prefixed reply lines through `reply`.
@@ -245,12 +283,21 @@ typedef void (*ff_dbgconsole_mic_fn)(void *user, ff_dbgconsole_mic_action_t acti
  * `mic` (S30) is the `ff_dbgconsole_mic_fn` platform hook — see that
  * typedef's own doc comment for the single-hook-four-verbs shape and the
  * `mic watch` blocking-duration contract.
+ *
+ * `music_frame` (2026-09-09, S31 canvas renderer) is the `music`
+ * command's own screen-timer hook — see `ff_dbgconsole_music_frame_fn`'s
+ * own doc comment just above. `music_frame == NULL` (every sim/test
+ * caller today) appends an honest `frame_ms=n/a canvas_us=n/a` fragment
+ * to the `music` reply line rather than omitting it — unlike i2c/perf/
+ * mic's "whole feature unavailable" NULL contract, `music` itself is
+ * real on both targets (see `dbgconsole_music`'s own doc comment); only
+ * this ONE fragment of its reply is conditionally absent-data.
  */
 void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len, uint32_t now_ms,
                                 ff_dbgconsole_reply_fn reply, void *user, ff_dbgconsole_i2c_scan_fn i2c_scan,
                                 ff_dbgconsole_compass_status_fn compass_status,
                                 ff_dbgconsole_i2c_health_fn i2c_health, ff_dbgconsole_perf_fn perf,
-                                ff_dbgconsole_mic_fn mic);
+                                ff_dbgconsole_mic_fn mic, ff_dbgconsole_music_frame_fn music_frame);
 
 #endif /* FF_TARGET_SIM || CONFIG_FF_DEBUG_CONSOLE */
 

@@ -67,6 +67,7 @@
 #include "ff_shell.h"
 #include "ff_sound_emit.h" /* S27 sounds — the screens-level TAP seam (ff_shell_sound_sink's bind target) */
 #include "ff_touchcal.h"
+#include "scr_music.h" /* 2026-09-09 S31 canvas renderer — ff_scr_music_debug_frame_stats, the `music` console hook */
 
 #if CONFIG_FF_DEBUG_CONSOLE
 #include "ff_dbgcmd.h"        /* FF_DBGCMD_LINE_MAX — the line-accumulator bound below */
@@ -1416,6 +1417,23 @@ static void dbgconsole_mic(void *hook_user, ff_dbgconsole_mic_action_t action, u
     }
 }
 
+/* `ff_dbgconsole_music_frame_fn` (ff_debug_console.h, 2026-09-09 S31
+ * canvas renderer) — the `music` command's screen-timer fragment. A
+ * thin passthrough onto `scr_music.h`'s own getter: this component
+ * REQUIRES ff_app_ui (see targets/esp32s3/components/ff_app_ui/
+ * CMakeLists.txt), so scr_music.h is directly reachable here, unlike
+ * from ff_debug_console.c itself — see that typedef's own doc comment
+ * for the full reasoning. Returns <0 (honest n/a) until the Music
+ * screen's own per-frame timer has closed its first one-second window. */
+static int dbgconsole_music_frame(void *hook_user, char *out, size_t cap)
+{
+    (void)hook_user;
+    ff_scr_music_frame_stats_t const st = ff_scr_music_debug_frame_stats();
+    if (!st.valid) return -1;
+    snprintf(out, cap, "frame_ms=%.2f canvas_us=%" PRIu32, (double)st.frame_period_avg_ms, st.canvas_draw_avg_us);
+    return 0;
+}
+
 /* Drain whatever the USB host has sent since the last frame (non-
  * blocking: ticks_to_wait=0) into the line accumulator, dispatching on
  * every '\n' and tolerating a preceding '\r' (ff_dbgcmd_parse's own CRLF
@@ -1443,7 +1461,7 @@ static void dbgconsole_poll(ff_shell_t *sh, uint32_t now_ms)
                     ff_dbgconsole_handle_line(sh, s_dbgconsole_line, s_dbgconsole_line_len, now_ms,
                                                dbgconsole_reply_write, NULL, dbgconsole_i2c_scan,
                                                dbgconsole_compass_status, dbgconsole_i2c_health, dbgconsole_perf,
-                                               dbgconsole_mic);
+                                               dbgconsole_mic, dbgconsole_music_frame);
                 }
                 s_dbgconsole_line_len = 0u;
                 s_dbgconsole_discarding = false;

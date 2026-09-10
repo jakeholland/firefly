@@ -36,19 +36,24 @@
  * "must never churn every frame" problem is different: the swarm's 60
  * particles move continuously (drift, beat pulls, twinkle) at up to
  * 30fps, far faster than any real render-key-driven rebuild should
- * ever happen (S16's own churn budget). So the pool here IS a plain,
- * PERSISTENT set of `lv_obj_t` circles — a core dot plus one halo ring
- * per firefly (120 objects total — see `scr_music.c`'s top comment,
- * "Object count is bounded by the LVGL heap", for why not 180/why not a
- * canvas) — created ONCE per face-BUILD (this
- * file owns the pointers as a file-static array) and only ever MUTATED
- * in-place — position/size/opacity, never create/delete — by this
- * file's own `lv_timer_create`d per-frame ticker, entirely OUTSIDE the
- * shell's dirty/rebuild path (see `scr_music.c`'s top comment for the
- * full mechanism and the frame-cost reasoning). See `firmware/core/
- * ff_swarm.h`'s own top comment for why the particle simulation itself
- * is core state this file owns privately rather than a member of
- * `ff_app_state_t`.
+ * ever happen (S16's own churn budget). See `firmware/core/ff_swarm.h`'s
+ * own top comment for why the particle simulation itself is core state
+ * this file owns privately rather than a member of `ff_app_state_t`.
+ *
+ * ## 2026-09-09 canvas renderer (supersedes the PR #247 dot-pool design)
+ * The swarm used to be drawn as a PERSISTENT pool of `lv_obj_t` circles
+ * — a core dot plus one halo ring per firefly, 120 objects, mutated
+ * in-place every frame. Measured on the field puck (`perf` console,
+ * Music face open): `lvgl_refresh avg_us=144705` — 145ms/frame, ~7fps —
+ * LVGL's own per-object overhead does not stay flat as object count
+ * grows the way that design assumed. The swarm is now ONE `lv_canvas`,
+ * redrawn by direct pixel writes into its own raw RGB565 buffer every
+ * frame — see `scr_music.c`'s own top comment, "Renderer", for the full
+ * writeup (sprite pre-rendering, PSRAM/malloc buffer placement, the
+ * additive-blend math) and docs/specs/S31-music-swarm.md's dated
+ * amendment for the measured numbers. This file's own `lv_timer_create`d
+ * per-frame ticker still runs entirely OUTSIDE the shell's dirty/rebuild
+ * path exactly as before — only WHAT it redraws each tick changed.
  */
 #ifndef FF_SCR_MUSIC_H
 #define FF_SCR_MUSIC_H
@@ -74,8 +79,8 @@ extern "C" {
  *
  * Also creates this face's own `lv_timer_t` (deleted automatically when
  * this screen is torn down, via an `LV_EVENT_DELETE` hook on the
- * screen — see scr_music.c) that steps the swarm and redraws the dot
- * pool every frame, at 30fps normally / 15fps once `state->radar.
+ * screen — see scr_music.c) that steps the swarm and redraws the canvas
+ * every frame, at 30fps normally / 15fps once `state->radar.
  * batt_pct` is a known reading <= 20% (docs/specs/S31-music-swarm.md's
  * "Frame budget").
  *
@@ -99,6 +104,36 @@ void ff_scr_music_build(ff_app_state_t const *state);
  * not an assumed one (AGENTS.md item 6).
  */
 uint32_t ff_scr_music_debug_render_ticks(void);
+
+/**
+ * ff_scr_music_frame_stats_t / ff_scr_music_debug_frame_stats —
+ * [debug-console-only] 2026-09-09 S31 canvas renderer: the last-CLOSED
+ * one-second window's rolling average frame period (`frame_period_avg_
+ * ms`, the wall time between two consecutive REAL per-frame timer
+ * ticks — never the settle step, never a DIM/OFF-paused tick) and
+ * average canvas composite draw time (`canvas_draw_avg_us`, everything
+ * `music_redraw_canvas` does except the final O(1) `lv_obj_invalidate`)
+ * — see `scr_music.c`'s own top comment, "Instrumentation", for exactly
+ * what is measured, with what clock, and why. `valid` is false (both
+ * numeric fields 0) until the first window has ever closed — an honest
+ * "no data yet", never a fabricated 0.00/0, matching `ff_display_perf_t`
+ * (esp32s3) own "n/a is not the same fact as an instant zero" rule.
+ *
+ * This is what `app_main.c`'s `dbgconsole_music_frame` (wired through
+ * `ff_dbgconsole_music_frame_fn`, ff_debug_console.h) is a thin
+ * passthrough onto — see that typedef's own doc comment for why
+ * `ff_debug_console.c` cannot call this getter directly (it deliberately
+ * excludes LVGL/this component). Not read by any product code — mirrors
+ * `ff_scr_music_debug_render_ticks`'s own "console/test-only getter"
+ * role just above.
+ */
+typedef struct {
+    bool valid;
+    float frame_period_avg_ms;
+    uint32_t canvas_draw_avg_us;
+} ff_scr_music_frame_stats_t;
+
+ff_scr_music_frame_stats_t ff_scr_music_debug_frame_stats(void);
 
 #ifdef __cplusplus
 }

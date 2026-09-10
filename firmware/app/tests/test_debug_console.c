@@ -136,6 +136,7 @@ static ff_dbgconsole_compass_status_fn s_compass_hook;
 static ff_dbgconsole_i2c_health_fn s_i2c_health_hook;
 static ff_dbgconsole_perf_fn s_perf_hook;
 static ff_dbgconsole_mic_fn s_mic_hook;
+static ff_dbgconsole_music_frame_fn s_music_frame_hook;
 
 #define MY_ID 0x00001000u
 #define DANA 0x0000DA1Au
@@ -149,6 +150,7 @@ static void harness_init(uint32_t t0_ms)
     s_i2c_health_hook = NULL;
     s_perf_hook = NULL;
     s_mic_hook = NULL;
+    s_music_frame_hook = NULL;
     H.clk.t = t0_ms;
     H.clock.now_ms = fake_now;
     H.clock.user = &H.clk;
@@ -291,7 +293,8 @@ static void dispatch(char const *line, capture_t *out)
 {
     capture_reset(out);
     ff_dbgconsole_handle_line(&H.shell, line, strlen(line), ff_shell_now_ms(&H.shell), capture_reply, out,
-                               s_i2c_hook, s_compass_hook, s_i2c_health_hook, s_perf_hook, s_mic_hook);
+                               s_i2c_hook, s_compass_hook, s_i2c_health_hook, s_perf_hook, s_mic_hook,
+                               s_music_frame_hook);
 }
 
 /* ------------------------------------------------------------------- */
@@ -992,11 +995,16 @@ static void dbgconsole_mic_bad_sub_verb_rejected_end_to_end(void)
 }
 
 /* ------------------------------------------------------------------- */
-/* S31 — "music" / "music seed <n>". Unlike mic/i2c/perf, no platform
- * hook: real on both targets (see dbgconsole_music's own doc comment,
- * ff_debug_console.c) — these tests drive the shell's beat detector
- * directly via ff_shell_set_beat_input, the same public API app_main.c
- * would call, and check the console's reply against it. */
+/* S31 — "music" / "music seed <n>". The source/loudness/bpm fields need
+ * no platform hook: real on both targets (see dbgconsole_music's own
+ * doc comment, ff_debug_console.c) — these tests drive the shell's beat
+ * detector directly via ff_shell_set_beat_input, the same public API
+ * app_main.c would call, and check the console's reply against it.
+ * 2026-09-09 (S31 canvas renderer) added the music_frame hook fragment
+ * (frame_ms=.../canvas_us=...); s_music_frame_hook is NULL by default
+ * (harness_init), so every test below that doesn't opt in sees the
+ * honest "n/a" fallback — see dbgconsole_music_frame_hook_appends_
+ * numbers_when_present below for the opt-in case. */
 /* ------------------------------------------------------------------- */
 
 static void dbgconsole_music_reports_no_source_by_default(void)
@@ -1005,7 +1013,8 @@ static void dbgconsole_music_reports_no_source_by_default(void)
     capture_t cap;
     dispatch("music", &cap);
     TEST_ASSERT_EQUAL_INT(1, cap.n);
-    TEST_ASSERT_EQUAL_STRING("dbg: music source=none loudness=0.00 bpm=0.0", cap.lines[0]);
+    TEST_ASSERT_EQUAL_STRING("dbg: music source=none loudness=0.00 bpm=0.0 frame_ms=n/a canvas_us=n/a",
+                              cap.lines[0]);
 }
 
 static void dbgconsole_music_reports_mic_source_and_loudness(void)
@@ -1056,6 +1065,52 @@ static void dbgconsole_music_seed_out_of_range_rejected_end_to_end(void)
     dispatch("music seed 9999", &cap); /* > parse_u32_dec's 3-digit ceiling */
     TEST_ASSERT_EQUAL_INT(1, cap.n);
     TEST_ASSERT_EQUAL_STRING("dbg: ? try help", cap.lines[0]);
+}
+
+static int fake_music_frame_ok(void *user, char *out, size_t cap)
+{
+    (void)user;
+    snprintf(out, cap, "frame_ms=32.87 canvas_us=410");
+    return 0;
+}
+
+static int fake_music_frame_not_closed(void *user, char *out, size_t cap)
+{
+    (void)user;
+    (void)out;
+    (void)cap;
+    return -1; /* the screen's own window hasn't closed yet — honest n/a */
+}
+
+/* 2026-09-09 (S31 canvas renderer) — the music_frame hook's numbers are
+ * appended to the SAME `music` reply line, not a new line of their
+ * own (ff_dbgconsole_music_frame_fn's own doc comment). */
+static void dbgconsole_music_frame_hook_appends_numbers_when_present(void)
+{
+    harness_init(1000);
+    s_music_frame_hook = fake_music_frame_ok;
+
+    capture_t cap;
+    dispatch("music", &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: music source=none loudness=0.00 bpm=0.0 frame_ms=32.87 canvas_us=410",
+                              cap.lines[0]);
+}
+
+/* A hook that exists but honestly has no CLOSED window yet reports the
+ * identical n/a fallback a NULL hook would — never a fabricated 0. */
+static void dbgconsole_music_frame_hook_present_but_not_closed_reports_na(void)
+{
+    harness_init(1000);
+    s_music_frame_hook = fake_music_frame_not_closed;
+
+    capture_t cap;
+    dispatch("music", &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: music source=none loudness=0.00 bpm=0.0 frame_ms=n/a canvas_us=n/a",
+                              cap.lines[0]);
 }
 
 /* ------------------------------------------------------------------- */
@@ -1442,6 +1497,8 @@ int main(void)
     RUN_TEST(dbgconsole_music_seed_reseeds_and_reports_it);
     RUN_TEST(dbgconsole_music_with_extra_arg_rejected_end_to_end);
     RUN_TEST(dbgconsole_music_seed_out_of_range_rejected_end_to_end);
+    RUN_TEST(dbgconsole_music_frame_hook_appends_numbers_when_present);
+    RUN_TEST(dbgconsole_music_frame_hook_present_but_not_closed_reports_na);
 
     RUN_TEST(dbgconsole_cal_status_reports_identity_when_uncalibrated_and_inactive);
     RUN_TEST(dbgconsole_cal_start_then_status_reports_live_progress);

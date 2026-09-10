@@ -1,6 +1,8 @@
 # S31 — Music/Swarm: the fifth launcher app
 
-Status: draft (2026-09-08). Builds on [S30](S30-audio-input.md) (mic
+Status: draft (2026-09-08, amended 2026-09-09 — canvas renderer, see
+"2026-09-09 amendment" below "Frame budget / renderer choice"). Builds
+on [S30](S30-audio-input.md) (mic
 bring-up — `ff_mic`, `ff_miclevel.h`), [S26](S26-device-lifecycle.md)
 (the launcher's N-agnostic satellite layout, keep-awake), [S16](S16-app-shell.md)
 (the render-key churn-budget discipline), [S28](S28-gestures.md)
@@ -83,7 +85,10 @@ does not fit in it. Shipped as ONE halo ring per firefly instead (120
 objects total) — see `scr_music.c`'s own top comment, "Object count is
 bounded by the LVGL heap," for the measured numbers and the fallback
 this file would reach for (a canvas) if a future change ever needs a
-third object per firefly again.
+third object per firefly again. **SUPERSEDED 2026-09-09**: that 120-
+object renderer measured at ~7fps in the field — see this doc's own
+"2026-09-09 amendment" section (below "Frame budget / renderer choice")
+for the bench evidence and the canvas replacement.
 
 **Goldens regenerated, deliberately** (the motion model, twinkle, and
 chip-visibility changes all move committed pixels): `music_swarm_quiet.
@@ -201,6 +206,14 @@ comments for every constant's exact value and provenance.
 
 ## Frame budget / renderer choice
 
+**SUPERSEDED 2026-09-09 — see the dated amendment immediately after this
+section.** The reasoning below (pre-created `lv_obj_t` circles, no
+canvas) was the S31-polish call and is kept for the historical record,
+but the field measurement that follows proved its central premise
+wrong: 120 object mutations did NOT stay "the same order of magnitude"
+as 60. Read this section as "what we believed and why," not as this
+spec's current renderer.
+
 **Pre-created `lv_obj_t` circles, not `lv_canvas`.** Reasoned from the
 Map face's own measured cost (`scr_map.c`'s top comment): that face's
 draw-op pool exists because CREATING ~300 `lv_obj_t` synchronously
@@ -247,6 +260,98 @@ a KNOWN reading (never treats "unknown" as low, same convention
 via `lv_timer_set_period` on the face's own timer, re-checked every
 firing (so a battery crossing mid-session takes effect on the next
 tick, not only at the next rebuild).
+
+## 2026-09-09 amendment: the 120-object renderer regressed to ~7fps —
+## replaced with a canvas
+
+**The bench evidence.** Jake, on the field puck (main 3ecaae7, Music
+face open, mic running): "the firefly music animation got less dynamic
+after the last update." `perf` console output over a 5s window:
+`lvgl_refresh min_us=128 avg_us=144705 max_us=265787 n=22` — **145ms per
+LVGL refresh, ~7fps, worst frames at 266ms**. The shell's own render
+loop was fine in the same window (`frame avg_us` ~2200, i.e. 2.2ms) —
+the cost was entirely inside LVGL's own refresh of the 120-object dot
+pool this section's now-superseded reasoning shipped. Before that PR
+(#245, 60 objects), the animation read as responsive; after it (#247,
+120 objects — this section, above), the SAME motion model reads as
+sluggish. The regression is renderer cost, not the motion model: at
+7fps every drift/twinkle/beat-pull parameter looks slow regardless of
+how lively the underlying numbers actually are.
+
+**Why the "same order of magnitude as 60 objects" reasoning above was
+wrong.** It modeled the per-frame cost as "N objects x (2 cheap struct
+writes)" — flat, linear in N. LVGL's real per-frame cost for a redraw
+this shape (many small, overlapping, individually-invalidated circles)
+is dominated by things that do NOT stay flat as N grows: per-object
+style/style-cache lookups, invalidation-AREA unions across overlapping
+objects, and one draw-call dispatch per object. Going from 60 to 120
+objects (2x) produced roughly a 15-20x frame-time regression (a rough
+back-of-envelope from Radar's "comfortably inside 8ms" claim at 60
+objects vs. the measured 145ms at 120), not the ~2x this section
+assumed. The lesson (AGENTS.md item 6: measure, don't assume): "the
+same order of magnitude" was a plausibility argument, never actually
+measured against a real 120-object build's `perf lvgl_refresh` line —
+this PR's whole reason to exist is that gap.
+
+**The fix: one `lv_canvas`, not more/fewer `lv_obj_t`.** This section's
+own "documented fallback" (a canvas needs one object plus one pixel
+buffer, not N objects, sidestepping the LVGL-heap ceiling) turned out to
+be the fix for the FRAME-TIME ceiling too, not only the heap one. The
+swarm (60 fireflies) is now drawn into ONE `lv_canvas` sized to the
+glass (412x412), backed by a single RGB565 pixel buffer allocated ONCE
+for the process lifetime — `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)`
+on the esp32s3 target (PSRAM, confirmed via a dedicated device-build
+check — never the fixed 64KB LVGL heap arena this section's own
+120-object budget was sized against), plain `malloc` on the sim. Every
+frame: clear the buffer to the theme background + bake in the faint
+static ring (no longer its own `lv_obj` — an opaque canvas would just
+paint over anything left under it, see `scr_music.c`'s own "Chrome"
+comment), then additively composite each firefly from one of 4
+pre-rendered "glow sprite" shapes (bucketed by glow quartile for SIZE,
+continuously scaled for BRIGHTNESS — no visible banding) via direct,
+unlocked integer pixel writes, then invalidate the canvas ONCE. See
+`scr_music.c`'s own top comment, "Renderer," for the full design
+(sprite generation, the additive-blend math, why RGB565 not this
+build's native display depth). The clock label and source chip remain
+ordinary `lv_obj_t` labels drawn on top — nothing about the "only flag
+what's unusual" chrome rules above changed.
+
+**Measured cost.** A scratch sim probe (a real `ff_ctl_loop_pump`+
+`lv_timer_handler()` session driven into Music with a loud 128 BPM mic
+stream, 3 simulated seconds at 30fps, reading `ff_scr_music_debug_
+frame_stats()`'s real `clock_gettime`-measured canvas-draw time) measured
+**~0.9-1.2ms of actual composite+clear CPU time per frame on an Apple
+M2 laptop**. That number does not translate directly to the esp32s3
+target (an M2 clocks ~15x higher AND is a wide superscalar core with
+large caches the Xtensa LX7 has neither of), so the device estimate is
+reasoned from pixel/byte counts instead, per this PR's own brief: one
+412x412 RGB565 clear (169,744px, ~339KB, sequential write — PSRAM-
+bandwidth-friendly) + the static ring (~1,080px, negligible) + up to 60
+sprite composites (45x45 bounding box each, most pixels skipped on
+zero alpha; a worst-case ALL-60-at-peak-glow frame touches up to
+~72,780px of read-modify-write, ~291KB) — **up to ~0.5-0.65MB touched
+per frame** in the worst case (a transient beat-drop moment), typically
+much less (the swarm's own twinkle floor/pull decay means most frames
+have most fireflies well under peak glow — see `ff_swarm.h`'s glow
+formula). At a conservative 240MHz Xtensa LX7 + external octal PSRAM
+(effective sustained bandwidth commonly cited in the 40-70MB/s range
+for this kind of mixed sequential-clear/scattered-small-block-composite
+traffic), that puts a TYPICAL frame comfortably inside this PR's own
+<=12ms target and a WORST-CASE (rare, transient, all-60-near-peak)
+frame in the ~9-16ms range — a real, bounded, honestly-reported risk,
+not a guarantee, but an enormous, unambiguous improvement over the
+145ms/frame this amendment replaces regardless of where in that range
+the real hardware lands. Confirming the worst-case number needs a
+flashed device with `perf`'s own `lvgl_refresh` line (kept working by
+this PR — see "Console" below) — out of scope here (build-only, no
+flash).
+
+**Object count, revisited.** The whole "120, not 180, because the LVGL
+heap is a fixed 64KB arena" story above is moot: this renderer uses
+exactly one `lv_obj_t` for the canvas (plus the two chrome labels) —
+three objects total, independent of firefly count. `scr_music.c`'s own
+"Object count is bounded by the LVGL heap" section is superseded the
+same way "Frame budget / renderer choice" above is.
 
 ## Render key: the particle state must NOT drive it
 
@@ -499,18 +604,43 @@ timer starts firing for real.
 
 ## Console
 
-Two commands, following S30's `mic`/`mic watch` shape but WITHOUT a
-platform hook: `ff_beat_t` is core state the shell already owns on
-every target (unlike `ff_mic`, esp32s3-only), so `music`/`music seed
-<n>` are real (non-"unavailable") on both the device and the sim —
-`ff_debug_console.c` reaches them through two new public getters/
-setters (`ff_shell_music_debug`, `ff_shell_set_music_seed`), the same
-"public getter, never reach into `shell_t`" rule this file's own top
-comment states for every read-only command.
+Two commands, following S30's `mic`/`mic watch` shape. The `source`/
+`loudness`/`bpm` fields need no platform hook: `ff_beat_t` is core
+state the shell already owns on every target (unlike `ff_mic`,
+esp32s3-only), so `music`/`music seed <n>` are real (non-"unavailable")
+on both the device and the sim — `ff_debug_console.c` reaches them
+through two public getters/setters (`ff_shell_music_debug`,
+`ff_shell_set_music_seed`), the same "public getter, never reach into
+`shell_t`" rule this file's own top comment states for every read-only
+command.
+
+**2026-09-09 amendment (canvas renderer)**: the `music` line gained a
+`frame_ms=.../canvas_us=...` fragment — the Music screen's own
+per-frame timer's last-CLOSED-one-second rolling average frame period
+(ms) and canvas composite draw time (us), the numbers this PR's own
+measured-cost section above is built from. UNLIKE `source`/`loudness`/
+`bpm`, this fragment DOES need a platform hook (`ff_dbgconsole_music_
+frame_fn`, ff_debug_console.h): it is sourced from `scr_music.c`'s own
+timer, and `ff-debug-console` (this file's link target) deliberately
+excludes LVGL/`ff-app-ui`, so only the wiring layer that already links
+both (`app_main.c` on the esp32s3 target) can reach `scr_music.h`'s
+`ff_scr_music_debug_frame_stats` getter directly. A NULL hook or a
+window that hasn't closed yet both report the honest `frame_ms=n/a
+canvas_us=n/a` — never a fabricated 0.00/0. The sim never wires the
+debug console into its own interactive runtime at all today (only
+`app_main.c` and `test_debug_console.c` call `ff_dbgconsole_handle_
+line`), so this fragment is `n/a` in every sim/test context; it is real
+on the esp32s3 target.
+
+The `perf` command's `lvgl_refresh` line (2026-09-08 QA hardening,
+app_main.c) is UNCHANGED by this PR and remains the tool that found the
+145ms/frame regression in the first place — it is what a bench engineer
+should watch after this fix to confirm the canvas renderer actually
+brought that number back down on real hardware.
 
 | Command | Effect |
 |---|---|
-| `music` | `dbg: music source=<mic\|imu\|none> loudness=X.XX bpm=XX.X` |
+| `music` | `dbg: music source=<mic\|imu\|none> loudness=X.XX bpm=XX.X frame_ms=<X.XX\|n/a> canvas_us=<N\|n/a>` |
 | `music seed <n>` | reseeds the swarm (bench determinism); `dbg: music seed=<n>` |
 
 ## Sim fixtures
@@ -541,6 +671,17 @@ member of `fx_face_table`) is documented in
 convenience sugar (`kind: "static"|"click"`) applied BEFORE the direct
 `loudness`/`beat_count`/`source` keys, so a fixture can always override
 what the sugar derived.
+
+**Regenerated AGAIN, deliberately, 2026-09-09 (canvas renderer)**: the
+same four fixtures/seed above, byte-identical FIXTURE JSON — only the
+committed PNGs changed, since the renderer (not the motion model, not
+any fixture) is what moved: `music_swarm_quiet.png`, `music_swarm_
+loud.png`, `music_swarm_imu.png`, `music_swarm_nosource.png`. Verified
+determinism-clean (byte-identical across two renders each, and 0/169744
+pixels differing across the clang and gcc-14 sim builds — see this
+PR's own gate results); every one of the other 98 pre-existing goldens
+(102 total minus these 4) is untouched (confirmed via `git status`
+after `tests/run_goldens.sh --update-golden`).
 
 ## Interpretation calls / questions (flagged per AGENTS.md)
 
@@ -619,6 +760,22 @@ what the sugar derived.
   by the S31 polish + the 4 regenerated Music fixtures listed above),
   byte-identical across both compilers; the ESP32-S3 device build
   (both the bench sdkconfig and `sdkconfig.ci`) is warning-clean.
+- **AC10** (2026-09-09 canvas renderer) — the swarm renders from ONE
+  `lv_canvas` (see "2026-09-09 amendment" above), its pixel buffer
+  confirmed to live in PSRAM on the esp32s3 target (`heap_caps_malloc`
+  with `MALLOC_CAP_SPIRAM`, never the LVGL heap arena) and plain
+  `malloc` in the sim; the four Music goldens are regenerated
+  deliberately and every other golden is untouched (this PR's own
+  "Sim fixtures" amendment above); clang and gcc-14 sim builds stay
+  warning-clean and `ctest` stays green, including the S16 churn
+  budgets (the canvas touches no `ff_app_state_t` field, so `shell_
+  render_key`'s existing `music.*` masking is unaffected); the `music`
+  console line carries the new `frame_ms=.../canvas_us=...` fragment
+  (honest `n/a` when unavailable) and the `perf` command's `lvgl_
+  refresh` line — the tool that found the original regression — still
+  works; the ESP32-S3 device build (bench sdkconfig, minus `CONFIG_
+  FREERTOS_USE_TRACE_FACILITY`, plus `CONFIG_FF_DEBUG_CONSOLE=y` and
+  `CONFIG_FF_COMPASS=y`) is warning-clean.
 
 ## Bench acceptance protocol (for the coordinator)
 

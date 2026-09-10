@@ -808,9 +808,9 @@ static void dbgconsole_mic(ff_dbgconsole_mic_fn mic, ff_dbgconsole_mic_action_t 
     mic(hook_user, action, watch_secs, reply, user);
 }
 
-/* S31 — `music` / `music seed <n>`. Unlike `mic`/`i2c`/`perf`, this
- * needs no platform hook at all: `ff_beat_t` is core state the SHELL
- * already owns regardless of target (`ff_shell_music_debug`/
+/* S31 — `music` / `music seed <n>`. The `source`/`loudness`/`bpm`
+ * fields need no platform hook at all: `ff_beat_t` is core state the
+ * SHELL already owns regardless of target (`ff_shell_music_debug`/
  * `ff_shell_set_music_seed`, app/include/ff_shell.h) — the mic/IMU
  * bytes feeding it are esp32s3-only, but this command only ever reads
  * the shell's already-projected RESULT, the same "public getter, never
@@ -818,15 +818,35 @@ static void dbgconsole_mic(ff_dbgconsole_mic_fn mic, ff_dbgconsole_mic_action_t 
  * every read-only command. Real (non-NULL-hook, in the sense that there
  * is no hook to be NULL) on BOTH targets — the sim can genuinely answer
  * "what does the beat detector currently think", it just never has real
- * mic/IMU bytes feeding it, so `source` honestly reads `none` there. */
-static void dbgconsole_music(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+ * mic/IMU bytes feeding it, so `source` honestly reads `none` there.
+ *
+ * 2026-09-09 (S31 canvas renderer) added ONE fragment that DOES need a
+ * hook — `music_frame` (`ff_dbgconsole_music_frame_fn`, own doc comment,
+ * ff_debug_console.h) — because it is sourced from `scr_music.c`'s own
+ * per-frame timer, and this file's link target (`ff-debug-console`)
+ * deliberately excludes LVGL/`ff-app-ui` (see this file's top comment).
+ * `music_frame == NULL` or a negative return (no window closed yet)
+ * both append the same honest `frame_ms=n/a canvas_us=n/a` — this
+ * function's own job, mirroring `dbgconsole_i2c`'s identical
+ * NULL-is-honestly-omitted convention for its own optional fragments. */
+static void dbgconsole_music(ff_shell_t *sh, ff_dbgconsole_music_frame_fn music_frame, void *hook_user,
+                              ff_dbgconsole_reply_fn reply, void *user)
 {
     ff_shell_music_debug_t const d = ff_shell_music_debug(sh);
     char const *src_text =
         (d.source == FF_APP_MUSIC_SRC_MIC) ? "mic" : (d.source == FF_APP_MUSIC_SRC_IMU) ? "imu" : "none";
+
+    char frame_body[64];
+    bool const have_frame = (music_frame != NULL) && (music_frame(hook_user, frame_body, sizeof(frame_body)) >= 0);
+
     char line[DBGCONSOLE_LINE_BUF];
-    snprintf(line, sizeof(line), "dbg: music source=%s loudness=%.2f bpm=%.1f", src_text, (double)d.loudness,
-              (double)d.bpm_estimate);
+    if (have_frame) {
+        snprintf(line, sizeof(line), "dbg: music source=%s loudness=%.2f bpm=%.1f %s", src_text,
+                  (double)d.loudness, (double)d.bpm_estimate, frame_body);
+    } else {
+        snprintf(line, sizeof(line), "dbg: music source=%s loudness=%.2f bpm=%.1f frame_ms=n/a canvas_us=n/a",
+                  src_text, (double)d.loudness, (double)d.bpm_estimate);
+    }
     reply_line(reply, user, line);
 }
 
@@ -842,7 +862,7 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
                                 ff_dbgconsole_reply_fn reply, void *user, ff_dbgconsole_i2c_scan_fn i2c_scan,
                                 ff_dbgconsole_compass_status_fn compass_status,
                                 ff_dbgconsole_i2c_health_fn i2c_health, ff_dbgconsole_perf_fn perf,
-                                ff_dbgconsole_mic_fn mic)
+                                ff_dbgconsole_mic_fn mic, ff_dbgconsole_music_frame_fn music_frame)
 {
     (void)now_ms; /* every command below reaches "now" via a shell getter, not this parameter */
     if (sh == NULL || reply == NULL) return;
@@ -885,7 +905,7 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
     case FF_DBGCMD_MIC_WATCH:
         dbgconsole_mic(mic, FF_DBGCONSOLE_MIC_WATCH, cmd.u.mic_watch_secs, user, reply, user);
         return;
-    case FF_DBGCMD_MUSIC: dbgconsole_music(sh, reply, user); return;
+    case FF_DBGCMD_MUSIC: dbgconsole_music(sh, music_frame, user, reply, user); return;
     case FF_DBGCMD_MUSIC_SEED: dbgconsole_music_seed(sh, cmd.u.music_seed, reply, user); return;
     case FF_DBGCMD_NONE: break; /* ff_dbgcmd_parse never returns OK with NONE — unreachable */
     }
