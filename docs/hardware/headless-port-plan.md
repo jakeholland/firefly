@@ -144,11 +144,22 @@ referenced by bbox.
 
 ## Full function table (case-pass16 `firefly_case.py`, 217 functions)
 
-69 ported, 51 deleted-as-quirk, 75 deferred, 22 todo (phase 2, this
-revision: +8 -- `ear_root_cap_z1`, `add_ear`, `add_s2_boss`,
+81 ported, 52 deleted-as-quirk, 65 deferred, 19 todo (phase 2, ears/S2
+boss revision: +8 -- `ear_root_cap_z1`, `add_ear`, `add_s2_boss`,
 `battery_connector_world_bbox`, `secondary_conn_world_bbox`,
 `verify_ear_root_material`, `verify_s2_boss_clearance`,
-`verify_display_to_stack_clearance`).
+`verify_display_to_stack_clearance`. Phase 2b, buttons revision: +12 --
+`normalize2`, `ray_box_exit_2d`, `button_geometry`, `add_button`,
+`add_buttons`, `find_switch_body`, `find_outermost_s`,
+`find_innermost_s`, `verify_plunger_reach`, `verify_button_insertion`,
+`verify_button_retention`, `verify_skin_intact` (10 were `deferred`, 2 --
+`find_outermost_s`/`find_innermost_s` -- were `todo`); this revision
+also reclassifies 2 rows found to be mislabeled while reading the
+button source for the port, net zero to `ported` itself:
+`build_wedge_along_x` (was noted as a button helper; it is actually
+phase 2 item 3's GPS-frame ledge helper, `deferred` either way) and
+`_rect_perimeter_points` (confirmed dead code in the source itself,
+`todo` -> `deleted-as-quirk`).
 
 | firefly_case.py line | function | status | port note |
 |---|---|---|---|
