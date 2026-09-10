@@ -7367,6 +7367,58 @@ static void S26c_AC1_keep_awake_true_while_flare_sending(void)
     TEST_ASSERT_TRUE(ff_shell_keep_awake(&view, false));
 }
 
+/* fix/s31-music-idle-drain (2026-09-09) — the actual regression this PR
+ * fixes, pinned as a permanent unit test. Bench evidence: Jake's puck,
+ * left on Music overnight on main 51c5d16, showed NO backlight change
+ * for 6.6 hours in an ordinary quiet room — the OLD Music branch here
+ * ("keep awake while loudness is above the auto-ranged floor") never
+ * released, because that floor chases the room's own ambient level and
+ * ordinary noise sits jittering just above it forever (ff_beat.h's own
+ * "Loudness" section). Music now gets ZERO special treatment in this
+ * function, at ANY loudness — this test proves it with a maximal
+ * loudness (1.0f, louder than any real ff_beat_t output), the strongest
+ * case the old buggy branch would have held awake for. */
+static void fix_s31_keep_awake_false_for_music_face_regardless_of_loudness(void)
+{
+    ff_app_state_t view;
+    memset(&view, 0, sizeof(view));
+    view.active_face = FF_APP_FACE_MUSIC;
+    view.music.loudness = 1.0f;
+
+    TEST_ASSERT_FALSE(ff_shell_keep_awake(&view, false));
+}
+
+/* fix/s31-music-idle-drain — the mic-power half of the same fix,
+ * unit-tested directly against the shared predicate both app_main.c's
+ * device loop and the sim's own ctl-harness regression test
+ * (targets/sim/tests/test_ctl_music_idle_drain.c) call — see that
+ * function's own doc comment (ff_shell.h) for why a shared function
+ * exists at all. Four cases: the mic wants to run only when ALL of
+ * (Music active, no takeover, idle ACTIVE) hold; any one of them false
+ * is enough to withhold it. */
+static void fix_s31_music_wants_mic_gates_on_face_takeover_and_idle_active(void)
+{
+    ff_app_state_t view;
+    memset(&view, 0, sizeof(view));
+    view.active_face = FF_APP_FACE_MUSIC;
+
+    TEST_ASSERT_TRUE(ff_shell_music_wants_mic(&view, FF_IDLE_STATE_ACTIVE));
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_music_wants_mic(&view, FF_IDLE_STATE_DIM), "must not want the mic while DIM");
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_music_wants_mic(&view, FF_IDLE_STATE_OFF), "must not want the mic while OFF");
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_music_wants_mic(&view, FF_IDLE_STATE_SLEEP), "must not want the mic while SLEEP");
+
+    view.flare.takeover_active = true;
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_music_wants_mic(&view, FF_IDLE_STATE_ACTIVE),
+                               "must not want the mic under a flare takeover");
+    view.flare.takeover_active = false;
+
+    view.active_face = FF_APP_FACE_RADAR;
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_music_wants_mic(&view, FF_IDLE_STATE_ACTIVE),
+                               "must not want the mic while Music is not the active face");
+
+    TEST_ASSERT_FALSE(ff_shell_music_wants_mic(NULL, FF_IDLE_STATE_ACTIVE));
+}
+
 /* ------------------------------------------------------------------- */
 /* S10 quick flare (docs/specs/S10-flare.md's Amendments, 2026-09-03):  */
 /* "press HOME 5 times quickly to flare to the crew, no screen needed." */
@@ -11228,6 +11280,8 @@ int main(void)
     RUN_TEST(S26c_AC1_keep_awake_null_view_is_safe);
     RUN_TEST(S26c_AC1_keep_awake_true_while_quick_flare_pending);
     RUN_TEST(S26c_AC1_keep_awake_true_while_flare_sending);
+    RUN_TEST(fix_s31_keep_awake_false_for_music_face_regardless_of_loudness);
+    RUN_TEST(fix_s31_music_wants_mic_gates_on_face_takeover_and_idle_active);
 
     /* S10 quick flare — 5x HOME flares to the crew. */
     RUN_TEST(S10_quick_flare_5_home_presses_start_sending);

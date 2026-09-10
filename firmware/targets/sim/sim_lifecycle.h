@@ -77,6 +77,7 @@
 
 #include "ff_app_state.h"
 #include "ff_idle.h"
+#include "ff_shell.h" /* fix/s31-music-idle-drain — ff_shell_t, ff_sim_lifecycle_pump's new shell parameter */
 
 #ifdef __cplusplus
 extern "C" {
@@ -147,14 +148,27 @@ void ff_sim_lifecycle_init(ff_sim_lifecycle_t *lc);
  * which `false` is a deliberate omission, matching `ff_idle_tick`'s own
  * shape.
  *
+ *   1b. (fix/s31-music-idle-drain, 2026-09-09) `ff_shell_set_screen_
+ *      awake(shell, idle_state == FF_IDLE_STATE_ACTIVE)` — pushes this
+ *      frame's idle verdict back into the shell so scr_music.c's own
+ *      per-frame timer can pause the swarm the instant DIM/OFF/SLEEP
+ *      starts (ff_shell_set_screen_awake's own doc comment, ff_shell.h),
+ *      exactly mirroring app_main.c's identical call placed right after
+ *      its own `ff_idle_tick`. `shell` is a new parameter this same PR
+ *      adds (every existing caller already has one in scope — see
+ *      ctl_loop.c/main.c/ff_demo_run.c's own call sites); NULL-safe
+ *      (ff_shell_set_screen_awake no-ops on NULL) so a caller with no
+ *      shell handy is not forced to fabricate one.
+ *
  * Returns the resulting `ff_idle_state_t` — window mode uses it to
  * show/hide the OFF/SLEEP black overlay (see
  * `ff_sim_lifecycle_apply_blank_overlay`); the ctl loop's own call site
  * only needs the earlier by-reference outputs, same as before.
  */
-ff_idle_state_t ff_sim_lifecycle_pump(ff_idle_t *idle, bool *rebuild_pending, uint32_t *rebuild_count,
-                                       uint32_t now_ms, bool dirty, bool shell_wake, bool finger_down,
-                                       bool keep_awake, bool sleep_inhibit, ff_app_state_t const *state);
+ff_idle_state_t ff_sim_lifecycle_pump(ff_shell_t *shell, ff_idle_t *idle, bool *rebuild_pending,
+                                       uint32_t *rebuild_count, uint32_t now_ms, bool dirty, bool shell_wake,
+                                       bool finger_down, bool keep_awake, bool sleep_inhibit,
+                                       ff_app_state_t const *state);
 
 /**
  * ff_sim_lifecycle_apply_blank_overlay — window-mode-only OFF/SLEEP

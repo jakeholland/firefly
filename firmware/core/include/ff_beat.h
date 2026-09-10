@@ -153,12 +153,24 @@ typedef struct {
  *  avoid — see docs/specs/S16-app-shell.md's Amendments). */
 #define FF_BEAT_LOUD_THRESHOLD 0.5f
 
-/** Below this loudness, the Music face releases its keep-awake hold
- *  (docs/specs/S31-music-swarm.md, "Power policy") — "the floor" the
- *  deliverable's own wording refers to: a silent/still room must not
- *  keep the puck awake forever just because Music happens to be the
- *  active face. */
-#define FF_BEAT_KEEPAWAKE_LOUDNESS 0.05f
+/* FF_BEAT_KEEPAWAKE_LOUDNESS — REMOVED, fix/s31-music-idle-drain,
+ * 2026-09-09 amendment (docs/specs/S31-music-swarm.md). This constant
+ * used to gate `ff_shell_keep_awake`'s Music branch: "the face keeps the
+ * puck awake only while loudness is above this floor". Bench evidence
+ * (Jake's puck, main 51c5d16, left on Music overnight on USB) showed why
+ * that never actually released the hold: `loudness` is computed against
+ * `ff_beat_t`'s own AUTO-RANGING floor/ceiling (this header's "Loudness"
+ * section above) — the floor chases whatever the room's ambient level
+ * IS, with only a ~20s release time constant, so ordinary night-quiet
+ * background noise sits jittering just above that self-tracking floor
+ * indefinitely, never settling all the way down to 0. The mic ran and
+ * the screen sat at 90% for 6.6 hours straight with nobody in the room.
+ * The fix removes the level-based keep-awake ENTIRELY: Music now obeys
+ * the exact same S26 DIM-at-15s/OFF-at-30s-since-last-INPUT policy as
+ * every other face (ff_shell_keep_awake, app/ff_shell.c) — sound is
+ * never an input. See that function's own comment for the removal, and
+ * `ff_shell_music_wants_mic`'s doc comment (app/include/ff_shell.h) for
+ * the mic-specific half of this same fix. */
 
 typedef struct {
     /* auto-ranging floor/ceiling (loudness mapping) */

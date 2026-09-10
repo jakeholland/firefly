@@ -19,14 +19,22 @@ void ff_sim_lifecycle_init(ff_sim_lifecycle_t *lc)
     lc->rebuild_count = 0u;
 }
 
-ff_idle_state_t ff_sim_lifecycle_pump(ff_idle_t *idle, bool *rebuild_pending, uint32_t *rebuild_count,
-                                       uint32_t now_ms, bool dirty, bool shell_wake, bool finger_down,
-                                       bool keep_awake, bool sleep_inhibit, ff_app_state_t const *state)
+ff_idle_state_t ff_sim_lifecycle_pump(ff_shell_t *shell, ff_idle_t *idle, bool *rebuild_pending,
+                                       uint32_t *rebuild_count, uint32_t now_ms, bool dirty, bool shell_wake,
+                                       bool finger_down, bool keep_awake, bool sleep_inhibit,
+                                       ff_app_state_t const *state)
 {
     if (shell_wake) { /* S26(c)+(d) — a pushed banner wakes a dim/off screen. */
         ff_idle_input(idle, now_ms);
     }
     ff_idle_state_t const idle_state = ff_idle_tick(idle, now_ms, keep_awake, sleep_inhibit);
+
+    /* fix/s31-music-idle-drain (2026-09-09) — see this function's own
+     * doc comment, step 1b (sim_lifecycle.h): mirrors app_main.c's
+     * identical call, same placement right after ff_idle_tick, so every
+     * live sim session (ctl/window/demo) feeds scr_music.c's pause gate
+     * the same way the device does. */
+    ff_shell_set_screen_awake(shell, idle_state == FF_IDLE_STATE_ACTIVE);
 
     /* Accumulate the dirty bit into the pending latch — never cleared by
      * skipping, only by an actual rebuild below (see this file's header

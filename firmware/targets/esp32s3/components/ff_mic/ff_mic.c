@@ -134,6 +134,17 @@ static ff_miclevel_envelope_t s_env;
 static bool s_stuck_logged = false;
 static uint32_t s_stuck_ms = 0;
 
+/* fix/s31-music-idle-drain (2026-09-09) — cumulative on-time tracking;
+ * see ff_mic_status_t.total_on_ms's own doc comment (ff_mic.h) for what
+ * this answers and why. `s_total_on_ms` is the sum of every COMPLETED
+ * on-stretch (committed at ff_mic_stop); `s_on_since_ms` is the start
+ * timestamp of the CURRENT stretch, meaningful only while s_want_running
+ * — ff_mic_status() adds the live in-progress stretch to s_total_on_ms
+ * on every call so the reported total never lags behind "right now" by
+ * up to a whole on-stretch. */
+static uint32_t s_total_on_ms = 0;
+static uint32_t s_on_since_ms = 0;
+
 /* Reader-task-exclusive scratch — file-scope static so it never lands on
  * the task's own (deliberately small) stack, same reasoning ff_audio.c's
  * s_chunk_buf comment gives. */
@@ -401,8 +412,12 @@ void ff_mic_start(void)
         return;
     }
 
+    ff_mic_lock();
+    s_on_since_ms = ff_mic_now_ms(); /* fix/s31-music-idle-drain — this stretch's own start, for total_on_ms */
+    ff_mic_unlock();
+
     (void)xSemaphoreGive(s_start_sem); /* wake the reader task out of its idle poll immediately */
-    ESP_LOGI(TAG, "mic started");
+    ESP_LOGI(TAG, "mic started (total on-time %us)", (unsigned)(s_total_on_ms / 1000u));
 }
 
 void ff_mic_stop(void)
@@ -413,12 +428,22 @@ void ff_mic_stop(void)
     bool const was_running = s_want_running;
     s_want_running = false;
     s_running = false;
+    if (was_running) {
+        /* fix/s31-music-idle-drain — commit this completed stretch into
+         * the cumulative total; see ff_mic_status_t.total_on_ms's own
+         * doc comment for why this (unlike frames_read/read_errors) is
+         * never reset. Wraparound-safe unsigned subtraction over any
+         * realistic on-stretch length, same convention ff_clock.h's
+         * ff_time_reached documents for every other now-vs-past
+         * millisecond delta in this codebase. */
+        s_total_on_ms += (ff_mic_now_ms() - s_on_since_ms);
+    }
     ff_mic_unlock();
 
     if (!was_running) return;
 
     (void)i2s_channel_disable(s_chan);
-    ESP_LOGI(TAG, "mic stopped");
+    ESP_LOGI(TAG, "mic stopped (total on-time %us)", (unsigned)(s_total_on_ms / 1000u));
 }
 
 ff_mic_status_t ff_mic_status(void)
@@ -434,6 +459,11 @@ ff_mic_status_t ff_mic_status(void)
     st.frames_read = s_frames_read;
     st.read_errors = s_read_errors;
     st.last_read_age_ms = (s_running && s_last_read_ms != 0u) ? (ff_mic_now_ms() - s_last_read_ms) : 0u;
+    /* fix/s31-music-idle-drain — the committed total plus whatever has
+     * elapsed of the CURRENT stretch so far, so a caller reading this
+     * mid-stretch (the common case: the mic is running right now) never
+     * sees a total that lags "right now" by up to one whole on-stretch. */
+    st.total_on_ms = s_total_on_ms + (s_want_running ? (ff_mic_now_ms() - s_on_since_ms) : 0u);
     ff_mic_unlock();
     return st;
 }

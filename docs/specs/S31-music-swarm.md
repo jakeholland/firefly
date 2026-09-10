@@ -293,16 +293,42 @@ zeroed, not merely bucketed).
 
 ## Power policy
 
+> **2026-09-09 amendment — keep-awake removed.** See "Keep-awake
+> (REMOVED, 2026-09-09)" below for the full writeup: the bullet just
+> above the fold used to read "the face keeps the puck awake only while
+> it is hearing/feeling something above the auto-ranged floor" — bench
+> evidence showed that floor never actually releases in an ordinary
+> room, so Music ran the mic and held the screen at full brightness for
+> 6.6 hours straight, unattended, overnight. Music now gets **zero**
+> special keep-awake treatment: the S26 DIM-at-15s/OFF-at-30s timers
+> apply to it exactly as they do to every other face. `music_wants_mic`
+> below is unchanged in SHAPE (mic runs only while Music is active,
+> genuinely visible, and the screen is genuinely ACTIVE) but its THIRD
+> term now comes from the idle FSM's own output, not from trying to
+> feed the idle FSM an input (loudness) that structurally never goes
+> quiet enough on its own.
+
 `ff_mic_start()`/`ff_mic_stop()` (app_main.c, the esp32s3 target — the
 shell never calls these directly; it has no `ff_mic.h` dependency, per
 CLAUDE.md's placement rule) are driven by one boolean, re-derived every
-main-loop iteration:
+main-loop iteration from the ONE shared, host-tested predicate
+`ff_shell_music_wants_mic` (`ff_shell.h` — pulled out of app_main.c's own
+inline expression by the 2026-09-09 amendment so app_main.c's device
+loop and the sim's own ctl-harness regression test,
+`targets/sim/tests/test_ctl_music_idle_drain.c`, can never drift apart
+on what "the mic should be on" means):
 
 ```c
 music_wants_mic = (active_face == FF_APP_FACE_MUSIC)
                 && !flare.takeover_active
                 && (idle_state == FF_IDLE_STATE_ACTIVE);
 ```
+
+`idle_state` is the S26 idle FSM's own `ff_idle_tick` return for this
+frame — DIM/OFF/SLEEP all withhold the mic, same as they always did, but
+now because the idle FSM genuinely reached DIM/OFF/SLEEP on its own
+un-overridden schedule, not because a second, separate loudness
+threshold happened to agree with it.
 
 Start/stop fire exactly on the edge (both are individually idempotent,
 but `ff_mic_start()` also resets its DC-blocking/envelope filter state
@@ -329,17 +355,77 @@ honestly reports NO SOURCE instead of a fabricated bounce. Splitting
 be the real fix; out of scope here (S31 is additive, not a rework of
 S15's read path) — see "Questions" below.
 
-**Keep-awake**: `ff_shell_keep_awake` gets one new branch —
-`active_face == FF_APP_FACE_MUSIC && view->music.loudness >
-FF_BEAT_KEEPAWAKE_LOUDNESS` (0.05) — the face keeps the puck awake only
-while it is genuinely hearing/feeling something above the auto-ranged
-floor. A silent, still room lets the idle FSM dim/sleep normally, even
-with Music on screen; "do not keep a silent room awake forever" (the
-task's own wording).
+**Keep-awake (REMOVED, 2026-09-09 amendment).** `ff_shell_keep_awake`
+used to get one Music-specific branch — `active_face ==
+FF_APP_FACE_MUSIC && view->music.loudness > FF_BEAT_KEEPAWAKE_LOUDNESS`
+(0.05) — "the face keeps the puck awake only while it is genuinely
+hearing/feeling something above the auto-ranged floor". It is gone.
+
+**Bench evidence** (Jake's puck, main `51c5d16`, overnight on USB): the
+puck was left on the Music face. Console log: `ff_mic: mic started` at
+uptime 44.75s, then **no backlight change for 6.6 hours** (no DIM at
+15s, no OFF at 30s), then `ff_mic: mic stopped` at uptime 23,878s. The
+room was ordinary night ambient — nobody clapping, nothing loud.
+
+**Root cause**: `loudness` (`ff_beat_t`, `ff_beat.h`) is computed
+against an AUTO-RANGING floor/ceiling — "Loudness: auto-ranging
+floor/ceiling" above — that CHASES whatever level the room actually is,
+with only a ~20s release time constant back up. In an ordinary quiet
+room, ambient noise sits jittering just above that self-tracking floor
+INDEFINITELY; `loudness` never actually settles at or below
+`FF_BEAT_KEEPAWAKE_LOUDNESS`, so the old branch above never released.
+The floor built to answer "is the room quiet" was, by its own auto-
+ranging design, structurally incapable of ever calling an ordinary room
+quiet. The mic ran and the screen sat at 90% for as long as the puck sat
+on Music, unattended — a real field battery-drain bug, not a bench
+curiosity.
+
+**The fix — product rule, not a threshold retune (owner's call, Jake,
+2026-09-09): Music must never override the idle policy.** It now gets
+**zero** special keep-awake treatment, at any loudness. The S26
+DIM-at-15s/OFF-at-30s-since-last-INPUT timers (`docs/specs/
+S26-device-lifecycle.md`) apply to Music exactly as they do to every
+other quiet face — the same "the launcher deliberately does NOT keep
+awake" precedent this function already established for a different
+face. **Sound is never an input.** `ff_shell_keep_awake`'s doc comment
+(`ff_shell.h`) carries the full writeup at the removed branch's old
+call site.
+
+The mic's own power policy did not need a threshold either — it was
+already correctly gated on the idle FSM's OUTPUT (`idle_state ==
+FF_IDLE_STATE_ACTIVE`, the "Power policy" section above), which only
+ever failed to matter because keep-awake never let idle LEAVE ACTIVE in
+the first place. Fixing keep-awake alone was enough to fix the mic too;
+`ff_shell_music_wants_mic` (`ff_shell.h`) is a shared-function pull-out
+of that same pre-existing gate, not a new decision. `ff_mic_stop()`
+still fires on DIM (not just OFF/SLEEP/leaving-the-face/flare
+takeover) via that exact same `idle_state == ACTIVE` gate — DIM is
+`idle_state != ACTIVE`, so it was always covered, it just never used to
+be reachable while Music was open.
+
+The swarm's OWN per-frame timer (`scr_music.c`) is a second, independent
+half of this fix: it used to keep stepping/redrawing at 15-30fps
+regardless of screen state (the mic not being fed new samples does not
+stop the timer from re-animating stale ones). It now reads
+`state->music.screen_awake` — the S26 idle FSM's own ACTIVE fact,
+pushed by `ff_shell_set_screen_awake` (`ff_shell.h`) — and skips
+stepping/redrawing entirely while not ACTIVE, resuming cleanly (no
+elapsed-time jump) the instant it is again. See `ff_scr_music_debug_
+render_ticks` (`scr_music.h`, test-only) and `targets/sim/tests/
+test_ctl_music_idle_drain.c` for the regression coverage that measures
+this rather than assuming it (AGENTS.md item 6).
 
 `sleep_inhibit` already includes `ff_mic_status().running` (S30) — a
 mic sample in flight is never cut off mid-frame by
 `esp_light_sleep_start()`; this PR adds no second inhibit source.
+
+**Power diagnostic (2026-09-09, this same PR)**: the mic's cumulative
+on-time since boot (never reset by a start/stop cycle) is now visible
+on the bench console's `mic` line (`total_on_s=`) and the DIAGNOSTICS
+page's own **MIC ON-TIME** row — see `ff_mic_status_t.total_on_ms`
+(`ff_mic.h`) and `ff_shell_set_mic_total_on_ms` (`ff_shell.h`). This
+overnight bug had no such number to look at; it does now, so a stuck-on
+mic can never hide in a point-in-time status read again.
 
 ## Launcher: the fifth satellite
 
@@ -509,9 +595,15 @@ what the sugar derived.
   directly — a settled quiet baseline AND a swing all the way to a
   sustained loud level both produce zero dirty ticks).
 - **AC6** — `ff_mic_start`/`stop` fire exactly on the
-  enter/leave-Music (or DIM/OFF/takeover) edge, never continuously;
-  `ff_shell_keep_awake` holds the puck awake only while
-  `music.loudness > FF_BEAT_KEEPAWAKE_LOUDNESS`.
+  enter/leave-Music (or DIM/OFF/takeover) edge, never continuously, via
+  the shared `ff_shell_music_wants_mic` predicate. **AMENDED
+  2026-09-09**: `ff_shell_keep_awake` no longer has a Music branch at
+  all — see "Power policy" > "Keep-awake (REMOVED, 2026-09-09
+  amendment)" above for the bench evidence and root cause. Music obeys
+  the same DIM-at-15s/OFF-at-30s S26 timers as every other face,
+  regardless of loudness; the mic-power half of AC6 above is unchanged
+  (it was always gated on the idle FSM's own ACTIVE output, not on
+  loudness).
 - **AC7** — BACK/HOME rim gestures work unchanged on the Music face
   (`test_gesture_glue.c`'s `S31_back_on_music_goes_home`, which
   exercises a full Music screen build+teardown — the same test that
