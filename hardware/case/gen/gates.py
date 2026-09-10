@@ -18,6 +18,7 @@ import importlib.util
 import math
 import os
 
+from . import components as comp
 from . import geometry as geo
 from .features import corner_blocks as cb
 
@@ -286,8 +287,10 @@ def check_interference_pairs(bodies):
     return results
 
 
-def all_gates(bodies, p, stl_paths, whitelist_xy=None):
-    """Run every phase-1 gate and return one combined report dict."""
+def all_gates(bodies, p, stl_paths, whitelist_xy=None, standoffs=None):
+    """Run every phase-1 gate (plus, when `standoffs` is given --
+    components.measure_standoffs' own return dict -- every phase-2
+    ears/S2-boss gate) and return one combined report dict."""
     report = {}
     report['interference'] = check_interference_pairs({'Top': bodies['Top'], 'Bottom': bodies['Bottom']})
     report['post_walls'] = verify_post_walls(bodies, p)
@@ -302,4 +305,228 @@ def all_gates(bodies, p, stl_paths, whitelist_xy=None):
         report[f'offline_{name}'] = manifold_and_overhang_check(stl_path, down_z, bed_z, whitelist_xy)
     if 'Top' in stl_paths:
         report['lip_ring_profile'] = verify_lip_ring_profile(stl_paths['Top'], p)
+    if standoffs is not None:
+        report['seat_heights'] = verify_seat_heights(p, standoffs)
+        report['ear_root_material'] = verify_ear_root_material(bodies, p, standoffs)
+        report['s2_boss_clearance'] = verify_s2_boss_clearance(bodies, p, standoffs)
+        report['display_to_stack_clearance'] = verify_display_to_stack_clearance(p)
+        report['display_interference_near_ears'] = check_display_interference_near_ears(bodies, p, standoffs)
     return report
+
+
+# ---------------------------------------------------------------------------
+# Phase-2 gates -- ears (S1/S3) + S2 boss (features/ears.py).
+# ---------------------------------------------------------------------------
+def verify_seat_heights(p, standoffs):
+    """Port of firefly_case.py:8229 verify_seat_heights -- headlessly, this
+    reduces to a construction identity (features/ears.py builds each
+    seat's top face at exactly `standoffs[name]['standoff_plane_z'] -
+    ear_seat_offset`), so this gate instead independently re-derives each
+    barrel's OWN measured local top-z (not the shared
+    STANDOFF_BARREL_TOP_LOCAL_Z constant `measure_standoffs` uses) from
+    `components.find_standoff_barrels` and re-checks the seat gap against
+    it -- catching a genuine per-barrel STEP anomaly the shared constant
+    could otherwise hide. `gap` = measured_plane_z - built_seat_z: the
+    built seat sits `ear_seat_offset` (0.25mm) BELOW the real measured
+    plane (mech review F5, so the window seat -- not S1/S2/S3 -- takes
+    the assembly preload), so `gap` is expected at +0.25 +/- 0.05mm."""
+    top_z = p['top_z']
+    offset = p['ear_seat_offset']
+    barrels = comp.find_standoff_barrels()
+    results = {}
+    for name, m in standoffs.items():
+        lx, ly = m['local_xy']
+        _, _, _, lz_top = min(barrels, key=lambda b: math.hypot(b[0] - lx, b[1] - ly))
+        measured_plane_z = top_z + lz_top
+        seat_z = m['standoff_plane_z'] - offset
+        gap = measured_plane_z - seat_z
+        results[name] = {
+            'measured_plane_z': round(measured_plane_z, 3),
+            'built_seat_z': round(seat_z, 3),
+            'gap_mm': round(gap, 3),
+            'ok': 0.20 <= gap <= 0.30,
+        }
+    return results
+
+
+def verify_ear_root_material(bodies_dict, p, standoffs):
+    """Port of firefly_case.py:8107 verify_ear_root_material for S1/S3:
+    (a) the standoff's own M2x4 through-hole reads open along its depth;
+    (b) the wall-root->standoff arm reads solid at its own low z-band
+    (off-axis at the standoff end, since t=1.0 on-axis lands dead-centre
+    on the through-hole by design); (c) the standoff riser reads solid at
+    its own mid-height; (d) the analytic clearance from each ear's own
+    footprint to the FPC relief pocket / display_header box (reported,
+    not gated, matching the source)."""
+    from .features import ears as ears_mod
+    top = bodies_dict['Top']
+    results = {}
+    arm_thick = p['ear_arm_thickness']
+    boss_r = p['boss_dia'] / 2.0
+    off_r = cb.BOSS_CORE_R - 0.3
+    fpc = p['fpc_relief']
+    hdr = p['display_header']
+    ceiling = p['top_ceiling_underside_z']
+    for name, ear in p['ears'].items():
+        rx, ry = ear['root_xy']
+        tx, ty, seat_z = ears_mod._target_xy_seat_z(p, standoffs, ear['target'])
+        root_z1 = ears_mod.ear_root_cap_z1(p, rx, ry, boss_r + cb.CORNER_BLOCK_REACH, ceiling)
+        z_mid_arm = root_z1 - arm_thick / 2.0
+        z_mid_riser = (root_z1 + seat_z) / 2.0
+
+        hole_checks = [not geo.probe_point_solid(top, (tx, ty, z))
+                       for z in (root_z1 - arm_thick + 0.3, seat_z - 0.3)]
+        results[f'{name}_standoff_hole_open'] = (all(hole_checks), hole_checks)
+
+        solid_checks = [geo.probe_point_solid(top, (rx + t * (tx - rx), ry + t * (ty - ry), z_mid_arm))
+                         for t in (0.0, 0.25, 0.5, 0.75)]
+        solid_checks += [geo.probe_point_solid(top, (tx + off_r * math.cos(math.radians(ang)),
+                                                       ty + off_r * math.sin(math.radians(ang)), z_mid_arm))
+                          for ang in (0, 90, 180, 270)]
+        results[f'{name}_material_solid'] = (all(solid_checks), solid_checks)
+
+        riser_checks = [geo.probe_point_solid(top, (tx + off_r * math.cos(math.radians(ang)),
+                                                      ty + off_r * math.sin(math.radians(ang)), z_mid_riser))
+                         for ang in (0, 90, 180, 270)]
+        results[f'{name}_riser_solid'] = (all(riser_checks), (round(z_mid_riser, 3), riser_checks))
+
+        fpc_dist = min(
+            math.hypot(max(fpc['x'][0] - pt[0], 0.0, pt[0] - fpc['x'][1]),
+                       max(fpc['y'][0] - pt[1], 0.0, pt[1] - fpc['y'][1])) - boss_r
+            for pt in ((rx, ry), (tx, ty)))
+        hdr_dist = min(
+            math.hypot(max(hdr['x'][0] - pt[0], 0.0, pt[0] - hdr['x'][1]),
+                       max(hdr['y'][0] - pt[1], 0.0, pt[1] - hdr['y'][1])) - boss_r
+            for pt in ((rx, ry), (tx, ty)))
+        results[f'{name}_fpc_relief_clear_mm'] = round(fpc_dist, 3)
+        results[f'{name}_header_clear_mm'] = round(hdr_dist, 3)
+    return results
+
+
+def verify_s2_boss_clearance(bodies_dict, p, standoffs):
+    """Port of firefly_case.py:8187 verify_s2_boss_clearance: the boss's
+    own hard keep-out around the display's real battery-connector XY+Z
+    footprint reads fully hollow in the built Top, and the boss's own
+    nearest edge clears the GPS frame's real outer wall by >= 0.5mm."""
+    top = bodies_dict['Top']
+    (bcx0, bcx1), (bcy0, bcy1), (bcz0, bcz1) = comp.battery_connector_world_bbox(p)
+    results = {}
+    bad = []
+    nx, ny, nz = 4, 3, 2
+    for i in range(nx):
+        x = bcx0 + (bcx1 - bcx0) * i / (nx - 1)
+        for j in range(ny):
+            y = bcy0 + (bcy1 - bcy0) * j / (ny - 1)
+            for k in range(nz):
+                z = bcz0 + (bcz1 - bcz0) * k / (nz - 1)
+                if geo.probe_point_solid(top, (x, y, z)):
+                    bad.append((round(x, 2), round(y, 2), round(z, 2)))
+    results['battery_clear_ok'] = (not bad, bad[:5])
+
+    s2 = p['s2_boss']
+    _, ty = standoffs[s2['target']]['world_xy']
+    boss_r = p['boss_dia'] / 2.0
+    gps = p['bay']['gps_patch']
+    gps_half = p['bay']['gps_frame_opening'] / 2.0
+    gcy = (gps['y'][0] + gps['y'][1]) / 2.0
+    gps_outer_y1 = gcy + gps_half + p['bay']['gps_frame_wall']
+    gps_clear = (ty - boss_r) - gps_outer_y1
+    results['gps_clear_mm'] = round(gps_clear, 3)
+    results['gps_clear_ok'] = gps_clear >= 0.5
+    return results
+
+
+def verify_display_to_stack_clearance(p):
+    """Port of firefly_case.py:8308 verify_display_to_stack_clearance --
+    purely analytic (bay params only): wherever the display's own real
+    bbox overlaps the comms stack / battery / GPS-patch footprint in XY,
+    the Z clearance there must be >= 0.5mm. `bay['stack3']` is None until
+    phase 2 item 3 (comms stack) lands -- that check is then simply
+    absent, not reported red, same convention `verify_corner_blocks`
+    already uses for the same not-yet-built feature."""
+    db = p['display_bbox']
+    dz = p.get('display_z_offset', 0.0)
+    dx0, dx1 = db['x']
+    dy0, dy1 = db['y']
+    dz0 = db['z'][0] + dz
+
+    checks = []
+    s3 = p['bay'].get('stack3')
+    if s3 is not None:
+        pcb = s3['l76k_pcb']
+        checks.append(('stack3', pcb['x'][0], pcb['x'][1], pcb['y'][0], pcb['y'][1], s3['stack_top_z_nominal']))
+    bat = p['bay']['battery']
+    checks.append(('battery', bat['x'][0], bat['x'][1], bat['y'][0], bat['y'][1], bat['z'][1]))
+    gps = p['bay']['gps_patch']
+    checks.append(('gps_patch', gps['x'][0], gps['x'][1], gps['y'][0], gps['y'][1], gps['z'][1]))
+
+    results = {'ok': True, 'checks': {}}
+    for name, cx0, cx1, cy0, cy1, top_z_feat in checks:
+        overlap = cb._xy_overlap(dx0, dx1, dy0, dy1, cx0, cx1, cy0, cy1)
+        if overlap is None:
+            results['checks'][name] = {'overlap': False,
+                                        'note': 'no XY overlap with the display bbox -- clear by construction'}
+            continue
+        ox0, ox1, oy0, oy1 = overlap
+        clearance = dz0 - top_z_feat
+        ok = clearance >= 0.5
+        results['checks'][name] = {
+            'overlap': True, 'region': (round(ox0, 2), round(ox1, 2), round(oy0, 2), round(oy1, 2)),
+            'clearance_mm': round(clearance, 3), 'ok': ok,
+        }
+        if not ok:
+            results['ok'] = False
+    return results
+
+
+def check_display_interference_near_ears(bodies, p, standoffs, margin=6.0):
+    """Not a firefly_case.py function by name -- the source's own
+    `check_interference` walks Fusion's LIVE occurrence tree (every
+    inserted board, including the display) against Top/Bottom; this port
+    has no occurrence tree, only `components.load_display`'s ~420-solid
+    compound (see that module's own docstring), and a full boolean
+    intersect of Top/Bottom against all 420 of those (most of which sit
+    nowhere near any case material by design, floating in open cavity
+    air) is not worth its own runtime. Scoped instead to the one place
+    phase-2 actually put NEW material near the real board: a padded XY
+    box around every ear root/target and the S2 target -- any display
+    solid whose own bbox centre falls inside it is boolean-intersected
+    against Top for real. Zero hits confirms the standoff through-holes/
+    barrel counterbores genuinely clear the real barrels, not just the
+    idealized cylinder the barrel-clearance cut assumes."""
+    disp = comp.load_display(p)
+    top = bodies['Top']
+
+    xs, ys = [], []
+    for ear in p['ears'].values():
+        xs.append(ear['root_xy'][0])
+        ys.append(ear['root_xy'][1])
+    for m in standoffs.values():
+        xs.append(m['world_xy'][0])
+        ys.append(m['world_xy'][1])
+    x0, x1 = min(xs) - margin, max(xs) + margin
+    y0, y1 = min(ys) - margin, max(ys) + margin
+
+    hits = []
+    for s in disp.solids():
+        bb = s.bounding_box()
+        cx, cy = (bb.min.X + bb.max.X) / 2.0, (bb.min.Y + bb.max.Y) / 2.0
+        if not (x0 <= cx <= x1 and y0 <= cy <= y1):
+            continue
+        vol = interference_volume(top, s)
+        if vol > 1e-4:
+            hits.append({
+                'bbox_xy': (round(bb.min.X, 2), round(bb.max.X, 2), round(bb.min.Y, 2), round(bb.max.Y, 2)),
+                'bbox_z': (round(bb.min.Z, 2), round(bb.max.Z, 2)),
+                'volume_mm3': round(vol, 4),
+            })
+    # NOISE_FLOOR_MM3: boolean-cleanup/tessellation noise at a shared
+    # boundary (same class check_interference_pairs' own 1e-4mm^3
+    # coincident-touch tolerance already accepts elsewhere in this file,
+    # just a hair looser here for a genuinely negligible residual --
+    # live-checked, this port's own smallest real fix was ~1.16mm^3, five
+    # orders of magnitude above this floor).
+    NOISE_FLOOR_MM3 = 0.001
+    real_hits = [h for h in hits if h['volume_mm3'] > NOISE_FLOOR_MM3]
+    return {'ok': not real_hits, 'region_xy': (round(x0, 1), round(x1, 1), round(y0, 1), round(y1, 1)),
+            'hits': hits, 'real_hits': real_hits}

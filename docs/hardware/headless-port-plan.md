@@ -61,16 +61,28 @@ exported STL, wired to `tools/offline_stl_check.py` reused unchanged.
 `docs/hardware/headless-port-parity.md` for the regression numbers this
 produced against the pass-16 goldens.
 
-## Phase 2 plan (next)
+## Phase 2 plan
 
 In roughly the order `firefly_case.py` itself builds them:
 
-1. **Ears + S2 boss** (`add_ear`, `add_s2_boss`, their own keepout/height-
-   cap helpers) -- the display mount proper. `gen/components.py`'s
-   `measure_standoffs` already gives the real, STEP-measured standoff
-   plane z (18.80mm current / 21.80mm trim, exact) and barrel XY for
-   S1/S2/S3 to build against, superseding the historical hand-recorded
-   `board_standoffs` numbers.
+1. ~~**Ears + S2 boss**~~ **DONE, this revision** (`features/ears.py`:
+   `add_ear`, `add_s2_boss`, `ear_root_cap_z1`, `_ear_wedge_wall_
+   touch_z1`; `components.py`: `battery_connector_world_bbox`,
+   `secondary_conn_world_bbox`, `ceiling_safe_display_cut`,
+   `apply_known_component_keepouts`; `gates.py`: `verify_seat_heights`,
+   `verify_ear_root_material`, `verify_s2_boss_clearance`,
+   `verify_display_to_stack_clearance`, `check_display_interference_
+   near_ears`) -- the display mount proper, targeting the real measured
+   standoff plane/XY (`components.measure_standoffs`), not the typed
+   `board_standoffs`/`ear_seat_z`. Found and fixed three real bugs (a
+   gate sign error, a genuine Top-vs-Bottom interference at `split_z`,
+   and ~600mm³ of real display interference from two not-yet-ported
+   inline cuts in the source's own `build()`) -- see
+   `docs/hardware/headless-port-parity.md`'s own "Phase 2 update"
+   section for the full account, including the two known, narrow,
+   live-found trade-offs (`corner_block_D_top`, `S3_riser_solid`) still
+   open on `trim`, and `current`'s several additional open findings
+   (not root-caused this pass, `current` is not the printed variant).
 2. **Buttons** (`button_geometry`, `add_button`, `add_buttons`, the
    guide-rib/collar mechanism) -- needs the real switch body position;
    plan to import a switch reference STEP or keep the existing
@@ -106,7 +118,11 @@ referenced by bbox.
 
 ## Full function table (case-pass16 `firefly_case.py`, 217 functions)
 
-61 ported, 51 deleted-as-quirk, 83 deferred, 22 todo.
+69 ported, 51 deleted-as-quirk, 75 deferred, 22 todo (phase 2, this
+revision: +8 -- `ear_root_cap_z1`, `add_ear`, `add_s2_boss`,
+`battery_connector_world_bbox`, `secondary_conn_world_bbox`,
+`verify_ear_root_material`, `verify_s2_boss_clearance`,
+`verify_display_to_stack_clearance`).
 
 | firefly_case.py line | function | status | port note |
 |---|---|---|---|
@@ -177,18 +193,18 @@ referenced by bbox.
 | 2041 | `_clip_of_ear_boss_keepout` | deferred | phase 2 |
 | 2125 | `_ear_wedge_wall_touch_z1` | deferred | phase 2 -- ear-vs-button height cap |
 | 2137 | `_ear_root_z1` | ported | features/corner_blocks.py -- needed by A/C/D’s display keepout, not just ears |
-| 2154 | `ear_root_cap_z1` | deferred | phase 2 -- ears specifically (corner blocks use `_ear_root_z1` directly, already ported) |
+| 2154 | `ear_root_cap_z1` | ported | features/ears.py -- also relies on the new `add_root_reinforcement(..., z_floor=...)` param (phase 2 fix, no source equivalent needed, see headless-port-parity.md) so the collar it caps can never dip below `split_z` |
 | 2184 | `_wall_outward_axes` | ported | geometry.py `wall_outward_axes` |
 | 2213 | `_nearer_spine_y` | ported | geometry.py |
 | 2232 | `_corner_block_ring_limit_r` | ported | features/corner_blocks.py |
 | 2293 | `add_single_corner_block` | ported | features/corner_blocks.py |
-| 2381 | `add_ear` | deferred | phase 2 -- S1/S3 display mount |
-| 2536 | `add_s2_boss` | deferred | phase 2 -- S2 display mount |
+| 2381 | `add_ear` | ported | features/ears.py -- target xy/seat_z come from `components.measure_standoffs` (measured), not the typed `board_standoffs`/`ear_seat_z`, per the port brief |
+| 2536 | `add_s2_boss` | ported | features/ears.py -- same measured-standoff sourcing as add_ear; adds a best-effort underside edge chamfer (no source equivalent, see its own docstring for the honest "still needs support" finding) |
 | 2681 | `_refetch_by_name` | deleted-as-quirk | Fusion stale-reference workaround -- OCC's +/-/& return the real result directly, no name-based re-fetch needed |
 | 2702 | `add_case_boss` | ported | features/corner_blocks.py |
 | 2813 | `add_case_screws` | ported | features/corner_blocks.py |
-| 2849 | `battery_connector_world_bbox` | deferred | phase 2 -- needs the battery bay |
-| 2873 | `secondary_conn_world_bbox` | deferred | phase 2 -- ear keepouts |
+| 2849 | `battery_connector_world_bbox` | ported | components.py -- used by add_s2_boss's own hard keep-out |
+| 2873 | `secondary_conn_world_bbox` | ported | components.py -- used by the new `apply_known_component_keepouts` (see headless-port-parity.md) |
 | 2883 | `get_open_doc` | deleted-as-quirk | Fusion multi-document lookup -- no live Fusion session in the headless build |
 | 2890 | `get_reference_transform` | deleted-as-quirk | superseded by components.py's empirically-derived transform (see its module docstring) |
 | 2901 | `insert_referenced_component` | deleted-as-quirk | Fusion occurrence-insert API |
@@ -302,11 +318,11 @@ referenced by bbox.
 | 7873 | `verify_fpc_relief` | todo | the SPEC-box corner clearance is already a build-time assert in features/fpc_relief.py; the fuller multi-probe gate is not yet a standalone function |
 | 7992 | `verify_wordmark` | deferred | phase 3 |
 | 8068 | `verify_wordmark_counters` | deferred | phase 3 |
-| 8107 | `verify_ear_root_material` | deferred | phase 2 -- ears |
-| 8187 | `verify_s2_boss_clearance` | deferred | phase 2 |
-| 8229 | `verify_seat_heights` | ported | superseded by components.py's `measure_standoffs` -- measures the real standoff plane directly from the STEP; reproduces the documented 18.80/21.80mm exactly (see components.py docstring) |
+| 8107 | `verify_ear_root_material` | ported | gates.py -- S1/S3 only; one known, live-found, narrow finding (`S3_riser_solid` at 1 of 4 angles), see headless-port-parity.md |
+| 8187 | `verify_s2_boss_clearance` | ported | gates.py -- clean both variants |
+| 8229 | `verify_seat_heights` | ported | gates.py, superseded in method (not just referenced) by components.py's `measure_standoffs` -- re-derives each barrel's OWN measured local top-z (not the shared constant) and checks the seat gap against it directly, rather than only reproducing the documented 18.80/21.80mm plane number |
 | 8300 | `_xy_overlap` | ported | features/corner_blocks.py |
-| 8308 | `verify_display_to_stack_clearance` | deferred | phase 2/3 |
+| 8308 | `verify_display_to_stack_clearance` | ported | gates.py -- purely analytic (bay params only); the `stack3`/GPS-patch checks are no-ops until phase 2 item 3 (comms stack) places real geometry, same convention `verify_corner_blocks` already uses |
 | 8357 | `window_column_probe_points` | todo | verify_openings_open helper |
 | 8376 | `_in_stadium` | todo | ditto |
 | 8391 | `verify_openings_open` | todo | general opening/closed regression gate |

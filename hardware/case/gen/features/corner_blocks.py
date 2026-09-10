@@ -37,16 +37,36 @@ DISPLAY_KEEPOUT_CLEARANCE = 0.5  # firefly_case.py:1938
 
 
 def add_root_reinforcement(body, cx, cy, r, z_root, direction,
-                            collar_rise=ROOT_COLLAR_RISE):
+                            collar_rise=ROOT_COLLAR_RISE, z_floor=None):
     """Port of add_root_reinforcement -- the fillet-first/collar-fallback
     path (superseded in the real generator itself, pass 13) is not
     ported; only the shipped, unconditional-collar design is. Trims the
     body within the collar's own radial footprint over EXACTLY the
     collar's own z-band before joining the collar (pass-16 item-1 fix,
-    closes the wedge/collar non-manifold seam)."""
+    closes the wedge/collar non-manifold seam).
+
+    `z_floor` (phase-2 addition, no firefly_case.py equivalent needed --
+    see below): every A/C/D corner block's own `z_root` sits comfortably
+    more than `collar_rise` above `split_z`, so a direction='up' collar
+    never had reason to reach below the Top/Bottom parting plane there.
+    The S1/S3 ears' own wall-root is NOT so comfortable -- `ear_root_
+    cap_z1` can cap `z_root` (button-height-limited, see features/ears.py)
+    to as little as ~1mm above `split_z`, and an uncapped `collar_rise`
+    (1.5mm) then dips the collar 0.5mm below the parting plane, into
+    Bottom's own territory -- live-found this port (a real, if tiny,
+    0.126mm^3 Top-vs-Bottom overlap for the 'current' variant's S3 ear).
+    `z_floor` clamps the collar's low end at that plane, recomputing the
+    matching radius by linear interpolation along the SAME cone surface
+    (not a flat truncation) so the collar's own taper angle is
+    unchanged, just shorter. A no-op for every existing call site
+    (z_floor=None) -- only ears.py passes one."""
     if direction == 'up':
         z_lo, z_hi = z_root - collar_rise, z_root + ROOT_COLLAR_OVERLAP
         r_lo, r_hi = r + ROOT_COLLAR_OVERLAP, r + collar_rise
+        if z_floor is not None and z_lo < z_floor < z_hi:
+            t = (z_floor - z_lo) / (z_hi - z_lo)
+            r_lo = r_lo + t * (r_hi - r_lo)
+            z_lo = z_floor
     else:
         z_lo, z_hi = z_root - ROOT_COLLAR_OVERLAP, z_root + collar_rise
         r_lo, r_hi = r + collar_rise, r + ROOT_COLLAR_OVERLAP

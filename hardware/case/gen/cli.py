@@ -7,27 +7,30 @@ Usage (from hardware/case, with gen/.venv active):
 Phase 1 builds: Top/Bottom shell, window, lip/anchor ring, case screws
 A/C/D (Bottom boss + Top corner block, each with its root-reinforcement
 collar), the USB-C tunnel + liner, the FPC relief pocket, and the
-lanyard lug. See docs/hardware/headless-port-plan.md for what is not
-yet ported (ears, S2 boss, buttons, stack/GPS/battery/compass frames,
-wordmark, comms boards) and docs/hardware/headless-port-parity.md for
-the regression comparison against the pass-16 goldens.
+lanyard lug. Phase 2 (this revision) adds: the S1/S3 ears + S2 boss
+(the display mount proper -- features/ears.py). See
+docs/hardware/headless-port-plan.md for what is not yet ported
+(buttons, stack/GPS/battery/compass frames, wordmark, comms boards) and
+docs/hardware/headless-port-parity.md for the regression comparison
+against the pass-16 goldens.
 """
 import argparse
 import json
 import os
 import time
 
+from . import components as components_mod
 from . import export as export_mod
 from . import gates as gates_mod
 from . import shell
-from .features import corner_blocks, fpc_relief, lug, usb_tunnel
+from .features import corner_blocks, ears, fpc_relief, lug, usb_tunnel
 from .params import get_params
 
 _CASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 
 def build(variant='trim'):
-    """Build Top/Bottom for the given variant. Returns (bodies, timings)."""
+    """Build Top/Bottom for the given variant. Returns (p, bodies, timings, standoffs)."""
     p = get_params(variant)
     t = {}
 
@@ -48,6 +51,25 @@ def build(variant='trim'):
     t['case_screws_ACD'] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
+    standoffs = components_mod.measure_standoffs(p)
+    t['measure_standoffs'] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    bodies = ears.add_ear(bodies, p, 'S1', standoffs)
+    bodies = ears.add_ear(bodies, p, 'S3', standoffs)
+    bodies = ears.add_s2_boss(bodies, p, standoffs)
+    t['ears_and_s2_boss'] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    bodies['Top'] = components_mod.apply_known_component_keepouts(bodies['Top'], p)
+    t['known_component_keepouts'] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    bodies['Top'], ceiling_cut_stats = components_mod.ceiling_safe_display_cut(bodies['Top'], p)
+    t['ceiling_safe_display_cut'] = time.perf_counter() - t0
+    t['ceiling_safe_display_cut_stats'] = ceiling_cut_stats
+
+    t0 = time.perf_counter()
     bodies = usb_tunnel.add_usb_tunnel(bodies, p)
     t['usb_tunnel'] = time.perf_counter() - t0
 
@@ -59,8 +81,8 @@ def build(variant='trim'):
     bodies = lug.add_lug(bodies, p)
     t['lug'] = time.perf_counter() - t0
 
-    t['total_build'] = sum(t.values())
-    return p, bodies, t
+    t['total_build'] = sum(v for v in t.values() if isinstance(v, (int, float)))
+    return p, bodies, t, standoffs
 
 
 def main():
@@ -74,7 +96,7 @@ def main():
     args = ap.parse_args()
 
     t_all0 = time.perf_counter()
-    p, bodies, timings = build(args.variant)
+    p, bodies, timings, standoffs = build(args.variant)
     print(f'--- build ({args.variant}) ---')
     print(json.dumps(timings, indent=2))
     print('Top volume mm3', bodies['Top'].volume)
@@ -95,7 +117,7 @@ def main():
         t0 = time.perf_counter()
         from .tools_bridge import top_whitelist, bottom_whitelist
         wl = top_whitelist() if 'Top' in stl_paths else None
-        report = gates_mod.all_gates(bodies, p, stl_paths, whitelist_xy=wl)
+        report = gates_mod.all_gates(bodies, p, stl_paths, whitelist_xy=wl, standoffs=standoffs)
         print('gates_s', time.perf_counter() - t0)
         print(json.dumps(report, indent=2, default=str))
 

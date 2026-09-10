@@ -37,7 +37,7 @@ def _skip_if_no_golden(variant, name):
 @pytest.mark.parametrize('variant,name', [('trim', 'Top'), ('trim', 'Bottom')])
 def test_bbox_within_tolerance(tmp_path, variant, name):
     golden_path = _skip_if_no_golden(variant, name)
-    p, bodies, _ = build(variant)
+    p, bodies, _, _ = build(variant)
     mine_path = os.path.join(tmp_path, f'{name}.stl')
     export_mod.export_stl(bodies[name], mine_path)
 
@@ -55,7 +55,7 @@ def test_signed_distance_median_near_zero(tmp_path, variant, name):
     docs/hardware/headless-port-parity.md) and are reported, not
     asserted on here."""
     golden_path = _skip_if_no_golden(variant, name)
-    p, bodies, _ = build(variant)
+    p, bodies, _, _ = build(variant)
     mine_path = os.path.join(tmp_path, f'{name}.stl')
     export_mod.export_stl(bodies[name], mine_path)
 
