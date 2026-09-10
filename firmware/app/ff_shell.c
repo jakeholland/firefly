@@ -2640,21 +2640,29 @@ static void shell_project_inbox(shell_t *sh, uint32_t now_ms, ff_app_inbox_t *ou
 }
 
 /**
- * Stack budget for one day's set list inside shell_project_now.
+ * Stack budget for one festival night's set list inside shell_project_now.
  *
  * `ff_sched_day_sets` would happily fill FP_MAX_SETS (256) pointers —
  * 2 KB of stack, on a tick path that on device runs inside an ESP-IDF
- * task whose default stack is single-digit KB. 64 pointers is 512 bytes
- * and is generous headroom over any real day (the vendored Lost Lands
- * 2026 pack's busiest day has 7 sets, and FP_MAX_STAGES is 12).
+ * task whose default stack is single-digit KB.
+ *
+ * 2026-09-09: this was 64, sized when the vendored Lost Lands 2026 pack
+ * was a 27-set placeholder whose busiest day held 7. The real published
+ * set-time grid landed (222 sets; see docs/specs/S05-festpack.md's dated
+ * amendment) and its busiest festival NIGHT — Saturday 2026-09-19, 45
+ * pre-midnight sets plus the 20 after-midnight ones now folded into the
+ * same night's day_doy — is 65. That is one over the old cap: real data
+ * had grown past a limit chosen against placeholder data. 128 pointers
+ * is 1 KB, still half the FP_MAX_SETS worst case, and leaves headroom
+ * for a busier grid than any Lost Lands has published.
  *
  * The truncation semantics, stated because they are not free: past this
- * many sets on one day, later sets are dropped in pack order and would
+ * many sets on one night, later sets are dropped in pack order and would
  * not reach the unknown-time lineup. That is `ff_sched_day_sets`'s own
  * documented "silently drop past max" contract, and `n_lineup` is capped
  * at FF_APP_NOW_MAX_LINEUP (32) below anyway.
  */
-#define SHELL_DAY_SETS_MAX 64
+#define SHELL_DAY_SETS_MAX 128
 
 static char const *shell_stage_name(fp_pack_t const *p, int8_t stage_idx)
 {

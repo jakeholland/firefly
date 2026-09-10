@@ -76,6 +76,30 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_field_pack)
 
     add_test(NAME test_field_pack COMMAND test_field_pack)
+
+    # festpack_lint.py — static validation of the real field pack's
+    # schedule (stage refs exist, start < end, no same-stage overlaps,
+    # days within the wall window, note/artist length budgets, total <=
+    # FP_MAX_SETS) that fp_parse() itself deliberately does NOT enforce
+    # (it is tolerant by design — see docs/specs/S05-festpack.md). Same
+    # "wire it into ctest so a bad pack fails the build, not a manual
+    # run" reasoning as firmware/tools/CMakeLists.txt's
+    # probe_node_selftest/beat_replay_selftest. `tools/festpack_lint.py`
+    # lives at this repo's TOP LEVEL (sibling of `firmware/`), same as
+    # `tools/beat_replay.py` — CMAKE_SOURCE_DIR here is the `firmware/`
+    # project root, so `../tools` reaches it. Lints both the shipped
+    # field asset and its tests/fixtures/ copy (so the two cannot drift
+    # into one being lint-clean and the other not).
+    find_program(FF_PYTHON3 python3)
+    if(NOT FF_PYTHON3)
+        set(FF_PYTHON3 python3) # fail loudly, never skip silently — see probe_node_selftest's own comment
+    endif()
+    add_test(NAME festpack_lint
+             COMMAND ${FF_PYTHON3} ${CMAKE_SOURCE_DIR}/../tools/festpack_lint.py
+                     ${CMAKE_CURRENT_SOURCE_DIR}/../assets/field/lost-lands-2026.festpack.json
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/lost-lands-2026.festpack.json
+                     ${CMAKE_CURRENT_SOURCE_DIR}/../assets/demo/firefly-fields.festpack.json
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bass-canyon-shape.festpack.json)
 endif()
 
 # S07 — schedule engine (now-playing/next-starred/day-lineup/alarm), slices

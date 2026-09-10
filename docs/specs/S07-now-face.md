@@ -18,8 +18,8 @@ fp_set_t const *ff_sched_alarm_tick(ff_sched_alarm_t *st, fp_pack_t const *p,
 ```
 
 ## Behavior
-- Sets with null times are listed in a per-day lineup list (scroll) but excluded from now/next/alarms. **When all times are null (current Lost Lands state) the face shows the day lineup + "SET TIMES TBD" banner** — the pack-update story.
-- Sets crossing midnight (end < start) belong to the day they start; `now_min` may exceed 1440 for late-night queries (day rolls at 06:00 local, not midnight — festival days end late).
+- Sets with null times are listed in a per-day lineup list (scroll) but excluded from now/next/alarms. **When all times are null the face shows the day lineup + "SET TIMES TBD" banner** — the pack-update story.
+- Sets crossing midnight (end < start) belong to the day they start; `now_min` may exceed 1440 for late-night queries (day rolls at 06:00 local, not midnight — festival days end late). *(2026-09-09: a set that STARTS after midnight is handled too — the pack bills it under a `night` and `fp_pack.c` folds its `start_min` past 1440 onto that night's `day_doy`, so it sorts and renders after the same night's evening sets. See `docs/specs/S05-festpack.md`'s dated amendment.)*
 - Alarm fires once per starred set at T≤15 min; alarm during quiet hours (S11) suppressed unless it's a flare (n/a here). Alarm action: haptic pattern + Now face banner.
 - Rendering: three now-rows max (progress bars in stage colors), starred next card with countdown, "IN N MIN" ≥13 px, page dot #2.
 

@@ -47,22 +47,39 @@ static bool sched_has_start(fp_set_t const *s)
  * misbehave on) resolves to that shared start_min either way — which
  * set index supplied it doesn't change the derived effective_end.
  *
- * KNOWN GAP (PR #65 review, finding 3, non-blocking, not currently
- * reachable): this compares two different sets' raw start_min values
- * directly, with no midnight fold. fp_pack.c never folds a standalone
- * set's start_min even when it represents "after local midnight, same
- * festival day" — only sched_effective_end's SINGLE-set `end_min <
- * start_min` fold handles that, and only within one set. If a real pack
- * ever published two separate schedule entries on the same stage/day
- * where a later, genuinely-standalone after-midnight entry has a
- * numerically SMALLER raw start_min than an earlier evening entry, this
- * function would miss it as "next" and fall back to the day-window
- * boundary instead. Not confirmed reachable given the existing
- * day-attribution convention (fp_doy_from_iso_date takes the pack's
- * literal "day" field), and the real Bass Canyon pack has no entries in
- * [0,360) at all — left as a documented gap rather than guessed at;
- * worth a fixture/test if there's ever visibility into how fest-almanac
- * actually dates a genuinely-standalone post-midnight set. */
+ * RESOLVED (2026-09-09, S05-festpack.md amendment — was "KNOWN GAP", PR
+ * #65 review finding 3): this function compares two different sets' raw
+ * start_min values directly, with no per-comparison midnight fold —
+ * that was flagged as a gap for a standalone (both start AND end after
+ * actual local midnight) set with a numerically SMALLER raw start_min
+ * than an earlier evening entry on the same stage/day_doy, which would
+ * have sorted BEFORE the evening entry instead of after it.
+ *
+ * We now have the visibility the old comment asked for: the real Lost
+ * Lands 2026 set-time grid is exactly this shape (Wompy Woods Friday
+ * night runs 14:30 through a 00:15/01:05/02:00 post-midnight tail).
+ * The fix lives one layer down, at parse time: fest-almanac gives every
+ * schedule entry an optional `night` (the festival night it is billed
+ * under) alongside its plain calendar `day`, and fp_pack.c's
+ * fp_parse_set_daytime() folds the two into a single festival-night
+ * day_doy with start_min measured from THAT night's midnight — so the
+ * post-midnight tail arrives here already at start_min >= 1440, in the
+ * same number space as that night's evening sets. See fp_pack.h's
+ * fp_set_t doc comment.
+ *
+ * Given that encoding, this function's plain `o->start_min <=
+ * s->start_min` / `o->start_min < best` comparisons need NO change:
+ * 00:15 (folded to 1455) correctly compares greater than 23:00 (1380)
+ * on the same day_doy. The gap only remains live for a pack that files
+ * a post-midnight set under the NEXT calendar day's day_doy at a small
+ * raw start_min — the option S05's amendment names and rejects
+ * precisely because it composes with neither this comparison nor
+ * ff_wall.h's wall-clock resolution, and which fp_parse_set_daytime's
+ * fallback fold (start < 06:00 -> previous day's night) also avoids for
+ * a pack that predates `night`. See test_sched.c's
+ * S07_real_lost_lands_* cases and test_festpack.c's
+ * S05_AC1_lost_lands_after_midnight_* / S05_AC1_night_fold_* cases for
+ * the regression coverage. */
 static int16_t sched_next_stage_start(fp_pack_t const *p, fp_set_t const *s)
 {
     int16_t best = -1;
@@ -95,10 +112,12 @@ static void sched_derive_end(fp_pack_t const *p, fp_set_t const *s, int16_t *out
     if (next_start >= 0) {
         /* Published set-time-grid semantics: your set ends when the
          * next one on your stage begins. next_start is another set's
-         * raw start_min (always 0..1439 per fp_pack.h), same space as
-         * `s->start_min`, so no midnight-crossing fold is needed here —
-         * that fold only applies to a single set's OWN end_min < its
-         * OWN start_min. */
+         * start_min, already measured from the SAME festival night's
+         * midnight as `s->start_min` (fp_pack.c folds an after-midnight
+         * set to >= 1440 at parse time — see fp_pack.h), so no
+         * midnight-crossing fold is needed here; that fold only applies
+         * to a single set's OWN end_min < its OWN start_min, which is
+         * the other, older way a pack can spell "ends after midnight". */
         *out_end = next_start;
         *out_pct_valid = true;
         return;
