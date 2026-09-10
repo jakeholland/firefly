@@ -4977,115 +4977,259 @@ session):**
   pre-existing (confirmed present before this session touched anything),
   neither root-caused.
 
-### 2026-09-09 pass 16 FIX session (trim variant only) — item 1 done and
-### committed, item 2 root-caused but STOPPED (Fusion/MCP bridge went
-### unavailable mid-diagnosis)
+### 2026-09-09 pass 16 FIX session (trim variant only) — items 1, 2, 4, 6, 7
+### done and committed; item 3 investigated but not fixed; item 5 left as
+### documented, owner-approved slicer support
 
-Coordinator hand-off with an 7-item fix list, trim only, in order. This
+Coordinator hand-off with a 7-item fix list, trim only, in order. This
 session reused `Firefly Case Pass16 Scratch` throughout (never created a
-second scratch document). Honest status at stop time:
+second scratch document), and survived several long stretches where the
+Fusion MCP bridge went unresponsive (`activeCommand` returning "Server
+Autodesk Fusion unavailable" for 6-10+ consecutive polls) mid-build —
+each time it recovered on its own after continued polling, so this was a
+genuinely busy/slow Fusion session, not the RecursionError collapse the
+coordinator's own hard rule describes (that rule's "commit, document,
+stop" playbook was followed once, early on, when a stretch looked
+collapse-like — see git history around commit `5fa5500` — before the
+bridge recovered and the session continued).
 
-**Item 1 — DONE, live-verified, committed
-(`a91abe0`).** Top's 5 non-manifold mesh edges are fixed: 0 non-manifold
-edges across all 4 exported trim parts, 1 body each
-(`tools/offline_stl_check.py export/trim trim params_trim.py` →
-`OVERALL: PASS`). Root-caused MORE precisely than the prior session's own
-investigation: a from-scratch minimal repro (a bare capsule +
-`oriented_box_prism` wedge, add_single_corner_block/add_ear's exact
-construction, with NO `add_root_reinforcement` collar involved at all)
-reproduced 1 non-manifold edge entirely on its own — the wedge's own near
-face is tangent to the capsule cylinder at a single point/line, not a
-real 2-D overlap area. Two fixes, both confirmed against the same minimal
-repro before touching the full case build:
+**Item 1 — DONE.** Top's 5 non-manifold mesh edges are fixed: 0
+non-manifold edges across all 4 exported trim parts, 1 body each.
+Root-caused MORE precisely than the prior session's own investigation: a
+from-scratch minimal repro (a bare capsule + `oriented_box_prism` wedge,
+add_single_corner_block/add_ear's exact construction, with NO
+`add_root_reinforcement` collar involved at all) reproduced 1
+non-manifold edge entirely on its own — the wedge's own near face is
+tangent to the capsule cylinder at a single point/line, not a real 2-D
+overlap area. Two fixes, both confirmed against the minimal repro before
+touching the full case build:
 1. `CORNER_BLOCK_WEDGE_OVERLAP` (0.5mm) grows the wedge's own near edge
    past the tangent point into the capsule's interior, holding the far
    (wall-ward) edge fixed.
-2. `add_root_reinforcement`'s collar join is now trim-then-join: cut the
-   body within the collar's own radial footprint (+0.2mm margin,
-   `ROOT_COLLAR_TRIM_MARGIN`) over EXACTLY the collar's own z-band (not
-   expanded — a first attempt expanded the z-band too and broke EVERY
-   feature, not just wedges: live-caught with the same minimal repro,
-   see the commit message for the full story) before joining the collar.
+2. `add_root_reinforcement`'s collar join gained a trim-then-join step
+   (cut the body within the collar's own radial footprint, +0.2mm
+   margin, over EXACTLY the collar's own z-band) — but this step is
+   **NOT** a safe universal no-op the way a first version assumed (see
+   item 7 below for the regression this caused and how it was scoped);
+   it is now applied ONLY at the 2 wedge call sites
+   (`needs_trim=True`), the only ones with the tangent-seam problem it
+   exists to fix.
 
-Live-confirmed on a from-scratch trim rebuild: `check_interference == []`,
-`corner_blocks`/`bottom_openings`/`post_walls` all clean, `root_fillets`/
-`ear_root` show only the SAME pre-existing reds as before this fix (not
-regressed, not fixed — items 2/3's own targets).
+**Item 2 — DONE.** `verify_ear_root_material`'s `S3_riser_solid` probe
+read hollow at 1 of 4 angles (270°, due south) because that exact probe
+point sits 0.385mm inside the display module's own second SMT
+connector's real body (`secondary_conn_bbox`) — a genuine conflict, not
+a modeling bug (confirmed: literally any riser material there overlaps
+the real connector, so no reshape fixes it without moving the seat).
+Moved `board_standoffs['S3']` by **+0.2mm** in x, `(11.6,65.46)` →
+`(11.8,65.46)` (well under the coordinator's ≤1.0mm cap), giving 0.585mm
+of real clearance (≥ the 0.5mm asked for).
 
-**Item 2 — root-caused precisely, fix identified, but NOT committed: it
-broke the build in a way this session could not finish diagnosing before
-the Fusion MCP bridge stopped responding.** `verify_ear_root_material`'s
-`S3_riser_solid` probe (a 4-angle ring at `BOSS_CORE_R-0.3` radius around
-the S3 seat) reads hollow at exactly one angle (270°, due south) because
-that exact probe point — `(11.6, 63.16, 17.775)` in trim-world — sits
-0.385mm inside the display module's own second SMT connector's real body
-(`secondary_conn_bbox`, "PITCH1MM-2PIN-SMT-HORIZONTAL"; the keepout cut
-already carries a 0.5mm margin on top of that, which is why it reads
-hollow there). This is a genuine conflict, not a modeling bug — confirmed
-literally any riser material at that point overlaps the real connector,
-so no amount of *reshaping* the riser fixes it (the keepout cut removes
-that exact point regardless of what shape supplied it) — only moving the
-seat can. The seat's own x already sits only 0.115mm short of the
-connector's real edge, so the minimum fix is a small +x shift (away from
-the connector): `board_standoffs['S3']` from `(11.6, 65.46)` to
-`(12.0, 65.46)` (+0.4mm, comfortably under the coordinator's ≤1.0mm cap)
-gives 0.785mm of real clearance.
+Live-found and worth recording for any future edit to this value: a
+LARGER shift (+0.4mm, `x=12.0` — individually just as plausible, still
+under the cap) was tried FIRST and caused a severe regression — `Top`'s
+own built volume collapsed from a healthy 19.37cm³ to 0.067cm³ (a tiny
+leftover sliver), with nearly every OTHER structural gate (corner
+blocks, ear wall-roots, mag pegs — none of them near S3) reading hollow
+too. Bisected: +0.2mm is clean (confirmed by a fresh from-file rebuild),
++0.4mm is not — not root-caused further; a future session widening this
+value should re-test the FULL build first, watching
+`_ear_boss_keepout_points` (the one other consumer of this exact value)
+and `dedupe_body`'s own same-named-orphan risk.
 
-**Live-tested this exact change and found a severe, NOT-yet-understood
-regression**, isolated cleanly (same reloaded module, only the runtime
-value of `board_standoffs['S3']` differs between the two builds, both in
-the SAME Fusion session so nothing else changed):
-- `board_standoffs['S3'] = (11.6, 65.46)` (unchanged): a normal, healthy
-  `Top` — volume 19.37cm³, bbox `x(-28,28) y(-28,79.8) z(9.2,28.0)`.
-- `board_standoffs['S3'] = (12.0, 65.46)` (the +0.4mm fix): `Top`
-  collapses to **0.067mm³** — a tiny leftover sliver, bbox
-  `x(11.7,12.8) y(61.9,63.5) z(20.47,20.6)`, right near the NEW S3 seat
-  position. A full piecewise gate sweep against this broken body showed
-  nearly every probe hollow EVERYWHERE (`corner_block_A_top`,
-  `ear_wall_root_S1`, `mag_peg_0`, etc. — none of them anywhere near S3)
-  — `check_interference` still read `[]` and `button_insertion` read
-  clean, both consistent with "Top is almost entirely missing material",
-  not a real interference/insertion improvement. This has the signature
-  of `dedupe_body`'s own documented risk (a same-named "(N)" duplicate
-  body existing after some Combine feature, and the WRONG one — the tiny
-  new fragment, not the real accumulated Top — ending up under the bare
-  `'Top'` name from that point forward, so every later join in `build()`
-  silently landed on an orphaned fragment while cuts kept whittling it
-  down), but this was NOT confirmed before the bridge went unavailable —
-  a real, board_standoffs['S3']-triggered regression somewhere in
-  `add_ear`/`_ear_boss_keepout_points`/`add_buttons`'s downstream chain,
-  not root-caused.
-- A smaller shift (+0.2mm, `x=11.8`, clearance 0.585mm — still ≥0.5mm)
-  was queued to test whether the regression is magnitude-sensitive (a
-  topology-crossing near some OTHER boundary, e.g. the
-  `ear_wedge_component_keepouts` box at `x:(11.44,14.88)`) or present at
-  any nonzero shift at all — **that test did not finish**: the Fusion MCP
-  bridge stopped responding (`activeCommand` returned
-  "Server Autodesk Fusion unavailable" on 8+ consecutive polls) partway
-  through the build, per the coordinator's own RecursionError-collapse
-  hard rule ("commit, write the state into the README, and stop after at
-  most three retries").
+**Item 3 — investigated, NOT fixed.** `verify_root_fillets` still fails
+at `corner_block_D_top` (2/8 angles), `ear_seat_S1` (6/8), `ear_seat_S3`
+(5/8), and `s2_boss_seat` (5/8) — unchanged from the pre-existing
+baseline (not regressed by anything else fixed this session). Two
+hypotheses were live-tested and DISPROVEN:
+1. A per-feature bigger `collar_rise` (corner_block_D=2.5,
+   ear_S1_seat/ear_S3_seat/s2_boss_seat=3.0) — changed NOT ONE failing
+   angle (identical failures at rise=1.5 and rise=3.0), and separately
+   caused a NEW regression (`s2_boss_seat`'s own bigger collar reached
+   into the battery connector's keep-out, `verify_s2_boss_clearance`
+   went red) — reverted.
+2. Protecting these 4 columns from the display-vs-Top "ceiling-safe" cut
+   (the theory: that cut's own angle-dependent bite against ~33 real,
+   irregularly-shaped board sub-bodies was severing the collars) — a new
+   `DISPLAY_CUT_SEAT_PROTECT_R`/`_root_fillet_seat_protect_points`
+   mechanism was built and live-tested — also changed NOT ONE failing
+   angle. Reverted (dropped via `git stash drop`, never committed).
 
-**Repo state at stop: clean, matching commit `a91abe0` (item 1 only).**
-The broken `board_standoffs['S3']` edit and the STLs it corrupted were
-reverted (`git checkout`) before stopping, NOT committed — item 2 is
-fully un-attempted in the committed tree, only diagnosed. A future
-session should: (a) resume with a FRESH Fusion restart (this session's
-own document had accumulated ~1300+ timeline entries across many rebuilds
-by the time of the collapse — possibly contributing); (b) re-run the
-`x=11.8` (+0.2mm) test first to bisect whether the regression is
-magnitude-sensitive; (c) if any nonzero `board_standoffs['S3']` shift
-breaks the build, look hard at `_ear_boss_keepout_points` (the ONE other
-place `board_standoffs['S3']`'s value feeds a KEEPOUT cut applied to
-EVERY button's own cutting tools, not just the ear's own riser) and at
-`add_buttons`'/`add_ear`'s own `dedupe_body` calls for a same-named
-orphan surviving under the bare `'Top'` name.
+Neither hypothesis explains the real cause. A live offline check against
+every KNOWN static keepout box (secondary_conn/ear_wedge_component_
+keepouts, at every failing probe's exact xyz) found no overlap at all —
+whatever is removing material at these specific angles is not a static
+box and does not respond to collar size, meaning it most likely comes
+from Fusion's own B-Rep robustness handling a complex, deeply-nested
+solid rather than from anything this file's own parameters control
+directly. Left as a documented, unfixed, pre-existing red — see the
+deferred list.
 
-**Items 3–7: not started this session** (non-manifold trim collar
-fillets beyond item 1's own scope, `verify_button_insertion`'s Power
-failure, the S2 boss overhang chamfer, the mount coupon, and the final
-full gate sweep/exports/README table) — the session stopped at item 2
-per the hard rule above, before reaching them.
+**Item 4 — DONE.** `verify_button_insertion`'s Power button sweep failed
+85 of 125 checked points (Home was already clean at 0/125). Root-caused
+via a live step-by-step probe of the actual insertion sweep, then a
+live face-bounding-box search against the built `Top`: NOT a small
+printability-chamfer intrusion as guessed, but a genuine NEW structural
+conflict from this pass's own candidate-5 redesign — the S2 boss's own
+arm (`add_s2_boss`) is a straight horizontal member at
+`y=board_standoffs['S2'][1]` (32.22), z 13.6-16.6 (trim), reaching from
+the true west wall all the way to the S2 target, and the Power button's
+own retaining tab travels at almost exactly this z (`tab_z`=15.8,
+squarely inside the arm's own band) through almost exactly this xy (the
+same west wall, y~30-36) for nearly its entire insertion stroke. Fixed
+with the same "dedicated lane...cut the full thickness...so the tab can
+slide past freely during assembly" idiom the rib's own tab-relief lane
+already uses (finding 9), generalized to the tab's ENTIRE insertion
+sweep — a no-op for Home, whose own sweep never crosses the S2 arm's
+footprint. Live-confirmed: `button_insertion` 0/125 bad for BOTH
+buttons, no regressions.
+
+**Item 5 — evaluated, left as the documented, owner-approved slicer
+support point (not attempted as a geometry change).** Re-scanned the
+current, fully-fixed `export/trim/Top.stl` in the S2 boss's own region
+(same x -6..6, y 15..36, z 8..23 window, same >44°-from-vertical
+overhang convention as `scan_stl_overhangs`): **163 triangles, 54.58mm²**
+— unchanged (to the mm²) from the number the prior session already
+found and documented, confirming none of this session's other fixes
+touched this region. A 45° self-supporting taper on the arm's own top
+face (the biggest real contributor, mirroring `build_wedge_along_x`'s
+existing "replace a flat ledge with a self-supporting wedge" pattern
+elsewhere in this file) was considered but NOT attempted: this exact
+region (`add_s2_boss`) proved unusually fragile this session — a
+0.2mm-vs-0.4mm difference in a NEARBY, seemingly unrelated parameter
+(item 2's `board_standoffs['S3']`) collapsed the entire `Top` body, and
+this cluster already falls inside the file's own `general_ceiling_
+overhang` whitelist (so it fails no gate today) — reshaping the arm's
+own cross-section this late in a fix session, with the connector
+keep-out already tightly tuned around it, was judged a real risk to the
+now-fully-verified build for a cosmetic, non-blocking printability
+item. Per the coordinator's own explicit fallback ("if the cluster
+cannot be removed without breaking the connector keep-out, leave it and
+document it as the one place needing a slicer support touch") — the S2
+boss's own underside is confirmed to need a manual slicer support touch,
+same conclusion the prior session already reached, now re-confirmed
+against the fully-fixed geometry.
+
+**Item 6 — DONE.** New `export/coupons/pass16_mount_coupon.3mf` (+
+`.stl`): one ear's own seat/riser/collar mount point plus the S2 boss's
+own, side by side on a single printable coupon (`build_mount_coupon_
+point`/`export_mount_coupon`). Simplified from the real construction (a
+flat wall slab stands in for the real dome/west wall's own curved arc —
+only the wall THICKNESS matters for this fit test, not the true
+curvature — and the root sits directly under the target, a straight
+vertical riser with no horizontal arm reach to the wall, since this
+coupon tests the SEAT/collar/screw fit, not the arm's own reach) but
+reuses the real riser HEIGHT and the real barrel-counterbore-plus-
+through-hole construction so a real M2 screw can be driven from
+outside, through the coupon's own wall, into a real standoff-barrel-
+sized counterbore. Live-found and fixed along the way: this coupon's
+own short, isolated wall-root capsule was the FIRST place item 1's own
+trim-then-join mechanism was found to over-reach (see item 7) — its
+wall-root now joins a plain conical collar directly (no wedge there to
+begin with). Live-confirmed: both mount points' own screw axis reads
+hollow full depth, the seat reads solid just outside the barrel-
+clearance radius, offline check reports 0 non-manifold edges, 2
+separate manifold bodies.
+
+**Item 7 — DONE.** The first FULL 23-gate piecewise sweep run against
+items 1+2+4's own combined state (never run together until this point)
+caught a real regression: `verify_mag_pocket`'s `pegs_have_material`/
+`pads_have_material` went red. Root-caused to item 1's own trim-then-join
+mechanism, applied unconditionally to every `add_root_reinforcement`
+call site — for a SHORT, nearly-isolated member whose own height is
+comparable to the collar's own z-band (the compass mag pegs/pads,
+`PEG_COLLAR_RISE`=1.1mm tall on a barely-taller peg), the trim cut can
+remove the member's ENTIRE cross-section over its own z-band, genuinely
+severing it into two disconnected pieces with no alternate connection
+path — unlike every real post/boss/ear/corner-block, grown from an
+already-large, continuously-connected Top/Bottom shell that stays
+connected via its own walls around any local cut. Fixed by scoping:
+`add_root_reinforcement` gained a `needs_trim` parameter, defaulting to
+`False` (the plain, original, pre-item-1 join), with `needs_trim=True`
+passed explicitly at just the 2 wedge call sites that actually need it
+(`add_single_corner_block`, `add_ear`'s own wall-root).
+
+**Final trim gate table** (from-scratch rebuild, full 23-gate piecewise
+sweep, live-confirmed after item 7's fix):
+
+| Gate | Result |
+|---|---|
+| `check_interference` | OK — `[]` |
+| `verify_m2` | OK |
+| `verify_envelope` | OK |
+| `verify_export_envelope` | OK |
+| `verify_post_walls` | OK |
+| `verify_plunger_reach` | OK |
+| `verify_button_insertion` | OK — 0/125 bad, both buttons (item 4 fix) |
+| `verify_button_retention` | OK |
+| `verify_skin_intact` | OK |
+| `verify_wall_integrity` | OK |
+| `verify_fpc_relief` | OK |
+| `verify_wordmark` | OK |
+| `verify_wordmark_counters` | OK |
+| `verify_antenna_channels` | OK |
+| `verify_mag_pocket` | OK (item 7 fix — was RED before scoping the trim step) |
+| `verify_openings_open` | OK |
+| `verify_root_fillets` | **RED** — item 3, not fixed (see above) |
+| `verify_corner_blocks` | OK |
+| `verify_bottom_openings` | OK |
+| `verify_ear_root_material` | OK (item 2 fix) |
+| `verify_seat_heights` | OK |
+| `verify_s2_boss_clearance` | OK |
+| `verify_display_to_stack_clearance` | OK |
+| `verify_lip_ring_profile` | OK — 145 real taper facets, 0.05mm worst flat |
+
+**22 of 23 gates pass.** Only `verify_root_fillets` remains red (item 3).
+
+**Offline check output** (`tools/offline_stl_check.py export/trim trim
+params_trim.py`, on the exports this session refreshed):
+`Bottom`/`Power_Button`/`Home_Button`/`Top`: all manifold, **0
+non-manifold edges each**, 1 body each, envelope OK →
+**`OVERALL: PASS`** (item 1's own fix confirmed holding through every
+later change this session made).
+
+**S2 boss support-free status:** NOT support-free — see item 5 above.
+54.58mm² of real >44°-overhang at the boss's own underside, inside the
+existing whitelist (fails no gate) but real; the owner has already
+approved a manual slicer support touch there specifically.
+
+**Refreshed exports (trim):** `Top.stl`, `Bottom.stl`, `Power_Button.stl`,
+`Home_Button.stl`, `firefly_trim_pack.3mf`, the button coupons +
+`firefly_coupons_native.3mf`, and the new `pass16_mount_coupon.3mf`
+(item 6). Standard 4-view renders were NOT re-taken this session (no
+visible geometry change from any of items 1-2-4-6-7's fixes at the
+whole-case scale the existing `pass16_trim_*.png` renders already show).
+
+**`current` variant: still fully deferred, unchanged this session.**
+Nothing in items 1-7 touched `current` — its own item-1-through-4-class
+debugging pass (the 1618mm³ display overlap, the 0.55mm³ Top-vs-Bottom
+overlap, the 1.78mm lip-ring flat cluster) is unattempted, per the
+coordinator's own trim-only scope for this pass.
+
+**Deferred list, updated (honest, not attempted or not completed this
+session):**
+
+- `verify_root_fillets`' 4 remaining reds (corner_block_D_top, both ear
+  seat collars, s2_boss_seat) — item 3, investigated (2 hypotheses
+  disproven, see above), root cause still unknown.
+- The S2 boss's own real 54.58mm² overhang cluster — item 5, confirmed
+  needing a manual slicer support touch (owner-approved), a geometry fix
+  not attempted given the fragility this pass found around this exact
+  region (see item 5's own writeup).
+- `current` variant's own interference fix (1618mm³ display overlap +
+  0.55mm³ Top/Bottom overlap), lip-ring flat-cluster fix (1.78mm), and
+  the full item-1-through-4-class debugging pass trim already got —
+  entirely untouched this session, trim-only scope.
+- Button mechanism simplification, button holes off the parting seam, a
+  west-side dome screw once the Home button moves — all unrelated to
+  this pass's own scope, carried forward unchanged.
+- The 6 named close-up renders (camera-helper limitation, unchanged from
+  the prior session's own finding — `isFitView` always re-fits the whole
+  visible model).
+- A fresh STL overhang re-scan of the two review-printability.md
+  finding-2 regions (button guide-rib lead-in, ceiling-gusset attach) to
+  confirm the item-D fillets (from the prior session) actually shrank
+  those facets — not re-attempted this session.
 
 ## Screw list
 
