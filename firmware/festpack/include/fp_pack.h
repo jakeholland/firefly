@@ -88,9 +88,38 @@ typedef struct {
 typedef struct {
     char artist[32];
     int8_t stage_idx;    /* index into fp_pack_t.stages, -1 unknown */
-    uint16_t day_doy;    /* day-of-year, 1..366 */
-    int16_t start_min;   /* minutes from local midnight, -1 null */
-    int16_t end_min;     /* minutes from local midnight, -1 null */
+    uint16_t day_doy;    /* day-of-year (1..366) of the FESTIVAL NIGHT this
+                             set is billed under — the pack's `night` field
+                             when present, else its `day` folded by the rule
+                             in fp_pack.c's fp_parse_set_daytime(). For an
+                             after-midnight set this is the night BEFORE the
+                             calendar date the set actually starts on: Sippy
+                             playing 00:15 on Sat 2026-09-19 has Friday
+                             2026-09-18's day_doy. See start_min. */
+    int16_t start_min;   /* minutes from local midnight of day_doy's calendar
+                             date, -1 null. 0..1439 for a set that starts
+                             before midnight; >= 1440 for one that starts
+                             after it (00:15 the following morning is 1455),
+                             because both are measured from the SAME festival
+                             night's midnight. That is deliberately the same
+                             minute space as ff_sched.h's festival-day
+                             now_min contract ([360, 1800), rolling at 06:00)
+                             and ff_wall.h's wall-clock resolution, which
+                             resolves a real 01:00 reading to the PREVIOUS
+                             day_doy at now_min = 1500 — so ff_sched.c can
+                             compare start_min against now_min, and against
+                             other sets' start_min, as plain integers. The
+                             pack itself never encodes an hour past 23; the
+                             fold happens at parse time. 2026-09-09
+                             amendment, see docs/specs/S05-festpack.md. */
+    int16_t end_min;     /* same space as start_min: -1 null (unknown — the
+                             common case; ff_sched.c derives an effective end
+                             from the next set on the stage), else 0..1439,
+                             or >= 1440 when the set's end falls after that
+                             night's midnight (the pack marks this with
+                             `end_day`, or with an `end` numerically below its
+                             own `start` — see ff_sched.c's
+                             sched_effective_end). */
     char note[24];
     bool starred;
 } fp_set_t;

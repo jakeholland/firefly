@@ -14,13 +14,22 @@
  *         tie-break case (equal start_min -> lower set index).
  *   AC4 — alarm: fires once at T-15 crossing, idempotent, ordered
  *         (including a tie-break case), un-star/re-star re-arms.
- *   AC5 — all-null-times pack: now/next empty/false, TBD flagged. The
- *         last AC5 case parses the real vendored Lost Lands 2026
- *         fixture via fp_parse (firmware/festpack/tests/fixtures/) —
- *         see the CMakeLists.txt S07 section for why that lives in this
- *         same executable rather than a separate test_sched_integration.
+ *   AC5 — all-null-times pack: now/next empty/false, TBD flagged
+ *         (hand-built fixtures only — see the REAL PACK section below
+ *         for why the real Lost Lands fixture moved off this path).
  *   AC6 (golden lineup_live.json/lineup_tbd.json screenshots) is UI (slice b)
  *         — out of scope for this engine-only PR.
+ *
+ *   REAL PACK — parses the real vendored Lost Lands 2026 fixture via
+ *         fp_parse (firmware/festpack/tests/fixtures/) — see the
+ *         CMakeLists.txt S07 section for why that lives in this same
+ *         executable rather than a separate test_sched_integration.
+ *         2026-09-09: Lost Lands published real set times (S05-festpack.md
+ *         dated amendment); this used to be the AC5 all-null-TBD
+ *         integration case (that hand-built-fixture coverage lives on
+ *         above, it just no longer needs the real pack) and is now a
+ *         fixed-fake-clock now/next + after-midnight "tonight" grouping
+ *         check against real data.
  *
  * Fixtures for AC1-4 are in-code fp_pack_t literals built with mk_set()
  * below (per AGENTS.md: don't parse JSON in unit tests except the one
@@ -1075,48 +1084,234 @@ static void test_day_sets_lists_all_including_null_times_in_pack_order(void)
     TEST_ASSERT_EQUAL_STRING("TBD Two", out[2]->artist);
 }
 
-/* AC5, integration case: the real vendored Lost Lands 2026 fixture is
- * (as of this writing, per docs/specs/S07-now-face.md's "current Lost
- * Lands state") entirely null-times. Parse it for real via fp_parse and
- * assert the all-null-TBD path against actual pack data, not a
- * hand-built fixture. */
-static void S07_AC5_real_lost_lands_fixture_is_all_null_tbd(void)
+/* ======================================================================
+ * REAL PACK — real Lost Lands 2026 fixture, real set times (2026-09-09).
+ *
+ * Replaces the old S07_AC5_real_lost_lands_fixture_is_all_null_tbd: that
+ * test's own doc comment predicted this ("if this now fails, the
+ * fixture has been updated with real set times..."). Lost Lands
+ * published its 2026 set-time grid on 2026-09-09 (see
+ * docs/specs/S05-festpack.md's dated amendment); the fixture now
+ * carries all 222 real sets, so the all-null/TBD path is no longer
+ * this fixture's story — that path is still covered by the
+ * hand-built-fixture S07_AC5_* cases above, which don't need real data.
+ *
+ * The pack publishes START times only (`end` is null on 221 of 222), so
+ * every window below is DERIVED by sched_derive_end from the next set on
+ * the stage — the Bass-Canyon-shaped path ff_sched.h's "Timed means a
+ * known start_min" section describes. The single exception, Excision's
+ * Friday 22:10 set, has a real `end` of 00:10 the next morning, dated
+ * unambiguously by the pack's `end_day`.
+ *
+ * Every case below uses a FIXED FAKE CLOCK, not "whatever now() is":
+ *   - Sat 2026-09-19 21:00 local — squarely inside the festival,
+ *     several stages concurrently live, half-open boundary changeovers
+ *     included (Forest/Subsidia both flip stage at exactly 21:00).
+ *   - Fri 2026-09-18 23:30 local — the last half hour before actual
+ *     midnight, Excision mid-set.
+ *   - Sat 2026-09-19 00:30 local — half an hour PAST actual midnight but
+ *     still FRIDAY night's festival day per ff_wall.h's contract
+ *     (day_doy = Friday's, now_min = 1470 = 30 + 1440). The pair of
+ *     23:30/00:30 cases is the concrete proof that the night's
+ *     pre-midnight and after-midnight sets share one day_doy and order
+ *     correctly against each other.
+ * ==================================================================== */
+
+static void load_real_lost_lands_pack(fp_pack_t *out)
 {
     char buf[256u * 1024u];
     char path[512];
-    snprintf(path, sizeof(path), "%slost-lands-2026.festpack.json", FP_FIXTURE_DIR);
+    snprintf(path, sizeof(path), "%s%s", FP_FIXTURE_DIR, "lost-lands-2026.festpack.json");
     FILE *f = fopen(path, "rb");
     TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
     size_t len = fread(buf, 1, sizeof(buf), f);
     fclose(f);
     TEST_ASSERT_TRUE(len > 0);
 
-    fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    fp_result_t r = fp_parse(buf, len, out, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
-    TEST_ASSERT_TRUE_MESSAGE(pack.n_sets > 0, "fixture unexpectedly has no sets");
+    TEST_ASSERT_EQUAL_UINT16(222, out->n_sets);
+}
 
-    /* festival.start ("2026-09-18") is a day every set's "day" can be
-     * compared against; use the festival's own start_doy so this test
-     * doesn't hardcode a day-of-year computation. */
-    uint16_t day = pack.start_doy;
+static bool row_has_artist(ff_now_row_t const rows[], uint8_t n, char const *artist)
+{
+    for (uint8_t i = 0; i < n; i++) {
+        if (strcmp(rows[i].set->artist, artist) == 0) return true;
+    }
+    return false;
+}
 
-    TEST_ASSERT_TRUE_MESSAGE(ff_sched_day_tbd(&pack, day),
-                              "expected the real Lost Lands fixture to still be all-null (SET TIMES TBD) — "
-                              "if this now fails, the fixture has been updated with real set times and "
-                              "S07-now-face.md's AC5/AC6 goldens (lineup_tbd.json) likely need attention too");
+static ff_now_row_t const *row_for_artist(ff_now_row_t const rows[], uint8_t n, char const *artist)
+{
+    for (uint8_t i = 0; i < n; i++) {
+        if (strcmp(rows[i].set->artist, artist) == 0) return &rows[i];
+    }
+    return NULL;
+}
 
-    ff_now_row_t rows[8];
-    TEST_ASSERT_EQUAL_UINT8(0, ff_sched_now_playing(&pack, day, 720, rows, 8));
+static void S07_real_lost_lands_now_playing_sat_2100(void)
+{
+    fp_pack_t pack;
+    load_real_lost_lands_pack(&pack);
 
-    ff_next_t next;
-    TEST_ASSERT_FALSE(ff_sched_next_starred(&pack, day, 720, &next));
+    uint16_t const saturday = (uint16_t)(pack.start_doy + 1); /* festival.start = Fri 2026-09-18 */
+    int16_t const now_min = 21 * 60; /* 21:00 local, well inside the festival, no clock unknowns */
 
-    /* But the day lineup helper still lists them (TBD sets are shown,
-     * just excluded from now/next/alarms). */
+    ff_now_row_t rows[FP_MAX_STAGES];
+    uint8_t n = ff_sched_now_playing(&pack, saturday, now_min, rows, FP_MAX_STAGES);
+
+    /* Exactly the 5 stages with Saturday daytime/evening programming are
+     * live at 21:00; Raptor Alley (opens at actual midnight, i.e.
+     * day_doy=Saturday but start_min >= 1440) and The Grove (Wed/Thu
+     * pre-party only) correctly have nothing yet. */
+    TEST_ASSERT_EQUAL_UINT8(5, n);
+    TEST_ASSERT_TRUE(row_has_artist(rows, n, "Kai Wachi"));     /* Prehistoric, from 20:50 */
+    TEST_ASSERT_TRUE(row_has_artist(rows, n, "Zingara"));       /* Wompy Woods, from 20:30 */
+    TEST_ASSERT_TRUE(row_has_artist(rows, n, "Whethan"));       /* The Crater, from 20:45 */
+    /* Forest Stage and Subsidia Stage both changeover AT exactly 21:00
+     * (half-open "now" window — see ff_sched.h): the starting act shows,
+     * the ending one does not. */
+    TEST_ASSERT_TRUE(row_has_artist(rows, n, "Bou"));           /* Forest, starts 21:00 */
+    TEST_ASSERT_FALSE(row_has_artist(rows, n, "Hedex"));        /* Forest, ended 21:00 */
+    TEST_ASSERT_TRUE(row_has_artist(rows, n, "Tokyo Machine")); /* Subsidia, starts 21:00 */
+    TEST_ASSERT_FALSE(row_has_artist(rows, n, "Truth"));        /* Subsidia, ended 21:00 */
+}
+
+/* Fri 2026-09-18 23:30 local — the LAST pre-midnight tick of Friday
+ * night. day_doy = Friday, now_min = 1410, no fold involved yet. */
+static void S07_real_lost_lands_now_playing_fri_2330_before_midnight(void)
+{
+    fp_pack_t pack;
+    load_real_lost_lands_pack(&pack);
+
+    uint16_t const friday = pack.start_doy; /* 2026-09-18 */
+    int16_t const now_min = 23 * 60 + 30;   /* 1410 */
+
+    ff_now_row_t rows[FP_MAX_STAGES];
+    uint8_t n = ff_sched_now_playing(&pack, friday, now_min, rows, FP_MAX_STAGES);
+
+    /* Five stages live; Raptor Alley's Friday-night programming does not
+     * start until 00:00 (folded start_min 1440), The Grove is Wed/Thu
+     * only. */
+    TEST_ASSERT_EQUAL_UINT8(5, n);
+    TEST_ASSERT_TRUE(row_has_artist(rows, n, "The Resistance")); /* Wompy Woods, from 22:45 */
+    TEST_ASSERT_TRUE(row_has_artist(rows, n, "Shlump"));         /* Forest, from 23:00 */
+    TEST_ASSERT_TRUE(row_has_artist(rows, n, "Izadi"));          /* Subsidia, from 23:00 */
+    TEST_ASSERT_TRUE(row_has_artist(rows, n, "The Widdler"));    /* The Crater, from 22:55 */
+    TEST_ASSERT_FALSE(row_has_artist(rows, n, "Sigma"));         /* Raptor Alley, not until 00:00 */
+
+    /* Excision is mid-set, and its end is the one REAL end in the pack:
+     * 00:10 the next morning, dated by `end_day`. mins_left must be the
+     * honest 40, not a midnight-wrapped negative or a next-set guess. */
+    ff_now_row_t const *excision = row_for_artist(rows, n, "Excision");
+    TEST_ASSERT_NOT_NULL(excision);
+    TEST_ASSERT_EQUAL_INT16(22 * 60 + 10, excision->set->start_min);
+    TEST_ASSERT_EQUAL_INT16(24 * 60 + 10, excision->set->end_min); /* 1450 */
+    TEST_ASSERT_EQUAL_INT16(40, excision->mins_left);
+    TEST_ASSERT_TRUE(excision->pct_valid);
+}
+
+/* Sat 2026-09-19 00:30 local — half an hour after actual midnight. Per
+ * ff_wall.h's contract this resolves to FRIDAY's day_doy at
+ * now_min = 1470 (30 + 1440), NOT Saturday's day_doy at now_min = 30.
+ * This is the after-midnight regression: the sets that took over at
+ * midnight are Friday-night sets, they sort AFTER the 23:30 ones, and
+ * Excision — whose 00:10 end is now in the past — is gone. */
+static void S07_real_lost_lands_now_playing_sat_0030_after_midnight(void)
+{
+    fp_pack_t pack;
+    load_real_lost_lands_pack(&pack);
+
+    uint16_t const friday = pack.start_doy; /* 2026-09-18 */
+    int16_t const now_min = 30 + 1440;      /* 1470 */
+
+    ff_now_row_t rows[FP_MAX_STAGES];
+    uint8_t n = ff_sched_now_playing(&pack, friday, now_min, rows, FP_MAX_STAGES);
+
+    TEST_ASSERT_EQUAL_UINT8(5, n);
+    TEST_ASSERT_TRUE(row_has_artist(rows, n, "Sippy"));                 /* Wompy Woods, from 00:15 */
+    TEST_ASSERT_TRUE(row_has_artist(rows, n, "Richard Finger"));        /* Forest, from 00:00 */
+    TEST_ASSERT_TRUE(row_has_artist(rows, n, "Zero"));                  /* Subsidia, from 00:00 */
+    TEST_ASSERT_TRUE(row_has_artist(rows, n, "Secret Takeover"));       /* The Crater, from 00:00 */
+    TEST_ASSERT_TRUE(row_has_artist(rows, n, "FuntCase b2b Doctor P")); /* Raptor Alley, from 00:00 */
+
+    /* Excision's real, end_day-dated 00:10 end has passed — it must NOT
+     * still read as live. Under the rejected "next calendar day, small
+     * minutes" encoding its end would have been minute 10 of a day this
+     * query never asks about, and it would have vanished an hour early
+     * (or never appeared at 23:30 at all). */
+    TEST_ASSERT_FALSE(row_has_artist(rows, n, "Excision"));
+    /* The Resistance handed over to Sippy at 00:15 (derived end) — also
+     * over, same half-open rule as the 21:00 changeovers. */
+    TEST_ASSERT_FALSE(row_has_artist(rows, n, "The Resistance"));
+
+    /* The ordering claim, stated directly: Sippy's after-midnight set
+     * sorts AFTER the pre-midnight set it followed on the same stage and
+     * the same festival night. This is what the `night` fold buys — the
+     * raw calendar clock would have put 00:15 (15) before 22:45 (1365). */
+    ff_now_row_t const *sippy = row_for_artist(rows, n, "Sippy");
+    TEST_ASSERT_NOT_NULL(sippy);
+    TEST_ASSERT_EQUAL_INT16(24 * 60 + 15, sippy->set->start_min); /* 1455 */
+    fp_set_t const *resistance = NULL;
+    for (uint16_t i = 0; i < pack.n_sets; i++) {
+        if (strcmp(pack.sets[i].artist, "The Resistance") == 0) resistance = &pack.sets[i];
+    }
+    TEST_ASSERT_NOT_NULL(resistance);
+    TEST_ASSERT_EQUAL_UINT16(friday, resistance->day_doy);
+    TEST_ASSERT_EQUAL_UINT16(friday, sippy->set->day_doy);
+    TEST_ASSERT_TRUE(sippy->set->start_min > resistance->start_min);
+}
+
+/* "Tonight" grouping: Friday's day lineup is the WHOLE night, pre- and
+ * post-midnight, in one day_doy bucket — and Saturday's own daytime
+ * artists must not leak into it. This is the concrete regression for the
+ * day/time model (S05 amendment): the after-midnight sets are billed
+ * under `night`, not under the calendar `day` they physically start on.
+ * ff_sched_day_sets returns pack order, and the pack lists each stage's
+ * night contiguously, so the night's sets also come back in start order:
+ * asserted here, since that is what the lineup renders. */
+static void S07_real_lost_lands_tonight_grouping_spans_midnight(void)
+{
+    fp_pack_t pack;
+    load_real_lost_lands_pack(&pack);
+
+    uint16_t const friday = pack.start_doy; /* 2026-09-18 */
+
     fp_set_t const *lineup[FP_MAX_SETS];
-    uint16_t n = ff_sched_day_sets(&pack, day, lineup, FP_MAX_SETS);
-    TEST_ASSERT_TRUE(n > 0);
+    uint16_t n_day = ff_sched_day_sets(&pack, friday, lineup, FP_MAX_SETS);
+
+    /* Friday night: 44 sets before midnight + 20 after = 64. */
+    TEST_ASSERT_EQUAL_UINT16(64, n_day);
+
+    bool has_resistance = false, has_sippy = false, has_oliverse = false, has_kai_wachi = false;
+    for (uint16_t i = 0; i < n_day; i++) {
+        if (strcmp(lineup[i]->artist, "The Resistance") == 0) has_resistance = true; /* pre-midnight */
+        if (strcmp(lineup[i]->artist, "Sippy") == 0) has_sippy = true;               /* post-midnight, same night */
+        if (strcmp(lineup[i]->artist, "Oliverse") == 0) has_oliverse = true;         /* 03:00 closer, same night */
+        if (strcmp(lineup[i]->artist, "Kai Wachi") == 0) has_kai_wachi = true;       /* Saturday DAYTIME — wrong night */
+    }
+    TEST_ASSERT_TRUE(has_resistance);
+    TEST_ASSERT_TRUE(has_sippy);
+    TEST_ASSERT_TRUE(has_oliverse);
+    TEST_ASSERT_FALSE_MESSAGE(has_kai_wachi, "Saturday's daytime lineup leaked into Friday's day_doy grouping");
+
+    /* Within one stage, the night's sets come back in ascending
+     * start_min — so the post-midnight tail RENDERS after the evening
+     * sets rather than jumping to the top of the list. Checked on Wompy
+     * Woods, the stage whose Friday night runs 14:30 -> 03:00. */
+    int8_t const wompy = 1; /* "wompy-woods" == stages[1] */
+    TEST_ASSERT_EQUAL_STRING("wompy-woods", pack.stages[1].id);
+    int16_t prev = -1;
+    uint16_t seen = 0;
+    for (uint16_t i = 0; i < n_day; i++) {
+        if (lineup[i]->stage_idx != wompy) continue;
+        TEST_ASSERT_TRUE_MESSAGE(lineup[i]->start_min > prev,
+                                  "Wompy Woods' Friday night is not in ascending start order");
+        prev = lineup[i]->start_min;
+        seen++;
+    }
+    TEST_ASSERT_EQUAL_UINT16(13, seen);
+    TEST_ASSERT_EQUAL_INT16(27 * 60, prev); /* the night ends on Oliverse at 03:00 (1620) */
 }
 
 /* ======================================================================
@@ -1183,7 +1378,10 @@ int main(void)
     RUN_TEST(S07_AC5_day_tbd_false_when_any_known_time);
     RUN_TEST(S07_AC5_day_tbd_false_when_day_has_no_sets);
     RUN_TEST(test_day_sets_lists_all_including_null_times_in_pack_order);
-    RUN_TEST(S07_AC5_real_lost_lands_fixture_is_all_null_tbd);
+    RUN_TEST(S07_real_lost_lands_now_playing_sat_2100);
+    RUN_TEST(S07_real_lost_lands_now_playing_fri_2330_before_midnight);
+    RUN_TEST(S07_real_lost_lands_now_playing_sat_0030_after_midnight);
+    RUN_TEST(S07_real_lost_lands_tonight_grouping_spans_midnight);
 
     return UNITY_END();
 }

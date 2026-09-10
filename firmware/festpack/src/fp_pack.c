@@ -296,32 +296,83 @@ static bool fp_is_leap_year(int y)
     return (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
 }
 
-/* "YYYY-MM-DD" -> day-of-year (1..366). Returns 0 on malformed input
- * rather than failing the whole parse — a bad date is a data-quality
- * problem for the schedule engine (S07), not a parse-time crash. */
-static uint16_t fp_doy_from_iso_date(char const *s, size_t len)
+/* "YYYY-MM-DD" -> (y, m, d). Returns false on malformed input rather
+ * than failing the whole parse — a bad date is a data-quality problem
+ * for the schedule engine (S07), not a parse-time crash. */
+static bool fp_ymd_from_iso_date(char const *s, size_t len, int *out_y, int *out_m, int *out_d)
 {
-    if (len != 10 || s[4] != '-' || s[7] != '-') return 0;
+    if (len != 10 || s[4] != '-' || s[7] != '-') return false;
     int y = 0, m = 0, d = 0;
     for (int i = 0; i < 4; i++) {
-        if (s[i] < '0' || s[i] > '9') return 0;
+        if (s[i] < '0' || s[i] > '9') return false;
         y = y * 10 + (s[i] - '0');
     }
     for (int i = 5; i < 7; i++) {
-        if (s[i] < '0' || s[i] > '9') return 0;
+        if (s[i] < '0' || s[i] > '9') return false;
         m = m * 10 + (s[i] - '0');
     }
     for (int i = 8; i < 10; i++) {
-        if (s[i] < '0' || s[i] > '9') return 0;
+        if (s[i] < '0' || s[i] > '9') return false;
         d = d * 10 + (s[i] - '0');
     }
-    if (m < 1 || m > 12 || d < 1 || d > 31) return 0;
+    if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+    *out_y = y;
+    *out_m = m;
+    *out_d = d;
+    return true;
+}
+
+/* day-of-year (1..366) for a (y, m, d) already validated by
+ * fp_ymd_from_iso_date. */
+static uint16_t fp_doy_from_ymd(int y, int m, int d)
+{
     uint16_t doy = fp_cum_days[m - 1] + (uint16_t)d;
     if (m > 2 && fp_is_leap_year(y)) doy += 1;
     return doy;
 }
 
-/* "HH:MM" -> minutes from midnight, or -1 (null / malformed). */
+/* "YYYY-MM-DD" -> day-of-year (1..366), 0 on malformed input. */
+static uint16_t fp_doy_from_iso_date(char const *s, size_t len)
+{
+    int y, m, d;
+    if (!fp_ymd_from_iso_date(s, len, &y, &m, &d)) return 0;
+    return fp_doy_from_ymd(y, m, d);
+}
+
+/* Days since 1970-01-01 for a proleptic-Gregorian (y, m, d) — Howard
+ * Hinnant's days_from_civil, integer-only. Used for one thing only:
+ * taking an EXACT difference between two ISO dates that appear in the
+ * same schedule entry (`day` vs `night`, `day` vs `end_day`), which
+ * day-of-year arithmetic alone cannot do across a year boundary. */
+static int32_t fp_days_from_civil(int y, int m, int d)
+{
+    y -= (m <= 2);
+    int32_t const era = (int32_t)((y >= 0 ? y : y - 399) / 400);
+    uint32_t const yoe = (uint32_t)(y - era * 400);                            /* [0, 399] */
+    uint32_t const doy_ = (uint32_t)((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1); /* [0, 365] */
+    uint32_t const doe = yoe * 365 + yoe / 4 - yoe / 100 + doy_;               /* [0, 146096] */
+    return era * 146097 + (int32_t)doe - 719468;
+}
+
+/* The day-of-year one calendar day BEFORE (y, m, d) — the fallback fold
+ * target when a schedule entry omits `night` (see fp_parse_schedule).
+ * Handles the Jan-1 wrap into the previous year's own last day-of-year
+ * (365, or 366 if that year was a leap year). */
+static uint16_t fp_doy_prev_day(int y, int m, int d)
+{
+    uint16_t doy = fp_doy_from_ymd(y, m, d);
+    if (doy > 1) return (uint16_t)(doy - 1);
+    return fp_is_leap_year(y - 1) ? 366u : 365u;
+}
+
+/* "HH:MM" -> minutes from midnight, or -1 (null / malformed). HH is
+ * 00..23 — a plain wall-clock time on its entry's own `day` calendar
+ * date. A set that runs past actual local midnight is NOT encoded with
+ * an inflated hour here; it carries the next calendar date in `day` and
+ * names the festival night it belongs to in `night` (and, for an `end`
+ * on a later date than `start`, `end_day`). fp_parse_schedule() does the
+ * folding into fp_set_t's festival-night minute space — see its comment
+ * and docs/specs/S05-festpack.md's 2026-09-09 amendment. */
 static int16_t fp_min_from_hhmm(char const *s, size_t len)
 {
     if (len != 5 || s[2] != ':') return -1;
@@ -471,6 +522,135 @@ static fp_result_t fp_parse_stages(fp_ctx_t const *c, int arr_i, fp_pack_t *out)
     return FP_OK;
 }
 
+/* Minutes-from-midnight below which a set with no explicit `night` is
+ * folded onto the PREVIOUS calendar day's festival night (06:00). Must
+ * equal ff_sched.h's FF_SCHED_FESTIVAL_DAY_START_MIN — festpack/ cannot
+ * include ff_sched.h from here (ff_sched.h includes fp_pack.h, not the
+ * other way round), so this is the same deliberate mirrored-constant
+ * arrangement ff_wall.h documents for FF_WALL_DAY_START_MIN. */
+#define FP_NIGHT_FOLD_MIN 360
+
+/* Reads one schedule entry's day/time fields into `s`, folding the
+ * pack's plain-calendar encoding into fp_set_t's festival-NIGHT minute
+ * space (see fp_pack.h's fp_set_t doc comment and
+ * docs/specs/S05-festpack.md's 2026-09-09 amendment).
+ *
+ * The pack encodes ordinary calendar facts:
+ *   `day`      ISO date the set STARTS on
+ *   `start`    "HH:MM", HH 00..23, local time on `day`
+ *   `end`      "HH:MM", HH 00..23, or null (unknown — derived by
+ *               ff_sched.c from the next set on the stage)
+ *   `night`    optional ISO date: the festival night the set is billed
+ *               under. Equals `day` for an ordinary set; equals
+ *               `day` - 1 day for an after-midnight set (Sippy's 00:15
+ *               on Sat 2026-09-19 is billed under Friday 2026-09-18).
+ *   `end_day`  optional ISO date of `end`, present only when the set's
+ *               end falls on a later calendar date than its start
+ *               (Excision 2026-09-18 22:10 -> 00:10 on 2026-09-19).
+ *
+ * fp_set_t instead stores ONE day_doy (the night) with start_min/end_min
+ * measured from that night's local midnight, so an after-midnight set
+ * lands at >= 1440 in the same number space as that night's evening
+ * sets. That is the space ff_sched.h's festival-day contract ([360,
+ * 1800), rolling at 06:00) and ff_wall.h's wall-clock resolution both
+ * already work in, so ff_sched.c's plain integer comparisons order
+ * 00:15 (1455) after 23:00 (1380) on the same night with no special
+ * casing.
+ *
+ * FALLBACK when `night` is absent: a set starting before 06:00
+ * (FP_NIGHT_FOLD_MIN) local belongs to the PREVIOUS calendar day's
+ * night; anything else belongs to its own `day`. This is a documented
+ * best guess for packs predating the `night` field, not a substitute
+ * for it — fest-almanac emits `night` on every entry, and
+ * tools/festpack_lint.py requires night == day or day - 1. */
+static void fp_parse_set_daytime(fp_ctx_t const *c, int obj_i, fp_set_t *s)
+{
+    int t;
+    int day_y = 0, day_m = 0, day_d = 0;
+    bool day_ok = false;
+    if (fp_obj_get(c, obj_i, "day", &t) && !fp_is_null(c, t)) {
+        jsmntok_t const *tt = &c->toks[t];
+        day_ok = fp_ymd_from_iso_date(c->js + tt->start, (size_t)(tt->end - tt->start),
+                                      &day_y, &day_m, &day_d);
+    }
+
+    int16_t start_raw = -1, end_raw = -1;
+    if (fp_obj_get(c, obj_i, "start", &t) && !fp_is_null(c, t)) {
+        jsmntok_t const *tt = &c->toks[t];
+        start_raw = fp_min_from_hhmm(c->js + tt->start, (size_t)(tt->end - tt->start));
+    }
+    if (fp_obj_get(c, obj_i, "end", &t) && !fp_is_null(c, t)) {
+        jsmntok_t const *tt = &c->toks[t];
+        end_raw = fp_min_from_hhmm(c->js + tt->start, (size_t)(tt->end - tt->start));
+    }
+
+    if (!day_ok) {
+        /* No usable `day`. `night` alone can still name the bucket; times
+         * stay in their raw 0..1439 space because there is no calendar
+         * date to fold them against. */
+        s->day_doy = 0;
+        if (fp_obj_get(c, obj_i, "night", &t) && !fp_is_null(c, t)) {
+            jsmntok_t const *tt = &c->toks[t];
+            s->day_doy = fp_doy_from_iso_date(c->js + tt->start, (size_t)(tt->end - tt->start));
+        }
+        s->start_min = start_raw;
+        s->end_min = end_raw;
+        return;
+    }
+
+    int32_t const day_days = fp_days_from_civil(day_y, day_m, day_d);
+
+    /* fold_days = how many days `day` sits AFTER the festival night. 0 for
+     * an ordinary set, 1 for an after-midnight one. */
+    int32_t fold_days = 0;
+    bool night_resolved = false;
+    if (fp_obj_get(c, obj_i, "night", &t) && !fp_is_null(c, t)) {
+        jsmntok_t const *tt = &c->toks[t];
+        int ny, nm, nd;
+        if (fp_ymd_from_iso_date(c->js + tt->start, (size_t)(tt->end - tt->start), &ny, &nm, &nd)) {
+            int32_t const diff = day_days - fp_days_from_civil(ny, nm, nd);
+            /* Out-of-contract `night` (ahead of `day`, or more than one
+             * night behind it) is data corruption, not a fold we should
+             * guess at: keep the night as authored for grouping but do
+             * not shift the clock times by a bogus multi-day offset.
+             * tools/festpack_lint.py rejects exactly this shape. */
+            fold_days = (diff == 1) ? 1 : 0;
+            s->day_doy = fp_doy_from_ymd(ny, nm, nd);
+            night_resolved = true;
+        }
+    }
+
+    if (!night_resolved) {
+        /* Documented fallback — see this function's comment. */
+        if (start_raw >= 0 && start_raw < FP_NIGHT_FOLD_MIN) {
+            fold_days = 1;
+            s->day_doy = fp_doy_prev_day(day_y, day_m, day_d);
+        } else {
+            s->day_doy = fp_doy_from_ymd(day_y, day_m, day_d);
+        }
+    }
+
+    /* `end_day`, when present, dates the END; the extra days it adds are
+     * on top of the start's own fold. Clamped to [0, 1]: a schedule entry
+     * whose end is more than one calendar day after its start is not a
+     * set, it is bad data (lint rejects it), and letting it through would
+     * push end_min past int16_t. */
+    int32_t end_extra_days = 0;
+    if (fp_obj_get(c, obj_i, "end_day", &t) && !fp_is_null(c, t)) {
+        jsmntok_t const *tt = &c->toks[t];
+        int ey, em, ed;
+        if (fp_ymd_from_iso_date(c->js + tt->start, (size_t)(tt->end - tt->start), &ey, &em, &ed)) {
+            int32_t const diff = fp_days_from_civil(ey, em, ed) - day_days;
+            end_extra_days = (diff == 1) ? 1 : 0;
+        }
+    }
+
+    s->start_min = (start_raw < 0) ? (int16_t)-1
+                                   : (int16_t)(start_raw + fold_days * 1440);
+    s->end_min = (end_raw < 0) ? (int16_t)-1
+                               : (int16_t)(end_raw + (fold_days + end_extra_days) * 1440);
+}
+
 static fp_result_t fp_parse_schedule(fp_ctx_t const *c, int arr_i, fp_pack_t *out)
 {
     jsmntok_t const *at = &c->toks[arr_i];
@@ -487,18 +667,7 @@ static fp_result_t fp_parse_schedule(fp_ctx_t const *c, int arr_i, fp_pack_t *ou
         int t;
         if (fp_obj_get(c, obj_i, "artist", &t)) fp_copy_str(c, t, s->artist, sizeof(s->artist));
         if (fp_obj_get(c, obj_i, "stage", &t) && !fp_is_null(c, t)) s->stage_idx = fp_stage_idx_lookup(c, t, out);
-        if (fp_obj_get(c, obj_i, "day", &t) && !fp_is_null(c, t)) {
-            jsmntok_t const *tt = &c->toks[t];
-            s->day_doy = fp_doy_from_iso_date(c->js + tt->start, (size_t)(tt->end - tt->start));
-        }
-        if (fp_obj_get(c, obj_i, "start", &t) && !fp_is_null(c, t)) {
-            jsmntok_t const *tt = &c->toks[t];
-            s->start_min = fp_min_from_hhmm(c->js + tt->start, (size_t)(tt->end - tt->start));
-        }
-        if (fp_obj_get(c, obj_i, "end", &t) && !fp_is_null(c, t)) {
-            jsmntok_t const *tt = &c->toks[t];
-            s->end_min = fp_min_from_hhmm(c->js + tt->start, (size_t)(tt->end - tt->start));
-        }
+        fp_parse_set_daytime(c, obj_i, s);
         if (fp_obj_get(c, obj_i, "note", &t)) fp_copy_str(c, t, s->note, sizeof(s->note));
         if (fp_obj_get(c, obj_i, "starred", &t)) s->starred = fp_bool(c, t, false);
         out->n_sets++;
