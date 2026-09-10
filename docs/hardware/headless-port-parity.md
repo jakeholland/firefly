@@ -331,3 +331,125 @@ just the raw local-frame one) across these three call sites is a
 straightforward speed-up left for a later pass, not attempted here to
 keep this session's own changes narrowly scoped to the geometry fixes
 above.
+
+## Phase 2b update (buttons)
+
+`features/buttons.py` ports `button_geometry`/`add_button`/`add_buttons`
+(the plunger/rib/collar mechanism) plus the ear/S2-boss cut-keepout guard
+(`_ear_boss_keepout_points`/`_clip_of_ear_boss_keepout`), with every
+historical correction the README records carried forward verbatim: the
+finding-10 real-actuator-reach fix (`switch_actuator_reach`/
+`plunger_pretravel`, not an offset from an empty bbox corner), `s_wall`
+via `true_wall_distance_along_ray` (not the flat-wall approximation that
+was "badly wrong for Home"), the finding-9 rib/collar actuator-clearance
+clamp + tab-relief lane, the pass-16 FIX item-4 S2-boss tab-relief LANE
+EXTENSION (`tab_sweep_body`, `sweep_margin=0.5`), the pass-15
+wall-connector-spoke + ceiling-gusset fix (anchored at the connector's
+own outboard end, not the plunger axis), and the pass-16 item-D
+best-effort lead-in fillets. Caps export as their own named parts
+(`gen/export.py`'s existing per-body loop needed no changes -- `bodies['Power
+Button']`/`bodies['Home Button']` just flow through it).
+
+**Gate results, both variants, from a from-scratch rebuild
+(`python3 -m gen.cli build --variant <v> --gates --export`):**
+
+| gate | trim | current |
+|---|---|---|
+| `verify_button_insertion` | **0/125 bad, both buttons** | **0/125 bad, both buttons** |
+| `verify_button_retention` | clean (all 9 checks) | clean (all 9 checks) |
+| `verify_plunger_reach` | clean -- actuator reach 1.80mm found vs. 1.82mm expected (within the gate's own <0.1mm tolerance); rest gap 0.35mm found vs. 0.3mm expected (within <0.15mm) | clean, identical numbers (intrinsic to the switch geometry, not variant-dependent) |
+| `verify_skin_intact` | clean, both buttons, 0/24 probes | clean, both buttons, 0/24 probes |
+| all-pairs interference (adds Power/Home Button to the existing Top/Bottom check) | 1 known finding, see below | 1 known finding, see below |
+
+**One real, live-found, port-specific fix (no `firefly_case.py`
+equivalent needed -- the source's own checks never covered this
+interaction):** the button **collar** -- not gated by any of the
+source's own cutting-tool clips, which only bound the cap's hole/tab
+cuts -- can physically overlap the S2 boss arm's or an S1/S3 ear
+riser's real, already-built material. `_clip_of_ear_boss_keepout`'s
+point keep-outs (radius 2.5mm around each ear/S2 root or target) don't
+reach far enough along the S2 arm's own mid-span to catch this, and a
+first attempt to widen the S2 keepout's own z-band (`ears.
+s2_boss_arm_z_band`, a real, separate bug fixed the same session -- the
+keepout was using the NOMINAL `seat_z - ear_arm_thickness` band, not the
+arm's REAL battery-clamped one, ~5mm lower) still didn't help, because
+the conflict sits at the arm's own mid-span in X, far from either
+keepout point. Fixed by subtracting a snapshot of Top from immediately
+BEFORE `add_buttons` runs (`existing_top`) directly from each button's
+own collar body -- a live, unambiguous guarantee against whatever
+structural material already exists there, rather than another
+hand-shaped keepout zone. Before this fix: Power ~1.80mm³ vs. the S2
+arm, Home ~0.50mm³ vs. the S1 riser (both variants); after: Power 0mm³,
+Home a single ~0.0009mm³ sliver (both variants) -- a cleaner
+`bd.offset(existing_top, amount=0.05)`-based version was tried to close
+that last sliver too, but `bd.offset` on a solid this complex (the whole
+in-progress Top) degenerated to a 2D shape (`ValueError: Only shapes
+with equal or greater dimension can be subtracted`), confirmed on both
+variants -- reverted. The remaining sliver is ordinary boolean-cleanup/
+tessellation noise at one shared coincident face, the same
+`NOISE_FLOOR_MM3`-class residual `check_display_interference_near_ears`
+already names and accepts elsewhere in this file (`gates.
+BUTTON_INTERFERENCE_NOISE_FLOOR_MM3 = 0.001` -- the 0.0009mm³ residual
+sits just under it), five orders of magnitude under this session's own
+smallest real fix (the ~1.16mm³ noise floor precedent from phase 2a).
+`gen/tests/test_gates.py::test_button_interference` filters at this
+floor rather than asserting `== {}` outright, so the residual is
+accepted explicitly, not silently hidden.
+
+**Volume/bbox vs. the case-pass16 golden** (same method as phase 1/2a;
+note the golden's own on-disk exports at
+`/private/tmp/claude-501/case-pass16/hardware/case/export/` read
+slightly different absolute volumes than the phase-1/phase-2a reports
+recorded for the SAME bodies at the SAME path -- e.g. `trim` Bottom's
+golden now reads 14,278mm³ vs. phase 1's own recorded 13,799mm³; this
+port's own `Bottom` body is bit-for-bit unchanged by this phase, 14,092.8mm³
+both before and after, confirming the drift is on the golden side of the
+comparison, not this port's -- reported as measured, not reconciled
+further, since this comparison is documented as informational, not a
+gate):
+
+| body | bbox max |diff| (mm) | volume % of golden (trim) | volume % of golden (current) |
+|---|---|---|---|
+| Top | 0.056 | 94.79% (18,339.6 vs 19,347.0mm³) | 95.64% (17,883.5 vs 18,698.4mm³) |
+| Bottom | 0.060 / 0.084 | 98.70% (14,092.8 vs 14,278.2mm³) | 98.25% (15,142.8 vs 15,412.2mm³) |
+
+Both bodies still clear the ≤0.1mm bbox target. Top's own percentage
+moved from phase 2a's 96.4%/95.6% down to 94.79%/95.64% -- NOT a
+regression: phase 2a's own comparison was apples-to-oranges (this
+port's Top had no button holes cut yet, while the golden's always did),
+so it read artificially close. Now that this port cuts the same button
+holes the golden's own Top does (a net REMOVAL of shell material -- the
+holes' own volume is larger than the small rib/connector/gusset the cap
+mechanism adds back), the residual gap is a more honest measure of what
+is still genuinely missing: the comms-stack frame, GPS frame, battery
+bay, compass-module mount, and wordmark deboss (all still purely
+additive to Top, all still un-ported, phase 2 item 3 / phase 3).
+
+**Cycle time, with buttons (single-variant `build --gates --export`,
+warm venv, this Mac):**
+
+| stage | trim (s) | current (s) |
+|---|---|---|
+| `buttons` (build step: two `add_button` calls) | 1.9 | 1.9 |
+| `total_build` (shell..lug, all phase-1+2 features) | 43.1 | 32.1 |
+| `export_s` (4 STLs + 1 packed 3MF, now incl. both caps) | 14.2 | 2.2 |
+| `gates_s` (all gates, incl. the new button probes) | 221.3 | 83.4 |
+| **full cycle (build + gates + export)** | **279.0** | **118.0** |
+
+Up from phase 2a's ~75s (both variants). The button build step itself is
+cheap (1.9s) -- essentially all of the added time is in `gates_s`,
+dominated by `verify_plunger_reach`'s own live ray-scan against the real
+switch STEP body (`find_outermost_s`/`find_innermost_s`, a fine step
+scan with no caching) and the probe-heavy `verify_button_insertion`/
+`verify_skin_intact` against the fully-built `Top` compound. The large
+trim-vs-current gap (279s vs. 118s) was not root-caused this pass --
+plausible causes include how often `geo.probe_point_solid`'s `is_inside`
+fast path misses and falls through to the expensive `distance_to`
+on-surface check for one variant's geometry vs. the other, and ordinary
+OS file-cache warmth between sequential runs (the `export_s` gap, 14.2s
+vs. 2.2s, points more toward the latter). Full `pytest gen/tests/` (42
+tests, both variants): **500.8s (0:08:20)**, up from phase 2a's
+233-315s. This is exactly the cost item 3 (cycle-time caching) of this
+phase's own brief targets -- see the "Phase 2b cycle-time caching"
+section below if that item landed this same pass, or `docs/hardware/
+headless-port-plan.md`'s own phase tracking if not.

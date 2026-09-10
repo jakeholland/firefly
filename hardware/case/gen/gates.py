@@ -20,6 +20,7 @@ import os
 
 from . import components as comp
 from . import geometry as geo
+from .features import buttons as btn
 from .features import corner_blocks as cb
 
 _CASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -311,6 +312,14 @@ def all_gates(bodies, p, stl_paths, whitelist_xy=None, standoffs=None):
         report['s2_boss_clearance'] = verify_s2_boss_clearance(bodies, p, standoffs)
         report['display_to_stack_clearance'] = verify_display_to_stack_clearance(p)
         report['display_interference_near_ears'] = check_display_interference_near_ears(bodies, p, standoffs)
+    if 'Power Button' in bodies and 'Home Button' in bodies:
+        # widen the all-pairs interference check to include both cap
+        # parts, not just Top/Bottom.
+        report['interference'] = check_interference_pairs(bodies)
+        report['button_insertion'] = verify_button_insertion(bodies, p)
+        report['button_retention'] = verify_button_retention(bodies, p)
+        report['plunger_reach'] = verify_plunger_reach(bodies, p)
+        report['skin_intact'] = verify_skin_intact(bodies, p)
     return report
 
 
@@ -530,3 +539,188 @@ def check_display_interference_near_ears(bodies, p, standoffs, margin=6.0):
     real_hits = [h for h in hits if h['volume_mm3'] > NOISE_FLOOR_MM3]
     return {'ok': not real_hits, 'region_xy': (round(x0, 1), round(x1, 1), round(y0, 1), round(y1, 1)),
             'hits': hits, 'real_hits': real_hits}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b gates -- buttons (features/buttons.py).
+# ---------------------------------------------------------------------------
+# Same 0.001mm^3 boolean-cleanup/tessellation-noise floor
+# check_display_interference_near_ears already establishes for a
+# genuinely negligible residual at a shared coincident face (this port's
+# own collar-vs-existing-material fix, features/buttons.py's add_button,
+# leaves exactly one such sliver, Home only -- see that fix's own
+# comment for why a cleaner bd.offset-based fix was tried and reverted).
+BUTTON_INTERFERENCE_NOISE_FLOOR_MM3 = 0.001
+
+
+def verify_button_insertion(bodies_dict, p):
+    """Port of verify_button_insertion (:6624, pass 9b finding 9): sweeps
+    the retaining tab's own footprint from a fully-inboard start to its
+    rest position, probing 5 points (4 corners + center) at 24+1 steps
+    against the BUILT Top -- 0 bad is a clean, unobstructed insertion
+    path. Must read 0/125 bad for both buttons (Jake's own live-print
+    regression target, pass-16 FIX item 4)."""
+    results = {}
+    top = bodies_dict.get('Top')
+    if top is None:
+        return {'ok': None, 'note': 'Top body missing'}
+    N_STEPS = 24
+    for name, switch_bbox, nub_dir, cap in btn._button_defs(p):
+        key = name.lower().replace(' ', '_')
+        g = btn.button_geometry(p, switch_bbox, nub_dir, cap)
+        d2, t2 = g['d'], g['t']
+        W = cap['stadium'][1]
+        z_center = (cap['z'][0] + cap['z'][1]) / 2.0
+        tab = p['tab']
+        tab_len_along_d = 1.5
+        tab_z = z_center - W / 2.0 - tab['h'] / 2.0
+        tab_start_xy = (g['tab_face_xy'][0] - tab_len_along_d * d2[0] / 2.0,
+                        g['tab_face_xy'][1] - tab_len_along_d * d2[1] / 2.0)
+        s_tab_face = g['s_tab_face']
+        shift_start = (g['s_rib_inner'] - 2.0) - s_tab_face
+        shift_end = 0.0
+        bad = []
+        checked = 0
+        for i in range(N_STEPS + 1):
+            shift = shift_start + (shift_end - shift_start) * i / N_STEPS
+            base_xy = (tab_start_xy[0] + shift * d2[0], tab_start_xy[1] + shift * d2[1])
+            for du, dv, dw in ((0, -tab['w'] / 2.0, 0), (0, tab['w'] / 2.0, 0),
+                               (tab_len_along_d, -tab['w'] / 2.0, 0), (tab_len_along_d, tab['w'] / 2.0, 0),
+                               (tab_len_along_d / 2.0, 0, 0)):
+                px = base_xy[0] + du * d2[0] + dv * t2[0]
+                py = base_xy[1] + du * d2[1] + dv * t2[1]
+                pz = tab_z + dw
+                checked += 1
+                if geo.probe_point_solid(top, (px, py, pz)):
+                    bad.append((round(shift, 3), round(px, 2), round(py, 2), round(pz, 2)))
+        results[key] = (len(bad) == 0, {'bad_count': len(bad), 'checked': checked, 'sample': bad[:5]})
+    return results
+
+
+def verify_button_retention(bodies_dict, p):
+    """Port of verify_button_retention (:6684, pass 9b finding 9): (1)
+    the collar's own oversized flange reads blocked by real, unrelieved
+    rib material (can't be pulled back out through the wall hole); (2)
+    the tab can't drift further outward past the wall's own real
+    material past the tab hole's own reach; (3) restates the
+    construction-guaranteed collar-bottoms-on-rib travel gap
+    (`plunger_travel`, 0.90mm) and tab gap (0.60mm)."""
+    results = {}
+    top = bodies_dict.get('Top')
+    if top is None:
+        return {'ok': None, 'note': 'Top body missing'}
+    results['collar_wider_than_rib_slot'] = (p['collar']['h'] > p['rib_slot_clearance'],
+                                              {'collar_h': p['collar']['h'], 'rib_slot_clearance': p['rib_slot_clearance']})
+    for name, switch_bbox, nub_dir, cap in btn._button_defs(p):
+        key = name.lower().replace(' ', '_')
+        g = btn.button_geometry(p, switch_bbox, nub_dir, cap)
+        d2 = g['d']
+        W = cap['stadium'][1]
+        z_center = (cap['z'][0] + cap['z'][1]) / 2.0
+
+        s_rib_mid = (g['s_rib_inner'] + g['s_rib_outer']) / 2.0
+        collar_top_z = z_center + W / 2.0 + p['collar']['h'] - 0.1
+        pt_xy = (g['housing_xy'][0] + s_rib_mid * d2[0], g['housing_xy'][1] + s_rib_mid * d2[1])
+        collar_blocked = geo.probe_point_solid(top, (pt_xy[0], pt_xy[1], collar_top_z))
+        results[f'{key}_collar_blocked_by_rib'] = (collar_blocked, {'s': round(s_rib_mid, 3), 'z': round(collar_top_z, 3)})
+
+        tab = p['tab']
+        tab_z = z_center - W / 2.0 - tab['h'] / 2.0
+        tab_hole_outward_s = g['s_inner'] + p.get('tab_hole_skin_margin', 2.0) / 2.0
+        s_probe = tab_hole_outward_s + 0.3
+        pt2_xy = (g['housing_xy'][0] + s_probe * d2[0], g['housing_xy'][1] + s_probe * d2[1])
+        tab_blocked = geo.probe_point_solid(top, (pt2_xy[0], pt2_xy[1], tab_z))
+        results[f'{key}_tab_outward_blocked'] = (tab_blocked, {'s': round(s_probe, 3), 'z': round(tab_z, 3)})
+
+        rest_gap = g['s_rib_inner'] - g['s_collar_outer']
+        results[f'{key}_collar_rib_gap_0.90'] = (abs(rest_gap - p['plunger_travel']) < 0.05, round(rest_gap, 4))
+        results[f'{key}_tab_gap_0.60'] = (abs(p['tab']['gap'] - 0.60) < 1e-9, p['tab']['gap'])
+    return results
+
+
+def verify_plunger_reach(bodies_dict, p):
+    """Port of verify_plunger_reach (:6560, pass 9b finding 10):
+    live-probes the REAL display STEP's own switch bodies (via
+    `components.load_display`/`buttons.find_switch_body`, this port's
+    no-occurrence-tree equivalent of the source's live Fusion probe) to
+    confirm the plunger's REST position sits `plunger_pretravel` (0.3mm)
+    from the real actuator nub, not the multi-mm miss finding 10 found
+    against an uninhabited bbox corner."""
+    results = {}
+    disp = comp.load_display(p)
+    for name, switch_bbox, nub_dir, cap in btn._button_defs(p):
+        key = name.lower().replace(' ', '_')
+        g = btn.button_geometry(p, switch_bbox, nub_dir, cap)
+        sw_body = btn.find_switch_body(disp, switch_bbox)
+        if sw_body is None:
+            results[f'{key}_reach'] = (False, 'switch body not found live')
+            continue
+        cx = (switch_bbox['x'][0] + switch_bbox['x'][1]) / 2.0
+        cy = (switch_bbox['y'][0] + switch_bbox['y'][1]) / 2.0
+        d2, t2 = g['d'], g['t']
+        z0, z1 = switch_bbox['z']
+
+        live_reach = None
+        z = z0 + 0.1
+        while z <= z1 - 0.1 + 1e-9:
+            s = btn.find_outermost_s(sw_body, (cx, cy), d2, z, max_s=6.0, step=0.05)
+            if s is not None and (live_reach is None or s > live_reach):
+                live_reach = s
+            z += 0.2
+        expect_reach = p['switch_actuator_reach']
+        reach_ok = live_reach is not None and abs(live_reach - expect_reach) < 0.1
+        results[f'{key}_actuator_reach'] = (reach_ok, {'expect': expect_reach, 'found': live_reach})
+
+        cap_body = bodies_dict.get(name)
+        if cap_body is not None and live_reach is not None:
+            pocket_half_w = p['nub_pocket']['xy'][0] / 2.0
+            rim_offset = pocket_half_w + 0.4
+            rim_origin = (cx + rim_offset * t2[0], cy + rim_offset * t2[1])
+            rim_s = btn.find_innermost_s(cap_body, rim_origin, d2, g['switch_z_mid'], max_s=8.0, step=0.05)
+            gap = None if rim_s is None else rim_s - live_reach
+            gap_ok = gap is not None and abs(gap - p['plunger_pretravel']) < 0.15
+            results[f'{key}_rest_gap'] = (gap_ok, {'expect': p['plunger_pretravel'],
+                                                     'found': None if gap is None else round(gap, 3)})
+        else:
+            results[f'{key}_rest_gap'] = (False, 'cap body or live_reach missing')
+    return results
+
+
+def verify_skin_intact(bodies_dict, p):
+    """Port of verify_skin_intact (:7150, pass 6 item A / pass 12
+    widened): regression guard against an interior cut (the tab hole/
+    tab-relief lane) reaching past the true outer skin. Scans the tab's
+    full z-span at the wider tab-relief footprint, probing radially
+    outward from the tab hole's own analytic reach
+    (s_inner + tab_hole_skin_margin/2) by two small depths -- real skin
+    should start immediately past that reach."""
+    top = bodies_dict['Top']
+    results = {}
+    tab = p['tab']
+    skin_margin = p.get('tab_hole_skin_margin', 2.0)
+    tab_relief_margin = 0.3
+    for name, switch_bbox, nub_dir, cap in btn._button_defs(p):
+        key = name.lower().replace(' ', '_').replace('_button', '')
+        g = btn.button_geometry(p, switch_bbox, nub_dir, cap)
+        d2, t2 = g['d'], g['t']
+        housing_xy = g['housing_xy']
+        W = cap['stadium'][1]
+        z_center = (cap['z'][0] + cap['z'][1]) / 2.0
+        tab_hole_z_lo = z_center - W / 2.0 - tab['h'] - 0.3
+        main_hole_z_lo = z_center - W / 2.0 - 0.25
+        z_samples = [tab_hole_z_lo + k * (main_hole_z_lo - tab_hole_z_lo) / 3.0 for k in range(4)]
+        s_reach = g['s_inner'] + skin_margin / 2.0
+        bad = []
+        checked = 0
+        for depth_out in (0.15, 0.3):
+            s_probe = s_reach + depth_out
+            for z in z_samples:
+                for t_frac in (-0.5, 0.0, 0.5):
+                    t_off = t_frac * (tab['w'] / 2.0)
+                    px = housing_xy[0] + s_probe * d2[0] + t_off * t2[0]
+                    py = housing_xy[1] + s_probe * d2[1] + t_off * t2[1]
+                    checked += 1
+                    if not geo.probe_point_solid(top, (px, py, z)):
+                        bad.append((round(depth_out, 2), round(z, 2), round(t_frac, 2)))
+        results[key] = (len(bad) == 0, {'bad_count': len(bad), 'checked': checked, 'sample': bad[:5]})
+    return results

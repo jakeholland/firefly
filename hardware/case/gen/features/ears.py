@@ -162,6 +162,36 @@ def add_ear(bodies, p, name, standoffs):
     return bodies
 
 
+def s2_boss_arm_z_band(p, standoffs):
+    """Factored out of add_s2_boss (not a firefly_case.py function by
+    name) so `features/buttons.py`'s own ear/S2-boss keep-out
+    (`_ear_boss_keepout_points`) can protect the S2 arm's REAL, battery-
+    clamped z-band rather than the nominal `seat_z - ear_arm_thickness`
+    one -- live-found this port (phase 2b, buttons): a real Top-vs-Button
+    collar overlap at exactly the S2 arm's own clamped position (z
+    13.6-16.6mm trim), well below the nominal band the keepout used
+    before this fix, since the battery-connector clamp (below) usually
+    pulls `arm_z1` far below `seat_z` for S2 specifically (unlike S1/S3,
+    whose own keep-out entry already uses each ear's OWN capped `root_z1`
+    for exactly this reason -- see add_ear). Kept as one shared
+    computation so add_s2_boss's own construction and the button
+    keep-out can never silently drift apart about where the arm actually
+    is, the same guarantee firefly_case.py's own `_ear_boss_keepout_
+    points` docstring already asks for."""
+    s2 = p['s2_boss']
+    tx, ty, seat_z = _target_xy_seat_z(p, standoffs, s2['target'])
+    boss_r = p['boss_dia'] / 2.0
+    wy = ty
+
+    (bcx0, bcx1), (bcy0, bcy1), (bcz0, bcz1) = comp.battery_connector_world_bbox(p)
+    clear = p['s2_battery_clear']
+    arm_z1 = seat_z
+    if bcy0 - boss_r <= wy <= bcy1 + boss_r:
+        arm_z1 = min(seat_z, bcz0 - clear)
+    arm_z0 = arm_z1 - p.get('ear_arm_thickness', 3.0)
+    return arm_z0, arm_z1
+
+
 def add_s2_boss(bodies, p, standoffs):
     """Port of add_s2_boss (:2536): a short boss from the west wall
     carrying S2, height-clamped below the display's real battery
@@ -174,12 +204,9 @@ def add_s2_boss(bodies, p, standoffs):
     wall_x = -(p['outer_radius'] - p['wall'])
     wy = ty
 
+    arm_z0, arm_z1 = s2_boss_arm_z_band(p, standoffs)
     (bcx0, bcx1), (bcy0, bcy1), (bcz0, bcz1) = comp.battery_connector_world_bbox(p)
     clear = p['s2_battery_clear']
-    arm_z1 = seat_z
-    if bcy0 - boss_r <= wy <= bcy1 + boss_r:
-        arm_z1 = min(seat_z, bcz0 - clear)
-    arm_z0 = arm_z1 - p.get('ear_arm_thickness', 3.0)
 
     wx_embed = wall_x - cb.CORNER_BLOCK_REACH
     dx, dy = tx - wx_embed, ty - wy

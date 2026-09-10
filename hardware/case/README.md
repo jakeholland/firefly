@@ -5159,13 +5159,76 @@ against the real STEP compound, not a regression in the underlying
 build (still ~3.7s). Full `pytest gen/tests/` (30 tests, both variants):
 ~4-5 minutes.
 
-**Not ported yet:** buttons (item 2), comms stack/GPS frame/battery
-bay/compass module (item 3), and phase 3 (wordmark deboss, coupons,
-packed exports, renders, then the switch-over deleting this file). See
-`docs/hardware/headless-port-plan.md`.
+**Not ported yet (at the time of writing):** buttons (item 2), comms
+stack/GPS frame/battery bay/compass module (item 3), and phase 3
+(wordmark deboss, coupons, packed exports, renders, then the switch-over
+deleting this file). See `docs/hardware/headless-port-plan.md`.
 
 `gen/.venv` and `gen/out/` are git-ignored (see `gen/.gitignore`) —
 recreate the venv with the commands above; `gen/out/` and
 `renders/gen/` are scratch build output, not committed exports (this
 port does not yet touch `export/<variant>/`, the Fusion generator's own
 canonical export directory / regression-golden location).
+
+## Phase 2 item 2: buttons
+
+`gen/features/buttons.py` ports `button_geometry`/`add_button`/
+`add_buttons` — the Power/Home plunger, guide-rib, inward-stop collar,
+and retaining-tab mechanism — with every historical correction this
+README records carried forward verbatim (same numbers, same reasoning):
+the finding-10 real-actuator-reach fix (`switch_actuator_reach` 1.82mm/
+`plunger_pretravel` 0.3mm, not an offset from an empty switch-bbox
+corner), `s_wall` via `true_wall_distance_along_ray` (the flat-wall
+approximation this file's own 2026-09-05 fix already found "badly wrong
+for Home"), the finding-9 rib/collar actuator-clearance clamp plus the
+tab-relief lane, the pass-16 FIX item-4 S2-boss tab-relief LANE
+EXTENSION (`tab_sweep_body` — a pass-16 addition, the S2 boss's own arm,
+sits squarely across the Power button's own tab-insertion sweep), the
+pass-15 wall-connector-spoke + ceiling-gusset fix (anchored at the
+connector's own outboard end, not the plunger axis — the first,
+display-board-hitting attempt is not reproduced, only the fix), and the
+pass-16 item-D best-effort lead-in fillets. The cap parts (`cap_
+clearance` 0.25mm) export as their own named STL/3MF parts automatically
+— `gen/export.py`'s existing per-body loop needed no changes.
+
+**Gate results, both variants, from a from-scratch rebuild:**
+`verify_button_insertion` — **0/125 bad, both buttons, both variants**
+(Jake's own live-print regression target); `verify_button_retention` —
+clean, all 9 checks; `verify_plunger_reach` — clean (actuator reach
+1.80mm found vs. 1.82mm expected, rest gap 0.35mm found vs. 0.3mm
+expected, both within the gate's own tolerance); `verify_skin_intact` —
+clean, both buttons.
+
+One real, live-found, port-specific fix (no `firefly_case.py` equivalent
+needed — the source's own checks never covered this interaction): the
+button **collar** can physically overlap the S2 boss arm's or an S1/S3
+ear riser's real, already-built material — not caught by any of the
+source's own cutting-tool clips, which only bound the cap's own hole/tab
+cuts, not the collar. Root-caused to two things: (1) the ear/S2-boss cut
+keep-out's own S2 entry used the NOMINAL `seat_z - ear_arm_thickness`
+z-band, not the arm's REAL battery-connector-clamped one (~5mm lower) —
+fixed by factoring the real z-band into a shared `ears.
+s2_boss_arm_z_band` helper both `add_s2_boss` and the button keep-out
+now call, so the two can never silently drift apart; (2) even with that
+fix, the real conflict sits at the S2 arm's own mid-span in X, far from
+either keep-out point the source's own point-keepout mechanism protects.
+Fixed by subtracting a snapshot of Top from immediately before
+`add_buttons` runs directly from each button's own collar body — a
+live, unambiguous guarantee against whatever structural material already
+exists there. Before: Power ~1.8mm³ vs. the S2 arm, Home ~0.5mm³ vs. the
+S1 riser (both variants); after: Power 0mm³, Home a single ~0.0009mm³
+sliver (both variants, accepted as boolean-cleanup/tessellation noise at
+one shared face — a cleaner `bd.offset`-based fix was tried and reverted,
+since `bd.offset` on a solid this complex degenerated to a 2D shape). See
+`docs/hardware/headless-port-parity.md`'s "Phase 2b update" section for
+the full account, volume/bbox numbers, and cycle time (up to ~279s/118s
+per variant with buttons' own gates added — addressed by item 3 below).
+
+**Not ported yet:** comms stack/GPS frame/battery bay/compass module,
+cycle-time caching for the display-STEP-based checks (`gen/components.
+py`'s `ceiling_safe_display_cut`/`check_display_interference_near_ears`
+and buttons' own `verify_plunger_reach`/`find_switch_body` are now the
+dominant cost of a full `--gates` build — up to ~279s/118s per variant,
+see `docs/hardware/headless-port-parity.md`), and phase 3 (wordmark
+deboss, coupons, packed exports, renders, then the switch-over deleting
+this file). See `docs/hardware/headless-port-plan.md`.

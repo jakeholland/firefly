@@ -33,7 +33,7 @@ def built(request, tmp_path_factory):
     p, bodies, timings, standoffs = build(variant)
     out_dir = tmp_path_factory.mktemp(f'gates_{variant}')
     stl_paths = {}
-    for name in ('Top', 'Bottom'):
+    for name in ('Top', 'Bottom', 'Power Button', 'Home Button'):
         path = os.path.join(out_dir, f'{name}.stl')
         export_mod.export_stl(bodies[name], path)
         stl_paths[name] = path
@@ -104,7 +104,8 @@ def test_offline_manifold_and_overhang(built):
     variant, p, bodies, stl_paths, standoffs = built
     down_z_bed = {'Top': (1.0, p['top_z']), 'Bottom': (-1.0, p['bottom_z'])}
     wl = {'Top': top_whitelist(), 'Bottom': bottom_whitelist()}
-    for name, path in stl_paths.items():
+    for name in ('Top', 'Bottom'):
+        path = stl_paths[name]
         down_z, bed_z = down_z_bed[name]
         report = gates_mod.manifold_and_overhang_check(path, down_z, bed_z, whitelist_xy=wl[name])
         assert report['manifold']['manifold'], f'{variant} {name}: non-manifold edges {report["manifold"]}'
@@ -204,3 +205,66 @@ def test_interference_including_top_bottom_after_ears(built):
     variant, p, bodies, stl_paths, standoffs = built
     result = gates_mod.check_interference_pairs({'Top': bodies['Top'], 'Bottom': bodies['Bottom']})
     assert result == {}, f'{variant}: real interference found: {result}'
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b -- buttons (features/buttons.py).
+# ---------------------------------------------------------------------------
+def test_button_interference(built):
+    """All-pairs interference including both cap parts. KNOWN, OPEN
+    (both variants, Home Button only): a ~0.0009mm^3 residual sliver at
+    one coincident face left by this port's own collar-vs-existing-Top
+    fix (features/buttons.py's add_button -- see its own comment: a
+    cleaner bd.offset-based fix was tried and reverted, since bd.offset
+    on a solid this complex degenerated to a 2D shape). Ordinary
+    boolean-cleanup/tessellation noise at a shared face, five orders of
+    magnitude under this port's own smallest real fix (~1.16mm^3, see
+    docs/hardware/headless-port-parity.md) -- same noise-floor class
+    `check_display_interference_near_ears` already names and accepts
+    elsewhere in this file."""
+    variant, p, bodies, stl_paths, standoffs = built
+    result = gates_mod.check_interference_pairs(bodies)
+    real = {k: v for k, v in result.items() if v > gates_mod.BUTTON_INTERFERENCE_NOISE_FLOOR_MM3}
+    assert not real, f'{variant}: real interference found: {real}'
+
+
+def test_button_insertion(built):
+    """Must be 0/125 bad for both buttons, both variants -- Jake's own
+    live-print regression target (pass-16 FIX item 4, the S2-boss
+    tab-relief lane extension)."""
+    variant, p, bodies, stl_paths, standoffs = built
+    result = gates_mod.verify_button_insertion(bodies, p)
+    bad = {k: detail for k, (ok, detail) in result.items() if not ok}
+    assert not bad, f'{variant}: button insertion failures: {bad}'
+
+
+def test_button_retention(built):
+    variant, p, bodies, stl_paths, standoffs = built
+    result = gates_mod.verify_button_retention(bodies, p)
+    bad = {k: v for k, v in result.items() if isinstance(v, tuple) and not v[0]}
+    assert not bad, f'{variant}: button retention failures: {bad}'
+
+
+def test_plunger_reach(built):
+    variant, p, bodies, stl_paths, standoffs = built
+    result = gates_mod.verify_plunger_reach(bodies, p)
+    bad = {k: v for k, v in result.items() if isinstance(v, tuple) and not v[0]}
+    assert not bad, f'{variant}: plunger reach failures: {bad}'
+
+
+def test_skin_intact(built):
+    variant, p, bodies, stl_paths, standoffs = built
+    result = gates_mod.verify_skin_intact(bodies, p)
+    bad = {k: detail for k, (ok, detail) in result.items() if not ok}
+    assert not bad, f'{variant}: skin-intact failures (interior cut reaching the outer skin): {bad}'
+
+
+def test_button_manifold(built):
+    """The cap parts export as their own clean, manifold, single-body
+    STLs (they are separate printed parts -- assembled by hand, not
+    solvent-welded to Top/Bottom)."""
+    variant, p, bodies, stl_paths, standoffs = built
+    for name in ('Power Button', 'Home Button'):
+        report = gates_mod.manifold_and_overhang_check(stl_paths[name], down_z=1.0, bed_z=0.0)
+        assert report['manifold']['manifold'], f'{variant} {name}: non-manifold edges {report["manifold"]}'
+        assert report['body_count']['one_body'], f'{variant} {name}: body count {report["body_count"]}'

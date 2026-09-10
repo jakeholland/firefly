@@ -23,7 +23,7 @@ from . import components as components_mod
 from . import export as export_mod
 from . import gates as gates_mod
 from . import shell
-from .features import corner_blocks, ears, fpc_relief, lug, usb_tunnel
+from .features import buttons, corner_blocks, ears, fpc_relief, lug, usb_tunnel
 from .params import get_params
 
 _CASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -59,6 +59,10 @@ def build(variant='trim'):
     bodies = ears.add_ear(bodies, p, 'S3', standoffs)
     bodies = ears.add_s2_boss(bodies, p, standoffs)
     t['ears_and_s2_boss'] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    bodies = buttons.add_buttons(bodies, p, standoffs)
+    t['buttons'] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
     bodies['Top'] = components_mod.apply_known_component_keepouts(bodies['Top'], p)

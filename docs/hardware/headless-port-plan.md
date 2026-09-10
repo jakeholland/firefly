@@ -83,12 +83,38 @@ In roughly the order `firefly_case.py` itself builds them:
    live-found trade-offs (`corner_block_D_top`, `S3_riser_solid`) still
    open on `trim`, and `current`'s several additional open findings
    (not root-caused this pass, `current` is not the printed variant).
-2. **Buttons** (`button_geometry`, `add_button`, `add_buttons`, the
-   guide-rib/collar mechanism) -- needs the real switch body position;
-   plan to import a switch reference STEP or keep the existing
-   params-derived `switch_power_bbox`/`switch_home_bbox` boxes as a
-   stand-in the way this phase-1 build already does for the display's
-   own sub-components it doesn't yet probe individually.
+2. ~~**Buttons**~~ **DONE, phase 2b** (`features/buttons.py`:
+   `normalize2`, `ray_box_exit_2d`, `button_geometry`, `add_button`,
+   `add_buttons`, `find_switch_body`, `find_outermost_s`,
+   `find_innermost_s`, plus the ear/S2-boss keep-out guard
+   `_ear_boss_keepout_points`/`_clip_of_ear_boss_keepout`; `gates.py`:
+   `verify_button_insertion`, `verify_button_retention`,
+   `verify_plunger_reach`, `verify_skin_intact`) -- kept the existing
+   params-derived `switch_power_bbox`/`switch_home_bbox` boxes to POSITION
+   the mechanism (as originally planned), but the real switch body IS
+   probed live for `verify_plunger_reach` (via `components.load_display`'s
+   already-imported display STEP -- the TS24CA switches are part of that
+   same compound, found by nearest-bbox-center match, `buttons.
+   find_switch_body`, the same trade-off `components.measure_standoffs`
+   already makes for standoff barrels). Every historical correction the
+   README records carries forward: the finding-10 real-actuator-reach fix,
+   `true_wall_distance_along_ray`-based `s_wall`, the finding-9 rib/collar
+   actuator clearance clamp + tab-relief lane, the pass-16 FIX item-4
+   S2-boss tab-relief LANE EXTENSION (`tab_sweep_body`), the pass-15
+   wall-connector + ceiling-gusset fix, and the pass-16 item-D lead-in
+   fillets. `verify_button_insertion`: 0/125 bad, both buttons, both
+   variants (Jake's own live-print regression target). One live-found,
+   port-specific fix not in `firefly_case.py` by name: the button
+   COLLAR (not gated by the source's own checks, which only cover the
+   cap's cutting tools) can overlap the S2 boss arm's/S1 ear riser's
+   real, already-built material -- fixed by subtracting a snapshot of
+   Top from BEFORE `add_buttons` runs from the collar body directly; see
+   `docs/hardware/headless-port-parity.md`'s "Phase 2b" section for the
+   one remaining, accepted noise-floor residual (Home only, ~0.0009mm³,
+   both variants) a cleaner `bd.offset`-based version could not resolve
+   (degenerated to a 2D shape on this solid). Caps export as their own
+   named STL/3MF parts (`gen/export.py`'s existing per-body loop, no
+   changes needed).
 3. **Comms stack / GPS frame / battery bay** (`add_comms_bay` and its
    `add_battery_bay`/`add_comms_stack_frame`/`build_gps_frame_body`
    dependents) -- the L76K/XIAO/Wio STEP files are already staged at
@@ -145,7 +171,7 @@ revision: +8 -- `ear_root_cap_z1`, `add_ear`, `add_s2_boss`,
 | 186 | `revolve_taper_wedge` | ported | geometry.py |
 | 217 | `extrude_taper_wedge_along_y` | ported | geometry.py |
 | 241 | `extrude_taper_cut_along_y` | ported | geometry.py |
-| 268 | `build_wedge_along_x` | deferred | phase 2 -- button guide-rib self-supporting ledge |
+| 268 | `build_wedge_along_x` | deferred | phase 2 item 3 -- GPS hanging-frame ledge (`build_hanging_frame`, :4742/:4743 -- NOT called by add_button/add_buttons, corrected from an earlier note here) |
 | 294 | `add_stadium_loop` | ported | folded into geometry.py `_stadium_face` |
 | 309 | `stadium_solid` | ported | geometry.py |
 | 317 | `stadium_ring_solid` | ported | geometry.py |
@@ -209,11 +235,11 @@ revision: +8 -- `ear_root_cap_z1`, `add_ear`, `add_s2_boss`,
 | 2890 | `get_reference_transform` | deleted-as-quirk | superseded by components.py's empirically-derived transform (see its module docstring) |
 | 2901 | `insert_referenced_component` | deleted-as-quirk | Fusion occurrence-insert API |
 | 2907 | `insert_display_pcba` | ported | components.py `load_display` -- transform derived empirically, not read live from Fusion (see module docstring) |
-| 2930 | `normalize2` | deferred | phase 2 -- button geometry helper |
-| 2935 | `ray_box_exit_2d` | deferred | phase 2 -- button geometry helper |
-| 2954 | `button_geometry` | deferred | phase 2 -- buttons |
-| 3129 | `add_button` | deferred | phase 2 -- buttons |
-| 3639 | `add_buttons` | deferred | phase 2 -- buttons |
+| 2930 | `normalize2` | ported | features/buttons.py |
+| 2935 | `ray_box_exit_2d` | ported | features/buttons.py |
+| 2954 | `button_geometry` | ported | features/buttons.py |
+| 3129 | `add_button` | ported | features/buttons.py |
+| 3639 | `add_buttons` | ported | features/buttons.py |
 | 3717 | `add_usb_tunnel` | ported | features/usb_tunnel.py |
 | 3747 | `lug_ear_geometry` | ported | features/lug.py |
 | 3792 | `add_lug` | ported | features/lug.py |
@@ -291,20 +317,20 @@ revision: +8 -- `ear_root_cap_z1`, `add_ear`, `add_s2_boss`,
 | 6449 | `verify_export_envelope` | todo | driver for check_body_envelope_vertices |
 | 6462 | `verify_m1_probe_table` | todo | SPEC.md profile probe table |
 | 6481 | `true_wall_distance_along_ray` | ported | geometry.py |
-| 6509 | `find_outermost_s` | todo | ray-scan helper, currently only used by button/wall checks |
-| 6522 | `find_innermost_s` | todo | ditto |
-| 6539 | `find_switch_body` | deferred | phase 2 -- buttons |
-| 6560 | `verify_plunger_reach` | deferred | phase 2 -- buttons |
-| 6624 | `verify_button_insertion` | deferred | phase 2 -- buttons |
-| 6684 | `verify_button_retention` | deferred | phase 2 -- buttons |
-| 6758 | `verify_m2` | todo | dimensional gate -- the USB tunnel/lug portions are covered by phase-1’s own build-time asserts; the button portion is deferred with buttons |
+| 6509 | `find_outermost_s` | ported | features/buttons.py |
+| 6522 | `find_innermost_s` | ported | features/buttons.py |
+| 6539 | `find_switch_body` | ported | features/buttons.py -- matches by nearest bbox-center distance within the display's real STEP compound, same no-occurrence-tree trade-off `components.measure_standoffs` already makes |
+| 6560 | `verify_plunger_reach` | ported | gates.py |
+| 6624 | `verify_button_insertion` | ported | gates.py -- 0/125 bad, both buttons, both variants |
+| 6684 | `verify_button_retention` | ported | gates.py |
+| 6758 | `verify_m2` | todo | dimensional gate -- the USB tunnel/lug portions are covered by phase-1's own build-time asserts; the button portion's own numbers (`cap_clearance` 0.25, `plunger_pretravel` 0.3, `nub_pocket` depth 0.8, `tab['gap']` 0.60) are all read directly from PARAMS by `button_geometry`/`add_button` (construction-checked, same argument the source's own docstring makes for why this is "checked by construction"), and `verify_button_retention`'s own `..._tab_gap_0.60` entry restates the tab-gap one live -- a small, standalone `verify_m2` wrapper restating the rest is still not wired as its own function |
 | 6918 | `find_component_occurrence` | deleted-as-quirk | Fusion component-tree walk |
 | 6929 | `organize_components` | deleted-as-quirk | Fusion outline-folder organization, no headless analog needed |
 | 6983 | `verify_structure` | deleted-as-quirk | checks the Fusion outline-folder organization organize_components builds |
 | 7049 | `collect_interference_entities` | deleted-as-quirk | Fusion occurrence-tree walk feeding the live analyzeInterference call |
 | 7107 | `verify_min_clearances` | deferred | phase 2/3 -- needs board occurrences placed |
-| 7135 | `_rect_perimeter_points` | todo | verify_skin_intact helper, deferred with buttons |
-| 7150 | `verify_skin_intact` | deferred | phase 2 -- button tab holes |
+| 7135 | `_rect_perimeter_points` | deleted-as-quirk | unused helper in the source itself (confirmed: never called) -- superseded by verify_skin_intact's own pass-12 simplification (inline t_frac/z/depth sampling), not ported |
+| 7150 | `verify_skin_intact` | ported | gates.py |
 | 7246 | `verify_wall_integrity` | todo | general dome-wall probe -- not button-specific, worth porting standalone |
 | 7358 | `verify_posts_and_bosses` | deleted-as-quirk | targets the retired P1-P4 Screen-Plate posts (pass 16 removed them) -- superseded by verify_root_fillets/verify_corner_blocks |
 | 7431 | `verify_post_walls` | ported | gates.py -- targets screws_D12 (D), same as the pass-16 source |
