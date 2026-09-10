@@ -1,0 +1,22 @@
+# ground-truth low-band onset timestamps (seconds) for firmware/core/tests/fixtures/audio/mic_dump_set_1.wav
+# one-pole cascade matching ff_bandenergy.c's own LOW band filter,
+# local maxima of the half-wave-rectified frame flux above
+# median+2*MAD (threshold=0.500dB this file), >= 350ms apart
+# -- see tools/beat_capture_onsets.py's own header, and
+# docs/specs/S31-music-swarm.md's dated amendment.
+0.380
+1.260
+1.700
+2.300
+2.680
+3.400
+4.220
+4.700
+5.420
+5.840
+6.240
+7.080
+7.900
+8.720
+9.560
+9.960

@@ -539,6 +539,27 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_beat COMMAND test_beat)
 endif()
 
+# 2026-09-09 amendment (fix/s31-beat-real-captures) — core/beat real-
+# capture regression: the SAME ff_beat/ff_bandenergy/ff_wav pipeline run
+# against two real 10s dubstep captures (firmware/core/tests/fixtures/
+# audio/mic_dump_set_{1,2}.wav + their _onsets.txt ground truth) instead
+# of only synthetic signals. See test_beat_captures.c's own top comment.
+if(FF_BUILD_TESTS)
+    add_executable(test_beat_captures
+        tests/test_beat_captures.c
+    )
+    target_compile_definitions(test_beat_captures PRIVATE
+        FF_BEAT_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/audio"
+    )
+    target_link_libraries(test_beat_captures PRIVATE ff-core unity)
+    if(UNIX)
+        target_link_libraries(test_beat_captures PRIVATE m)
+    endif()
+    ff_apply_warnings(test_beat_captures)
+
+    add_test(NAME test_beat_captures COMMAND test_beat_captures)
+endif()
+
 # S31 — core/swarm: Music/Swarm's deterministic 60-particle simulation.
 # Pure C11, no I/O, host-testable. See ff_swarm.h.
 if(FF_BUILD_TESTS)
