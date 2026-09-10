@@ -343,9 +343,25 @@ typedef struct {
     uint32_t n_samples;
 
     bool valid; /* true once at least one window has ever closed */
+    uint32_t last_valid_ms; /* lv_tick_get() at the moment `valid` most recently became/stayed true — 2026-09-09
+                                amendment, the "keep the last values for 30s after leaving the face" fix below */
     float last_frame_period_avg_ms;
     uint32_t last_canvas_draw_avg_us;
 } music_frame_stats_t;
+
+/** 2026-09-09 amendment (fix/s31-beat-real-audio, docs/specs/
+ *  S31-music-swarm.md's dated amendment) — `ff_scr_music_debug_frame_
+ *  stats` reports `frame_ms=n/a canvas_us=n/a` once the last real
+ *  window closed more than this long ago, rather than showing an
+ *  ARBITRARILY stale number forever (this file's own `s_frame_stats` is
+ *  only ever reset on the NEXT face build — nothing previously bounded
+ *  how old "the last real numbers" could be once the face was left).
+ *  30s: long enough that a bench operator who just left Music and reads
+ *  the console a few seconds later still sees the real numbers from the
+ *  session that just ended (the deliverable's own stated acceptance),
+ *  short enough that a MUCH later read (a different face, a different
+ *  session entirely) gets the honest n/a it should. */
+#define FF_SCR_MUSIC_FRAME_STATS_KEEP_MS 30000u
 
 static music_frame_stats_t s_frame_stats;
 
@@ -679,6 +695,7 @@ static void music_frame_stats_add(uint32_t period_ms, uint32_t draw_us, uint32_t
         s_frame_stats.last_frame_period_avg_ms = (float)s_frame_stats.sum_period_ms / (float)s_frame_stats.n_samples;
         s_frame_stats.last_canvas_draw_avg_us = s_frame_stats.sum_draw_us / s_frame_stats.n_samples;
         s_frame_stats.valid = true;
+        s_frame_stats.last_valid_ms = now_ms; /* 2026-09-09 amendment — see FF_SCR_MUSIC_FRAME_STATS_KEEP_MS's own doc comment */
 
         s_frame_stats.window_start_ms = now_ms;
         s_frame_stats.sum_period_ms = 0u;
@@ -892,7 +909,15 @@ uint32_t ff_scr_music_debug_render_ticks(void)
 ff_scr_music_frame_stats_t ff_scr_music_debug_frame_stats(void)
 {
     ff_scr_music_frame_stats_t out = {0};
-    out.valid = s_frame_stats.valid;
+    if (!s_frame_stats.valid) return out; /* honest: no window has ever closed this session */
+
+    /* 2026-09-09 amendment — see FF_SCR_MUSIC_FRAME_STATS_KEEP_MS's own
+     * doc comment: stale beyond the keep window reports the same honest
+     * n/a as "never populated", never an arbitrarily old number. */
+    uint32_t const age_ms = lv_tick_get() - s_frame_stats.last_valid_ms; /* wraparound-safe over any real session length */
+    if (age_ms > FF_SCR_MUSIC_FRAME_STATS_KEEP_MS) return out;
+
+    out.valid = true;
     out.frame_period_avg_ms = s_frame_stats.last_frame_period_avg_ms;
     out.canvas_draw_avg_us = s_frame_stats.last_canvas_draw_avg_us;
     return out;

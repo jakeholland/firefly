@@ -294,6 +294,50 @@ static void dbgcmd_mic_watch_rejects_missing_or_trailing_arg(void)
     TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic watch 10 now", &cmd));
 }
 
+/* 2026-09-09 amendment (fix/s31-beat-real-audio) — "mic dump <secs>":
+ * identical shape to "mic watch <secs>" above, its own tighter 1-10s
+ * range (FF_DBGCMD_MIC_DUMP_MIN_S/_MAX_S, ff_dbgcmd.h). */
+static void dbgcmd_mic_dump_parses_seconds(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("mic dump 5", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_MIC_DUMP, cmd.kind);
+    TEST_ASSERT_EQUAL_UINT32(5u, cmd.u.mic_dump_secs);
+}
+
+static void dbgcmd_mic_dump_accepts_boundaries(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("mic dump 1", &cmd));
+    TEST_ASSERT_EQUAL_UINT32(1u, cmd.u.mic_dump_secs);
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("mic dump 10", &cmd));
+    TEST_ASSERT_EQUAL_UINT32(10u, cmd.u.mic_dump_secs);
+}
+
+static void dbgcmd_mic_dump_rejects_out_of_range(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic dump 0", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic dump 11", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic dump 30", &cmd)); /* valid for watch, not dump */
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic dump 999", &cmd));
+}
+
+static void dbgcmd_mic_dump_rejects_non_decimal(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic dump ten", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic dump -5", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic dump 1.5", &cmd));
+}
+
+static void dbgcmd_mic_dump_rejects_missing_or_trailing_arg(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic dump", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic dump 5 now", &cmd));
+}
+
 static void dbgcmd_mic_unknown_sub_verb_rejected(void)
 {
     ff_dbgcmd_t cmd;
@@ -682,6 +726,11 @@ int main(void)
     RUN_TEST(dbgcmd_mic_watch_rejects_out_of_range);
     RUN_TEST(dbgcmd_mic_watch_rejects_non_decimal);
     RUN_TEST(dbgcmd_mic_watch_rejects_missing_or_trailing_arg);
+    RUN_TEST(dbgcmd_mic_dump_parses_seconds);
+    RUN_TEST(dbgcmd_mic_dump_accepts_boundaries);
+    RUN_TEST(dbgcmd_mic_dump_rejects_out_of_range);
+    RUN_TEST(dbgcmd_mic_dump_rejects_non_decimal);
+    RUN_TEST(dbgcmd_mic_dump_rejects_missing_or_trailing_arg);
     RUN_TEST(dbgcmd_mic_unknown_sub_verb_rejected);
 
     RUN_TEST(dbgcmd_music_parses);

@@ -158,6 +158,7 @@ static void dbgconsole_help(ff_dbgconsole_reply_fn reply, void *user)
     reply_line(reply, user, "dbg: mic on                   S30: start the mic channel + reader task");
     reply_line(reply, user, "dbg: mic off                  S30: stop them");
     reply_line(reply, user, "dbg: mic watch <secs>         S30: print RMS/peak/envelope every 250ms, 1-30s");
+    reply_line(reply, user, "dbg: mic dump <secs>          2026-09-09: stream raw 16kHz PCM as base64, 1-10s");
     reply_line(reply, user, "dbg: music                    S31: beat detector source/loudness/bpm-estimate");
     reply_line(reply, user, "dbg: music seed <n>           S31: reseed the swarm (bench determinism)");
 }
@@ -904,6 +905,9 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
     case FF_DBGCMD_MIC_OFF: dbgconsole_mic(mic, FF_DBGCONSOLE_MIC_OFF, 0u, user, reply, user); return;
     case FF_DBGCMD_MIC_WATCH:
         dbgconsole_mic(mic, FF_DBGCONSOLE_MIC_WATCH, cmd.u.mic_watch_secs, user, reply, user);
+        return;
+    case FF_DBGCMD_MIC_DUMP:
+        dbgconsole_mic(mic, FF_DBGCONSOLE_MIC_DUMP, cmd.u.mic_dump_secs, user, reply, user);
         return;
     case FF_DBGCMD_MUSIC: dbgconsole_music(sh, music_frame, user, reply, user); return;
     case FF_DBGCMD_MUSIC_SEED: dbgconsole_music_seed(sh, cmd.u.music_seed, reply, user); return;

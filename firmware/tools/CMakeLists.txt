@@ -62,3 +62,22 @@ if(FF_BUILD_TESTS)
     add_test(NAME probe_node_selftest
              COMMAND ${FF_PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/dev/probe_node.py --selftest)
 endif()
+
+# ---------------------------------------------------------------------------
+# beat_replay.py --selftest (2026-09-09 amendment, fix/s31-beat-real-audio,
+# docs/specs/S30-audio-input.md's `mic dump` addition) — the `mic dump`
+# decode/synth tool's own library-free test suite, same "wire it into ctest
+# so it cannot ship broken" reasoning as probe_node_selftest just above.
+# Standard-library-only (base64/wave/struct/math), same as that tool.
+# `tools/beat_replay.py` lives at this repo's TOP LEVEL (sibling of
+# `firmware/`, not under `firmware/tools/`) — CMAKE_SOURCE_DIR here is the
+# `firmware/` project root, so `../tools` reaches it.
+# ---------------------------------------------------------------------------
+if(FF_BUILD_TESTS)
+    find_program(FF_PYTHON3 python3)
+    if(NOT FF_PYTHON3)
+        set(FF_PYTHON3 python3) # see probe_node_selftest's own comment: fail loudly, never skip silently
+    endif()
+    add_test(NAME beat_replay_selftest
+             COMMAND ${FF_PYTHON3} ${CMAKE_SOURCE_DIR}/../tools/beat_replay.py --selftest)
+endif()

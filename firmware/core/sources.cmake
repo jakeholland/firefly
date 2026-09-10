@@ -57,6 +57,8 @@ set(FF_CORE_SOURCES
     src/ff_meshname.c        # NAME in Settings — charset sanitize + Meshtastic short-name derivation
     src/ff_find.c             # S29 PR2 — FIND mode session state machine (active pings)
     src/ff_miclevel.c        # S30 — mic level math (RMS/peak dBFS, DC-block HPF, attack/release envelope)
+    src/ff_base64.c          # 2026-09-09 amendment — pure base64 encoder ('mic dump' console command)
+    src/ff_bandenergy.c      # S31 amendment (2026-09-09) — low/mid band-limited energy (real-music onset input)
     src/ff_beat.c             # S31 — Music/Swarm beat/loudness detector (auto-ranging + onset)
     src/ff_swarm.c            # S31 — Music/Swarm 60-particle deterministic simulation
 )

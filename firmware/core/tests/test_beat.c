@@ -23,12 +23,24 @@ void tearDown(void) {}
 
 #define TICK_MS 20u /* 50 Hz nominal mic frame rate, ff_beat.h's own documented input cadence */
 
+/* 2026-09-09 amendment (fix/s31-beat-real-audio): the onset detector now
+ * runs on `low_band_dbfs`/`mid_band_dbfs` (ff_bandenergy.h), not
+ * `env_dbfs` — see ff_beat.h's own top comment. Every test in THIS file
+ * that only cares about a single broadband level jump (the click train,
+ * the slow swell, the loudness-ranging tests) feeds the SAME value into
+ * every level field: a click/swell is a genuine broadband event, so it
+ * shows up identically in every band too — an honest, simplifying model
+ * for a synthetic single-number test signal, not a claim that real
+ * music ever behaves this way (see test_beat_music.c for tests that
+ * DO give the two bands independently meaningful values). */
 static ff_beat_sample_t mic_sample(float env_dbfs)
 {
     ff_beat_sample_t s = {0};
     s.source = FF_BEAT_SOURCE_MIC;
     s.env_dbfs = env_dbfs;
     s.rms_dbfs = env_dbfs;
+    s.low_band_dbfs = env_dbfs;
+    s.mid_band_dbfs = env_dbfs;
     return s;
 }
 
@@ -267,6 +279,155 @@ static void source_selects_the_matching_detector(void)
     TEST_ASSERT_EQUAL_INT(FF_BEAT_SOURCE_IMU, b.source);
 }
 
+/* --------------------------------------------------------------------
+ * 2026-09-09 amendment (fix/s31-beat-real-audio): synthetic REAL-MUSIC
+ * signals — the on-device evidence this amendment fixes (loudness=0.82,
+ * bpm=0.0 for an entire 15s real-music set) could never have been
+ * caught by the click-train test above, which is a genuine broadband
+ * transient in near-silence — exactly the one case the OLD detector was
+ * tuned for. These two tests instead model a 128 BPM four-on-the-floor
+ * kick with a COMPRESSED broadband envelope (only a 3-5dB swing on
+ * `env_dbfs`, mirroring a mastered track sitting near a limiter's
+ * ceiling throughout) but a real per-band attack/decay punch on each
+ * kick — the shape a low band (or, for the "phone speaker" variant,
+ * only the mid band) actually shows even under that same broadband
+ * compression. See ff_bandenergy.h/ff_beat.h's own top comments for why
+ * this is exactly the fix's own thesis: band-limited flux survives
+ * broadband compression that would otherwise hide the kick entirely.
+ * ------------------------------------------------------------------- */
+
+/** A single kick's percussive envelope: a fast (one-tick) linear attack
+ *  to `peak_db` above baseline, then an exponential decay back down
+ *  with time constant `decay_tau_ms` — `phase_ms` is time since this
+ *  kick's own onset (see the callers below for how that is tracked on
+ *  the test's own 20ms tick grid, mirroring `click_train_128bpm_...`'s
+ *  own `next_click_ms` bookkeeping). `peak_db == 0` (the phone-speaker
+ *  variant's suppressed band) always returns 0 — an honest "no bump
+ *  here", not a fabricated tiny one. */
+static float kick_bump_db(float phase_ms, float attack_ms, float decay_tau_ms, float peak_db)
+{
+    if (peak_db == 0.0f || phase_ms < 0.0f) return 0.0f;
+    if (phase_ms <= attack_ms) {
+        return peak_db * (phase_ms / attack_ms);
+    }
+    return peak_db * expf(-(phase_ms - attack_ms) / decay_tau_ms);
+}
+
+/** Runs `n_ticks` of a `bpm`-tempo kick through a fresh detector.
+ *  `low_peak_db`/`mid_peak_db` let the two variants below (normal vs.
+ *  phone-speaker-suppressed-low) share one driver. Fills
+ *  `expected_kick_ms`/`observed_beat_ms` (capacity `cap`, actual counts
+ *  in `*n_expected`/`*n_observed`) exactly like
+ *  `click_train_128bpm_yields_beats_within_30ms` does, and returns the
+ *  detector's own final `bpm_estimate`. */
+static float run_synthetic_kick(float bpm, float low_peak_db, float mid_peak_db, int n_ticks, float *expected_kick_ms,
+                                 int cap, int *n_expected, uint32_t *observed_beat_ms, int *n_observed,
+                                 ff_beat_t *out_final)
+{
+    ff_beat_t b;
+    ff_beat_reset(&b);
+
+    float const period_ms = 60000.0f / bpm;
+    float const attack_ms = 20.0f;
+    float const decay_tau_ms = 80.0f;
+    float const env_baseline_db = -8.0f;   /* compressed broadband floor — near the assumed limiter ceiling */
+    float const env_swing_db = 4.0f;       /* 3-5dB broadband swing per the deliverable's own "compressed" spec */
+    float const low_baseline_db = -25.0f;
+    float const mid_baseline_db = -30.0f;
+
+    float next_kick_ms = period_ms; /* first kick, not at t=0 (t=0 is the quiet count-in) */
+    float last_kick_start_ms = -1000.0f; /* far enough in the past that phase_ms is huge (bump == 0) before the first kick */
+    uint32_t now = 0u;
+    *n_expected = 0;
+    *n_observed = 0;
+    uint32_t last_seen_count = 0u;
+
+    for (int i = 0; i < n_ticks; i++) {
+        now += TICK_MS;
+        if ((float)now >= next_kick_ms && *n_expected < cap) {
+            expected_kick_ms[(*n_expected)++] = (float)now;
+            last_kick_start_ms = (float)now;
+            next_kick_ms += period_ms;
+        }
+        float const phase_ms = (float)now - last_kick_start_ms;
+        float const low_bump = kick_bump_db(phase_ms, attack_ms, decay_tau_ms, low_peak_db);
+        float const mid_bump = kick_bump_db(phase_ms, attack_ms, decay_tau_ms, mid_peak_db);
+        /* The broadband envelope gets a much SMALLER, capped bump — the
+         * compressed-mix behavior this whole fix is about: the kick is
+         * clearly visible per-band but nearly invisible broadband. */
+        float const env_bump = (low_bump + mid_bump > 0.0f) ? env_swing_db : 0.0f;
+
+        ff_beat_sample_t s = {0};
+        s.source = FF_BEAT_SOURCE_MIC;
+        s.env_dbfs = env_baseline_db + env_bump;
+        s.rms_dbfs = s.env_dbfs;
+        s.low_band_dbfs = low_baseline_db + low_bump;
+        s.mid_band_dbfs = mid_baseline_db + mid_bump;
+
+        ff_beat_update(&b, &s, TICK_MS, now);
+        if (b.beat_count != last_seen_count) {
+            last_seen_count = b.beat_count;
+            if (*n_observed < cap) observed_beat_ms[(*n_observed)++] = b.last_beat_ms;
+        }
+    }
+
+    if (out_final != NULL) *out_final = b;
+    return b.bpm_estimate;
+}
+
+static void assert_beats_track_kicks_within_40ms(float const *expected_kick_ms, int n_expected,
+                                                  uint32_t const *observed_beat_ms, int n_observed)
+{
+    TEST_ASSERT_GREATER_OR_EQUAL_INT_MESSAGE(10, n_observed, "128 BPM synthetic kick produced too few beats over 7s");
+    int const limit = (n_observed < n_expected) ? n_observed : n_expected;
+    for (int i = 0; i < limit; i++) {
+        float const diff = (float)observed_beat_ms[i] - expected_kick_ms[i];
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(40.0f, 0.0f, diff, "beat did not land within +-40ms of its kick");
+    }
+}
+
+/** The deliverable's own headline case: a 128 BPM kick with a sustained
+ *  bass line, compressed broadband dynamic range, detected via the LOW
+ *  band (the kick's own fundamental). */
+static void synthetic_music_128bpm_kick_yields_beats_within_40ms_and_bpm_within_3(void)
+{
+    float expected_kick_ms[16];
+    uint32_t observed_beat_ms[16];
+    int n_expected = 0, n_observed = 0;
+    ff_beat_t final_state;
+
+    float const bpm_estimate = run_synthetic_kick(128.0f, /*low_peak_db=*/15.0f, /*mid_peak_db=*/2.0f, 350,
+                                                   expected_kick_ms, 16, &n_expected, observed_beat_ms, &n_observed,
+                                                   &final_state);
+
+    assert_beats_track_kicks_within_40ms(expected_kick_ms, n_expected, observed_beat_ms, n_observed);
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(3.0f, 128.0f, bpm_estimate, "BPM estimate not within +-3 of 128");
+    (void)final_state; /* loudness auto-ranging is unchanged by this amendment and has its own dedicated coverage
+                           above (a_steady_level_settles_to_near_zero_loudness et al.) — this test's own synthetic
+                           envelope shape has no particular loudness value to pin */
+}
+
+/** "Phone speaker" variant — high-passed at ~150Hz, per the deliverable:
+ *  the LOW band never moves (`low_peak_db == 0`, an honest "the bass is
+ *  gone"), so detection must come entirely from the MID band instead —
+ *  this is what actually exercises the detector's OR-across-bands
+ *  fusion (ff_beat.c's own `low_onset || mid_onset`), which the LOW-only
+ *  case above cannot distinguish from a "MID is ignored" bug. */
+static void synthetic_phone_speaker_kick_yields_beats_within_40ms_and_bpm_within_3(void)
+{
+    float expected_kick_ms[16];
+    uint32_t observed_beat_ms[16];
+    int n_expected = 0, n_observed = 0;
+    ff_beat_t final_state;
+
+    float const bpm_estimate = run_synthetic_kick(128.0f, /*low_peak_db=*/0.0f, /*mid_peak_db=*/15.0f, 350,
+                                                   expected_kick_ms, 16, &n_expected, observed_beat_ms, &n_observed,
+                                                   &final_state);
+
+    assert_beats_track_kicks_within_40ms(expected_kick_ms, n_expected, observed_beat_ms, n_observed);
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(3.0f, 128.0f, bpm_estimate, "BPM estimate not within +-3 of 128");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -280,5 +441,7 @@ int main(void)
     RUN_TEST(slow_swell_yields_no_beats);
     RUN_TEST(imu_bounce_2hz_yields_2_beats_per_second);
     RUN_TEST(source_selects_the_matching_detector);
+    RUN_TEST(synthetic_music_128bpm_kick_yields_beats_within_40ms_and_bpm_within_3);
+    RUN_TEST(synthetic_phone_speaker_kick_yields_beats_within_40ms_and_bpm_within_3);
     return UNITY_END();
 }

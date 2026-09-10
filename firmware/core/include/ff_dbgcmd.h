@@ -154,6 +154,18 @@
  * (`firmware/app/ff_debug_console.c`) routes all four through a single
  * platform hook (`ff_dbgconsole_mic_fn`, `ff_debug_console.h`), honestly
  * unavailable on a target with no mic driver wired up (the sim).
+ *
+ * `mic dump <secs>` (2026-09-09 amendment, fix/s31-beat-real-audio,
+ * docs/specs/S30-audio-input.md) is a FIFTH `mic` sub-verb, its own
+ * `ff_dbgcmd_kind_t` (`FF_DBGCMD_MIC_DUMP`) alongside the four above —
+ * same bare-verb-plus-fixed-sub-verb-plus-one-decimal-argument shape as
+ * `mic watch <secs>`, reusing `parse_u32_dec` identically, just its own
+ * (tighter — see `FF_DBGCMD_MIC_DUMP_MIN_S`/`_MAX_S`'s own doc comment)
+ * range. Streams the reader task's raw 16kHz mono samples to the
+ * console as base64 text (the coordinator's own capture workflow,
+ * `tools/beat_replay.py`) — this parser still carries no mic policy of
+ * its own; the actual ring-buffer/streaming plumbing lives entirely in
+ * the esp32s3 target (`ff_mic.h`'s own doc comment).
  */
 #ifndef FF_DBGCMD_H
 #define FF_DBGCMD_H
@@ -187,6 +199,16 @@ extern "C" {
 #define FF_DBGCMD_MIC_WATCH_MIN_S 1u
 #define FF_DBGCMD_MIC_WATCH_MAX_S 30u
 
+/** `mic dump <secs>` bounds (2026-09-09 amendment, fix/s31-beat-real-
+ *  audio) — see this header's top comment, "mic dump", just below.
+ *  Capped at 10s (not `mic watch`'s 30s): a dump streams every raw
+ *  sample as base64 text, not one summary line every 250ms, so the
+ *  console/USB-serial-JTAG bandwidth budget is a lot tighter per second
+ *  of capture — 10s is comfortably enough to catch a handful of beats
+ *  at any real-world tempo without threatening to run away. */
+#define FF_DBGCMD_MIC_DUMP_MIN_S 1u
+#define FF_DBGCMD_MIC_DUMP_MAX_S 10u
+
 /** Every line this parser recognizes. `FF_DBGCMD_NONE` is the zero value
  *  used for "nothing parsed yet" / a rejected line; it is never a
  *  successful parse's `kind`. */
@@ -218,6 +240,7 @@ typedef enum {
     FF_DBGCMD_MIC_ON,       /* S30: "mic on" */
     FF_DBGCMD_MIC_OFF,      /* S30: "mic off" */
     FF_DBGCMD_MIC_WATCH,    /* S30: "mic watch <secs>" — u.mic_watch_secs, 1-30 */
+    FF_DBGCMD_MIC_DUMP,     /* 2026-09-09 amendment: "mic dump <secs>" — u.mic_dump_secs, 1-10 */
     FF_DBGCMD_MUSIC,        /* S31: "music" bare — source/loudness/bpm-estimate */
     FF_DBGCMD_MUSIC_SEED,   /* S31: "music seed <n>" — u.music_seed, bench-determinism reseed */
 } ff_dbgcmd_kind_t;
@@ -263,6 +286,7 @@ typedef struct {
         } dm;
         uint32_t node;             /* S29 PR2: PING/FIND target node id */
         uint32_t mic_watch_secs;   /* S30: "mic watch <secs>" duration, already bounds-checked */
+        uint32_t mic_dump_secs;    /* 2026-09-09 amendment: "mic dump <secs>" duration, already bounds-checked */
         uint32_t music_seed;       /* S31: "music seed <n>" — the swarm PRNG seed to apply next build */
     } u;
 } ff_dbgcmd_t;

@@ -160,25 +160,28 @@ typedef void (*ff_dbgconsole_perf_fn)(void *user, ff_dbgconsole_reply_fn reply, 
 /**
  * ff_dbgconsole_mic_action_t / ff_dbgconsole_mic_fn — S30 mic bring-up:
  * the `mic`/`mic on`/`mic off`/`mic watch <secs>` commands' ONE platform
- * hook (docs/specs/S30-audio-input.md). Follows `ff_dbgconsole_perf_fn`'s
- * shape (handed the reply sink directly, emits its own already-
- * `"dbg: mic "`-prefixed lines), for the same reason: this is device-only
- * data with no home in `ff_shell_t` (the esp32s3-only `ff_mic` component
- * — this dispatcher never touches it directly, CLAUDE.md's "I/O lives in
- * the target" placement rule) reporting a variable NUMBER of lines
- * (`mic watch` prints repeatedly). One hook, not four, because all four
- * sub-commands are "do a small thing to the SAME mic driver, then report
- * its status" — a single `action` argument dispatches inside the hook the
+ * hook (docs/specs/S30-audio-input.md), joined by a FIFTH — `mic dump
+ * <secs>` — in the 2026-09-09 amendment (fix/s31-beat-real-audio,
+ * docs/specs/S30-audio-input.md's own dated addition). Follows
+ * `ff_dbgconsole_perf_fn`'s shape (handed the reply sink directly, emits
+ * its own already-`"dbg: mic "`-prefixed lines), for the same reason:
+ * this is device-only data with no home in `ff_shell_t` (the esp32s3-
+ * only `ff_mic` component — this dispatcher never touches it directly,
+ * CLAUDE.md's "I/O lives in the target" placement rule) reporting a
+ * variable NUMBER of lines (`mic watch` prints repeatedly; `mic dump`
+ * streams a whole capture). One hook, not five, because every sub-
+ * command is "do a small thing to the SAME mic driver, then report its
+ * status" — a single `action` argument dispatches inside the hook the
  * exact same way `ff_dbgcmd_kind_t` already dispatches at the parser
- * layer, rather than this header growing three more `ff_dbgconsole_
- * handle_line` parameters for four closely-related verbs.
+ * layer, rather than this header growing more `ff_dbgconsole_
+ * handle_line` parameters for each closely-related verb.
  *
  * `mic`/`mic on`/`mic off` are expected to be effectively instantaneous
  * (a channel enable/disable plus a status read) — the hook returns
  * before `ff_dbgconsole_handle_line` does, same as every other command.
  * `mic watch` is the one deliberate exception: per the deliverable's own
  * "print once per 250ms for up to 30s, then stop", the hook BLOCKS for
- * up to `watch_secs` seconds, printing a line every ~250ms — this
+ * up to `secs` seconds, printing a line every ~250ms — this
  * freezes the calling task (on the esp32s3 target, the render-loop task
  * `dbgconsole_poll` runs on) for that entire window, a deliberate,
  * bounded (`FF_DBGCMD_MIC_WATCH_MAX_S` = 30s, ff_dbgcmd.h), bench-only
@@ -188,13 +191,13 @@ typedef void (*ff_dbgconsole_perf_fn)(void *user, ff_dbgconsole_reply_fn reply, 
  * implementation feeds the task watchdog (`esp_task_wdt_reset`) on every
  * iteration of that internal loop so a 30s `mic watch` never trips it.
  *
- * `watch_secs` is meaningful only for `FF_DBGCONSOLE_MIC_WATCH` (already
- * range-checked by the parser into `ff_dbgcmd.h`'s
- * `[FF_DBGCMD_MIC_WATCH_MIN_S, FF_DBGCMD_MIC_WATCH_MAX_S]` — the hook
- * never has to re-validate it); 0 for every other action.
+ * `secs` is meaningful only for `FF_DBGCONSOLE_MIC_WATCH`/
+ * `FF_DBGCONSOLE_MIC_DUMP` (already range-checked by the parser — see
+ * this typedef's own doc comment just below for both ranges); 0 for
+ * every other action.
  *
  * `mic == NULL` (the sim, which has no mic driver at all) makes every
- * one of the four commands reply with the single honest line
+ * one of the five commands reply with the single honest line
  * `"dbg: mic unavailable on this target"` — this function's own job,
  * mirroring `perf == NULL`'s identical single-line contract above,
  * never the hook's.
@@ -204,9 +207,39 @@ typedef enum {
     FF_DBGCONSOLE_MIC_ON,
     FF_DBGCONSOLE_MIC_OFF,
     FF_DBGCONSOLE_MIC_WATCH,
+    FF_DBGCONSOLE_MIC_DUMP, /* 2026-09-09 amendment: "mic dump <secs>" — see this typedef's own doc comment below */
 } ff_dbgconsole_mic_action_t;
 
-typedef void (*ff_dbgconsole_mic_fn)(void *user, ff_dbgconsole_mic_action_t action, uint32_t watch_secs,
+/** `secs` is meaningful for `FF_DBGCONSOLE_MIC_WATCH` (already range-
+ *  checked into `[FF_DBGCMD_MIC_WATCH_MIN_S, _MAX_S]`) and
+ *  `FF_DBGCONSOLE_MIC_DUMP` (checked into `[FF_DBGCMD_MIC_DUMP_MIN_S,
+ *  _MAX_S]`, ff_dbgcmd.h) — 0 for every other action.
+ *
+ * `FF_DBGCONSOLE_MIC_DUMP` (2026-09-09 amendment, fix/s31-beat-real-
+ * audio, docs/specs/S30-audio-input.md) streams the reader task's raw
+ * 16kHz mono samples to the console as base64 TEXT LINES, frame-aligned
+ * (one 20ms/320-sample frame per line), for up to `secs` seconds
+ * (bounded, `FF_DBGCMD_MIC_DUMP_MAX_S` = 10s) — the coordinator's own
+ * capture workflow (this repo's `tools/beat_replay.py` decodes the
+ * result back into a WAV file). Like `FF_DBGCONSOLE_MIC_WATCH`, this
+ * BLOCKS the calling task for the whole duration (same bench-only
+ * tradeoff, same doc comment reasoning as `mic watch` above — see
+ * `ff_dbgconsole_handle_line`'s own top comment, "mic watch's blocking-
+ * duration contract"). Two behaviors are specific to `dump`, not shared
+ * with `watch`:
+ *   - it FORCES the mic on for the duration of the dump, even if no
+ *     face currently wants it (`ff_shell_music_wants_mic` reading
+ *     false — e.g. Music is not even open), and restores whatever
+ *     state the mic was actually in before the dump started once it
+ *     finishes — a bench engineer capturing audio should not first have
+ *     to open the Music face and keep it open;
+ *   - the underlying reader task copies frames into a small ring buffer
+ *     this hook drains; a frame the ring has no room for (the console's
+ *     own base64-encode-and-write falling behind the mic's 50Hz
+ *     production rate) is DROPPED, never blocks the reader — the
+ *     dropped-frame COUNT is reported honestly in the dump's own
+ *     trailer line, never silently absorbed. */
+typedef void (*ff_dbgconsole_mic_fn)(void *user, ff_dbgconsole_mic_action_t action, uint32_t secs,
                                       ff_dbgconsole_reply_fn reply, void *reply_user);
 
 /**

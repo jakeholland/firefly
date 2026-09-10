@@ -193,6 +193,18 @@ typedef struct {
     float rms_dbfs;
     float peak_dbfs;
     float envelope_dbfs;
+    /* 2026-09-09 amendment (fix/s31-beat-real-audio) — `ff_bandenergy.h`
+     * (firmware/core) low (~60-200Hz) / mid (~200-2000Hz) band RMS dBFS
+     * for the SAME frame `rms_dbfs`/`peak_dbfs`/`envelope_dbfs` above
+     * describe, computed from the identical DC-removed samples. This is
+     * what `ff_shell_set_beat_input` now feeds the real-music onset
+     * detector — see `ff_beat.h`'s own top comment for why the broadband
+     * numbers above could never see a kick drum in a compressed mix.
+     * `FF_MICLEVEL_FLOOR_DBFS`, never NaN/-inf, before the first frame or
+     * whenever `ff_mic_status().present` is false — same convention as
+     * every other field here. */
+    float low_band_dbfs;
+    float mid_band_dbfs;
 } ff_mic_level_t;
 
 ff_mic_level_t ff_mic_level(void);
@@ -210,6 +222,69 @@ ff_mic_level_t ff_mic_level(void);
  * build on rather than adding its own copy-out path later.
  */
 size_t ff_mic_last_frame(int16_t *dst, size_t n);
+
+/**
+ * `mic dump <secs>` device-side plumbing — 2026-09-09 amendment
+ * (fix/s31-beat-real-audio, docs/specs/S30-audio-input.md). The bench
+ * console (`app_main.c`'s `dbgconsole_mic_dump`) needs to stream a
+ * whole capture out over USB-Serial-JTAG at the mic's own real-time
+ * production rate, base64-encoding and writing each frame as it goes —
+ * that write can legitimately take longer than one 20ms frame period
+ * (a slow terminal, USB backpressure). The reader task itself (this
+ * file's own top comment, "Reader task — always looping, always
+ * bounded") must NEVER block waiting for that: it copies each frame
+ * into a small RING BUFFER instead (`FF_MIC_DUMP_RING_FRAMES` deep —
+ * ~1.28s of headroom at 20ms/frame) and moves on immediately, dropping
+ * (never blocking on) a frame the ring has no room for. The console
+ * drains the ring at its own pace via `ff_mic_dump_pop`.
+ *
+ * `ff_mic_dump_start` arms capture (clears the ring and the drop/
+ * capture counters) — a no-op if `ff_mic_init` never succeeded.
+ * `ff_mic_dump_stop` disarms it; frames pushed after this call are
+ * simply not copied (the reader task's own per-frame cost when NOT
+ * dumping is one boolean check). Both are safe to call repeatedly.
+ */
+void ff_mic_dump_start(void);
+void ff_mic_dump_stop(void);
+
+/** Ring capacity, in frames — see this section's own top comment.
+ *  40,960 bytes total (`FF_MIC_DUMP_RING_FRAMES * FF_MIC_FRAME_SAMPLES
+ *  * sizeof(int16_t)`), placed in PSRAM (`ff_mic.c`'s own allocation
+ *  comment) precisely so this budget can be generous without pressuring
+ *  the S3's much smaller internal DRAM. */
+#define FF_MIC_DUMP_RING_FRAMES 64u
+
+/** One popped frame: `FF_MIC_FRAME_SAMPLES` DC-removed int16 samples
+ *  (the same samples `ff_mic_last_frame` copies out), verbatim — no
+ *  further processing. */
+typedef struct {
+    int16_t samples[FF_MIC_FRAME_SAMPLES];
+} ff_mic_dump_frame_t;
+
+/**
+ * ff_mic_dump_pop — remove and return the OLDEST captured frame still
+ * in the ring, if any. Returns true and fills `*out` on success; false
+ * (leaving `*out` untouched) if the ring is currently empty — the
+ * caller (the console's own drain loop) is expected to poll this at
+ * roughly the mic's own frame period and treat "empty" as "nothing new
+ * yet", not an error. `out == NULL` is a safe false.
+ */
+bool ff_mic_dump_pop(ff_mic_dump_frame_t *out);
+
+/** ff_mic_dump_stats_t / ff_mic_dump_stats — the current dump session's
+ *  own honest counters, for the console's trailer line.
+ *  `frames_captured` is every frame the reader task successfully pushed
+ *  into the ring since the last `ff_mic_dump_start` (lifetime, NOT just
+ *  what is still queued — popped frames still count); `frames_dropped`
+ *  is every frame the reader task could not push because the ring was
+ *  full at that moment (never silently absorbed — see this section's
+ *  own top comment). Both reset to 0 by `ff_mic_dump_start`. */
+typedef struct {
+    uint32_t frames_captured;
+    uint32_t frames_dropped;
+} ff_mic_dump_stats_t;
+
+ff_mic_dump_stats_t ff_mic_dump_stats(void);
 
 #ifdef __cplusplus
 }

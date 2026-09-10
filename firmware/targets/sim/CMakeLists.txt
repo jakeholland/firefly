@@ -253,6 +253,32 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_ctl_music_idle_drain COMMAND test_ctl_music_idle_drain)
 
+    # 2026-09-09 amendment (fix/s31-beat-real-audio): the `music` bench
+    # console line's frame_ms/canvas_us fragment never populated on real
+    # hardware for an entire 15s session (docs/specs/S31-music-swarm.md's
+    # dated amendment). Builds Music for real, drives its per-frame timer
+    # with real lv_timer_handler() calls under a mock clock, and reads
+    # ff_scr_music_debug_frame_stats() directly — the exact function the
+    # console hook calls — proving it reports real numbers after a
+    # build+timer run, and that those numbers survive leaving the face
+    # for 30s before honestly expiring back to n/a.
+    add_executable(test_ctl_music_frame_stats
+        tests/test_ctl_music_frame_stats.c
+        screenshot.c
+    )
+    target_link_libraries(test_ctl_music_frame_stats PRIVATE
+        ff-sim-ctl-loop
+        ff-sim-ctl
+        ff-shell
+        ff-app-ui
+        ff-stb-image-write
+        lvgl::lvgl
+        unity
+    )
+    ff_apply_warnings(test_ctl_music_frame_stats)
+
+    add_test(NAME test_ctl_music_frame_stats COMMAND test_ctl_music_frame_stats)
+
     # S26 wake-only-touch amendment (docs/specs/S26-device-lifecycle.md
     # "(c) Inactivity -> dim -> screen off", 2026-09-02): a real ctl tap
     # that BEGINS while idle is DIM/OFF must wake ACTIVE and deliver

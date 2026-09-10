@@ -84,7 +84,8 @@ static bool feed_synthetic_mic_sample(ff_ctl_loop_ctx_t *ctx, uint32_t now_ms, u
     bool const is_event = ((*sample_idx % FF_TEST_EVENT_EVERY_N) == 0u);
     float const dbfs = is_event ? -40.0f : -60.0f;
     (*sample_idx)++;
-    ff_shell_set_beat_input(ctx->shell, /* mic_present */ true, dbfs, dbfs, /* imu_present */ false,
+    ff_shell_set_beat_input(ctx->shell, /* mic_present */ true, dbfs, dbfs, /* mic_low_band_dbfs */ dbfs,
+                             /* mic_mid_band_dbfs */ dbfs, /* imu_present */ false,
                              /* accel_z_g */ 0.0f, now_ms);
     return true;
 }
