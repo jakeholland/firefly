@@ -71,6 +71,40 @@ final class BLEContractTests: XCTestCase {
         XCTAssertEqual(calls.value, 0)
     }
 
+    // MARK: - SHOULD-FIX 4 (PR #272 review): connect-pending guard
+    //
+    // `BLETransport.performConnectSequence()` can no longer be exercised
+    // with a real `CBCentralManager` in `swift test` (that would abort
+    // the process — this type's own file-level doc comment), so this
+    // pins the PURE decision the guard is built on
+    // (`shouldIssueConnect(for:pendingConnectPeripheralID:)`) rather
+    // than the CoreBluetooth call site itself: whether a NEW native
+    // `central.connect()` should be issued for a peripheral, given
+    // whichever identifier (if any) already has one outstanding — the
+    // guard `issueConnect(_:)` uses at all three call sites that can
+    // arm a connect (an explicit `connect()`'s own
+    // `performConnectSequence()`, `handleDisconnected`'s
+    // reconnect-on-loss re-arm, `handleWillRestoreState`'s re-arm).
+
+    func testShouldIssueConnectWhenNothingIsPending() {
+        let target = UUID()
+        XCTAssertTrue(BLETransport.shouldIssueConnect(for: target, pendingConnectPeripheralID: nil))
+    }
+
+    func testShouldNotIssueConnectWhenTheSamePeripheralIsAlreadyPending() {
+        let target = UUID()
+        XCTAssertFalse(BLETransport.shouldIssueConnect(for: target, pendingConnectPeripheralID: target),
+                        "a restore or a reconnect-on-loss re-arm already has this exact peripheral pending — " +
+                        "an explicit connect() must not redundantly issue a second native central.connect()")
+    }
+
+    func testShouldIssueConnectForADifferentPeripheralEvenWhileAnotherIsPending() {
+        let pending = UUID()
+        let other = UUID()
+        XCTAssertTrue(BLETransport.shouldIssueConnect(for: other, pendingConnectPeripheralID: pending),
+                       "a pending connect for a DIFFERENT identifier must never suppress a fresh one")
+    }
+
     func testMarkBondedFiresThePersistenceClosureAndRecordsTheID() async {
         let id = UUID()
         let bonded = Locked<[UUID]>([])

@@ -362,6 +362,13 @@ public final class AppGraph {
     }
 
     public func makeConnectViewModel() -> ConnectViewModel {
-        ConnectViewModel(client: dependencies.client)
+        // `store:` — SHOULD-FIX 5 (PR #272 review): the "Forget this
+        // node" action needs a real settings seam to clear
+        // `SettingsKey.lastPeripheralID` through. `.stub()`/`.demo()`
+        // each hand this an `InMemorySettingsStore()` with nothing
+        // persisted (`autoConnectToLastKnownPeripheral()`'s own doc
+        // comment), so FORGET is harmlessly disabled there too
+        // (`canForgetNode`).
+        ConnectViewModel(client: dependencies.client, store: dependencies.store)
     }
 }

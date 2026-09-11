@@ -94,13 +94,16 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// Guards `connect()` against a second, overlapping call — see
     /// `MeshtasticClientError.alreadyConnecting`'s own doc comment.
     private var isConnectAttemptInFlight = false
-    /// The handshake-retry-with-backoff loop a transport reconnect
-    /// starts (`handleTransportReconnected()`). Tracked so a NEW
-    /// transport `.ready` (or a `.disconnected` mid-retry) can cancel
-    /// any retry already in flight rather than letting two overlapping
-    /// loops both retry the handshake — the client-level analog of "no
-    /// duplicate CBCentralManager": at most one handshake attempt is
-    /// ever outstanding.
+    /// The handshake-retry-with-backoff loop a transport reconnect (or a
+    /// `FromRadio.rebooted` frame) starts (`handleTransportReconnected()`,
+    /// via `restartReconnectTask()`). Tracked so a NEW transport `.ready`,
+    /// a `.rebooted` frame — including one arriving mid-retry (PR #272
+    /// review, BLOCKING item 1) — or a `.disconnected` mid-retry can
+    /// cancel any retry already in flight rather than letting two
+    /// overlapping loops both retry the handshake — the client-level
+    /// analog of "no duplicate CBCentralManager": at most one handshake
+    /// attempt is ever outstanding, no matter which of those three
+    /// triggers fires it.
     private var reconnectTask: Task<Void, Never>?
 
     /// Which want_config phase is currently outstanding, if any —
@@ -620,15 +623,22 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         return .seconds(min(baseSeconds * multiplier, capSeconds))
     }
 
-    /// `FromRadio.rebooted` is an immediate session loss, not something
-    /// to discover via a silence timeout (docs/specs/A01-companion-app.md,
-    /// "Handshake"; the same lesson `mc_client.c`'s
-    /// `meshtastic_FromRadio_rebooted_tag` handling encodes for the
-    /// puck). Reissues BOTH want_config phases from scratch, same two
-    /// sentinels — never fresh ones.
-    private func handleRebooted() async {
-        heartbeatTask?.cancel(); heartbeatTask = nil
-        await handleTransportReconnected()
+    /// The ONE place a handshake-retry loop is (re)started — cancels
+    /// whichever `reconnectTask` is currently outstanding (a no-op if
+    /// none is) before replacing it, so at most one
+    /// `handleTransportReconnected()` is ever running at a time no
+    /// matter which of the two triggers fires it: the transport reaching
+    /// `.ready` a second time (`consumeTransportEvents`), or a
+    /// `FromRadio.rebooted` frame arriving — including one that lands
+    /// WHILE an existing retry is already mid-backoff (PR #272 review,
+    /// BLOCKING item 1). `handleTransportReconnected()` reissues BOTH
+    /// want_config phases from scratch, same two sentinels — never fresh
+    /// ones — same as it always has.
+    private func restartReconnectTask() {
+        reconnectTask?.cancel()
+        reconnectTask = Task { [weak self] in
+            await self?.handleTransportReconnected()
+        }
     }
 
     private func resetSessionState() {
@@ -681,10 +691,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
                 // client-level "no duplicate" guarantee — see
                 // `reconnectTask`'s own doc comment).
                 if hasCompletedInitialConnect {
-                    reconnectTask?.cancel()
-                    reconnectTask = Task { [weak self] in
-                        await self?.handleTransportReconnected()
-                    }
+                    restartReconnectTask()
                 }
             case .received(let data):
                 ingest(data)
@@ -720,7 +727,19 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     private func handle(fromRadio fr: FromRadio) {
         switch fr.payloadVariant {
         case .rebooted:
-            Task { [weak self] in await self?.handleRebooted() }
+            // BLOCKING 1 (PR #272 review): this used to be an untracked
+            // `Task { handleRebooted() }` that awaited
+            // `handleTransportReconnected()` INLINE — a second, fully
+            // concurrent handshake-retry loop whenever `.rebooted`
+            // arrived while a transport-`.ready`-triggered `reconnectTask`
+            // was already mid-retry (both would independently
+            // `nodeDB.reset()`/`pendingSends.removeAll()` and both send
+            // `want_config`). Routed through the SAME cancel-and-replace
+            // `restartReconnectTask()` the `.ready` case above uses:
+            // exactly one handshake attempt is ever outstanding,
+            // regardless of which event triggers the retry.
+            heartbeatTask?.cancel(); heartbeatTask = nil
+            restartReconnectTask()
 
         case .myInfo(let info):
             myNodeNum = info.myNodeNum

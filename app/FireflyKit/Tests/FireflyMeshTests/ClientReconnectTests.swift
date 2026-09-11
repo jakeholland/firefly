@@ -224,6 +224,89 @@ final class ClientReconnectTests: XCTestCase {
         XCTAssertEqual(readyCount, 2)
     }
 
+    // MARK: - BLOCKING 1 (PR #272 review): a real reboot arriving MID-RETRY
+    // must route through the SAME reconnectTask, not a second, untracked one
+
+    private func rebootedFrame() -> Data {
+        fromRadio { fr in fr.rebooted = true }
+    }
+
+    /// The exact scenario BLOCKING item 1 named: `FromRadio.rebooted`
+    /// arrives WHILE a transport-`.ready`-triggered handshake-retry
+    /// attempt is already outstanding (mid-retry — the first attempt has
+    /// sent its `want_config` but has not been answered or timed out
+    /// yet). Before the fix, `.rebooted` ran through an untracked
+    /// `Task { handleRebooted() }` that awaited
+    /// `handleTransportReconnected()` INLINE — a second, fully
+    /// concurrent handshake-retry loop, each independently calling
+    /// `nodeDB.reset()`/`pendingSends.removeAll()` and each sending its
+    /// own `want_config`. This pins that exactly ONE new
+    /// `want_config(onlyConfig)` round trip follows the reboot (not two,
+    /// which a duplicate concurrent loop would produce) and that the
+    /// nodeDB was rebuilt exactly once for the post-reboot session (a
+    /// node known before the reboot, and never re-announced after it,
+    /// must not survive).
+    func testRebootArrivingMidRetryRoutesThroughTheSameReconnectTask() async throws {
+        let transport = LoopbackTransport()
+        // A long config-phase timeout: the reboot must interrupt the
+        // FIRST retry attempt while it is still genuinely awaiting a
+        // reply, not race a timeout that was about to fire anyway.
+        let client = MeshtasticClient(
+            transport: transport,
+            configPhaseTimeout: .seconds(5),
+            nodeDBPhaseTimeout: .seconds(5),
+            handshakeRetryLimit: 3,
+            handshakeRetryBaseDelay: .milliseconds(30),
+            handshakeRetryMaxDelay: .milliseconds(300))
+
+        let states = client.linkState()
+        var readyCount = 0
+        let stateCollector = Task {
+            for await s in states {
+                if s == .ready { readyCount += 1 }
+                if readyCount == 2 { break }
+            }
+        }
+
+        try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
+        transport.inject(nodeInfoFrame(num: 42, shortName: "F1", longName: "Friend"))
+        try await Task.sleep(for: .milliseconds(20))
+        let nodeBeforeLoss = await client.nodeSnapshot(42)
+        XCTAssertNotNil(nodeBeforeLoss, "sanity: the node is known before the loss")
+
+        let sentBeforeLoss = transport.sentMessages.count
+
+        // The transport reconnects on its own — `reconnectTask` attempt 1
+        // starts: heartbeat + want_config(onlyConfig), deliberately never
+        // answered.
+        transport.simulateDisconnect(reason: "out of range")
+        transport.simulateReconnect()
+        try await waitForSentCount(sentBeforeLoss + 2, on: transport)
+
+        // A REAL reboot lands WHILE that first retry attempt is still
+        // outstanding — mid-retry, exactly BLOCKING item 1's scenario.
+        transport.inject(rebootedFrame())
+
+        // Exactly ONE new want_config(onlyConfig) round trip follows —
+        // not two, which a second, untracked concurrent retry loop would
+        // produce.
+        try await waitForSentCount(sentBeforeLoss + 4, on: transport) // heartbeat, want_config(onlyConfig)
+        transport.inject(myInfoFrame(num: 1))
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyConfig))
+        try await waitForSentCount(sentBeforeLoss + 5, on: transport) // want_config(onlyNodeDB)
+        // Node 42 is deliberately NOT re-announced this time.
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyNodeDB))
+
+        _ = await stateCollector.result
+        XCTAssertEqual(readyCount, 2, "the client must reach .ready again after the post-reboot handshake")
+        XCTAssertEqual(transport.sentMessages.count, sentBeforeLoss + 5,
+                        "exactly one want_config handshake followed the mid-retry reboot — " +
+                        "a duplicate concurrent retry loop would send more")
+        let nodeAfterReboot = await client.nodeSnapshot(42)
+        XCTAssertNil(nodeAfterReboot, "nodeDB.reset() ran exactly once for the post-reboot session — " +
+                     "a node from before it, never re-announced, must not survive")
+    }
+
     // MARK: - Bounded exponential backoff, end to end
 
     func testHandshakeTimeoutRetriesWithBackoffPublishingReconnectingThenSucceeds() async throws {

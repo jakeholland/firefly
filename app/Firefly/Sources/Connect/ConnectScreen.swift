@@ -138,18 +138,42 @@ struct ConnectScreen: View {
             }
 
             HStack(spacing: 12) {
-                Button("CONNECT") { Task { await connect.connect() } }
+                // NIT (PR #272 review): `connect.connectButtonLabel` reads
+                // "RETRY" once the bounded handshake-retry loop has given
+                // up (`.failed`) — a visible terminal-state action,
+                // rather than a silent re-enable of a button still
+                // labeled for a first-time connect.
+                Button(connect.connectButtonLabel) { Task { await connect.connect() } }
                     .buttonStyle(.borderedProminent)
                     .tint(.ffAmber)
                     .foregroundStyle(Color.ffBackground)
-                    .disabled(isBusyOrConnected)
+                    .disabled(connect.isBusyOrConnected)
 
+                // SHOULD-FIX 3 (PR #272 review): gated on
+                // `ConnectViewModel.isDisconnectable`, not `link == .ready`
+                // — see that property's own doc comment for why a
+                // `.connecting`/`.handshaking`/`.reconnecting` link must
+                // stay abortable.
                 Button("DISCONNECT") { Task { await connect.disconnect() } }
                     .buttonStyle(.bordered)
                     .tint(.ffMuted)
-                    .disabled(connect.link != .ready)
+                    .disabled(!connect.isDisconnectable)
+
+                Button("FORGET") { Task { await connect.forgetNode() } }
+                    .buttonStyle(.bordered)
+                    .tint(.ffAlert)
+                    .disabled(!connect.canForgetNode)
             }
             .frame(minHeight: 44)
+
+            // SHOULD-FIX 5 (PR #272 review): plain DISCONNECT deliberately
+            // never clears the remembered node — matches Meshtastic-Apple's
+            // own `AccessoryManager.disconnect()`, which also never
+            // touches `UserDefaults.preferredPeripheralId`. FORGET, above,
+            // is the only action that does.
+            Text("DISCONNECT keeps this radio remembered for next launch. FORGET clears it.")
+                .font(.caption2)
+                .foregroundStyle(Color.ffMuted)
         }
     }
 
@@ -159,17 +183,6 @@ struct ConnectScreen: View {
         case .handshaking, .connecting, .reconnecting: return .ffAmber
         case .failed: return .ffAlert
         case .disconnected: return .ffMuted
-        }
-    }
-
-    /// M2: `.reconnecting` joins the already-busy states — a manual
-    /// CONNECT tap while the client is mid-backoff-retry would race
-    /// `MeshtasticClient`'s own reentrancy guard
-    /// (`MeshtasticClientError.alreadyConnecting`) for nothing.
-    private var isBusyOrConnected: Bool {
-        switch connect.link {
-        case .ready, .connecting, .handshaking, .reconnecting: return true
-        case .disconnected, .failed: return false
         }
     }
 

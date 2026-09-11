@@ -369,10 +369,12 @@ much quicker check, below.
    begins) — a large or unchanged uptime here means the app is showing
    the OLD session's clock, not proof of a real reconnect. If Link state
    instead sits on `FAILED`, the bounded retry was exhausted (default: 6
-   attempts, 2s/4s/8s/16s/32s/60s apart) — reopen Connect and tap
-   CONNECT by hand, and note how long the node actually took to
-   re-advertise, since that is the number the retry bound is tuned
-   against.
+   attempts, 2s/4s/8s/16s/32s apart between them — 5 delays across 6
+   attempts, never reaching the 60s cap `handshakeRetryMaxDelay` defines;
+   that cap only matters if `handshakeRetryLimit` is ever raised past 6)
+   — tap the now-visible RETRY action (or reopen Connect and tap CONNECT
+   by hand), and note how long the node actually took to re-advertise,
+   since that is the number the retry bound is tuned against.
 
 **The "off means off" check** (quick, no 30-minute wait): with "Stay
 connected in background" OFF, background the app — Diagnostics (checked

@@ -27,14 +27,29 @@ public final class ConnectViewModel {
     public private(set) var lastConnectedAt: Date?
 
     private let client: any MeshtasticClientProtocol
+    /// SHOULD-FIX 5 (PR #272 review) — "Forget this node". Optional, and
+    /// appended after `client` with a `nil` default, so every existing
+    /// `ConnectViewModel(client:)` call site (every test in this file,
+    /// `CoreStoreTests`, `DemoRunnerTests`) keeps compiling unchanged.
+    /// `nil` in exactly those tests and in any other composition that
+    /// has no settings seam at all — `forgetNode()`/`canForgetNode`
+    /// degrade to "disconnect only" / "always false" rather than crash.
+    /// `FireflyModel` already owns `SettingsStoring` (this file lives in
+    /// the same module), so this is a direct dependency, not a closure
+    /// like `BLETransport.onPreferredPeripheralChanged` has to be
+    /// (`FireflyMesh` cannot depend on `FireflyModel` — that closure's
+    /// own doc comment).
+    private let store: (any SettingsStoring)?
     private var observation: Task<Void, Never>?
     /// Injectable so `lastConnectedLabel`'s "X ago" arithmetic is
     /// testable without a real wall-clock wait — same convention
     /// `MeshtasticClient.renderedDeliveryState(...)` uses.
     private let now: () -> Date
 
-    public init(client: any MeshtasticClientProtocol, now: @escaping () -> Date = Date.init) {
+    public init(client: any MeshtasticClientProtocol, store: (any SettingsStoring)? = nil,
+                now: @escaping () -> Date = Date.init) {
         self.client = client
+        self.store = store
         self.now = now
     }
 
@@ -71,14 +86,60 @@ public final class ConnectViewModel {
         lastError = nil
         do {
             try await client.connect()
+        } catch MeshtasticClientError.alreadyConnecting {
+            // BLOCKING 2 (PR #272 review): `.alreadyConnecting` is a
+            // benign race, not a real failure — this call simply lost to
+            // an already in-flight `connect()` (`AppGraph`'s launch
+            // auto-connect racing a user's own CONNECT tap on cold
+            // launch, or an ordinary fast double-tap before
+            // `isBusyOrConnected` has propagated away from
+            // `.disconnected`). Deliberately do NOT touch `link` or
+            // `lastError` here: forcing `.failed("alreadyConnecting")`
+            // would show a bogus FAILED for what is actually an
+            // in-progress, successful connect — the WINNING call's own
+            // `linkState()` stream events (already subscribed via
+            // `observe()`) are what report the real outcome.
         } catch {
             lastError = String(describing: error)
             link = .failed(String(describing: error))
         }
     }
 
+    /// SHOULD-FIX 5 (PR #272 review): deliberately does NOT clear the
+    /// persisted `SettingsKey.lastPeripheralID` — a plain disconnect
+    /// keeps the node remembered, so the next cold launch's
+    /// `AppGraph.autoConnectToLastKnownPeripheral()` auto-connects back
+    /// to it, same as before this method ran. This matches
+    /// Meshtastic-Apple's own `AccessoryManager.disconnect()`, which
+    /// also never touches `UserDefaults.preferredPeripheralId` — cited
+    /// against the actual GPL-3.0 source, not assumed. `forgetNode()`,
+    /// below, is the one action that DOES clear it; call that instead
+    /// when the intent is "stop auto-connecting to this radio", not
+    /// this one.
     public func disconnect() async {
         await client.disconnect()
+    }
+
+    /// SHOULD-FIX 5 (PR #272 review) — "Forget this node": clears the
+    /// persisted `SettingsKey.lastPeripheralID` AND disconnects, so a
+    /// relaunch does not silently auto-connect back to this radio
+    /// (`disconnect()`'s own doc comment covers the plain-DISCONNECT
+    /// case this is distinct from). A no-op on the store side when this
+    /// view model was built with none (`store == nil`) — disconnecting
+    /// still happens either way.
+    public func forgetNode() async {
+        store?.setString(nil, .lastPeripheralID)
+        await disconnect()
+    }
+
+    /// Nothing to forget when nothing is remembered (`lastPeripheralID`
+    /// unset) or when this view model has no settings seam at all
+    /// (`store == nil` — the M1 stub composition and every plain
+    /// `ConnectViewModel(client:)` test). The Connect screen's FORGET
+    /// action disables itself on this rather than always being tappable
+    /// dead chrome.
+    public var canForgetNode: Bool {
+        store?.string(.lastPeripheralID) != nil
     }
 
     /// Exposed for tests and for the stream consumer; keeps the
@@ -108,6 +169,20 @@ public final class ConnectViewModel {
         }
     }
 
+    /// NIT (PR #272 review): before this, the terminal state after the
+    /// bounded handshake-retry loop gives up (`.failed`, once
+    /// `handshakeRetryLimit` attempts are spent — `MeshtasticClient
+    /// .handleTransportReconnected()`) had no action of its own — the
+    /// CONNECT button was merely re-enabled (`isBusyOrConnected` already
+    /// reads `false` for `.failed`), with nothing telling the user that
+    /// tapping it again is exactly the right move. "RETRY" makes that
+    /// terminal state's own next step visible rather than silently
+    /// relying on the button's ordinary label to double as one.
+    public var connectButtonLabel: String {
+        if case .failed = link { return "RETRY" }
+        return "CONNECT"
+    }
+
     /// M2 — "'last connected X ago'": nil while `.ready` (there is
     /// nothing to say — it IS connected) or before any `.ready` has ever
     /// been observed; a short relative-time string otherwise, so the
@@ -117,6 +192,44 @@ public final class ConnectViewModel {
     public var lastConnectedLabel: String? {
         guard link != .ready, let lastConnectedAt else { return nil }
         return "last connected \(Self.relativeAgo(from: lastConnectedAt, to: now()))"
+    }
+
+    /// M2: `.reconnecting` joins the already-busy states — a manual
+    /// CONNECT tap while the client is mid-backoff-retry would race
+    /// `MeshtasticClient`'s own reentrancy guard
+    /// (`MeshtasticClientError.alreadyConnecting`) for nothing. Moved
+    /// here (PR #272 review, SHOULD-FIX 3) from a private computed var
+    /// on `ConnectScreen` itself so the CONNECT/DISCONNECT gating state
+    /// matrix is unit-testable without SwiftUI, the same way
+    /// `statusLabel`/`lastConnectedLabel` already are.
+    public var isBusyOrConnected: Bool {
+        switch link {
+        case .ready, .connecting, .handshaking, .reconnecting: return true
+        case .disconnected, .failed: return false
+        }
+    }
+
+    /// SHOULD-FIX 3 (PR #272 review): before this, DISCONNECT was gated
+    /// on `link == .ready`, so it — together with `isBusyOrConnected`
+    /// gating CONNECT — was unreachable for the ENTIRE `.connecting`/
+    /// `.handshaking`/`.reconnecting` window. Pre-M2 that window was one
+    /// short handshake attempt; M2's bounded retry loop can legitimately
+    /// run for minutes (`handshakeRetryLimit` attempts, each budgeted up
+    /// to `configPhaseTimeout` + `nodeDBPhaseTimeout` before its own
+    /// backoff sleep even starts), during which a user with a good
+    /// reason to bail — wrong node still connected, switching devices,
+    /// saving battery — had no way to abort it. DISCONNECT is reachable
+    /// any time the link is not already `.disconnected`:
+    /// `MeshtasticClient.disconnect()` cancels `reconnectTask` (and
+    /// `receiveTask`/`heartbeatTask`) unconditionally, so this is always
+    /// a real abort, not a no-op. `.failed` is excluded — nothing is
+    /// running there to cancel, so DISCONNECT would just be dead chrome
+    /// on an already-terminal state.
+    public var isDisconnectable: Bool {
+        switch link {
+        case .disconnected, .failed: return false
+        case .ready, .connecting, .handshaking, .reconnecting: return true
+        }
     }
 
     /// Pure and testable with no real wall-clock wait. Coarse on
