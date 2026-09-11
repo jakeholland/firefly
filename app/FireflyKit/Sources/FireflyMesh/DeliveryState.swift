@@ -61,3 +61,58 @@ public enum DeliveryState: String, Sendable, CaseIterable, Equatable {
         }
     }
 }
+
+/// The shell-assigned identity of an outgoing send, stamped BEFORE a
+/// packet id can exist (`ff_feed_item_t.outbox_id`'s own doc comment,
+/// `ff_feed.h`) — the retry queue's only way back to a specific pending
+/// send. `0` is the documented "not tracked" sentinel, same as the C
+/// field.
+///
+/// Wrapped as its own type (PR #261 review, finding 1) rather than a
+/// bare `UInt32`: `CoreStore.apply(delivery:)` once passed a value
+/// labeled `packetID` into an API that expected an `outbox_id`, and the
+/// compiler had nothing to say about it because both were just
+/// `UInt32`. `OutboxID`/`PacketID` being distinct types turns that class
+/// of mistake into a compile error at every call site that matters —
+/// `InboxBridge.markSent`/`setSendStatus`/`FeedItem.outboxID` and
+/// `DeliveryEvent` below.
+public struct OutboxID: Sendable, Equatable, Hashable {
+    public let rawValue: UInt32
+    public init(_ rawValue: UInt32) { self.rawValue = rawValue }
+}
+
+/// The `MeshPacket` id the radio assigns once a send is accepted
+/// (`ff_feed_item_t.packet_id`'s own doc comment) — the
+/// `mc_events_t.on_routing_ack` correlation key. Distinct type from
+/// `OutboxID` — see that type's own doc comment for why.
+public struct PacketID: Sendable, Equatable, Hashable {
+    public let rawValue: UInt32
+    public init(_ rawValue: UInt32) { self.rawValue = rawValue }
+}
+
+/// One delivery-state transition off `MeshtasticClientProtocol.
+/// deliveryUpdates()`, shaped so each case carries ONLY the key(s) that
+/// transition actually has to give — mirroring `firmware/app/ff_shell.c`
+/// (`shell_send_or_queue_text`, `shell_ev_routing_ack`)'s own
+/// partitioning of `ff_feed.h`'s three setters:
+///  - `.waiting`/`.dropped` carry only `outboxID` — no packet exists yet
+///    for `.waiting` (`shell_next_outbox_id` runs before the send is even
+///    attempted), and none was ever formed for `.dropped` (outbox-full
+///    eviction, or a send the transport refused outright) —
+///    `ff_feed_set_send_status_by_outbox_id`.
+///  - `.sent` carries BOTH: `outboxID` to find the WAITING item,
+///    `packetID`/`wantAck` to stamp onto it — only the send attempt
+///    itself knows either — `ff_feed_mark_sent_by_outbox_id`.
+///  - `.delivered`/`.noAck` carry only `packetID` — a routing ack (or an
+///    explicit NAK) knows nothing about the shell-local outbox id, only
+///    the packet id it is answering — `ff_feed_set_ack_by_packet_id`.
+/// The TIMEOUT half of NO_ACK (`ff_feed_expire_pending_acks`) is not a
+/// per-message event at all — it is a tick-driven sweep over the whole
+/// feed with no key — so it has no case here; see `CoreStore.tick(nowMs:)`.
+public enum DeliveryEvent: Sendable, Equatable {
+    case waiting(outboxID: OutboxID)
+    case sent(outboxID: OutboxID, packetID: PacketID, wantAck: Bool)
+    case delivered(packetID: PacketID)
+    case noAck(packetID: PacketID)
+    case dropped(outboxID: OutboxID)
+}

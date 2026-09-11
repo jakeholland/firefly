@@ -3,6 +3,7 @@
 //  survives the round trip into Swift values (docs/specs/A01-companion-app.md,
 //  slice B's "Must add"), covering every `RadarMode` the app can reach.
 //
+import FireflyCore
 @testable import FireflyModel
 import XCTest
 
@@ -113,5 +114,21 @@ final class BridgeRadarTests: XCTestCase {
         let view = radar.compute(crew: crew, headingDeg: 0,
                                   myPosition: (47.707135, -122.2820993), imperial: false, now: 0)
         XCTAssertEqual(view.dots.count, 2)
+    }
+
+    // MARK: - Enum-growth guard (PR #261 review, finding 2 — the
+    // `DeliveryStateTests.testEveryStateMapsToTheCEnum` pattern).
+
+    func testRadarModeEnumeratesAllNineCoreValues() {
+        XCTAssertEqual(RadarMode(ffMode: RADAR_LIVE), .live)
+        XCTAssertEqual(RadarMode(ffMode: RADAR_STALE), .stale)
+        XCTAssertEqual(RadarMode(ffMode: RADAR_LOST), .lost)
+        XCTAssertEqual(RadarMode(ffMode: RADAR_PLACE), .place)
+        XCTAssertEqual(RadarMode(ffMode: RADAR_CLOSE), .close)
+        XCTAssertEqual(RadarMode(ffMode: RADAR_NOFIX), .noFix)
+        XCTAssertEqual(RadarMode(ffMode: RADAR_NOHDG), .noHdg)
+        XCTAssertEqual(RadarMode(ffMode: RADAR_SIGNAL), .signal)
+        XCTAssertEqual(RadarMode(ffMode: RADAR_NOSEL), .noSel)
+        XCTAssertEqual(RadarMode.allCases.count, 9, "a new radar_mode_t value needs a matching RadarMode case")
     }
 }

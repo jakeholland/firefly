@@ -29,9 +29,17 @@
 //  bug this bridge could catch or fix; the correct fix for a data race
 //  is confinement, not a lock. The app confines exactly one instance of
 //  each to `CoreStore`'s single `@MainActor` isolation domain
-//  (CoreStore.swift); that confinement is what makes these types safe
-//  to use at all, and it is enforced at compile time by `CoreStore`
-//  being `@MainActor` itself, not by anything in this file.
+//  (CoreStore.swift); that confinement is real and correctly designed,
+//  but it is confinement BY CONVENTION AND CODE REVIEW today, not a
+//  compiler guarantee (PR #261 review, finding 5): `Package.swift`
+//  builds this target under Swift's default (`minimal`) strict-
+//  concurrency checking, which does not reliably flag a non-`Sendable`
+//  type like these being captured off the actor that "owns" it — that
+//  diagnostic only becomes dependable under `SWIFT_STRICT_CONCURRENCY:
+//  complete`, explicitly deferred to M3. Nothing in this file enforces
+//  the confinement either; it is enforced by every caller routing
+//  through `CoreStore`'s `@MainActor` surface (or a view model's own
+//  `@MainActor` context), which is discipline, not a type-system proof.
 //
 @testable import FireflyModel
 import FireflyCore

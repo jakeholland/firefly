@@ -126,6 +126,33 @@ public enum ConversationKind: Sendable, Equatable, Hashable {
     }
 }
 
+/// The shell-assigned identity of an outgoing send, stamped BEFORE a
+/// packet id can exist (`ff_feed_item_t.outbox_id`'s own doc comment,
+/// `ff_feed.h`) — the retry queue's only way back to a specific pending
+/// send. `0` is the documented "not tracked" sentinel, same as the C
+/// field.
+///
+/// Wrapped as its own type (PR #261 review, finding 1) rather than a
+/// bare `UInt32` so `markSent`/`setSendStatus` and `PacketID` below can
+/// never be silently swapped for each other at a call site — the bug
+/// `CoreStore.apply(delivery:)` shipped with once already. Deliberately
+/// a SEPARATE type from `FireflyMesh.OutboxID` (this file's own top
+/// comment: Bridge/* never imports FireflyMesh) — `CoreStore` is the
+/// one seam that legitimately depends on both and converts between them.
+public struct OutboxID: Sendable, Equatable, Hashable {
+    public let rawValue: UInt32
+    public init(_ rawValue: UInt32) { self.rawValue = rawValue }
+}
+
+/// The `MeshPacket` id the radio assigns once a send is accepted
+/// (`ff_feed_item_t.packet_id`'s own doc comment) — the routing-ack
+/// correlation key. Distinct type from `OutboxID` — see that type's own
+/// doc comment.
+public struct PacketID: Sendable, Equatable, Hashable {
+    public let rawValue: UInt32
+    public init(_ rawValue: UInt32) { self.rawValue = rawValue }
+}
+
 /// `ff_sigview_presence_t` — reused by `ff_inbox` for a conversation's
 /// presence field, never reimplemented (ff_sigview.h's own top comment).
 public enum SigviewPresence: Sendable, Equatable, CaseIterable {
@@ -153,14 +180,16 @@ public struct FeedItem: Sendable, Equatable {
     /// whole-crew broadcast.
     public var toNode: UInt32
     /// Meaningful iff `direction == .out`: the shell-assigned identity
-    /// of this send, stamped BEFORE a packet id can exist — the only
-    /// way `setSendStatus`/`markSent`/`setAck` can find their way back
-    /// to this exact item later (ff_feed.h's own doc comment). `0` = not
-    /// tracked (0 never matches — the documented sentinel).
-    public var outboxID: UInt32
+    /// of this send, stamped BEFORE a packet id can exist — the only way
+    /// `setSendStatus`/`markSent` can find their way back to this exact
+    /// item later (ff_feed.h's own doc comment). `0` = not tracked (0
+    /// never matches — the documented sentinel). `setAck`, once
+    /// `markSent` has stamped the item's `packet_id`, correlates by
+    /// `PacketID` instead — see `setAck`'s own doc comment.
+    public var outboxID: OutboxID
 
     public init(kind: FeedKind, fromNode: UInt32 = 0, atMs: UInt32, text: String = "",
-                direction: FeedDirection = .unknown, toNode: UInt32 = 0, outboxID: UInt32 = 0) {
+                direction: FeedDirection = .unknown, toNode: UInt32 = 0, outboxID: OutboxID = OutboxID(0)) {
         self.kind = kind
         self.fromNode = fromNode
         self.atMs = atMs
@@ -275,7 +304,7 @@ public final class InboxBridge {
         raw.unread = unread
         raw.dir = item.direction.ffValue
         raw.to_node = item.toNode
-        raw.outbox_id = item.outboxID
+        raw.outbox_id = item.outboxID.rawValue
         ff_feed_push(context, &raw)
     }
 
@@ -285,20 +314,34 @@ public final class InboxBridge {
     public var itemCount: Int { Int(ff_feed_count(context)) }
 
     /// The WAITING -> SENT transition: stamps `packetID`/`wantAck` too,
-    /// so a later ack/timeout can find this item again.
-    public func markSent(outboxID: UInt32, packetID: UInt32, wantAck: Bool, atMs: UInt32) {
-        ff_feed_mark_sent_by_outbox_id(context, outboxID, packetID, wantAck, atMs)
+    /// so a later ack/timeout can find this item again
+    /// (`ff_feed_mark_sent_by_outbox_id`). Keyed by `outboxID`, same
+    /// no-op rules as `setSendStatus` — 0 never matches, and a no-match
+    /// (item already evicted) is silently ignored.
+    public func markSent(outboxID: OutboxID, packetID: PacketID, wantAck: Bool, atMs: UInt32) {
+        ff_feed_mark_sent_by_outbox_id(context, outboxID.rawValue, packetID.rawValue, wantAck, atMs)
     }
 
-    public func setSendStatus(outboxID: UInt32, status: FeedSendStatus, atMs: UInt32) {
-        ff_feed_set_send_status_by_outbox_id(context, outboxID, status.ffValue, atMs)
+    /// Direct `send_status` write (`ff_feed_set_send_status_by_outbox_id`)
+    /// — reserved for WAITING and DROPPED, the two transitions with no
+    /// packet id to gate on. Use `markSent`/`setAck` for SENT/DELIVERED/
+    /// NO_ACK instead, so the C library's own SENT+want_ack ordering
+    /// guard stays in force for those (ff_feed.h's own doc comments).
+    public func setSendStatus(outboxID: OutboxID, status: FeedSendStatus, atMs: UInt32) {
+        ff_feed_set_send_status_by_outbox_id(context, outboxID.rawValue, status.ffValue, atMs)
     }
 
-    /// Returns `true` iff a matching WAITING/SENT item was found and
-    /// resolved to DELIVERED (`ok`) or NO_ACK (`!ok`).
+    /// The mesh's routing-ACK answer for a DIRECT send
+    /// (`ff_feed_set_ack_by_packet_id`): finds the OUT item with
+    /// `send_status == SENT`, `want_ack == true` and this `packetID` —
+    /// gated internally by the C library, not this wrapper — and
+    /// resolves it to DELIVERED (`ok`) or NO_ACK (`!ok`). A `packetID`
+    /// matching nothing (unknown, not yet SENT, already resolved,
+    /// expired, or scrolled out of the ring) is a safe, silent no-op.
+    /// Returns `true` iff a matching item was found and updated.
     @discardableResult
-    public func setAck(packetID: UInt32, ok: Bool, atMs: UInt32) -> Bool {
-        ff_feed_set_ack_by_packet_id(context, packetID, ok, atMs)
+    public func setAck(packetID: PacketID, ok: Bool, atMs: UInt32) -> Bool {
+        ff_feed_set_ack_by_packet_id(context, packetID.rawValue, ok, atMs)
     }
 
     public func expirePendingAcks(now: UInt32, timeoutMs: UInt32) {

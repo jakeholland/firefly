@@ -205,4 +205,26 @@ final class BridgeCrewStoreTests: XCTestCase {
         store.upsert(nodeID: 1)
         XCTAssertEqual(store.rssiTrend(nodeID: 1, now: 0), .flat)
     }
+
+    // MARK: - Enum-growth guards (PR #261 review, finding 2 — the
+    // `DeliveryStateTests.testEveryStateMapsToTheCEnum` pattern).
+
+    func testHeardPresenceEnumeratesAllFourCoreValues() {
+        XCTAssertEqual(HeardPresence(ffPresence: FF_CREW_PRESENCE_HEARD), .heard)
+        XCTAssertEqual(HeardPresence(ffPresence: FF_CREW_PRESENCE_STALE), .stale)
+        XCTAssertEqual(HeardPresence(ffPresence: FF_CREW_PRESENCE_LOST), .lost)
+        XCTAssertEqual(HeardPresence(ffPresence: FF_CREW_PRESENCE_NEVER), .never)
+        XCTAssertEqual(HeardPresence.allCases.count, 4,
+                       "a new ff_crew_presence_t value needs a matching HeardPresence case")
+    }
+
+    func testFreshnessCategoryEnumeratesAllFiveCoreValues() {
+        XCTAssertEqual(FreshnessCategory(ffFreshness: FF_FRESH_LIVE), .live)
+        XCTAssertEqual(FreshnessCategory(ffFreshness: FF_FRESH_STALE), .stale)
+        XCTAssertEqual(FreshnessCategory(ffFreshness: FF_FRESH_LOST), .lost)
+        XCTAssertEqual(FreshnessCategory(ffFreshness: FF_FRESH_NEVER), .never)
+        XCTAssertEqual(FreshnessCategory(ffFreshness: FF_FRESH_ASSERTED), .asserted)
+        XCTAssertEqual(FreshnessCategory.allCases.count, 5,
+                       "a new ff_freshness_t value needs a matching FreshnessCategory case")
+    }
 }

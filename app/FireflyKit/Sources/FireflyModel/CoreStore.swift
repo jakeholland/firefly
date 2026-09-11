@@ -72,9 +72,9 @@ public final class CoreStore {
             }
         }
         deliveryObservation = Task { [weak self] in
-            for await (packetID, state) in deliveries {
+            for await event in deliveries {
                 guard let self else { return }
-                self.apply(delivery: (packetID, state))
+                self.apply(delivery: event)
             }
         }
     }
@@ -116,21 +116,67 @@ public final class CoreStore {
         crew.onHeard(nodeID: nodeUpdate.num, rxTimeMs: heardAt, direct: direct)
     }
 
-    /// Routes a delivery-state transition into
-    /// `ff_feed_set_send_status_by_outbox_id` through
-    /// `Bridge/InboxBridge.swift`. `DeliveryState` (FireflyMesh) and
-    /// `FeedSendStatus` (this module's Bridge/* vocabulary, which never
-    /// imports FireflyMesh — see InboxBridge.swift's top comment) meet
-    /// exactly here, the one seam that legitimately depends on both.
-    public func apply(delivery: (packetID: UInt32, state: DeliveryState)) {
-        let status: FeedSendStatus
-        switch delivery.state {
-        case .waiting: status = .waiting
-        case .sent: status = .sent
-        case .delivered: status = .delivered
-        case .noAck: status = .noAck
-        case .dropped: status = .dropped
+    /// Routes one `DeliveryEvent` (FireflyMesh) into `Bridge/
+    /// InboxBridge.swift`'s three `ff_feed_*` setters, mirroring
+    /// `firmware/app/ff_shell.c` (`shell_send_or_queue_text`,
+    /// `shell_ev_routing_ack`) exactly rather than funnelling every
+    /// transition through one call keyed on one id (PR #261 review,
+    /// finding 1 — `DeliveryEvent`'s own doc comment has the full
+    /// per-case rationale):
+    ///  - `.waiting`/`.dropped` -> `setSendStatus(outboxID:)` — no packet
+    ///    id exists (or ever will) for either.
+    ///  - `.sent` -> `markSent(outboxID:packetID:wantAck:)` — the ONLY
+    ///    place `packetID`/`wantAck` get stamped onto the item, so a
+    ///    later `setAck`/`tick(nowMs:)` can find it again.
+    ///  - `.delivered`/`.noAck` -> `setAck(packetID:ok:)` — keyed on
+    ///    `packetID` alone, gated by the C library's own SENT+want_ack
+    ///    precondition, never `outboxID`.
+    /// `FireflyMesh.{OutboxID,PacketID}` and this module's own
+    /// `Bridge.{OutboxID,PacketID}` are deliberately separate types
+    /// (InboxBridge.swift's top comment: Bridge/* never imports
+    /// FireflyMesh) — this is the one seam that legitimately depends on
+    /// both, so the unwrap-and-rewrap happens only here.
+    public func apply(delivery: DeliveryEvent) {
+        // `FireflyModel.` qualification below is required, not
+        // decorative: `FireflyMesh.OutboxID`/`PacketID` (this switch's
+        // own case payloads) and this module's OWN `OutboxID`/`PacketID`
+        // (InboxBridge.swift, same module as this file) share bare
+        // names, so an unqualified `OutboxID(...)`/`PacketID(...)` here
+        // would be an ambiguous-type-name compile error, not a silent
+        // pick of the wrong one — the two vocabularies really do meet
+        // only at this one seam.
+        let now = FireflyClock.nowMillis()
+        switch delivery {
+        case .waiting(let outboxID):
+            inbox.setSendStatus(outboxID: FireflyModel.OutboxID(outboxID.rawValue), status: .waiting, atMs: now)
+        case .sent(let outboxID, let packetID, let wantAck):
+            inbox.markSent(outboxID: FireflyModel.OutboxID(outboxID.rawValue),
+                            packetID: FireflyModel.PacketID(packetID.rawValue), wantAck: wantAck, atMs: now)
+        case .delivered(let packetID):
+            inbox.setAck(packetID: FireflyModel.PacketID(packetID.rawValue), ok: true, atMs: now)
+        case .noAck(let packetID):
+            inbox.setAck(packetID: FireflyModel.PacketID(packetID.rawValue), ok: false, atMs: now)
+        case .dropped(let outboxID):
+            inbox.setSendStatus(outboxID: FireflyModel.OutboxID(outboxID.rawValue), status: .dropped, atMs: now)
         }
-        inbox.setSendStatus(outboxID: delivery.packetID, status: status, atMs: FireflyClock.nowMillis())
     }
+
+    /// The ACK-TIMEOUT half of NO_ACK (`ff_feed_expire_pending_acks`) —
+    /// a tick-driven sweep with no per-message key, exactly as
+    /// `ff_shell_tick` runs it every tick regardless of link state
+    /// (ff_shell.c's own comment on that call site). Not folded into
+    /// `apply(delivery:)`: this has no `DeliveryEvent` to arrive on: no
+    /// event ever tells this app "45 seconds have now passed", so the
+    /// caller (the app's own tick/heartbeat loop) must call this
+    /// directly, the same way `ff_shell_tick` calls the C function.
+    public func tick(nowMs: UInt32) {
+        inbox.expirePendingAcks(now: nowMs, timeoutMs: CoreStore.outboxAckTimeoutMs)
+    }
+
+    /// Mirrors `FF_OUTBOX_ACK_TIMEOUT_MS` (firmware/app/include/ff_shell.h)
+    /// — that header is app-layer (`firmware/app`), not part of
+    /// `firmware/core` this package symlinks in, so the value is
+    /// duplicated here rather than imported. Keep the two in sync by
+    /// hand if that constant ever changes.
+    public static let outboxAckTimeoutMs: UInt32 = 45_000
 }
