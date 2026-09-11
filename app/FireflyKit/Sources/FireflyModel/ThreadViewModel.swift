@@ -60,6 +60,30 @@ public typealias NodeID = UInt32
 /// this seam does not filter.
 public protocol FireflyPacketSending: AnyObject, Sendable {
     func sendFlare(to: NodeID?, durationSeconds: UInt16) async throws
+    /// M2: RALLY (S04 type `0x04`, body `[lat:i32][lon:i32][name_len:1]
+    /// [name...≤24]`) — "set/replace crew rally point". `want_ack =
+    /// false` (S04's addressing table: "RALLY/STATUS broadcast
+    /// likewise" — `want_ack` true for FLARE only). `to: nil` broadcasts,
+    /// same crew-filtered-receiver-side rule `sendFlare`'s own doc
+    /// comment states.
+    func sendRally(to: NodeID?, latitude: Double, longitude: Double, name: String) async throws
+    /// M2: STATUS (S04 type `0x06`, body `[status_len:1][status...≤20]`)
+    /// — free-text status. Same broadcast/want_ack rule as RALLY.
+    func sendStatus(to: NodeID?, text: String) async throws
+}
+
+/// Defaults so a `FireflyPacketSending` conformance written before M2
+/// (`MockFlareSender` in `InboxThreadViewModelTests.swift`, any future
+/// test double that only cares about FLARE) keeps compiling unchanged.
+/// Never reached by this app's own real `MeshFireflyPacketSender`, which
+/// overrides both.
+public extension FireflyPacketSending {
+    func sendRally(to: NodeID?, latitude: Double, longitude: Double, name: String) async throws {
+        throw ImmediateSendFailure.transportError
+    }
+    func sendStatus(to: NodeID?, text: String) async throws {
+        throw ImmediateSendFailure.transportError
+    }
 }
 
 /// A transient, non-queued failure surfaced by a quick-reply or FLARE
@@ -71,7 +95,7 @@ public protocol FireflyPacketSending: AnyObject, Sendable {
 /// Rally sends are likewise unchanged... only FEED_TEXT sends... go
 /// through the outbox"). The view reads this, shows it, and it is
 /// cleared on the next attempt — never silently retried later.
-public enum ImmediateSendFailure: Sendable, Equatable {
+public enum ImmediateSendFailure: Error, Sendable, Equatable {
     /// The link was down at the moment of the tap.
     case linkDown
     /// The link was up but the send itself failed (a genuine transport
@@ -81,6 +105,11 @@ public enum ImmediateSendFailure: Sendable, Equatable {
     /// FLARE specifically: no `FireflyPacketSending` conformance was
     /// injected, so there is no wire path to attempt at all.
     case flareUnavailable
+    /// RALLY specifically (M2): the link and the seam are both fine, but
+    /// we have no honest position of our own to attach — never sent
+    /// with a fabricated lat/lon (A01: "Never fabricate. No fix means no
+    /// position message").
+    case rallyNoFix
 }
 
 private final class OutboxIDGenerator: @unchecked Sendable {
@@ -149,6 +178,13 @@ public final class ThreadViewModel {
     /// (`flareAvailable`) rather than falling back to a placeholder
     /// transmission.
     private let flareSender: (any FireflyPacketSending)?
+    /// M2: RALLY's own position source — the app's single phone-GPS fix,
+    /// shared with the composition root's other M2 readers
+    /// (`AppGraph.myFix`) rather than a second, independent location
+    /// subscription in every thread. `nil` in every test/preview that
+    /// does not inject one, which is the honest default: no fix, no
+    /// RALLY (`sendRally`'s own guard).
+    private let currentFix: (() -> LocationFix?)?
     private var linkObservation: Task<Void, Never>?
     private var deliveryObservation: Task<Void, Never>?
     private var outbox: [PendingSend] = []
@@ -161,11 +197,12 @@ public final class ThreadViewModel {
     private var sendChainTail: Task<Void, Never>?
 
     public init(conversation: ConversationKind, provider: any InboxProviding, client: any MeshtasticClientProtocol,
-                flareSender: (any FireflyPacketSending)? = nil) {
+                flareSender: (any FireflyPacketSending)? = nil, currentFix: (() -> LocationFix?)? = nil) {
         self.conversation = conversation
         self.provider = provider
         self.client = client
         self.flareSender = flareSender
+        self.currentFix = currentFix
     }
 
     /// Whether the FLARE control should be usable at all — `false`
@@ -177,6 +214,15 @@ public final class ThreadViewModel {
     /// The honest label the view shows next to a disabled FLARE
     /// control (BLOCKING review item 2).
     public static let flareUnavailableLabel = "Flare needs the mesh client"
+
+    /// M2: whether RALLY is usable at all — the seam has to exist
+    /// (same `flareSender`, S04's whole portnum-269 send path); it does
+    /// NOT also require a current fix, because a missing fix is its own,
+    /// distinct, visible failure (`rallyNoFix`) rather than a disabled
+    /// control — the fix can arrive between the button rendering and the
+    /// tap landing, and disabling the button would just be stale.
+    public var rallyAvailable: Bool { flareSender != nil }
+    public static let rallyUnavailableLabel = "Rally needs the mesh client"
 
     /// Appends `work` to this thread's single send chain and returns
     /// the `Task` representing "my turn, after everyone chained before
@@ -307,6 +353,54 @@ public final class ThreadViewModel {
         }
     }
 
+    /// RALLY send (S04 type `0x04`, M2) — fire-and-forget like FLARE:
+    /// never enters the outbox, fails visibly rather than queuing (the
+    /// same BLOCKING-item-3-style discipline `sendFlare` follows).
+    /// `name`, when supplied, is the place label (never a festpack
+    /// landmark — this app has none, A01's own scope cut); when omitted
+    /// the current `composeText` is used as the label (consumed and
+    /// cleared, mirroring the "Meet at…" quick reply's own text-entry
+    /// affordance), falling back to "MY SPOT" when both are empty
+    /// (`ff_rally.h`'s own `FF_RALLY_DEFAULT_NAME` — the honest fallback
+    /// the puck uses when it has no better name either).
+    public func sendRally(name providedName: String? = nil) async {
+        immediateSendFailure = nil
+        guard let flareSender else {
+            immediateSendFailure = .flareUnavailable
+            return
+        }
+        guard isLinkReady else {
+            immediateSendFailure = .linkDown
+            return
+        }
+        // RALLY's own wire body always carries a real lat/lon (S04) —
+        // there is no "position absent" shape on the wire to encode, so
+        // sending one without a fix of our own would mean inventing
+        // coordinates. The honest answer is to refuse, visibly, exactly
+        // as the phone-GPS uplink refuses to push a position it does not
+        // have (A01: "No fix means no position message... There is no
+        // last-known-position fallback that gets broadcast as current").
+        guard let fix = currentFix?() else {
+            immediateSendFailure = .rallyNoFix
+            return
+        }
+        let typed = (providedName ?? composeText).trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = typed.isEmpty ? "MY SPOT" : String(typed.prefix(24)) // FF_PROTO_RALLY_NAME_MAX
+        if providedName == nil { composeText = "" }
+        let dest: NodeID? = (conversation == .crew) ? nil : destination
+        do {
+            try await flareSender.sendRally(to: dest, latitude: fix.latitude, longitude: fix.longitude, name: name)
+            let now = Date()
+            let sent = FeedMessage(id: OutboxIDGenerator.shared.next(), kind: .rally, direction: .out, text: name,
+                                    timestamp: now, destination: dest ?? meshBroadcastAddress, deliveryState: .sent,
+                                    statusAt: now)
+            provider.push(sent, into: conversation)
+            refresh()
+        } catch {
+            immediateSendFailure = .transportError
+        }
+    }
+
     /// The single non-outbox send path shared by quick replies (FLARE
     /// has its own, above, since it uses a different seam entirely).
     /// Pushes a local record only once the send has actually been
@@ -347,6 +441,15 @@ public final class ThreadViewModel {
         guard message.direction == .out else { return }
         if message.kind == .flare {
             await sendFlare(durationSeconds: message.flareDurationSeconds ?? 300)
+            return
+        }
+        if message.kind == .rally {
+            // The place LABEL is the one fact `resend` can honestly
+            // replay — the position is re-read fresh from `currentFix`
+            // (never the original send's now-possibly-stale coordinate),
+            // same "a resend is a fresh attempt, not a fossil" rule
+            // every other resend in this app follows.
+            await sendRally(name: message.text)
             return
         }
         await send(text: message.text, kind: message.kind, flareDurationSeconds: message.flareDurationSeconds)

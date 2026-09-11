@@ -534,6 +534,16 @@ public enum RadarCrewPalette {
 public protocol HapticSignaling: Sendable {
     func warmer()
     func colder()
+    /// M2, S10: inbound FLARE's "haptic pattern (3 long) — overrides
+    /// quiet hours". Defaulted (no-op) so every conformance written
+    /// before this method existed — `NoHapticSignaling` below, any test
+    /// double — keeps compiling without change; `UIKitHapticSignaling`
+    /// (app target) is the one real override.
+    func flareAlert()
+}
+
+public extension HapticSignaling {
+    func flareAlert() {}
 }
 
 /// The macOS/unit-test default — there is no Taptic Engine on a Mac, and
@@ -543,6 +553,7 @@ public final class NoHapticSignaling: HapticSignaling, Sendable {
     public init() {}
     public func warmer() {}
     public func colder() {}
+    public func flareAlert() {}
 }
 
 // MARK: - RadarViewModel

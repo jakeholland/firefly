@@ -104,6 +104,50 @@ private final class ScriptedLocationProvider: LocationProviding, @unchecked Send
     func push(_ fix: LocationFix?) { hub.yield(fix) }
 }
 
+/// An honest `NotificationSending` double: posts nothing, records every
+/// call so a test can assert exactly what would have gone out — same
+/// "record, never actually deliver" convention `MockFlareSender`
+/// (`InboxThreadViewModelTests.swift`) already uses for the FLARE seam.
+/// A plain class + `NSLock`, not an actor: `waitUntil` (this file's own
+/// helper) polls a synchronous, non-`async` predicate, which an actor's
+/// isolated properties cannot satisfy without their own `await` — same
+/// `NSLock`-across-a-suspension-point convention `LoopbackTransport
+/// .record(_:)`/`MockFlareSender.record(to:durationSeconds:)` already
+/// use in this codebase for an identical reason.
+private final class RecordingNotificationSending: NotificationSending, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _flareCalls: [String] = []
+    private var _messageCalls: [(senderName: String, preview: String)] = []
+
+    var flareCalls: [String] { lock.lock(); defer { lock.unlock() }; return _flareCalls }
+    var messageCalls: [(senderName: String, preview: String)] { lock.lock(); defer { lock.unlock() }; return _messageCalls }
+
+    func postFlare(senderName: String) async { record { self._flareCalls.append(senderName) } }
+    func postMessage(senderName: String, preview: String) async {
+        record { self._messageCalls.append((senderName, preview)) }
+    }
+
+    private func record(_ body: () -> Void) {
+        lock.lock(); defer { lock.unlock() }
+        body()
+    }
+}
+
+/// An honest `HapticSignaling` double for the negative "unpaired sender
+/// gets no haptic" tests (PR #271 review, BLOCKING finding 1) — same
+/// "record, never actually vibrate" convention `RecordingNotificationSending`
+/// just above already uses.
+private final class RecordingHapticSignaling: HapticSignaling, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _flareAlertCount = 0
+
+    var flareAlertCount: Int { lock.lock(); defer { lock.unlock() }; return _flareAlertCount }
+
+    func warmer() {}
+    func colder() {}
+    func flareAlert() { lock.lock(); _flareAlertCount += 1; lock.unlock() }
+}
+
 @MainActor
 final class AppGraphTests: XCTestCase {
 
@@ -151,10 +195,18 @@ final class AppGraphTests: XCTestCase {
         XCTAssertEqual(client.subscriptionCount("node"), 1)
         XCTAssertEqual(client.subscriptionCount("delivery"), 1)
         XCTAssertEqual(client.subscriptionCount("private"), 1)
-        // The graph itself does NOT read incoming texts — `InboxViewModel`
-        // holds that subscription (its own, independent one, S1), so a
-        // graph with no Inbox on screen must not have taken one.
-        XCTAssertEqual(client.subscriptionCount("text"), 0)
+        // M2: the graph now holds its OWN `incomingTexts()` subscription
+        // too — a second, independent one (S1's multicast rule), purely
+        // to notice a text arriving while the app is backgrounded and
+        // post a local notification
+        // (`observeIncomingTextsForNotifications()`). `InboxViewModel`'s
+        // own subscription (below) is unaffected and unrelated: it lives
+        // only while the Inbox screen is on screen (`InboxListView`'s
+        // `onAppear`/`onDisappear`), which is exactly the lifecycle a
+        // backgrounded-app notification cannot depend on — so the graph
+        // needs one of its own rather than reusing (or stealing) the
+        // screen's.
+        XCTAssertEqual(client.subscriptionCount("text"), 1)
 
         await graph.stop()
     }
@@ -168,8 +220,10 @@ final class AppGraphTests: XCTestCase {
         inbox.observe()
 
         // S1's multicast rule: the Inbox's subscriptions are ITS own,
-        // never stolen from or shared with the graph's.
-        XCTAssertEqual(client.subscriptionCount("text"), 1)
+        // never stolen from or shared with the graph's. "2" here is the
+        // graph's own M2 notification subscription (started by
+        // `graph.start()` above) plus the Inbox's own.
+        XCTAssertEqual(client.subscriptionCount("text"), 2)
         XCTAssertEqual(client.subscriptionCount("delivery"), 2, "graph's + the Inbox's own")
 
         inbox.stopObserving()
@@ -279,8 +333,8 @@ final class AppGraphTests: XCTestCase {
 
     // MARK: - Phone GPS uplink
 
-    private func fix(latitude: Double, longitude: Double) -> LocationFix {
-        LocationFix(latitude: latitude, longitude: longitude, altitude: 42, time: Date(),
+    private func fix(latitude: Double, longitude: Double, time: Date = Date()) -> LocationFix {
+        LocationFix(latitude: latitude, longitude: longitude, altitude: 42, time: time,
                      horizontalAccuracyMeters: 12, groundSpeedMetersPerSecond: nil, groundTrackDegrees: nil)
     }
 
@@ -372,5 +426,463 @@ final class AppGraphTests: XCTestCase {
     func testStubStackHasNoScannerSoThePickerCannotInventAPeripheral() {
         XCTAssertNil(AppDependencies.stub().scanner,
                       "no radio in the Simulator — an empty picker is the honest answer")
+    }
+
+    // MARK: - M2: PONG auto-reply (S29 PR 2)
+
+    /// A received PING gets exactly one PONG, direct-addressed, carrying
+    /// OUR OWN measured RSSI/SNR on that packet — never the RSSI it
+    /// claims to be replying about.
+    func testPingReceivesExactlyOnePongWithOurMeasuredRSSIAndSNR() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client))
+        await graph.start()
+
+        let pingPayload = FireflyPacket.ping(nonce: 0xABCD_1234).encode()
+        XCTAssertNotNil(pingPayload)
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x02E6_06B0, to: 48_621_524, channel: 0, packetID: 55, payload: pingPayload!,
+            rxTime: Date(), rssiDbm: -63, snrDb: 4.5, direct: true))
+
+        await waitUntil { !client.sentPrivate.isEmpty }
+        XCTAssertEqual(client.sentPrivate.count, 1)
+        let (payload, destination, wantAck) = try! XCTUnwrap(client.sentPrivate.first)
+        XCTAssertEqual(destination, 0x02E6_06B0, "the reply goes back to whoever pinged us, direct-addressed")
+        XCTAssertFalse(wantAck, "S29: PONG carries no ack request")
+        XCTAssertEqual(FireflyPacket.decode(payload), .pong(nonce: 0xABCD_1234, rssiDbm: -63, snrDb: 4.5),
+                        "the reply must echo the nonce and carry OUR OWN measured reading of the PING")
+
+        await graph.stop()
+    }
+
+    /// A PING packet with no honest RSSI reading of our own gets no
+    /// reply at all — `ff_proto.h`'s own rule (`ff_proto_pong_t
+    /// .rssi_dbm`'s doc comment): nothing honest to report, so nothing
+    /// is sent.
+    func testPingWithNoRSSIReadingGetsNoReply() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client))
+        await graph.start()
+
+        let pingPayload = FireflyPacket.ping(nonce: 9).encode()!
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x02E6_06B0, to: 48_621_524, channel: 0, packetID: 56, payload: pingPayload,
+            rxTime: Date(), rssiDbm: nil, snrDb: nil, direct: true))
+
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertTrue(client.sentPrivate.isEmpty)
+
+        await graph.stop()
+    }
+
+    /// The task's own explicit ask: rate-limited to ONE reply per nonce
+    /// — a redelivered/duplicated PING packet must not double-reply.
+    func testDuplicatePingNonceFromTheSameSenderOnlyRepliesOnce() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client))
+        await graph.start()
+
+        let pingPayload = FireflyPacket.ping(nonce: 42).encode()!
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x02E6_06B0, to: 48_621_524, channel: 0, packetID: 60, payload: pingPayload,
+            rxTime: Date(), rssiDbm: -70, snrDb: nil, direct: true))
+        await waitUntil { client.sentPrivate.count == 1 }
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x02E6_06B0, to: 48_621_524, channel: 0, packetID: 61, payload: pingPayload,
+            rxTime: Date(), rssiDbm: -71, snrDb: nil, direct: true))
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        XCTAssertEqual(client.sentPrivate.count, 1, "same (from, nonce) pair — only the first PING gets a reply")
+
+        await graph.stop()
+    }
+
+    /// A DIFFERENT nonce from the same sender is a new probe and gets
+    /// its own reply — the dedup key is the (from, nonce) PAIR, not the
+    /// sender alone.
+    func testDifferentNonceFromSameSenderGetsItsOwnReply() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client))
+        await graph.start()
+
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x02E6_06B0, to: 48_621_524, channel: 0, packetID: 70,
+            payload: FireflyPacket.ping(nonce: 1).encode()!, rxTime: Date(), rssiDbm: -70, snrDb: nil, direct: true))
+        await waitUntil { client.sentPrivate.count == 1 }
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x02E6_06B0, to: 48_621_524, channel: 0, packetID: 71,
+            payload: FireflyPacket.ping(nonce: 2).encode()!, rxTime: Date(), rssiDbm: -70, snrDb: nil, direct: true))
+        await waitUntil { client.sentPrivate.count == 2 }
+
+        XCTAssertEqual(client.sentPrivate.count, 2)
+
+        await graph.stop()
+    }
+
+    // MARK: - M2: inbound FLARE (S10)
+
+    /// Every one of these senders must be registered PAIRED first (PR
+    /// #271 review, BLOCKING finding 1) — before this fix, these tests
+    /// themselves demonstrated the gap: they asserted a reaction for a
+    /// `from` node id that was never paired, let alone identified.
+    func testInboundFlareShowsTheTakeoverWhileForegrounded() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client))
+        graph.core.crew.setPaired(nodeID: 0x0000_1002, paired: true)
+        await graph.start()
+        graph.setForegrounded(true)
+
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1002, to: meshBroadcastAddress, channel: 0, packetID: 80,
+            payload: FireflyPacket.flare(durationS: 120).encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: true))
+
+        await waitUntil { graph.flareTakeover.isActive }
+        XCTAssertEqual(graph.flareTakeover.senderNodeID, 0x0000_1002)
+        XCTAssertEqual(graph.flareTakeover.totalDurationSeconds, 120)
+
+        await graph.stop()
+    }
+
+    /// S10/task point (1)+(4): backgrounded, the takeover never renders
+    /// — a local notification fires instead.
+    func testInboundFlareWhileBackgroundedNeverShowsTheTakeoverAndPostsANotificationInstead() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client), notifications: notifications)
+        graph.core.crew.setPaired(nodeID: 0x0000_1002, paired: true)
+        await graph.start()
+        graph.setForegrounded(false)
+
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1002, to: meshBroadcastAddress, channel: 0, packetID: 81,
+            payload: FireflyPacket.flare(durationS: 60).encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: true))
+
+        await waitUntil { !notifications.flareCalls.isEmpty }
+        XCTAssertFalse(graph.flareTakeover.isActive, "never shown in the background beyond a local notification")
+        XCTAssertEqual(notifications.flareCalls.count, 1)
+
+        await graph.stop()
+    }
+
+    /// The feed keeps a record of an inbound FLARE regardless of
+    /// foreground state (S10: "feed item remains").
+    func testInboundFlarePushesAFeedItemEvenWhileBackgrounded() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client), notifications: notifications)
+        graph.core.crew.setPaired(nodeID: 0x0000_1002, paired: true)
+        await graph.start()
+        graph.setForegrounded(false)
+
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1002, to: meshBroadcastAddress, channel: 0, packetID: 82,
+            payload: FireflyPacket.flare(durationS: 60).encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: true))
+
+        await waitUntil { !graph.inboxProvider.thread(for: .crew, now: Date()).isEmpty }
+        let message = graph.inboxProvider.thread(for: .crew, now: Date()).last
+        XCTAssertEqual(message?.kind, .flare)
+        XCTAssertEqual(message?.senderID, 0x0000_1002)
+
+        await graph.stop()
+    }
+
+    /// FLARE_END only clears a takeover currently showing FOR THAT
+    /// sender — a stale end naming someone else must not touch it. Both
+    /// senders are paired here, so this stays a test of the SENDER-MATCH
+    /// guard specifically, not a re-test of the pairing gate.
+    func testFlareEndOnlyClearsTheTakeoverForTheMatchingSender() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client))
+        graph.core.crew.setPaired(nodeID: 0x0000_1002, paired: true)
+        graph.core.crew.setPaired(nodeID: 0x0000_1003, paired: true)
+        await graph.start()
+
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1002, to: meshBroadcastAddress, channel: 0, packetID: 90,
+            payload: FireflyPacket.flare(durationS: 300).encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: true))
+        await waitUntil { graph.flareTakeover.isActive }
+
+        // A FLARE_END from a DIFFERENT (but still paired) sender must
+        // not clear it.
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1003, to: meshBroadcastAddress, channel: 0, packetID: 91,
+            payload: FireflyPacket.flareEnd.encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil, direct: true))
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertTrue(graph.flareTakeover.isActive, "a FLARE_END naming someone else must not touch this takeover")
+
+        // The matching sender's FLARE_END does clear it.
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1002, to: meshBroadcastAddress, channel: 0, packetID: 92,
+            payload: FireflyPacket.flareEnd.encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil, direct: true))
+        await waitUntil { !graph.flareTakeover.isActive }
+
+        await graph.stop()
+    }
+
+    // MARK: - M2: unpaired senders are dropped silently (PR #271 review, BLOCKING finding 1)
+
+    /// Foregrounded: an unpaired sender's FLARE must never open the
+    /// takeover, fire the haptic, or leave a feed item — S04's
+    /// Addressing section ("only react if sender is paired"), mirroring
+    /// the puck's own `wiring_push_if_paired` (`ff_wiring.c`).
+    func testUnpairedFlareWhileForegroundedShowsNoTakeoverNoHapticAndNoFeedItem() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client))
+        let haptics = RecordingHapticSignaling()
+        graph.flareTakeover.setHaptics(haptics)
+        // Deliberately never paired.
+        await graph.start()
+        graph.setForegrounded(true)
+
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_9001, to: meshBroadcastAddress, channel: 0, packetID: 200,
+            payload: FireflyPacket.flare(durationS: 120).encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: true))
+
+        // Sentinel: a PAIRED sender's STATUS, sent after the unpaired
+        // FLARE above on the same serial `incomingPrivate()` pipeline
+        // (`AppGraph.observePrivatePackets()`'s single `for await` loop)
+        // — once this lands, the FLARE has certainly already been
+        // handled (and dropped) rather than merely not-yet-delivered.
+        graph.core.crew.setPaired(nodeID: 0x0000_9002, paired: true)
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_9002, to: meshBroadcastAddress, channel: 0, packetID: 201,
+            payload: FireflyPacket.status("sentinel").encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: false))
+        await waitUntil { !graph.inboxProvider.thread(for: .crew, now: Date()).isEmpty }
+
+        XCTAssertFalse(graph.flareTakeover.isActive, "an unpaired sender must never open the takeover")
+        XCTAssertEqual(haptics.flareAlertCount, 0, "an unpaired sender must never trigger the FLARE haptic")
+        let crew = graph.inboxProvider.thread(for: .crew, now: Date())
+        XCTAssertFalse(crew.contains { $0.senderID == 0x0000_9001 }, "no feed item for an unpaired FLARE sender")
+        XCTAssertEqual(crew.count, 1, "only the paired sentinel STATUS should have landed")
+
+        await graph.stop()
+    }
+
+    /// Backgrounded: an unpaired sender's FLARE must never post a local
+    /// notification either — the pairing gate runs before ANY reaction,
+    /// notification included.
+    func testUnpairedFlareWhileBackgroundedPostsNoNotificationAndNoFeedItem() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client), notifications: notifications)
+        // Deliberately never paired.
+        await graph.start()
+        graph.setForegrounded(false)
+
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_9003, to: meshBroadcastAddress, channel: 0, packetID: 202,
+            payload: FireflyPacket.flare(durationS: 60).encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: true))
+
+        graph.core.crew.setPaired(nodeID: 0x0000_9004, paired: true)
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_9004, to: meshBroadcastAddress, channel: 0, packetID: 203,
+            payload: FireflyPacket.status("sentinel").encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: false))
+        await waitUntil { !graph.inboxProvider.thread(for: .crew, now: Date()).isEmpty }
+
+        XCTAssertTrue(notifications.flareCalls.isEmpty, "an unpaired sender must never post a FLARE notification")
+        let crew = graph.inboxProvider.thread(for: .crew, now: Date())
+        XCTAssertFalse(crew.contains { $0.senderID == 0x0000_9003 }, "no feed item for an unpaired FLARE sender")
+        XCTAssertEqual(crew.count, 1, "only the paired sentinel STATUS should have landed")
+
+        await graph.stop()
+    }
+
+    // MARK: - M2: inbound RALLY / STATUS (S04)
+
+    func testInboundRallyPushesAFeedItemWithDistanceAndBearingWhenWeHaveAFix() async {
+        let client = CountingClient()
+        let location = ScriptedLocationProvider()
+        let graph = AppGraph(dependencies: dependencies(client: client, location: location))
+        graph.core.crew.setPaired(nodeID: 0x0000_1004, paired: true)
+        await graph.start()
+
+        location.push(fix(latitude: 43.700000, longitude: -121.500000))
+        // Same convention `testGPSUplinkPushesOnlyWhileSharingIsOnAndStopsWhenItIsTurnedOff`
+        // uses to let a pushed fix actually reach its subscriber before
+        // the next step depends on it.
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        let rallyPayload = FireflyPacket.rally(latitude: 43.701000, longitude: -121.500000, name: "MY SPOT").encode()
+        XCTAssertNotNil(rallyPayload)
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1004, to: meshBroadcastAddress, channel: 0, packetID: 95, payload: rallyPayload!,
+            rxTime: Date(), rssiDbm: -60, snrDb: nil, direct: false))
+
+        await waitUntil { !graph.inboxProvider.thread(for: .crew, now: Date()).isEmpty }
+        let message = try! XCTUnwrap(graph.inboxProvider.thread(for: .crew, now: Date()).last)
+        XCTAssertEqual(message.kind, .rally)
+        XCTAssertTrue(message.text.contains("MY SPOT"), "the place label must survive: \(message.text)")
+        XCTAssertTrue(message.text.contains("of you"), "a real fix on both ends must render distance/bearing: \(message.text)")
+
+        await graph.stop()
+    }
+
+    func testInboundRallyWithNoFixOfOurOwnShowsOnlyTheName() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client)) // UnavailableLocationProvider — no fix, ever
+        graph.core.crew.setPaired(nodeID: 0x0000_1004, paired: true)
+        await graph.start()
+
+        let rallyPayload = FireflyPacket.rally(latitude: 43.701000, longitude: -121.500000, name: "THE TOWER").encode()
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1004, to: meshBroadcastAddress, channel: 0, packetID: 96, payload: rallyPayload!,
+            rxTime: Date(), rssiDbm: -60, snrDb: nil, direct: false))
+
+        await waitUntil { !graph.inboxProvider.thread(for: .crew, now: Date()).isEmpty }
+        let message = try! XCTUnwrap(graph.inboxProvider.thread(for: .crew, now: Date()).last)
+        XCTAssertEqual(message.text, "THE TOWER", "no fix of our own — the honest answer is the name alone, never a fabricated distance")
+
+        await graph.stop()
+    }
+
+    /// SHOULD-FIX 3: a stale fix of our own is not honest grounds for a
+    /// confident bearing either, even with a real RALLY position on the
+    /// other end.
+    func testInboundRallyWithAStaleFixOfOurOwnRendersTheStalenessReasonNotABearing() async {
+        let client = CountingClient()
+        let location = ScriptedLocationProvider()
+        let graph = AppGraph(dependencies: dependencies(client: client, location: location))
+        graph.core.crew.setPaired(nodeID: 0x0000_1004, paired: true)
+        await graph.start()
+
+        // FF_CREW_LIVE_MS is 45s (ff_crew.h) — 6 minutes old is
+        // squarely past it.
+        location.push(fix(latitude: 43.700000, longitude: -121.500000,
+                           time: Date().addingTimeInterval(-6 * 60)))
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        let rallyPayload = FireflyPacket.rally(latitude: 43.701000, longitude: -121.500000, name: "MY SPOT").encode()
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1004, to: meshBroadcastAddress, channel: 0, packetID: 950, payload: rallyPayload!,
+            rxTime: Date(), rssiDbm: -60, snrDb: nil, direct: false))
+
+        await waitUntil { !graph.inboxProvider.thread(for: .crew, now: Date()).isEmpty }
+        let message = try! XCTUnwrap(graph.inboxProvider.thread(for: .crew, now: Date()).last)
+        XCTAssertEqual(message.text, "MY SPOT — no bearing (your fix is 6 min old)")
+
+        await graph.stop()
+    }
+
+    func testInboundStatusPushesAFeedItemWithItsText() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client))
+        graph.core.crew.setPaired(nodeID: 0x0000_1003, paired: true)
+        await graph.start()
+
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1003, to: meshBroadcastAddress, channel: 0, packetID: 97,
+            payload: FireflyPacket.status("RAGING").encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: false))
+
+        await waitUntil { !graph.inboxProvider.thread(for: .crew, now: Date()).isEmpty }
+        let message = try! XCTUnwrap(graph.inboxProvider.thread(for: .crew, now: Date()).last)
+        XCTAssertEqual(message.kind, .status)
+        XCTAssertEqual(message.text, "RAGING")
+
+        await graph.stop()
+    }
+
+    /// A direct (non-broadcast) RALLY/STATUS lands in the SENDER's own
+    /// 1:1 thread, not CREW — same membership rule ordinary inbound
+    /// text uses.
+    func testDirectInboundStatusLandsInTheSendersOwnThreadNotCrew() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client))
+        graph.core.crew.setPaired(nodeID: 0x0000_1003, paired: true)
+        await graph.start()
+
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1003, to: 48_621_524, channel: 0, packetID: 98,
+            payload: FireflyPacket.status("solo mission").encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: true))
+
+        await waitUntil { !graph.inboxProvider.thread(for: .member(0x0000_1003), now: Date()).isEmpty }
+        XCTAssertTrue(graph.inboxProvider.thread(for: .crew, now: Date()).isEmpty,
+                       "a direct STATUS must not also appear in CREW")
+
+        await graph.stop()
+    }
+
+    /// SHOULD-FIX 2: `to == 0` is protobuf's zero-default for an unset
+    /// field, not a real broadcast — `pushInboundFeedItem`'s routing
+    /// must agree with `InboxViewModel.ingest(_:)`'s (both now call the
+    /// same `isBroadcastDestination` helper), so it must land in the
+    /// SENDER's own thread, exactly like a direct message would.
+    func testStatusAddressedToZeroRoutesAsDirectNotBroadcast() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client))
+        graph.core.crew.setPaired(nodeID: 0x0000_1005, paired: true)
+        await graph.start()
+
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1005, to: 0, channel: 0, packetID: 99,
+            payload: FireflyPacket.status("to-zero").encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: true))
+
+        await waitUntil { !graph.inboxProvider.thread(for: .member(0x0000_1005), now: Date()).isEmpty }
+        XCTAssertTrue(graph.inboxProvider.thread(for: .crew, now: Date()).isEmpty,
+                       "to == 0 is not a real broadcast — must not land in CREW")
+
+        await graph.stop()
+    }
+
+    /// Unpaired RALLY: no feed item, same trust boundary as FLARE.
+    func testUnpairedRallyPushesNoFeedItem() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client))
+        // Deliberately never paired.
+        await graph.start()
+
+        let rallyPayload = FireflyPacket.rally(latitude: 43.701000, longitude: -121.500000, name: "UNKNOWN SPOT").encode()
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_9005, to: meshBroadcastAddress, channel: 0, packetID: 204, payload: rallyPayload!,
+            rxTime: Date(), rssiDbm: -60, snrDb: nil, direct: false))
+
+        graph.core.crew.setPaired(nodeID: 0x0000_9006, paired: true)
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_9006, to: meshBroadcastAddress, channel: 0, packetID: 205,
+            payload: FireflyPacket.status("sentinel").encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: false))
+        await waitUntil { !graph.inboxProvider.thread(for: .crew, now: Date()).isEmpty }
+
+        let crew = graph.inboxProvider.thread(for: .crew, now: Date())
+        XCTAssertFalse(crew.contains { $0.senderID == 0x0000_9005 }, "no feed item for an unpaired RALLY sender")
+        XCTAssertEqual(crew.count, 1, "only the paired sentinel STATUS should have landed")
+
+        await graph.stop()
+    }
+
+    /// Unpaired STATUS: no feed item, same trust boundary as FLARE.
+    func testUnpairedStatusPushesNoFeedItem() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client))
+        // Deliberately never paired.
+        await graph.start()
+
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_9007, to: meshBroadcastAddress, channel: 0, packetID: 206,
+            payload: FireflyPacket.status("unpaired").encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: false))
+
+        graph.core.crew.setPaired(nodeID: 0x0000_9008, paired: true)
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_9008, to: meshBroadcastAddress, channel: 0, packetID: 207,
+            payload: FireflyPacket.status("sentinel").encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: false))
+        await waitUntil { !graph.inboxProvider.thread(for: .crew, now: Date()).isEmpty }
+
+        let crew = graph.inboxProvider.thread(for: .crew, now: Date())
+        XCTAssertFalse(crew.contains { $0.senderID == 0x0000_9007 }, "no feed item for an unpaired STATUS sender")
+        XCTAssertEqual(crew.count, 1, "only the paired sentinel STATUS should have landed")
+
+        await graph.stop()
     }
 }

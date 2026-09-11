@@ -45,10 +45,44 @@ public final class AppGraph {
     /// to a session nobody is watching has nothing to update.
     private weak var radar: RadarViewModel?
 
-    public init(dependencies: AppDependencies = .current()) {
+    // MARK: - M2: inbound FLARE/RALLY/STATUS + PING auto-reply
+    // (docs/specs/A01-companion-app.md M2; see `AppGraph+M2Protocol.swift`
+    // for the methods that use these — split into its own file so this
+    // shared file's own diff stays small, three other M2 slices touching
+    // it in the same worktree).
+
+    /// The inbound-FLARE takeover's whole state — one per process, like
+    /// every other `ff_*`-backed view model this graph owns.
+    public let flareTakeover: FlareTakeoverViewModel
+    /// `UNNotificationSending` by default (the live graph) — local
+    /// notifications for a backgrounded FLARE/text (task point 4).
+    /// Injectable so a test never has to touch the real
+    /// `UNUserNotificationCenter` (`UNNotificationSending`'s own doc
+    /// comment on why that matters under bare `swift test`).
+    let notifications: any NotificationSending
+    /// Whether the app is in the foreground right now — `FireflyApp`'s
+    /// `ScenePhase` observation is the one caller (`setForegrounded(_:)`).
+    /// Starts `true`: the app IS foregrounded at the moment its own
+    /// composition root is built, before any `ScenePhase` event has ever
+    /// fired.
+    var isForegrounded = true
+    /// The phone's own last known fix, kept live by `observeMyLocation()`
+    /// — shared by `FlareTakeoverViewModel`'s bearing/distance and
+    /// inbound RALLY's own distance/bearing text.
+    var myFix: LocationFix?
+    var locationObservation: Task<Void, Never>?
+    /// A second, independent `incomingTexts()` subscription purely for
+    /// backgrounded-text notifications — see `observeIncomingTextsForNotifications()`.
+    var incomingTextNotificationObservation: Task<Void, Never>?
+    /// PONG auto-reply's "one reply per nonce" memory.
+    var repliedPongNonces = PongReplyDedup()
+
+    public init(dependencies: AppDependencies = .current(), notifications: any NotificationSending = UNNotificationSending()) {
         self.dependencies = dependencies
+        self.notifications = notifications
         self.inboxProvider = CoreInboxProvider(inbox: core.inbox, crew: core.crew)
         self.packetSender = MeshFireflyPacketSender(client: dependencies.client)
+        self.flareTakeover = FlareTakeoverViewModel(crew: self.core.crew)
         let client = dependencies.client
         self.uplink = PhoneGPSUplink(
             location: dependencies.location,
@@ -58,7 +92,15 @@ public final class AppGraph {
             // there is no node to address, and a fix arriving then is
             // dropped rather than sent to a guessed destination.
             destinationNodeNum: { client.connectedNodeNum })
+        // Only safe now: every stored property above is set, so `self`
+        // may finally be captured (`setCurrentFix`'s own doc comment).
+        self.flareTakeover.setCurrentFix { [weak self] in self?.myFix }
     }
+
+    /// `FireflyApp`'s `ScenePhase` observation calls this — the one
+    /// source of truth `handleInboundFlare`/the notification path below
+    /// read to decide "takeover, or a local notification instead".
+    public func setForegrounded(_ active: Bool) { isForegrounded = active }
 
     /// Idempotent, the same convention every `observe()` in this app
     /// follows. Subscribes `CoreStore` to the client's streams, starts
@@ -90,6 +132,8 @@ public final class AppGraph {
         // `CoreStore.observe(client:routeDeliveriesToInbox:)`.
         core.observe(client: dependencies.client, routeDeliveriesToInbox: false)
         observePrivatePackets()
+        observeMyLocation()
+        observeIncomingTextsForNotifications()
         await uplink.start()
         tickLoop = Task { [weak self] in
             while !Task.isCancelled {
@@ -100,6 +144,9 @@ public final class AppGraph {
                 // to call it, exactly as `ff_shell_tick` does on the puck
                 // (`CoreStore.tick(nowMs:)`'s own doc comment).
                 self.core.tick(nowMs: FireflyClock.nowMillis())
+                // The FLARE takeover's own auto-dismiss (S10: "Auto-end
+                // at dur") — same tick-driven shape, same loop.
+                self.flareTakeover.tick()
             }
         }
     }
@@ -124,6 +171,8 @@ public final class AppGraph {
         started = false
         core.stopObserving()
         privateObservation?.cancel(); privateObservation = nil
+        stopObservingMyLocation()
+        stopObservingIncomingTextsForNotifications()
         tickLoop?.cancel(); tickLoop = nil
         await uplink.stop()
     }
@@ -158,18 +207,27 @@ public final class AppGraph {
             radar?.handlePong(fromNodeID: packet.from, nonce: nonce, rssiDbm: rssiOfUs,
                                hasSNR: snrDb != nil, snrDb: Double(snrDb ?? 0))
         case .ping(let nonce):
-            // Somebody is FINDing US. Answering is a real S29 behaviour
-            // and is deliberately NOT wired in M1: the reply must carry
-            // how we hear THEM, which is this packet's own rx RSSI, and
-            // an unconditional auto-reply is a transmit decision the
-            // owner has not made yet. Tracked, not silently half-done.
-            _ = nonce
-        case .flare, .flareEnd, .rally, .rallyClear, .status, .ackPing, .retiredReserved01:
-            // Inbound FLARE/RALLY/STATUS rendering is M2 (A01's
-            // milestones): the feed kinds exist (`ff_feed_kind_t`), but
-            // no M1 screen renders one, and pushing them into the inbox
-            // with no screen behind them would be inventing rows nobody
-            // can open.
+            // Somebody is FINDing US (S29 PR 2) — a puck's own spec'd
+            // behaviour, and the app must answer exactly as honestly:
+            // one PONG, direct-addressed, carrying the RSSI/SNR OUR OWN
+            // radio measured on THIS packet.
+            replyToPing(from: packet.from, nonce: nonce, rssiDbm: packet.rssiDbm, snrDb: packet.snrDb)
+        case .flare(let durationS):
+            handleInboundFlare(from: packet.from, to: packet.to, durationS: durationS)
+        case .flareEnd:
+            handleInboundFlareEnd(from: packet.from)
+        case .rally(let latitude, let longitude, let name):
+            handleInboundRally(from: packet.from, to: packet.to, latitude: latitude, longitude: longitude, name: name)
+        case .rallyClear:
+            handleInboundRallyClear(from: packet.from)
+        case .status(let text):
+            handleInboundStatus(from: packet.from, to: packet.to, text: text)
+        case .ackPing, .retiredReserved01:
+            // ACK_PING is reserved for v1.5 (no encoder exists yet, S04);
+            // RESERVED_01 is the permanently-retired PULSE shape (S04's
+            // Amendments) — both decode successfully and both are
+            // honestly nothing to do, same as the puck's own
+            // `app/ff_wiring.c`.
             break
         }
     }
@@ -214,7 +272,8 @@ public final class AppGraph {
     /// the first time — `flareSender` was `nil` in every composition
     /// until a portnum-269 send existed.
     public func makeInboxViewModel() -> InboxViewModel {
-        InboxViewModel(provider: inboxProvider, client: dependencies.client, flareSender: packetSender)
+        InboxViewModel(provider: inboxProvider, client: dependencies.client, flareSender: packetSender,
+                        currentFix: { [weak self] in self?.myFix })
     }
 
     public func makeConnectViewModel() -> ConnectViewModel {

@@ -15,9 +15,27 @@ import UIKit
 final class UIKitHapticSignaling: HapticSignaling, @unchecked Sendable {
     private let warmerGenerator = UIImpactFeedbackGenerator(style: .light)
     private let colderGenerator = UIImpactFeedbackGenerator(style: .rigid)
+    private let flareGenerator = UINotificationFeedbackGenerator()
 
     func warmer() {
         DispatchQueue.main.async { self.warmerGenerator.impactOccurred() }
+    }
+
+    /// M2, S10: "haptic pattern (3 long) — overrides quiet hours." Same
+    /// tellable-apart-by-count convention `colder()` already uses (this
+    /// file's own note on `HapticSignaling`'s lack of a duration/pattern
+    /// parameter) — three heavy pulses, spaced enough to read as
+    /// distinct beats rather than one long buzz.
+    func flareAlert() {
+        DispatchQueue.main.async {
+            self.flareGenerator.notificationOccurred(.warning)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                self.flareGenerator.notificationOccurred(.warning)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                self.flareGenerator.notificationOccurred(.warning)
+            }
+        }
     }
 
     /// Tellable apart from `warmer()` by COUNT, not pattern — the real

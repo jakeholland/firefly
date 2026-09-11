@@ -92,6 +92,19 @@ public final class MeshFireflyPacketSender: FireflyPacketSending {
         try await send(.flare(durationS: durationSeconds), to: to ?? meshBroadcastAddress, wantAck: true)
     }
 
+    /// S04: RALLY is type `0x04`. `want_ack = false` — "RALLY/STATUS
+    /// broadcast likewise" (S04's Addressing table; FLARE is the one
+    /// `want_ack` type).
+    public func sendRally(to: NodeID?, latitude: Double, longitude: Double, name: String) async throws {
+        try await send(.rally(latitude: latitude, longitude: longitude, name: name),
+                        to: to ?? meshBroadcastAddress, wantAck: false)
+    }
+
+    /// S04: STATUS is type `0x06`. Same `want_ack = false` rule as RALLY.
+    public func sendStatus(to: NodeID?, text: String) async throws {
+        try await send(.status(text), to: to ?? meshBroadcastAddress, wantAck: false)
+    }
+
     /// The general entry point — FIND's PING goes through this too.
     @discardableResult
     public func send(_ packet: FireflyPacket, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {

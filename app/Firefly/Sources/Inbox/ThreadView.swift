@@ -92,6 +92,7 @@ private struct ImmediateSendFailureBanner: View {
         case .linkDown: return "NOT SENT · NODE NOT CONNECTED"
         case .transportError: return "NOT SENT · TRY AGAIN"
         case .flareUnavailable: return ThreadViewModel.flareUnavailableLabel.uppercased()
+        case .rallyNoFix: return "NOT SENT · NO GPS FIX OF YOUR OWN"
         }
     }
 
@@ -136,8 +137,8 @@ private struct MessageBubble: View {
                                 .font(.system(.caption2, design: .monospaced).weight(.bold))
                                 .foregroundStyle(Color.ffAmber)
                                 .buttonStyle(.plain)
-                                // 44pt minimum tap target (SHOULD-FIX 7),
-                                // without inflating the caption text's own
+                                // HIG 44pt minimum tap target, without
+                                // inflating the caption text's own
                                 // visual size.
                                 .frame(minWidth: 44, minHeight: 44)
                                 .contentShape(Rectangle())
@@ -152,7 +153,8 @@ private struct MessageBubble: View {
     @ViewBuilder
     private var bubbleBody: some View {
         Group {
-            if message.kind == .flare {
+            switch message.kind {
+            case .flare:
                 HStack(spacing: 6) {
                     Image(systemName: "flame.fill")
                     Text(flareLabel)
@@ -162,7 +164,32 @@ private struct MessageBubble: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(Color.ffAmber, in: RoundedRectangle(cornerRadius: 14))
-            } else {
+            case .rally:
+                // M2: `message.text` already carries the honest
+                // distance/bearing suffix, baked in at receive time by
+                // `AppGraph.formatRallyText(...)` — never a live-updating
+                // number (see that function's own doc comment on why
+                // `ff_feed_item_t` has nowhere else to keep it).
+                HStack(spacing: 6) {
+                    Image(systemName: "mappin.and.ellipse")
+                    Text(message.text.isEmpty ? "RALLY" : message.text.uppercased())
+                }
+                .font(.system(.callout, design: .rounded).weight(.bold))
+                .foregroundStyle(isMine ? Color.ffBackground : Color.ffInk)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(isMine ? Color.ffAmber : Color.ffSurface, in: RoundedRectangle(cornerRadius: 14))
+            case .status:
+                HStack(spacing: 6) {
+                    Image(systemName: "text.bubble")
+                    Text(message.text)
+                }
+                .font(.system(.callout, design: .rounded).weight(.semibold))
+                .foregroundStyle(isMine ? Color.ffBackground : Color.ffInk)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(isMine ? Color.ffAmber : Color.ffSurface, in: RoundedRectangle(cornerRadius: 14))
+            case .text:
                 Text(message.text)
                     .font(.body)
                     .foregroundStyle(isMine ? Color.ffBackground : Color.ffInk)
@@ -197,7 +224,7 @@ private struct QuickReplyRow: View {
                             .foregroundStyle(Color.ffInk)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
-                            .frame(minWidth: 44, minHeight: 44) // SHOULD-FIX 7
+                            .frame(minWidth: 44, minHeight: 44) // HIG 44pt minimum tap target
                             .background(Color.ffSurface, in: Capsule())
                     }
                     .buttonStyle(.plain)
@@ -214,7 +241,7 @@ private struct QuickReplyRow: View {
                         .foregroundStyle(model.flareAvailable ? Color.ffBackground : Color.ffMuted)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .frame(minWidth: 44, minHeight: 44) // SHOULD-FIX 7
+                        .frame(minWidth: 44, minHeight: 44) // HIG 44pt minimum tap target
                         .background(model.flareAvailable ? Color.ffAmber : Color.ffSurface, in: Capsule())
                 }
                 .buttonStyle(.plain)
@@ -222,6 +249,28 @@ private struct QuickReplyRow: View {
                 .disabled(!model.flareAvailable)
                 .accessibilityLabel(model.flareAvailable ? "Flare" : ThreadViewModel.flareUnavailableLabel)
                 .help(model.flareAvailable ? "" : ThreadViewModel.flareUnavailableLabel)
+
+                // M2: RALLY — "meet at" with our current position
+                // (`ThreadViewModel.sendRally(name:)`'s own honesty
+                // guard: no fix, no send, never a fabricated lat/lon).
+                // Uses whatever is typed in the compose bar as the place
+                // label, "MY SPOT" if it's empty.
+                Button {
+                    Task { await model.sendRally() }
+                } label: {
+                    Label("RALLY", systemImage: "mappin.and.ellipse")
+                        .font(.system(.caption, design: .rounded).weight(.bold))
+                        .foregroundStyle(model.rallyAvailable ? Color.ffBackground : Color.ffMuted)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .frame(minWidth: 44, minHeight: 44) // HIG 44pt minimum tap target
+                        .background(model.rallyAvailable ? Color.ffAmber : Color.ffSurface, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .contentShape(Capsule())
+                .disabled(!model.rallyAvailable)
+                .accessibilityLabel(model.rallyAvailable ? "Rally" : ThreadViewModel.rallyUnavailableLabel)
+                .help(model.rallyAvailable ? "" : ThreadViewModel.rallyUnavailableLabel)
             }
             .padding(.horizontal, 12)
         }
@@ -252,7 +301,7 @@ private struct ComposeBar: View {
                     .font(.system(size: 30))
                     .foregroundStyle(model.composeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                       ? Color.ffMuted : Color.ffAmber)
-                    .frame(minWidth: 44, minHeight: 44) // SHOULD-FIX 7 — the glyph stays 30pt, the tap target doesn't
+                    .frame(minWidth: 44, minHeight: 44) // HIG 44pt minimum tap target — the glyph stays 30pt, the tap target doesn't
             }
             .buttonStyle(.plain)
             .contentShape(Rectangle())

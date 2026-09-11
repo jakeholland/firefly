@@ -7,7 +7,42 @@
 import FireflyCore
 import FireflyMesh
 import FireflyModel
+import Foundation
 import XCTest
+
+/// `StubMeshtasticClient` deliberately never yields an `IncomingText`
+/// (its own header comment: "NEVER invents... incoming messages" —
+/// tests that need one inject exact bytes). `InboxViewModel.ingest(_:)`'s
+/// `to`-routing (PR #271 review, SHOULD-FIX 2) needs exactly that, so
+/// this tiny double exists purely to be able to yield one — every other
+/// stream is empty and every send is a no-op, same "record nothing,
+/// fabricate nothing beyond what the test injects" shape `CountingClient`
+/// (`AppGraphTests.swift`) uses for the same reason.
+private final class TextInjectingClient: MeshtasticClientProtocol, @unchecked Sendable {
+    private let linkHub = EventHub<LinkState>()
+    private let nodeHub = EventHub<MeshNodeSnapshot>()
+    private let deliveryHub = EventHub<DeliveryEvent>()
+    private let textHub = EventHub<IncomingText>()
+    private let privateHub = EventHub<IncomingPrivate>()
+
+    func linkState() -> AsyncStream<LinkState> { linkHub.subscribe() }
+    func nodeUpdates() -> AsyncStream<MeshNodeSnapshot> { nodeHub.subscribe() }
+    func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
+    func incomingTexts() -> AsyncStream<IncomingText> { textHub.subscribe() }
+    func incomingPrivate() -> AsyncStream<IncomingPrivate> { privateHub.subscribe() }
+    var connectedNodeNum: UInt32? { nil }
+
+    func connect() async throws {}
+    func disconnect() async {}
+    @discardableResult
+    func sendText(_ text: String, to destination: UInt32, wantAck: Bool) async throws -> UInt32 { 0 }
+    @discardableResult
+    func sendPosition(_ fix: ExternalPositionFix, to destination: UInt32) async throws -> UInt32 { 0 }
+    @discardableResult
+    func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32 { 0 }
+
+    func yieldText(_ text: IncomingText) { textHub.yield(text) }
+}
 
 @MainActor
 final class InboxViewModelTests: XCTestCase {
@@ -245,5 +280,57 @@ final class InboxViewModelTests: XCTestCase {
         let thread = vm.openThread(.member(3))
         XCTAssertEqual(thread.conversation, .member(3))
         XCTAssertEqual(vm.conversations.first { $0.kind == .member(3) }?.unreadCount, 0)
+    }
+
+    // MARK: - ingest(_:) broadcast routing (PR #271 review, SHOULD-FIX 2)
+
+    /// `to == 0` is protobuf's zero-default for an unset field, not a
+    /// real broadcast — must route exactly like a direct message would,
+    /// same as `AppGraph.pushInboundFeedItem`'s own `to == 0` test
+    /// (`AppGraphTests.testStatusAddressedToZeroRoutesAsDirectNotBroadcast`)
+    /// now that both call the one shared `isBroadcastDestination` helper.
+    func testIngestRoutesToZeroAsDirectNotBroadcast() async {
+        let store = InMemoryInboxStore()
+        let client = TextInjectingClient()
+        let vm = InboxViewModel(provider: store, client: client)
+        vm.observe()
+
+        client.yieldText(IncomingText(from: 0x0000_5001, to: 0, channel: 0, packetID: 500,
+                                       text: "hi", rxTime: Date(), rssiDbm: nil, snrDb: nil, direct: nil))
+
+        var attempts = 0
+        while store.thread(for: .member(0x0000_5001), now: Date()).isEmpty && attempts < 400 {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+            attempts += 1
+        }
+
+        XCTAssertFalse(store.thread(for: .member(0x0000_5001), now: Date()).isEmpty,
+                        "to == 0 must route like a direct message, not vanish into CREW")
+        XCTAssertTrue(store.thread(for: .crew, now: Date()).isEmpty,
+                       "to == 0 is not a real broadcast — must not land in CREW")
+
+        vm.stopObserving()
+    }
+
+    /// The wire's actual broadcast address still routes to CREW, exactly
+    /// as before — the shared helper changes nothing about this case.
+    func testIngestStillRoutesTheRealBroadcastAddressToCrew() async {
+        let store = InMemoryInboxStore()
+        let client = TextInjectingClient()
+        let vm = InboxViewModel(provider: store, client: client)
+        vm.observe()
+
+        client.yieldText(IncomingText(from: 0x0000_5002, to: meshBroadcastAddress, channel: 0, packetID: 501,
+                                       text: "hey crew", rxTime: Date(), rssiDbm: nil, snrDb: nil, direct: nil))
+
+        var attempts = 0
+        while store.thread(for: .crew, now: Date()).isEmpty && attempts < 400 {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+            attempts += 1
+        }
+
+        XCTAssertFalse(store.thread(for: .crew, now: Date()).isEmpty, "the real broadcast address must still route to CREW")
+
+        vm.stopObserving()
     }
 }
