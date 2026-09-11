@@ -22,8 +22,14 @@ extension Color {
         Color(fireflyHex: hex)
     }
 
-    static func mapCrew(colorIndex: UInt8) -> Color {
-        Color(fireflyHex: FireflyTheme.crewColor(index: Int(colorIndex)))
+    /// PR #283 review, SHOULD-FIX 6: same colorblind-safe alternate this
+    /// screen's own crew freshness treatment otherwise matches Radar
+    /// pin-for-pin (`RadarCrewPalette.hex(index:colorblind:)`) — `false`
+    /// (`FireflyTheme.crew`) reproduces this function's old behavior
+    /// exactly, so every existing (non-colorblind) call site is
+    /// unaffected.
+    static func mapCrew(colorIndex: UInt8, colorblind: Bool) -> Color {
+        Color(fireflyHex: RadarCrewPalette.hex(index: Int(colorIndex), colorblind: colorblind))
     }
 
     /// The blue "you" dot — deliberately NOT one of the crew/theme

@@ -15,14 +15,26 @@ import FireflyModel
 import SwiftUI
 
 struct FieldMapView: View {
-    let projection: FieldMapProjection?
+    /// The whole view model, not a pre-computed `FieldMapProjection?` —
+    /// PR #283 review, BLOCKING 1: this view's own `GeometryReader` is
+    /// the only place that knows the REAL on-screen radius (`radiusPx`
+    /// below), so the projection is computed HERE, from that measured
+    /// value, rather than by a caller (`MapTabView`) guessing a fixed
+    /// pixel count before layout is known. Passing a stale, hardcoded
+    /// radius into `fieldMapProjection(radiusPx:marginPx:)` broke S09
+    /// AC1's "every point stays inside the fitted circle" guarantee on
+    /// any device/window whose Field-map square isn't exactly the
+    /// literal that was hardcoded.
+    let model: MapViewModel
     let onSelect: (UInt32) -> Void
     let selectedCrewID: UInt32?
+    let colorblind: Bool
 
     var body: some View {
         GeometryReader { geo in
             let side = min(geo.size.width, geo.size.height)
             let radiusPx = Float(side / 2 - 12)
+            let projection = model.fieldMapProjection(radiusPx: radiusPx, marginPx: 16)
             ZStack {
                 Circle()
                     .fill(Color.ffSurface)
@@ -120,7 +132,7 @@ struct FieldMapView: View {
 
     @ViewBuilder
     private func crewMarker(_ dot: FieldMapCrewDot, selected: Bool) -> some View {
-        let color = Color.mapCrew(colorIndex: dot.pin.colorIndex)
+        let color = Color.mapCrew(colorIndex: dot.pin.colorIndex, colorblind: colorblind)
         ZStack {
             switch dot.pin.treatment {
             case .live:

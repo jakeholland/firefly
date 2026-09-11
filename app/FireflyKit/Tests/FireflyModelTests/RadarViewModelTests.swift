@@ -630,6 +630,43 @@ final class RadarViewModelTests: XCTestCase {
         XCTAssertFalse(find.isActive)
     }
 
+    // PR #283 review, BLOCKING 2: the Map tab's FIND action
+    // (`FireflyApp.swift`'s `mapFind` closure) used to call
+    // `graph.core.find.start(targetNodeID:now:)` directly on the raw
+    // `FindBridge` — that only flips `ff_find_t.active`, it never
+    // itself sends a ping. The fix makes `mapFind` call THIS exact
+    // entry point — `RadarViewModel.startFind(targetNodeID:)`, the same
+    // one `startFindOnSelection()` (Radar's own START FIND button)
+    // calls internally — instead. This test exercises that entry point
+    // directly (mirroring what `mapFind` does), through the actual
+    // async `findLoop` `Task` (not a hand-ticked `find.tick(now:)`), to
+    // prove a FIND started this way really does ping within the
+    // cadence, and that Radar's own stop path (`stopObserving()`, called
+    // from `RadarView`'s `.onDisappear`) actually stops it — regardless
+    // of which screen started the session.
+    func testStartFindByTargetNodeIDMirrorsTheMapEntryPointAndActuallyPingsThenRadarStopsIt() async {
+        let s = snapshot(mode: .signal, signalTier: .good, signalHeard: true)
+        let (model, _, find) = makeModel(snapshot: s, selectedNodeID: nil) // Map's own entry point never needs a Radar selection
+        model.observe()
+        defer { model.stopObserving() }
+
+        model.startFind(targetNodeID: 99) // exactly what `mapFind` now calls
+        XCTAssertTrue(find.isActive)
+        XCTAssertEqual(find.targetNodeID, 99)
+
+        // The findLoop `Task` ticks immediately, then every
+        // `pingIntervalSeconds` — give it a moment to actually run
+        // rather than hand-calling `find.tick(now:)` ourselves, since
+        // this is specifically testing that STARTING is enough to make
+        // pings go out on their own.
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertGreaterThan(find.pingCount, 0, "starting FIND from the Map tab's entry point must actually ping — "
+                                + "not just flip `active` and sit silent")
+
+        model.stopObserving() // .onDisappear from Radar — must stop FIND regardless of who started it
+        XCTAssertFalse(find.isActive, "leaving Radar must stop a FIND session even if the Map tab started it")
+    }
+
     func testFindDoesNothingWithoutASelection() {
         let s = snapshot(mode: .noSel)
         let (model, _, find) = makeModel(snapshot: s, selectedNodeID: nil)

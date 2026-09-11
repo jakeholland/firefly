@@ -180,11 +180,26 @@ struct FireflyApp: App {
                 // Map tab slice's own hunk — one view model, built once
                 // by the graph like every other destination here
                 // (`AppGraph.makeMapViewModel()`'s own doc comment), and
-                // two thin action closures over `graph.core.find`/tab
-                // selection rather than plumbing `graph` itself into
-                // `RootView`.
+                // two thin action closures over `radar`/tab selection
+                // rather than plumbing `graph` itself into `RootView`.
                 map: map,
-                mapFind: { nodeID in graph.core.find.start(targetNodeID: nodeID, now: FireflyClock.nowMillis()) },
+                // PR #283 review, BLOCKING 2: this USED to call
+                // `graph.core.find.start(targetNodeID:now:)` directly on
+                // the raw `FindBridge` — that only flips `ff_find_t
+                // .active`; it never actually ticks (sends a ping). The
+                // ONLY thing that drives FIND for real is
+                // `RadarViewModel.startFind(targetNodeID:)`'s own
+                // `findLoop` `Task` (`find.tick(now:)` every second,
+                // `CoreFindSession.tick` is what puts a packet on the
+                // wire) — nothing else ever starts that loop. Calling
+                // the SAME view model FIND already owns here — `radar`,
+                // the one `RadarViewModel` this graph built, already in
+                // scope — means a FIND started from a Map pin goes
+                // through the exact path Radar's own START FIND button
+                // does, and Radar's STOP (`stopFind()`/`stopObserving()`
+                // on `.onDisappear`) stops it the same way regardless of
+                // which screen started it.
+                mapFind: { nodeID in radar.startFind(targetNodeID: nodeID) },
                 mapMessage: { _ in }
             )
             .preferredColorScheme(.dark)

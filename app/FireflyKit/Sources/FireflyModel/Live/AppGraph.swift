@@ -746,7 +746,23 @@ public final class AppGraph {
         let model = MapViewModel(crew: core.crew, location: dependencies.location, heading: dependencies.heading,
                                   festpackSource: DemoMapFestpackSource(), connectivity: NetworkConnectivityMonitor(),
                                   imperial: { [dependencies] in dependencies.store.resolvedImperial() })
-        model.observe()
+        // PR #283 review, BLOCKING 3: deliberately NOT `model.observe()`
+        // here, unlike `makeRadarViewModel`/`makeInboxViewModel`/
+        // `makeConnectViewModel` just above. Those three are each
+        // genuinely process-lifetime state (`makeConnectViewModel()`'s
+        // own doc comment draws the exact line: link state is true/false
+        // for the WHOLE app, not meaningful only while one screen is on
+        // top). `MapViewModel`'s 1 Hz `pinRefreshLoop` plus its
+        // location/heading/connectivity subscriptions exist ONLY to
+        // refresh the Map tab's OWN UI (pin age text, the festpack
+        // projection, the offline chip) — no other screen consumes any
+        // of it — so this is the "genuinely screen-scoped" category
+        // `NearbyNodesViewModel`/`ThreadViewModel`/`DiagnosticsViewModel`
+        // already follow: `MapTabView`'s own `.onAppear { model.observe()
+        // }` / `.onDisappear { model.stopObserving() }` (Map/MapTabView.swift)
+        // starts and stops it, so the loop — and the battery it costs —
+        // stops the moment the Map tab is no longer visible, not just at
+        // app exit.
         return model
     }
 }

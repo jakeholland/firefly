@@ -79,6 +79,36 @@ final class MapViewModelTests: XCTestCase {
                         "must never claim a fabricated cached-tile size")
     }
 
+    // PR #283 review, BLOCKING 3: `AppGraph.makeMapViewModel()` used to
+    // call `model.observe()` eagerly at graph construction (app
+    // launch), so the 1 Hz `pinRefreshLoop` — plus its location/heading/
+    // connectivity subscriptions — ran for the ENTIRE app session,
+    // regardless of which tab was on screen, failing the "stops when
+    // not visible (battery)" requirement outright. The fix moves
+    // `observe()`/`stopObserving()` to `MapTabView`'s own `.onAppear`/
+    // `.onDisappear`. This test proves `stopObserving()` actually halts
+    // the periodic loop itself — not just the location/heading/
+    // connectivity streams — via `refreshTickCount` (a test seam,
+    // `MapViewModel`'s own doc comment on it): `ageText` alone can't
+    // tell a live loop from a stopped one within a short test window
+    // (`ff_fmt_age` deliberately reads "now" for a full minute).
+    func testPinRefreshLoopStopsTickingOnceStopObservingIsCalled() async {
+        let vm = MapViewModel(crew: CrewStore(now: { 0 }), location: UnavailableLocationProvider(),
+                               heading: NoHeadingProvider(), festpackSource: DemoMapFestpackSource(),
+                               connectivity: FixedConnectivity(.online))
+        vm.observe()
+        // >= 2 periodic ticks (1 Hz), on top of the one synchronous
+        // `refreshPins()` call `observe()` itself makes.
+        try? await Task.sleep(nanoseconds: 2_300_000_000)
+        let ticksWhileObserving = vm.refreshTickCount
+        XCTAssertGreaterThan(ticksWhileObserving, 1, "the periodic loop must keep ticking while the tab is visible")
+
+        vm.stopObserving()
+        try? await Task.sleep(nanoseconds: 2_300_000_000) // long enough for 2 more ticks, if it still ran
+        XCTAssertEqual(vm.refreshTickCount, ticksWhileObserving,
+                        "the 1Hz recompute loop must not tick once the Map tab is no longer visible (battery)")
+    }
+
     func testDistanceBearingTextHonestlyNilWithoutBothFacts() {
         let vm = MapViewModel(crew: CrewStore(now: { 0 }), location: UnavailableLocationProvider(),
                                heading: NoHeadingProvider(), festpackSource: DemoMapFestpackSource())
@@ -86,5 +116,16 @@ final class MapViewModelTests: XCTestCase {
                                      longitude: -121.5, treatment: .live, ageText: "1 MIN", distanceMeters: nil,
                                      bearingDegrees: nil, precisionGridMeters: nil)
         XCTAssertNil(vm.distanceBearingText(for: noDistance, imperial: false))
+    }
+
+    // PR #283 review, SHOULD-FIX 4: `imperial` used to be `private`, so
+    // `GPSMapView.selectedCard` had no way to read the real Units
+    // setting and hardcoded `false` (always metric). Now public, and
+    // reflects whatever the injected resolver currently returns.
+    func testImperialExposesTheResolvedUnitsSetting() {
+        let vm = MapViewModel(crew: CrewStore(now: { 0 }), location: UnavailableLocationProvider(),
+                               heading: NoHeadingProvider(), festpackSource: DemoMapFestpackSource(),
+                               imperial: { true })
+        XCTAssertTrue(vm.imperial)
     }
 }

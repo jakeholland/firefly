@@ -85,11 +85,15 @@ struct RootView: View {
     /// model, same "built once by the graph, never by a screen's own
     /// init" rule every other destination here follows.
     let map: MapViewModel
-    /// Map tab slice: the selected-crew card's FIND action starts a
-    /// real `ff_find` session on `AppGraph.core.find` — this view
-    /// switches to Radar afterward (where FIND's own UI already lives,
-    /// `RadarView.swift`) rather than duplicating a FIND affordance
-    /// inside Map.
+    /// Map tab slice: the selected-crew card's FIND action. PR #283
+    /// review, BLOCKING 2: this closure (`FireflyApp.swift`) calls the
+    /// SAME `RadarViewModel.startFind(targetNodeID:)` Radar's own FIND
+    /// button calls — never the raw `ff_find` bridge directly — so the
+    /// session this starts actually ticks (sends pings) rather than
+    /// sitting "active" and silent until the user manually restarts it
+    /// from Radar. This view switches to Radar afterward (where FIND's
+    /// own UI already lives, `RadarView.swift`) rather than duplicating
+    /// a FIND affordance inside Map.
     let mapFind: (UInt32) -> Void
     /// Map tab slice: the selected-crew card's MESSAGE action switches
     /// to Inbox. KNOWN GAP, flagged rather than silently faked: this
@@ -172,6 +176,7 @@ struct RootView: View {
                                          colorblind: settings.colorblindPalette)
         case .lineup: LineupScreen(model: lineup)
         case .map: MapTabView(model: map, initialSegment: initialMapSegment ?? .field,
+                               colorblind: settings.colorblindPalette,
                                onFind: { nodeID in mapFind(nodeID); selection = .radar },
                                onMessage: { nodeID in mapMessage(nodeID); selection = .inbox })
         case .settings: SettingsScreen(model: settings, client: client, pairing: pairing, lineup: lineup,

@@ -61,7 +61,7 @@ public struct CrewMapPin: Sendable, Equatable, Identifiable {
     /// pre-formatted via `CrewStore.formatAge`, never reimplemented.
     public let ageText: String
     /// nil only when the viewer's own position is unknown — see
-    /// `CrewMapPinBuilder.build(from:myPosition:imperial:)`.
+    /// `CrewMapPinBuilder.build(from:myPosition:)`.
     public let distanceMeters: Double?
     public let bearingDegrees: Double?
     /// Only set for `.imprecise` — the approximate cell edge
@@ -106,8 +106,17 @@ public enum CrewMapPinBuilder {
     /// `myPosition: nil` means the viewer's own fix is unknown —
     /// `distanceMeters`/`bearingDegrees` are honestly `nil` for every
     /// pin in that case, never a distance to a fabricated origin.
-    public static func build(from members: [CrewMember], myPosition: GeoCoordinate?,
-                              imperial: Bool) -> [CrewMapPin] {
+    ///
+    /// PR #283 review, SHOULD-FIX 4: this used to also take an
+    /// `imperial: Bool` parameter that was threaded through but never
+    /// read in this function's body — a `CrewMapPin` carries raw
+    /// `distanceMeters`, not a pre-formatted string, so unit choice is
+    /// a RENDER-time decision (`MapViewModel.distanceBearingText(for:
+    /// imperial:)`, via `DistanceFormatting`), not a build-time one.
+    /// Removed rather than wired up, since wiring it here would mean a
+    /// pin's distance gets formatted twice — once (uselessly) here,
+    /// once for real at render.
+    public static func build(from members: [CrewMember], myPosition: GeoCoordinate?) -> [CrewMapPin] {
         members.compactMap { member in
             guard let position = member.position else { return nil } // NEVER: nothing to draw
             let treatment = treatment(for: member, position: position)

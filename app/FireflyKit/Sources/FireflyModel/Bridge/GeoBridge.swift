@@ -55,6 +55,12 @@ public enum GeoBridge {
     public static func compassPoint(bearingDegrees: Double) -> String {
         var buf: [CChar] = [0, 0, 0, 0]
         ff_geo_compass_point(Float(bearingDegrees), &buf)
-        return String(cString: buf)
+        // NIT (PR #283 review): `String(cString:)` on a `[CChar]` is a
+        // deprecated initializer. Trim at the NUL terminator and decode
+        // the raw bytes instead — two more instances of the identical
+        // pre-existing pattern live in `CrewStore.swift`; not touched
+        // here (out of this fix's scope), same call this review made.
+        let bytes = buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 }

@@ -28,6 +28,8 @@ struct GPSMapView: View {
     let onDeselect: () -> Void
     let onFind: (UInt32) -> Void
     let onMessage: (UInt32) -> Void
+    /// `SettingsViewModel.colorblindPalette` — PR #283 review, SHOULD-FIX 6.
+    let colorblind: Bool
     @State private var cameraPosition: MapCameraPosition = .automatic
 
     var body: some View {
@@ -69,6 +71,18 @@ struct GPSMapView: View {
                         .onTapGesture { onSelect(pin.id) }
                 }
             }
+            // PR #283 review, SHOULD-FIX 5: an honest accuracy ring —
+            // sized from the SAME fix's own `horizontalAccuracyMeters`
+            // (never a guessed/fixed radius), and simply omitted (not a
+            // fabricated default radius) whenever that reading is
+            // absent or non-positive, matching this file's own "never
+            // pretend to know what we don't" convention.
+            if let fix = model.myFix, let accuracy = fix.horizontalAccuracyMeters, accuracy > 0 {
+                MapCircle(center: CLLocationCoordinate2D(latitude: fix.latitude, longitude: fix.longitude),
+                          radius: accuracy)
+                    .foregroundStyle(Color.mapYou.opacity(0.15))
+                    .stroke(Color.mapYou.opacity(0.5), lineWidth: 1)
+            }
             UserAnnotation()
         }
         .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
@@ -103,7 +117,7 @@ struct GPSMapView: View {
 
     @ViewBuilder
     private func crewAnnotation(_ pin: CrewMapPin) -> some View {
-        let color = Color.mapCrew(colorIndex: pin.colorIndex)
+        let color = Color.mapCrew(colorIndex: pin.colorIndex, colorblind: colorblind)
         ZStack {
             switch pin.treatment {
             case .live:
@@ -139,7 +153,8 @@ struct GPSMapView: View {
         let (source, age) = MapViewModel.selectedCardText(for: pin)
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Circle().fill(Color.mapCrew(colorIndex: pin.colorIndex)).frame(width: 10, height: 10)
+                Circle().fill(Color.mapCrew(colorIndex: pin.colorIndex, colorblind: colorblind))
+                    .frame(width: 10, height: 10)
                 Text(pin.name).font(.headline).foregroundStyle(Color.ffInk)
                 Spacer()
                 Button { onDeselect() } label: {
@@ -150,7 +165,10 @@ struct GPSMapView: View {
             Text("\(source) · \(age)")
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(Color.ffMuted)
-            if let distanceBearing = model.distanceBearingText(for: pin, imperial: false) {
+            // PR #283 review, SHOULD-FIX 4: `model.imperial` — the real
+            // resolved Units setting — not a hardcoded `false`, so this
+            // card agrees with Radar about which unit system it's in.
+            if let distanceBearing = model.distanceBearingText(for: pin, imperial: model.imperial) {
                 Text(distanceBearing)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(Color.ffAmber)

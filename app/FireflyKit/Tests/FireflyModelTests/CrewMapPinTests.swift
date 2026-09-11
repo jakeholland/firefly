@@ -13,7 +13,7 @@ final class CrewMapPinTests: XCTestCase {
     func testLiveFreshnessRendersAsLivePin() {
         let store = CrewStore(now: { 0 })
         store.onPosition(nodeID: 1, latitude: 43.7005, longitude: -121.4995, rxTimeMs: 0)
-        let pins = CrewMapPinBuilder.build(from: store.members(now: 1_000), myPosition: myPosition, imperial: false)
+        let pins = CrewMapPinBuilder.build(from: store.members(now: 1_000), myPosition: myPosition)
         XCTAssertEqual(pins.count, 1)
         XCTAssertEqual(pins[0].treatment, .live)
         XCTAssertFalse(pins[0].ageText.hasPrefix("~"), "a LIVE pin's age must not read as approximate")
@@ -23,7 +23,7 @@ final class CrewMapPinTests: XCTestCase {
         let store = CrewStore(now: { 0 })
         store.onPosition(nodeID: 1, latitude: 43.7005, longitude: -121.4995, rxTimeMs: 0)
         // FF_CREW_LIVE_MS == 45_000 — one tick past it is STALE.
-        let pins = CrewMapPinBuilder.build(from: store.members(now: 45_001), myPosition: myPosition, imperial: false)
+        let pins = CrewMapPinBuilder.build(from: store.members(now: 45_001), myPosition: myPosition)
         XCTAssertEqual(pins[0].treatment, .staleRing)
         XCTAssertTrue(pins[0].ageText.hasPrefix("~"), "a STALE pin's age must read as approximate")
     }
@@ -32,8 +32,7 @@ final class CrewMapPinTests: XCTestCase {
         let store = CrewStore(now: { 0 })
         store.onPosition(nodeID: 1, latitude: 43.7005, longitude: -121.4995, rxTimeMs: 0)
         // FF_CREW_LOST_MS == 1_200_000 — one tick past it is LOST.
-        let pins = CrewMapPinBuilder.build(from: store.members(now: 1_200_001), myPosition: myPosition,
-                                            imperial: false)
+        let pins = CrewMapPinBuilder.build(from: store.members(now: 1_200_001), myPosition: myPosition)
         XCTAssertEqual(pins[0].treatment, .lostRing)
         XCTAssertTrue(pins[0].ageText.hasPrefix("~"))
     }
@@ -41,7 +40,7 @@ final class CrewMapPinTests: XCTestCase {
     func testNeverFreshnessIsNotDrawnAtAll() {
         let store = CrewStore(now: { 0 })
         store.upsert(nodeID: 1) // tracked, but no position has ever arrived
-        let pins = CrewMapPinBuilder.build(from: store.members(now: 999_999), myPosition: myPosition, imperial: false)
+        let pins = CrewMapPinBuilder.build(from: store.members(now: 999_999), myPosition: myPosition)
         XCTAssertTrue(pins.isEmpty, "NEVER (no position at all) must not produce a pin — nothing to honestly anchor")
     }
 
@@ -49,8 +48,7 @@ final class CrewMapPinTests: XCTestCase {
         let store = CrewStore(now: { 0 })
         store.onPosition(nodeID: 1, latitude: 43.6995, longitude: -121.5000, rxTimeMs: 0,
                           meta: .init(asserted: true))
-        let pins = CrewMapPinBuilder.build(from: store.members(now: 100_000_000), myPosition: myPosition,
-                                            imperial: false)
+        let pins = CrewMapPinBuilder.build(from: store.members(now: 100_000_000), myPosition: myPosition)
         XCTAssertEqual(pins[0].treatment, .asserted)
         XCTAssertEqual(pins[0].ageText, "ASSERTED")
     }
@@ -60,7 +58,7 @@ final class CrewMapPinTests: XCTestCase {
         // bits=20 -> below FF_CREW_POS_PRECISION_MIN_BITS (21) — degraded.
         store.onPosition(nodeID: 1, latitude: 43.7005, longitude: -121.4995, rxTimeMs: 0,
                           meta: .init(precisionBits: 20))
-        let pins = CrewMapPinBuilder.build(from: store.members(now: 1_000), myPosition: myPosition, imperial: false)
+        let pins = CrewMapPinBuilder.build(from: store.members(now: 1_000), myPosition: myPosition)
         XCTAssertEqual(pins[0].treatment, .imprecise)
         XCTAssertNotNil(pins[0].precisionGridMeters)
         XCTAssertGreaterThan(pins[0].precisionGridMeters ?? 0, 0)
@@ -71,7 +69,7 @@ final class CrewMapPinTests: XCTestCase {
         // bits=21 -> exactly FF_CREW_POS_PRECISION_MIN_BITS, still "precise".
         store.onPosition(nodeID: 1, latitude: 43.7005, longitude: -121.4995, rxTimeMs: 0,
                           meta: .init(precisionBits: 21))
-        let pins = CrewMapPinBuilder.build(from: store.members(now: 1_000), myPosition: myPosition, imperial: false)
+        let pins = CrewMapPinBuilder.build(from: store.members(now: 1_000), myPosition: myPosition)
         XCTAssertEqual(pins[0].treatment, .live)
         XCTAssertNil(pins[0].precisionGridMeters)
     }
@@ -79,7 +77,7 @@ final class CrewMapPinTests: XCTestCase {
     func testNoOwnPositionYieldsHonestlyNilDistanceAndBearing() {
         let store = CrewStore(now: { 0 })
         store.onPosition(nodeID: 1, latitude: 43.7005, longitude: -121.4995, rxTimeMs: 0)
-        let pins = CrewMapPinBuilder.build(from: store.members(now: 1_000), myPosition: nil, imperial: false)
+        let pins = CrewMapPinBuilder.build(from: store.members(now: 1_000), myPosition: nil)
         XCTAssertNil(pins[0].distanceMeters)
         XCTAssertNil(pins[0].bearingDegrees)
     }

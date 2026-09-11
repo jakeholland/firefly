@@ -56,7 +56,7 @@ public final class MapViewModel {
     private let heading: any HeadingProviding
     private let festpackSource: any MapFestpackSource
     private let connectivity: any NetworkConnectivityObserving
-    private let imperial: () -> Bool
+    private let imperialResolver: () -> Bool
 
     public private(set) var myFix: LocationFix?
     public private(set) var headingReading: HeadingReading?
@@ -64,6 +64,15 @@ public final class MapViewModel {
     public private(set) var pins: [CrewMapPin] = []
     public private(set) var connectivityState: MapConnectivity = .online
     public var selectedCrewID: UInt32?
+    /// Test seam only (PR #283 review, BLOCKING 3): counts every
+    /// `refreshPins()` call, the periodic 1 Hz loop's own included —
+    /// exists so a test can mechanically prove the loop actually stops
+    /// once `stopObserving()` runs. `ageText` alone can't tell a live
+    /// loop from a stopped one within a short test window (`ff_fmt_age`
+    /// deliberately reads "now" for a full minute — its own doc comment
+    /// on `ff_crew.c`), so this is the honest, minimal alternative to a
+    /// flaky wall-clock-string assertion.
+    public private(set) var refreshTickCount = 0
 
     private var locationObservation: Task<Void, Never>?
     private var headingObservation: Task<Void, Never>?
@@ -78,7 +87,7 @@ public final class MapViewModel {
         self.heading = heading
         self.festpackSource = festpackSource
         self.connectivity = connectivity
-        self.imperial = imperial
+        self.imperialResolver = imperial
     }
 
     /// Idempotent, same convention as every other view model's
@@ -140,9 +149,16 @@ public final class MapViewModel {
     }
 
     public func refreshPins(now: UInt32 = FireflyClock.nowMillis()) {
+        refreshTickCount += 1
         let myPosition = myFix.map { GeoCoordinate(latitude: $0.latitude, longitude: $0.longitude) }
-        pins = CrewMapPinBuilder.build(from: crew.members(now: now), myPosition: myPosition, imperial: imperial())
+        pins = CrewMapPinBuilder.build(from: crew.members(now: now), myPosition: myPosition)
     }
+
+    /// The resolved units preference (`SettingsStoring.resolvedImperial()`,
+    /// read fresh each access) — PR #283 review, SHOULD-FIX 4: exposed so
+    /// a view (`GPSMapView.selectedCard`) can pass the REAL setting into
+    /// `distanceBearingText(for:imperial:)` instead of a hardcoded value.
+    public var imperial: Bool { imperialResolver() }
 
     public var selectedPin: CrewMapPin? {
         guard let selectedCrewID else { return nil }
@@ -195,7 +211,12 @@ public final class MapViewModel {
     /// side of the pair is unknown (never "0 m" for an unknown distance).
     public func distanceBearingText(for pin: CrewMapPin, imperial: Bool) -> String? {
         guard let distanceMeters = pin.distanceMeters, let bearingDegrees = pin.bearingDegrees else { return nil }
-        let distanceText = CrewStore.formatDistance(meters: Float(distanceMeters), imperial: imperial)
+        // `DistanceFormatting` — PR #283 review, SHOULD-FIX 4: the ONE
+        // seam every OTHER Swift-computed distance in this app renders
+        // through (`DistanceFormatting.swift`'s own header comment),
+        // rather than this file's own direct call into
+        // `CrewStore.formatDistance`.
+        let distanceText = DistanceFormatting.distance(meters: distanceMeters, imperial: imperial)
         let compass = GeoBridge.compassPoint(bearingDegrees: bearingDegrees)
         return "\(distanceText) · \(Int(bearingDegrees.rounded()))° \(compass)"
     }

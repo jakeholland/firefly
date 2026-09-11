@@ -29,7 +29,13 @@ public final class DemoMapFestpackSource: MapFestpackSource {
     /// pack's own hex strings ("#ffc66b" etc.), parsed once here rather
     /// than at every render.
     public static let fireflyFields: Festpack = {
-        let venue = FestpackLatLon(latitude: 43.7000, longitude: -121.5000)
+        // NIT (PR #283 review): referencing `DemoWorld`'s own constants
+        // directly — rather than duplicating their value as a literal —
+        // makes drift between this file's venue anchor and the rest of
+        // the app's demo world structurally impossible instead of
+        // merely caught by `DemoMapFestpackSourceTests
+        // .testVenueMatchesDemoWorldAnchorExactly`.
+        let venue = FestpackLatLon(latitude: DemoWorld.venueLatitude, longitude: DemoWorld.venueLongitude)
 
         let stages: [FestpackStage] = [
             FestpackStage(id: "beacon", name: "The Beacon", colorHex: 0xFFC66B,
@@ -96,7 +102,15 @@ public final class DemoMapFestpackSource: MapFestpackSource {
         // A short slice of "schedule" — enough for a Map tab that wants
         // to show "on now at this stage" later; not required by any
         // acceptance criterion this slice ships, carried through because
-        // `Festpack`'s own shape names it.
+        // `Festpack`'s own shape names it. NIT (PR #283 review): unlike
+        // every stage/feature/geometry value above, these two entries
+        // are NOT transcribed from `firmware/assets/demo/
+        // firefly-fields.festpack.json`'s own real schedule (e.g. that
+        // pack's actual Sat headliner is "DJ COMPASS", not "FIREFLY") —
+        // this file's header "not invented" claim is scoped to
+        // stages/features/geometry, not schedule. Harmless today (the
+        // Map tab never renders schedule), flagged so a future reader
+        // never assumes otherwise.
         let schedule: [FestpackScheduleItem] = [
             FestpackScheduleItem(artist: "FIREFLY", stageID: "beacon", day: "2026-09-05", start: "21:00",
                                   end: "22:30", note: "Sat headliner"),

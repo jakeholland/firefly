@@ -64,12 +64,62 @@ final class FieldMapProjectionTests: XCTestCase {
         let store = CrewStore(now: { 0 })
         store.onPosition(nodeID: 1, latitude: 43.700902, longitude: -121.498753, rxTimeMs: 0)
         let pins = CrewMapPinBuilder.build(from: store.members(now: 1_000),
-                                            myPosition: GeoCoordinate(latitude: 43.7, longitude: -121.5),
-                                            imperial: false)
+                                            myPosition: GeoCoordinate(latitude: 43.7, longitude: -121.5))
         let projection = FieldMapProjector.project(festpack: festpack, crewPins: pins, myPosition: nil,
                                                      headingDegrees: nil)
         XCTAssertEqual(projection.crew.count, 1)
         XCTAssertNil(projection.you, "no fix -> YOU must be hidden, never a fabricated position (S09 AC5)")
+    }
+
+    // PR #283 review, BLOCKING 1: `MapTabView` used to hardcode
+    // `radiusPx: 160` regardless of the Field map's ACTUAL on-screen
+    // circle (`FieldMapView`'s own `GeometryReader`-measured `side/2`),
+    // breaking S09 AC1's "every point stays inside the fitted circle"
+    // guarantee whenever the real square wasn't ~320pt. The fix feeds
+    // the view's own measured radius into `fieldMapProjection(radiusPx:
+    // marginPx:)` instead — this test proves the PROJECTION ITSELF
+    // (not just the default) correctly fits a boundary point onto the
+    // circle for two genuinely different radii, so plumbing an
+    // arbitrary measured value through can never silently regress back
+    // to "some points land outside".
+    func testBoundaryPointLandsExactlyOnTheFittedCircleForTwoDifferentRadii() {
+        // Two festival-boundary features sharing a latitude — the
+        // bounding box `ff_map_xform_fit` fits (`ff_map.c`) then has
+        // ZERO north/south extent, so the fit is governed purely by the
+        // east/west span between them, and EACH point sits at exactly
+        // one extreme corner of that box. `ff_map_xform_fit`'s own
+        // `FF_MAP_SQRT2` factor (its doc comment: fitting the bbox's
+        // longer side to the side of the square INSCRIBED in the usable
+        // circle) means an extreme-corner point on a zero-height box
+        // lands at exactly `(radiusPx - marginPx) / sqrt(2)` from the
+        // circle's center — a RATIO, so this doesn't need to hand-derive
+        // `ff_geo_project`'s own meters-per-degree conversion to pin an
+        // exact expected value.
+        let venue = FestpackLatLon(latitude: 43.7000, longitude: -121.5000)
+        let west = FestpackFeature(id: "west-edge", kind: .poi, label: "West Edge",
+                                    polygon: [FestpackLatLon(latitude: 43.7000, longitude: -121.5050)])
+        let east = FestpackFeature(id: "east-edge", kind: .poi, label: "East Edge",
+                                    polygon: [FestpackLatLon(latitude: 43.7000, longitude: -121.4950)])
+        let pack = Festpack(meta: FestpackMeta(name: "Boundary Test", venue: venue), stages: [],
+                             features: [west, east], schedule: [])
+        let marginPx: Float = 16
+
+        for radiusPx: Float in [90, 220] {
+            let projection = FieldMapProjector.project(festpack: pack, crewPins: [], myPosition: nil,
+                                                         headingDegrees: nil, radiusPx: radiusPx, marginPx: marginPx)
+            let expectedDistance = (radiusPx - marginPx) / Float(2).squareRoot()
+            XCTAssertEqual(projection.features.count, 2)
+            for feature in projection.features {
+                guard let point = feature.points.first else {
+                    return XCTFail("expected \(feature.label)'s own projected point at radiusPx \(radiusPx)")
+                }
+                let distanceFromCenter = (point.x * point.x + point.y * point.y).squareRoot()
+                XCTAssertEqual(distanceFromCenter, expectedDistance, accuracy: 0.5,
+                                "\(feature.label) must land exactly on the fitted circle for radiusPx \(radiusPx) — "
+                                    + "proves the projection actually honors whatever radius it's given, not a "
+                                    + "hardcoded one")
+            }
+        }
     }
 
     func testYouAppearsOnceAFixExists() {

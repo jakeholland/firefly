@@ -144,3 +144,23 @@ public struct Festpack: Sendable, Equatable, Codable {
 public protocol MapFestpackSource: Sendable {
     func currentFestpack() async -> Festpack?
 }
+
+// PR #283 review, SHOULD-FIX 7: as of this fix, the parallel
+// `FestpackProviding` slice (S05) has NOT landed on `main` yet — this
+// file's header comment's "one-line swap" framing is still unverified,
+// not confirmed. The one concrete risk this review flagged, documented
+// here rather than assumed away: `Festpack.meta.venue`/`meta.name` are
+// REQUIRED by every caller of this seam (`FieldMapProjector.project`'s
+// own `ff_geo_project` origin, `GPSMapView`'s offline-fallback center).
+// If the real `FestpackProviding` slice's own value only carries
+// "stages id/name/colour/polygon/centre + features" (per that slice's
+// own brief) and NOT an explicit venue anchor, a `MapFestpackSource`
+// adapter over it needs MORE than a one-line field remap — e.g.
+// deriving a venue from the stage-centre bounding box's own centroid,
+// which is itself an interpretation call (which stages count, how ties
+// break) that should be confirmed with whoever owns that slice, not
+// invented silently the day this adapter is written. If that slice DOES
+// carry its own venue anchor by the time it lands, the swap really is
+// the one-line `MapFestpackSource` conformance this file's header
+// already describes — this note is only for the other case.
+
