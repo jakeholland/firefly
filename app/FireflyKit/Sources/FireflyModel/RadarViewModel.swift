@@ -16,10 +16,17 @@
 //  plus honest mocks (`MockRadarComputing`, `MockFindSession`) that
 //  invent nothing — the exact shape `StubMeshtasticClient` already
 //  established for the mesh client seam (A01, "the stub client's
-//  defining property is what it *refuses* to do"). At integration,
-//  slice B's `RadarBridge`/`FindBridge` conform to these two protocols
-//  and are swapped in at `RadarViewModel.live(dependencies:)` — nothing
-//  else in this file, or in `app/Firefly/Sources/Radar/*`, changes.
+//  defining property is what it *refuses* to do").
+//
+//  INTEGRATED: slice B's bridges now fill both seams for real, through
+//  `Live/LiveAdapters.swift` (`CoreRadarComputing` over `ff_crew` +
+//  `ff_radar_compute`, `CoreFindSession` over `ff_find` plus a real
+//  portnum-269 send), composed in `AppGraph.makeRadarViewModel(haptics:)`
+//  — and, exactly as this comment promised, nothing else in this file
+//  or in `app/Firefly/Sources/Radar/*` changed to make that happen. The
+//  two mocks stay as TEST doubles (`RadarViewModel.mocked(...)`), since
+//  `RadarViewModelTests` drives them with exact field values transcribed
+//  from `firmware/tests/fixtures/radar_*.json`.
 //
 //  ALL bearing/distance/geometry math is either already computed by
 //  whatever fills in `RadarSnapshot` (the C core, via slice B's real
@@ -371,11 +378,22 @@ public protocol FindPinging: AnyObject, Sendable {
     /// was actually sent this call.
     @discardableResult
     func tick(now: Date) -> Bool
-    /// Feed a PONG's payload in (in production, arriving off the
-    /// client's inbound stream via slice A/B wiring). Returns the
-    /// warmer/colder haptic verdict for this update — `.none` on every
-    /// call that isn't itself a fresh trend crossing.
-    func recordPong(fromNodeID: UInt32, rssiDbm: Int16, hasSNR: Bool, snrDb: Double, now: Date) -> FindHaptic
+    /// Feed a PONG's payload in — in production, decoded off the
+    /// client's `incomingPrivate()` stream (portnum 269) by the
+    /// composition root. Returns the warmer/colder haptic verdict for
+    /// this update — `.none` on every call that isn't itself a fresh
+    /// trend crossing.
+    ///
+    /// `nonce` is the PING nonce the PONG is answering. The real
+    /// `ff_find_on_pong` DISCARDS a reply whose nonce isn't the most
+    /// recently sent ping's, which is what keeps a late reply from a
+    /// previous session out of this session's trend — so it is part of
+    /// the seam, not an implementation detail of the bridge
+    /// (`CoreFindSession`). `MockFindSession` models cadence and trend
+    /// only and ignores it, which is why the mock is a stand-in and not
+    /// a second implementation.
+    func recordPong(fromNodeID: UInt32, nonce: UInt32, rssiDbm: Int16, hasSNR: Bool, snrDb: Double,
+                    now: Date) -> FindHaptic
 }
 
 /// `ff_find.h`'s cadence/cap constants, transcribed — see that header's
@@ -449,7 +467,10 @@ public final class MockFindSession: FindPinging, @unchecked Sendable {
         return true
     }
 
-    public func recordPong(fromNodeID: UInt32, rssiDbm: Int16, hasSNR: Bool, snrDb: Double, now: Date) -> FindHaptic {
+    /// `nonce` is accepted and ignored — see the protocol's own doc
+    /// comment. Only `CoreFindSession`/`ff_find_on_pong` checks it.
+    public func recordPong(fromNodeID: UInt32, nonce: UInt32, rssiDbm: Int16, hasSNR: Bool, snrDb: Double,
+                           now: Date) -> FindHaptic {
         lock.lock(); defer { lock.unlock() }
         guard _isActive, fromNodeID == _targetNodeID else { return .none }
         sampleHistory.append(Double(rssiDbm))
@@ -578,13 +599,22 @@ public final class RadarViewModel {
         self.clock = clock
     }
 
-    /// The M1 composition: `MockRadarComputing`/`MockFindSession` stand
-    /// in for slice B's real bridge (see this file's top comment) —
-    /// `dependencies.heading`/`dependencies.location` are real seams
-    /// already landed (S5), so this is the identical "swap the stub for
-    /// the real thing later, nothing above the seam changes" pattern
-    /// `AppDependencies.live()` documents for the mesh client.
-    public static func live(dependencies: AppDependencies, haptics: any HapticSignaling = NoHapticSignaling()) -> RadarViewModel {
+    /// The MOCK composition — previews and tests only, never the app.
+    ///
+    /// This used to be the M1 live composition, back when
+    /// `MockRadarComputing`/`MockFindSession` stood in for slice B's
+    /// bridge. The real composition is now
+    /// `AppGraph.makeRadarViewModel(haptics:)`, over `CoreRadarComputing`
+    /// (`ff_crew` + `ff_radar_compute`) and `CoreFindSession`
+    /// (`ff_find` + a real portnum-269 send); the mocks stay because
+    /// `RadarViewModelTests` drives them with exact values transcribed
+    /// from `firmware/tests/fixtures/radar_*.json`, which is a thing no
+    /// live bridge can be asked to do.
+    ///
+    /// Deliberately NOT named `live` any more: the name was the whole
+    /// reason a screen could reach for it and believe it had a radio.
+    public static func mocked(dependencies: AppDependencies,
+                              haptics: any HapticSignaling = NoHapticSignaling()) -> RadarViewModel {
         RadarViewModel(radar: MockRadarComputing(), heading: dependencies.heading,
                         location: dependencies.location, find: MockFindSession(), haptics: haptics)
     }
@@ -688,12 +718,15 @@ public final class RadarViewModel {
         findLoop = nil
     }
 
-    /// Feed a PONG in (slice A/B wiring calls this in production, off
-    /// the client's inbound stream). Appends to the replies list and
+    /// Feed a PONG in — `AppGraph.observePrivatePackets()` calls this in
+    /// production, off the client's `incomingPrivate()` stream (portnum
+    /// 269) once `FireflyPacket.decode` has turned the frame into a
+    /// `.pong(nonce:rssiDbm:snrDb:)`. Appends to the replies list and
     /// fires haptics on a warmer/colder crossing.
-    public func handlePong(fromNodeID: UInt32, rssiDbm: Int16, hasSNR: Bool, snrDb: Double) {
+    public func handlePong(fromNodeID: UInt32, nonce: UInt32, rssiDbm: Int16, hasSNR: Bool, snrDb: Double) {
         let now = clock()
-        let verdict = find.recordPong(fromNodeID: fromNodeID, rssiDbm: rssiDbm, hasSNR: hasSNR, snrDb: snrDb, now: now)
+        let verdict = find.recordPong(fromNodeID: fromNodeID, nonce: nonce, rssiDbm: rssiDbm,
+                                       hasSNR: hasSNR, snrDb: snrDb, now: now)
         findReplyCounter += 1
         findReplies.append(FindReply(
             id: findReplyCounter, rssiOfUs: Int(rssiDbm), hasSNR: hasSNR, snrOfUs: snrDb,

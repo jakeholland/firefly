@@ -38,11 +38,13 @@ public protocol SettingsStoring: AnyObject, Sendable {
 /// stub stack: same shape as a real `UserDefaults`-backed store, with
 /// nothing that survives a process relaunch — exactly what a test needs
 /// to stay hermetic between runs.
-public final class InMemorySettingsStore: SettingsStoring, @unchecked Sendable {
+public final class InMemorySettingsStore: FireflyExtraSettingsStoring, @unchecked Sendable {
     private let lock = NSLock()
     private var strings: [SettingsKey: String] = [:]
     private var bools: [SettingsKey: Bool] = [:]
     private var doubles: [SettingsKey: Double] = [:]
+    private var extraBools: [String: Bool] = [:]
+    private var extraStrings: [String: String] = [:]
 
     public init() {}
 
@@ -74,5 +76,52 @@ public final class InMemorySettingsStore: SettingsStoring, @unchecked Sendable {
     public func setDouble(_ value: Double?, _ key: SettingsKey) {
         lock.lock(); defer { lock.unlock() }
         doubles[key] = value
+    }
+
+    // MARK: - FireflyExtraSettingsStoring
+    //
+    // The same four Settings/Diagnostics preferences `SettingsStore`
+    // persists (`FireflyExtraSettingsKey`), held in memory — so a test
+    // or the iOS Simulator gets one store with the whole surface on it,
+    // rather than two stores that can disagree.
+
+    public var colorblindPaletteEnabled: Bool {
+        get { extraBool("colorblindPaletteEnabled") }
+        set { setExtraBool(newValue, "colorblindPaletteEnabled") }
+    }
+
+    public var backgroundConnectEnabled: Bool {
+        get { extraBool("backgroundConnectEnabled") }
+        set { setExtraBool(newValue, "backgroundConnectEnabled") }
+    }
+
+    public var nodeLongNamePreference: String? {
+        get { extraString("nodeLongNamePreference") }
+        set { setExtraString(newValue, "nodeLongNamePreference") }
+    }
+
+    public var nodeShortNamePreference: String? {
+        get { extraString("nodeShortNamePreference") }
+        set { setExtraString(newValue, "nodeShortNamePreference") }
+    }
+
+    private func extraBool(_ key: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return extraBools[key] ?? false
+    }
+
+    private func setExtraBool(_ value: Bool, _ key: String) {
+        lock.lock(); defer { lock.unlock() }
+        extraBools[key] = value
+    }
+
+    private func extraString(_ key: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return extraStrings[key]
+    }
+
+    private func setExtraString(_ value: String?, _ key: String) {
+        lock.lock(); defer { lock.unlock() }
+        extraStrings[key] = value
     }
 }

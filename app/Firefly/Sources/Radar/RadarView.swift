@@ -21,22 +21,15 @@ struct RadarView: View {
         _model = State(initialValue: model)
     }
 
-    /// The composition root for this screen: `AppDependencies.current()`
-    /// supplies the already-landed heading/location seams (S5); the
-    /// radar/FIND computation itself is `MockRadarComputing`/
-    /// `MockFindSession` until slice B's real bridge replaces them (see
-    /// `RadarViewModel.swift`'s top comment) — swapped in at
-    /// `RadarViewModel.live(dependencies:)` alone, nothing here changes
-    /// when that happens.
-    init() {
-        let dependencies = AppDependencies.current()
-        #if os(iOS)
-        let haptics: any HapticSignaling = UIKitHapticSignaling()
-        #else
-        let haptics: any HapticSignaling = NoHapticSignaling()
-        #endif
-        _model = State(initialValue: .live(dependencies: dependencies, haptics: haptics))
-    }
+    // There is deliberately NO no-argument `init()` any more. The one
+    // this screen used to have called `AppDependencies.current()` for
+    // itself, which built a SECOND `MeshtasticClient` over a SECOND
+    // `BLETransport` every time the Radar destination was shown — so
+    // the screen observed a client nothing ever connected. The view
+    // model now comes from the app's single `AppGraph`
+    // (`FireflyApp.init` -> `RootView.radar`), which is also what makes
+    // FIND's pings go out over the same radio the Connect screen
+    // connected.
 
     var body: some View {
         ScrollView {

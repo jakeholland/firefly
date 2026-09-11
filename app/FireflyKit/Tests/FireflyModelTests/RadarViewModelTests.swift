@@ -484,10 +484,10 @@ final class RadarViewModelTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 5000)
         find.start(targetNodeID: 1, now: now)
         // Steady baseline, then a >=3 dB improvement.
-        for rssi: Int16 in [-90, -90, -90] { XCTAssertEqual(find.recordPong(fromNodeID: 1, rssiDbm: rssi, hasSNR: false, snrDb: 0, now: now), .none) }
+        for rssi: Int16 in [-90, -90, -90] { XCTAssertEqual(find.recordPong(fromNodeID: 1, nonce: 7, rssiDbm: rssi, hasSNR: false, snrDb: 0, now: now), .none) }
         var verdicts: [FindHaptic] = []
         for rssi: Int16 in [-80, -80, -80] {
-            verdicts.append(find.recordPong(fromNodeID: 1, rssiDbm: rssi, hasSNR: false, snrDb: 0, now: now))
+            verdicts.append(find.recordPong(fromNodeID: 1, nonce: 7, rssiDbm: rssi, hasSNR: false, snrDb: 0, now: now))
         }
         // A trend is computable only once a FULL 6-sample window exists
         // (3 baseline + 3 new) — the crossing therefore fires on the
@@ -495,14 +495,14 @@ final class RadarViewModelTests: XCTestCase {
         // are populated, not on the first one to cross the threshold.
         XCTAssertEqual(verdicts, [.none, .none, .warmer], "fires once per CROSSING, not once per sample above threshold")
         // A later call that still reads warmer must not re-fire.
-        XCTAssertEqual(find.recordPong(fromNodeID: 1, rssiDbm: -80, hasSNR: false, snrDb: 0, now: now), .none)
+        XCTAssertEqual(find.recordPong(fromNodeID: 1, nonce: 7, rssiDbm: -80, hasSNR: false, snrDb: 0, now: now), .none)
     }
 
     func testFindPongFromAnotherNodeIsIgnored() {
         let find = MockFindSession()
         let now = Date(timeIntervalSince1970: 6000)
         find.start(targetNodeID: 1, now: now)
-        XCTAssertEqual(find.recordPong(fromNodeID: 99, rssiDbm: -60, hasSNR: false, snrDb: 0, now: now), .none)
+        XCTAssertEqual(find.recordPong(fromNodeID: 99, nonce: 7, rssiDbm: -60, hasSNR: false, snrDb: 0, now: now), .none)
     }
 
     func testHandlePongAppendsAReplyWithTheRightTierAndFiresHaptics() {
@@ -510,7 +510,7 @@ final class RadarViewModelTests: XCTestCase {
         let (model, _, _) = makeModel(snapshot: s, selectedNodeID: 3_494_928_410)
         model.observe(); defer { model.stopObserving() }
         model.startFindOnSelection()
-        model.handlePong(fromNodeID: 3_494_928_410, rssiDbm: -72, hasSNR: true, snrDb: -2.5)
+        model.handlePong(fromNodeID: 3_494_928_410, nonce: 7, rssiDbm: -72, hasSNR: true, snrDb: -2.5)
         XCTAssertEqual(model.findReplies.count, 1)
         XCTAssertEqual(model.findReplies[0].rssiOfUs, -72)
         XCTAssertEqual(model.findReplies[0].tier, SignalTierPresentation.tier(rssiDbm: -72))

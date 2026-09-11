@@ -218,6 +218,57 @@ public final class CrewStore {
         track(nodeID)
     }
 
+    /// Write the identity fields the MESH reports (`NodeInfo.user`'s
+    /// short/long name) plus the two `ff_crew.h` explicitly documents as
+    /// "app-assigned" (`initial`, `color_idx`) into a member slot.
+    ///
+    /// There is no `ff_crew_set_names` to call: `ff_crew_member_t` is a
+    /// fully-defined struct whose name fields the OWNING APP fills in
+    /// (the header's own "display letter; '\0' until known" /
+    /// "app-assigned" notes), exactly as the puck's shell does. So this
+    /// writes through the mutable member pointer `ff_crew_upsert`
+    /// already returns — the same pointer the core hands every caller —
+    /// and the pointer never escapes this call.
+    ///
+    /// NOTHING here is synthesized: a nil `shortName` clears the field
+    /// rather than deriving one from the long name (`long_name`'s own
+    /// header note: "never synthesized from `name`"), and `initial` is
+    /// '\0' — honestly unknown — until some name is actually known.
+    /// `colorIndex` is the one genuinely app-side choice: a stable
+    /// per-node palette slot, derived from the node id so the same
+    /// friend keeps the same colour across launches with nothing
+    /// persisted.
+    @discardableResult
+    public func setIdentity(nodeID: UInt32, shortName: String?, longName: String?) -> Bool {
+        guard let member = ff_crew_upsert(context, nodeID) else { return false }
+        track(nodeID)
+        if let shortName { FixedCString.encode(shortName, into: &member.pointee.name) }
+        if let longName { FixedCString.encode(longName, into: &member.pointee.long_name) }
+        member.pointee.initial = CrewStore.initialByte(shortName: shortName, longName: longName)
+        member.pointee.color_idx = CrewStore.colorIndex(nodeID: nodeID)
+        return true
+    }
+
+    /// The display letter, as a single C byte: the first ASCII
+    /// letter/digit of the short name, else of the long name, else
+    /// '\0' ("until known" — never a '?' placeholder, which would render
+    /// as a real, wrong initial).
+    static func initialByte(shortName: String?, longName: String?) -> CChar {
+        for candidate in [shortName, longName] {
+            guard let scalar = candidate?.unicodeScalars.first(where: { $0.properties.isAlphabetic || ("0"..."9").contains($0) }),
+                  scalar.isASCII else { continue }
+            return CChar(bitPattern: UInt8(String(scalar).uppercased().utf8.first ?? 0))
+        }
+        return 0
+    }
+
+    /// A stable palette slot per node — `ff_crew_member_t.color_idx` is
+    /// "app-assigned", and deriving it from the node id (rather than
+    /// from arrival order) is what makes a friend's colour survive a
+    /// relaunch with nothing written to disk. 8 slots, matching
+    /// `FireflyTheme.crew`/`RadarCrewPalette`.
+    static func colorIndex(nodeID: UInt32) -> UInt8 { UInt8(nodeID % 8) }
+
     /// Provenance/precision accompanying one position report — Swift's
     /// side of `ff_crew_pos_meta_t`. `.none` (not asserted, precision
     /// unknown) is `FF_CREW_POS_META_NONE`'s own "least-claiming"

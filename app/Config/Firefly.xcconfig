@@ -1,16 +1,32 @@
 //
-// Firefly.xcconfig — committed. Nothing in here signs anything on its
-// own; CODE_SIGNING_ALLOWED = NO in project.yml still wins for the
-// committed project, so a clean checkout keeps building with no team
-// and no certificate (A01_AC1).
+// Firefly.xcconfig — committed, and wired into every target in
+// project.yml (`configFiles:`). It holds the signing DEFAULTS for a
+// clean checkout, so that `Local.xcconfig` — git-ignored, per-developer
+// — can override them with nothing but a file copy: no CLI flags, no
+// edit to a committed file, no team id in this repo's history.
 //
-// The #include? below is OPTIONAL (the "?" — .xcconfig's own syntax for
-// "include this file if it exists, say nothing if it doesn't"). It pulls
-// in Local.xcconfig, a git-ignored, per-developer file that is not
-// committed and cannot be, because it holds a personal DEVELOPMENT_TEAM.
-// Copy Local.xcconfig.example to Local.xcconfig, fill in your team id,
-// and flip CODE_SIGNING_ALLOWED back to YES yourself to run on a device
-// (see app/README.md, "Run on the iPhone"). Nobody's team id ever
-// reaches this repo's history.
+// Order matters. An .xcconfig assignment is last-wins, and the
+// `#include?` at the bottom is what lets Local.xcconfig beat the two
+// defaults above it. Do not move it up.
 //
+// The "?" on the include is .xcconfig's own syntax for "include this
+// file if it exists, say nothing if it doesn't" — so its absence
+// changes nothing for anyone else's clean checkout.
+//
+//     cp app/Config/Local.xcconfig.example app/Config/Local.xcconfig
+//
+// See app/README.md, "On-device signing" and "Signed local runs".
+//
+
+// A clean checkout builds with no team and no certificate (A01_AC1),
+// which is what CI needs. These live HERE rather than in project.yml's
+// per-target `settings:` because a target-level build setting BEATS an
+// .xcconfig: with them in project.yml, Local.xcconfig could not turn
+// signing on without also editing the committed project — the exact
+// friction slice A hit ("Cannot code sign because the target does not
+// have an Info.plist", reached only by passing signing flags on the
+// command line instead).
+CODE_SIGNING_ALLOWED = NO
+CODE_SIGNING_REQUIRED = NO
+
 #include? "Local.xcconfig"

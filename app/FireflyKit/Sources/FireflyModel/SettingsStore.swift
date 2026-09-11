@@ -27,13 +27,33 @@ public enum FireflyExtraSettingsKey: String, Sendable, CaseIterable {
     case nodeShortNamePreference
 }
 
+/// `SettingsStoring` plus the four Settings/Diagnostics-only
+/// preferences declared in this file — the seam the composition root
+/// actually hands around.
+///
+/// It exists because `SettingsViewModel` needs those four AND the six
+/// shared keys from the SAME instance: before integration it took a
+/// CONCRETE `SettingsStore()` of its own (that file's own comment said
+/// so, and flagged the consequence — "a Radar-screen read of
+/// `dependencies.store.bool(.locationSharingEnabled)` will not see what
+/// Settings wrote"). Refining the protocol rather than widening
+/// `SettingsKey` keeps slice C's original judgement intact: these four
+/// are Settings' own, and nothing else reads them.
+public protocol FireflyExtraSettingsStoring: SettingsStoring {
+    var colorblindPaletteEnabled: Bool { get set }
+    var backgroundConnectEnabled: Bool { get set }
+    /// A LOCAL DRAFT only — see `SettingsStore`'s own doc comment.
+    var nodeLongNamePreference: String? { get set }
+    var nodeShortNamePreference: String? { get set }
+}
+
 /// Real backing store for `SettingsStoring`. `UserDefaults`-backed,
 /// same six methods as `InMemorySettingsStore` (the M1 stand-in, landed
 /// with the protocol) — so swapping one for the other changes nothing
 /// above this seam. Every key is namespaced `firefly.settings.` so this
 /// store can share a `UserDefaults` suite (or `.standard`) without
 /// colliding with anything else that reads or writes it.
-public final class SettingsStore: SettingsStoring, @unchecked Sendable {
+public final class SettingsStore: FireflyExtraSettingsStoring, @unchecked Sendable {
     private let defaults: UserDefaults
     private let lock = NSLock()
     private static let prefix = "firefly.settings."

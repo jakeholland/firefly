@@ -78,6 +78,74 @@ final class BLEHardwareTests: XCTestCase {
         XCTAssertNotNil(firefly1?.position, "Firefly 1's asserted bench position (CLIENT, 47.708135,-122.2820993) did not arrive")
     }
 
+    /// A01_AC5, first half: a DM from the app to the OTHER board shows
+    /// WAITING -> SENT -> DELIVERED on a REAL routing ACK.
+    ///
+    /// Firefly 1 (`!02e606b0`) is a normal Meshtastic CLIENT, so it acks
+    /// a `want_ack` DM by itself, with no firmware of ours involved —
+    /// which is exactly what makes this a test of OUR ack handling
+    /// rather than of a cooperating fixture. The board is never
+    /// connected to (bench policy, this file's header): it is addressed
+    /// over the mesh through Firefly 2.
+    ///
+    /// The AC's second half (powered off -> NO ACK, never DELIVERED) is
+    /// deliberately NOT automated: it needs a human to power a board
+    /// down mid-run, and a test that silently passes because the board
+    /// happened to be out of range would be worse than no test. It stays
+    /// a manual check — see app/README.md.
+    func testDirectMessageToFirefly1ReachesDelivered() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["FIREFLY_HARDWARE"] == "1",
+            "set FIREFLY_HARDWARE=1 with Meshtastic_e7d4 reachable over BLE to run hardware tests")
+
+        let transport = BLETransport()
+        let targetID = try await discoverTarget(named: Self.targetPeripheralName, on: transport)
+        await transport.setPreferredPeripheral(targetID)
+
+        let client = MeshtasticClient(transport: transport)
+        // SUBSCRIBE FIRST, connect second: `deliveryUpdates()` is
+        // multicast and does NOT replay (S1), so a subscription taken
+        // after the send could miss WAITING entirely and the test would
+        // be asserting on whatever happened to arrive late.
+        let deliveries = client.deliveryUpdates()
+        try await client.connect()
+        addTeardownBlock { await client.disconnect() }
+
+        let text = "firefly integration \(UUID().uuidString.prefix(8))"
+        let packetID = try await client.sendText(text, to: Self.firefly1NodeNum, wantAck: true)
+
+        var seen: [String] = []
+        var outboxID: UInt32?
+        // 60s: a routing ack over LoRa at the default preset is seconds,
+        // not sub-second, and a retransmit can take longer still.
+        let deadline = Date().addingTimeInterval(60)
+        for await event in deliveries {
+            switch event {
+            case .waiting(let id):
+                seen.append("WAITING")
+                outboxID = id.rawValue
+            case .sent(let id, let packet, let wantAck):
+                guard packet.rawValue == packetID else { continue }
+                XCTAssertTrue(wantAck, "a DM must keep want_ack — only a broadcast has it stripped")
+                XCTAssertEqual(id.rawValue, outboxID, "SENT must carry the same outbox id WAITING did")
+                XCTAssertNotEqual(id.rawValue, packet.rawValue,
+                                   "outbox id and packet id must never share a value space")
+                seen.append("SENT")
+            case .delivered(let packet) where packet.rawValue == packetID:
+                seen.append("DELIVERED")
+            case .noAck(let packet) where packet.rawValue == packetID:
+                seen.append("NO ACK")
+            default:
+                continue
+            }
+            if seen.last == "DELIVERED" || seen.last == "NO ACK" { break }
+            if Date() > deadline { break }
+        }
+
+        XCTAssertEqual(seen, ["WAITING", "SENT", "DELIVERED"],
+                        "expected WAITING -> SENT -> DELIVERED off a real routing ack from Firefly 1; saw \(seen)")
+    }
+
     /// Scans on the service UUID (never a name prefix — MeshtasticBLE's
     /// own rule) and waits for the one board this suite is allowed to
     /// touch, `Meshtastic_e7d4`, ignoring anything else it sees —

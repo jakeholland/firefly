@@ -30,6 +30,16 @@ public struct BLEDiscoveredPeripheral: Sendable, Identifiable, Equatable {
     public let id: UUID
     public let name: String?
     public let rssi: Int
+
+    /// Public so a test can construct a sighting without a radio — the
+    /// node picker's own tests (`PeripheralDiscoveryTests`) drive
+    /// `NodeScanning` with hand-built peripherals, which is the point of
+    /// that seam existing at all.
+    public init(id: UUID, name: String?, rssi: Int) {
+        self.id = id
+        self.name = name
+        self.rssi = rssi
+    }
 }
 
 /// Pairing-failure classification (docs/specs/A01-companion-app.md,
@@ -70,7 +80,7 @@ public enum BLEPairingFailure: Error, Equatable, Sendable {
     }
 }
 
-public actor BLETransport: MeshTransport {
+public actor BLETransport: MeshTransport, NodeScanning {
     public let kind: TransportKind = .message
 
     private let hub = EventHub<TransportEvent>()

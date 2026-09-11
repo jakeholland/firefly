@@ -314,3 +314,117 @@ final class DiagnosticsViewModelTests: XCTestCase {
         }
     }
 }
+
+// MARK: - Node picker (PeripheralDiscovery)
+
+/// A `NodeScanning` a test drives by hand. No CoreBluetooth: this is the
+/// whole reason the picker depends on the seam rather than on
+/// `BLETransport` (`NodeScanning`'s own doc comment).
+private actor FakeScanner: NodeScanning {
+    private let hub = EventHub<BLEDiscoveredPeripheral>()
+    private(set) var stopCount = 0
+    private(set) var preferred: UUID?
+    private(set) var scanCount = 0
+
+    func scan() async -> AsyncStream<BLEDiscoveredPeripheral> {
+        scanCount += 1
+        return hub.subscribe()
+    }
+
+    func stopScanning() async { stopCount += 1 }
+    func setPreferredPeripheral(_ id: UUID?) async { preferred = id }
+    nonisolated func yield(_ peripheral: BLEDiscoveredPeripheral) { hub.yield(peripheral) }
+}
+
+@MainActor
+final class PeripheralDiscoveryTests: XCTestCase {
+
+    private func waitUntil(_ condition: @escaping () -> Bool, timeout: Int = 400) async {
+        for _ in 0..<timeout where !condition() {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
+    /// The async twin, for conditions that have to `await` into an actor.
+    private func waitUntilAsync(_ condition: @escaping () async -> Bool, timeout: Int = 400) async {
+        for _ in 0..<timeout {
+            if await condition() { return }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
+    /// The honest empty answer wherever there is no radio at all.
+    func testStubDiscoversNothing() async {
+        let discovery = StubPeripheralDiscovery()
+        discovery.startScanning()
+        var seen: [[DiscoveredPeripheral]] = []
+        for await list in discovery.peripherals() {
+            seen.append(list)
+            break
+        }
+        XCTAssertEqual(seen, [[]], "an empty picker, never an invented peripheral")
+    }
+
+    func testRealDiscoveryPublishesWhatTheScannerSawDeduplicatedAndRanked() async {
+        let scanner = FakeScanner()
+        let discovery = MeshPeripheralDiscovery(scanner: scanner)
+        var latest: [DiscoveredPeripheral] = []
+        let stream = discovery.peripherals()
+        let drain = Task { for await list in stream { latest = list } }
+
+        discovery.startScanning()
+        // Wait for the scan subscription to actually exist before
+        // yielding: `scan()` is `async` (it is an actor's method), so
+        // `startScanning()` returning is not the same fact as "the
+        // stream is live", and `EventHub` is multicast, not replayed
+        // (S1). In production this ordering is the transport's own to
+        // guarantee — `BLETransport.scan()` subscribes BEFORE it calls
+        // `scanForPeripherals`, so no advertisement can precede the
+        // subscription; only a hand-driven fake can get ahead of it.
+        await waitUntilAsync { await scanner.scanCount == 1 }
+        let weak = UUID(uuidString: "00000000-0000-0000-0000-0000000000AA")!
+        let strong = UUID(uuidString: "00000000-0000-0000-0000-0000000000BB")!
+        scanner.yield(BLEDiscoveredPeripheral(id: weak, name: "Meshtastic_06b0", rssi: -80))
+        scanner.yield(BLEDiscoveredPeripheral(id: strong, name: "Meshtastic_e7d4", rssi: -40))
+        // The same board advertising again: an UPDATE, never a second row.
+        scanner.yield(BLEDiscoveredPeripheral(id: weak, name: "Meshtastic_06b0", rssi: -70))
+
+        await waitUntil { latest.count == 2 && latest.contains { $0.rssiDbm == -70 } }
+        XCTAssertEqual(latest.map(\.name), ["Meshtastic_e7d4", "Meshtastic_06b0"],
+                        "strongest first — the board on the table, not the one three tents over")
+        XCTAssertEqual(latest.last?.rssiDbm, -70, "the newest sighting's reading, not the first one's")
+
+        drain.cancel()
+    }
+
+    func testSelectingARowSetsThePreferredPeripheralAndConnectsNothing() async {
+        let scanner = FakeScanner()
+        let discovery = MeshPeripheralDiscovery(scanner: scanner)
+        let id = UUID(uuidString: "00000000-0000-0000-0000-0000000000CC")!
+
+        discovery.select(id.uuidString)
+
+        await waitUntilAsync { await scanner.preferred != nil }
+        let preferred = await scanner.preferred
+        XCTAssertEqual(preferred, id)
+        let scans = await scanner.scanCount
+        XCTAssertEqual(scans, 0, "selecting a row must not start a scan, and must not connect")
+    }
+
+    func testStartScanningIsIdempotentAndStopReachesTheTransport() async {
+        let scanner = FakeScanner()
+        let discovery = MeshPeripheralDiscovery(scanner: scanner)
+
+        discovery.startScanning()
+        discovery.startScanning()
+        discovery.startScanning()
+        await waitUntilAsync { await scanner.scanCount >= 1 }
+        let scans = await scanner.scanCount
+        XCTAssertEqual(scans, 1, "RESCAN must not open a second subscription to the same radio")
+
+        discovery.stopScanning()
+        await waitUntilAsync { await scanner.stopCount == 1 }
+        let stops = await scanner.stopCount
+        XCTAssertEqual(stops, 1)
+    }
+}

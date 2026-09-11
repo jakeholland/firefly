@@ -41,6 +41,7 @@ Nothing but a Swift toolchain is needed — no Xcode project, no simulator:
 cd app/FireflyKit
 swift build
 swift test
+swift test --sanitize=address   # the C core is real C; ASan is not optional
 ```
 
 `swift test` runs every unit test in the package, including the two
@@ -48,6 +49,30 @@ guards that keep the app and the puck from drifting apart:
 `CoreSourceLinkTests` (every `firmware/core` source is still linked in)
 and `ProtobufPinTests` (the Swift and nanopb generators still pin the
 same `meshtastic/protobufs` commit).
+
+The app-target view models (Connect, Settings, Diagnostics, the node
+picker) are NOT part of the SwiftPM package, so `swift test` cannot see
+them. They run through the Xcode project:
+
+```sh
+cd app
+xcodebuild test -project Firefly.xcodeproj -scheme Firefly \
+  -destination 'platform=macOS' -only-testing:FireflyAppTests
+```
+
+## How the app is wired together
+
+`FireflyModel/Live/AppGraph.swift` is the composition root: ONE
+`AppDependencies` (`.current()` — the stub stack in the iOS Simulator,
+which has no Bluetooth at all; the real one everywhere else), ONE
+`MeshtasticClient` over ONE `BLETransport`, ONE set of `firmware/core`
+contexts (`ff_crew` / `ff_feed` / `ff_radar` / `ff_find`, via
+`CoreStore`), and every view model built from them. `FireflyApp.init`
+constructs it once and hands the view models down.
+
+Nothing below that line constructs its own dependencies — a screen that
+called `AppDependencies.current()` for itself would get a second client
+over a second radio and then observe the one nothing connected.
 
 ## Build the app
 
@@ -59,31 +84,56 @@ xcodebuild -project Firefly.xcodeproj -scheme Firefly -destination 'generic/plat
 
 Or just `open app/Firefly.xcodeproj`.
 
-Code signing is **off** in `project.yml` (`CODE_SIGNING_ALLOWED: NO`) so
-a clean checkout builds with no certificate and no team. That stays true
-for everyone's checkout — signing for an on-device run is wired in
-per-developer, never committed. See "On-device signing" below.
+Code signing is **off by default** — `CODE_SIGNING_ALLOWED = NO` in
+`app/Config/Firefly.xcconfig` (committed) — so a clean checkout builds
+with no certificate and no team, which is what CI needs. That stays true
+for everyone's checkout: signing is wired in per-developer, never
+committed.
 
-### On-device signing
+### Signed local runs
 
-To run on a real iPhone (the Mac never needs this — `platform=macOS`
-doesn't require a team), give the project your own team id without
-committing it:
+Those two defaults live in the **xcconfig**, not in `project.yml`'s
+per-target `settings:`, and the difference matters: a target-level build
+setting beats an xcconfig, so while they lived there nothing local could
+turn signing on without either editing a committed file or passing
+`CODE_SIGNING_ALLOWED=YES` on every `xcodebuild` command line.
+
+Now one file copy is the whole story:
 
 ```sh
 cp app/Config/Local.xcconfig.example app/Config/Local.xcconfig
-# edit app/Config/Local.xcconfig: set DEVELOPMENT_TEAM to your own team id
+# then edit it — your own team id, and the four signing settings:
+#   DEVELOPMENT_TEAM = <your team id>
+#   CODE_SIGN_STYLE = Automatic
+#   CODE_SIGN_IDENTITY = Apple Development
+#   CODE_SIGNING_ALLOWED = YES
+#   CODE_SIGNING_REQUIRED = YES
 ```
 
-`app/Config/Local.xcconfig` is git-ignored. `app/Config/Firefly.xcconfig`
-(committed, wired into the `Firefly` target via `project.yml`)
-`#include?`s it — the `?` means "if it exists", so its absence changes
-nothing for anyone else's clean checkout. With `Local.xcconfig` in
-place, open Xcode, select your iPhone as the destination, and turn
-`CODE_SIGNING_ALLOWED` back on for that run (Signing & Capabilities, or
-flip it in `project.yml`+regenerate if you want it to stick locally —
-just don't commit that flip). The bundle id is `com.jakeholland.firefly`
-either way.
+`app/Config/Local.xcconfig` is git-ignored and stays that way — nobody's
+team id reaches this repo's history. `app/Config/Firefly.xcconfig`
+(committed, wired into **every** target via `project.yml`'s
+`configFiles:`) `#include?`s it at the BOTTOM of the file: `?` means "if
+it exists", and last-wins ordering is what lets your local values beat
+the committed defaults. Do not move that include.
+
+With it in place, `xcodebuild ... build` and `⌘R` both produce a signed
+app with no extra flags, and the bundle id is `com.jakeholland.firefly`
+either way. A signed Mac build also gives the app a STABLE code identity,
+which is what makes macOS's one-time Bluetooth grant survive a rebuild
+instead of re-prompting every time.
+
+Both test bundles set `GENERATE_INFOPLIST_FILE: YES` for the same
+reason: `codesign` needs an Info.plist in the bundle, and a unit-test
+target has no `INFOPLIST_FILE` of its own, so a signed `xcodebuild test`
+without it fails with *"Cannot code sign because the target does not
+have an Info.plist file"*.
+
+### On-device signing (iPhone)
+
+Same `Local.xcconfig` as above — that is all an iPhone run needs. In
+Xcode, select the **Firefly** scheme and your iPhone as the destination,
+then `⌘R`.
 
 ### Run on the Mac
 
@@ -132,9 +182,63 @@ FIREFLY_HARDWARE=1 xcodebuild test \
   -only-testing:FireflyHardwareTests
 ```
 
-Without `FIREFLY_HARDWARE=1` the suite still builds and runs, and the
-one placeholder test skips cleanly — that is what CI exercises (never
-with a board or the env var; see below).
+Two tests live there: the `want_config` handshake against Firefly 2
+(A01_AC4 — node num, owner name, channel, and Firefly 1 present in the
+nodeDB with its asserted position) and a DM to Firefly 1 with `want_ack`
+that must show `WAITING -> SENT -> DELIVERED` off a real routing ack
+(A01_AC5's first half). AC5's second half — powered off shows
+`WAITING -> SENT -> NO ACK` and never `DELIVERED` — stays a MANUAL
+check: it needs a human to power a board down mid-run, and a test that
+passed because the board happened to be out of range would be worse than
+no test.
+
+Without `FIREFLY_HARDWARE=1` the suite still builds and runs and both
+tests skip cleanly — that is what CI exercises (never with a board or
+the env var; see below).
+
+**The one-time Bluetooth Allow.** The first signed run puts up macOS's
+Bluetooth permission dialog for `com.jakeholland.firefly`. Click
+**Allow**. Until somebody does, the run does not fail — it HANGS, and
+`xcodebuild` eventually reports:
+
+```
+Firefly (NNNNN) encountered an error (The test runner hung before establishing connection.)
+```
+
+To confirm that is what you are looking at:
+
+```sh
+log show --last 5m --predicate 'subsystem == "com.apple.TCC"' \
+  | grep AUTHREQ_PROMPTING
+```
+
+A line naming `kTCCServiceBluetoothAlways` and
+`Sub:{com.jakeholland.firefly}` means the dialog is waiting on you.
+Never reach for `tccutil` — the grant is the user's to give, and a
+signed build (see "Signed local runs") is what makes it stick across
+rebuilds instead of re-prompting.
+
+The app itself does NOT scan on launch, deliberately: building a
+`CBCentralManager` is what triggers that dialog, and showing the Connect
+screen is not the moment to ask. Press **RESCAN** in the node picker.
+That also keeps the dialog out of the way of the test host, which
+launches this same app.
+
+**Why Debug is not sandboxed.** A signed, sandboxed host cannot complete
+XCTest's connection to its controller — the run hangs with that same
+"test runner hung before establishing connection" message and the host
+logs nothing after `libsystem_secinit.dylib AppSandbox`. An unsigned
+build hid this, because an unsigned build carries no entitlements and so
+is not sandboxed at all. So `Firefly/Resources/Firefly.Debug.entitlements`
+(the Debug `CODE_SIGN_ENTITLEMENTS`) is `Firefly.entitlements` with
+`com.apple.security.app-sandbox` set to **false**; Release keeps the
+sandbox on. B1 needs a SIGNED bundle with
+`NSBluetoothAlwaysUsageDescription` launched via LaunchServices — none of
+which is the sandbox — so the rig loses nothing. The cost, stated rather
+than buried: **a Debug build no longer exercises the sandbox**, so a
+sandbox-only failure (realistically, the serial transport opening
+`/dev/cu.*` under `device.serial`) will not show up until a Release
+build. Check that against Release before the festival.
 
 **Serial and TCP — plain `swift test`.** These transports are not
 CoreBluetooth, so they are unaffected by the TCC restriction above and
@@ -175,13 +279,12 @@ Without `FIREFLY_SERIAL_PORT` (or with `FIREFLY_HARDWARE` unset) the
 suite skips cleanly — both are required, and the skip message says
 which is missing.
 
-`SerialHardwareTests` does not depend on slice A's `MeshtasticClient` —
-that class is not merged as of this PR — so it drives the two-phase
-`want_config` handshake directly through `SerialTransport` +
-`StreamFramer` with hand-built `ToRadio` protobufs from
-`MeshtasticProto`, and asserts the bench board's own identity read back
-off the wire: node num, owner name, and the asserted fixed position from
-`docs/hardware/heltec-v3.md`'s bench table. It never sends an admin
+`SerialHardwareTests` predates slice A's `MeshtasticClient` landing, so
+it drives the two-phase `want_config` handshake directly through
+`SerialTransport` + `StreamFramer` with hand-built `ToRadio` protobufs
+from `MeshtasticProto`, and asserts the bench board's own identity read
+back off the wire: node num, owner name, and the asserted fixed position
+from `docs/hardware/heltec-v3.md`'s bench table. It never sends an admin
 message and never exercises the phone-GPS `LOC_EXTERNAL` push against
 the bench board — that push would risk overwriting Firefly 1's asserted
 fixed position with a measured one, exactly the provenance trap that

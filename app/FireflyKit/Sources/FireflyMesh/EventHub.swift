@@ -82,3 +82,22 @@ public final class EventHub<Element>: @unchecked Sendable {
         lock.unlock()
     }
 }
+
+/// A one-value, lock-protected box — the smallest thing that lets an
+/// `actor` publish a single piece of its own state to a `nonisolated`
+/// synchronous reader (`MeshtasticClient.connectedNodeNum`). Not a
+/// general-purpose escape hatch from actor isolation: the actor stays
+/// the only writer, so the box can never disagree with it except by
+/// being momentarily behind, which is exactly what any snapshot read of
+/// another isolation domain's state is.
+final class LockedValue<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: Value
+
+    init(_ initial: Value) { storage = initial }
+
+    var value: Value {
+        get { lock.lock(); defer { lock.unlock() }; return storage }
+        set { lock.lock(); defer { lock.unlock() }; storage = newValue }
+    }
+}
