@@ -749,10 +749,22 @@ persisted pairing, or the Keychain-held channel PSKs, this app never
 promises to keep it. A future schema this binary predates, or a
 corrupted store file, is deleted and rebuilt empty rather than crashing
 the app on launch (`HistoryStore.makeContainer`). This is the one place
-in the app that silently discards user data on purpose, and it is
-disclosed in three places: here, `HistoryStore`'s own header comment,
-and the Settings **"Clear history"** action (with confirmation), which
-exercises the identical "wipe the store" path deliberately, on request.
+in the app that silently discards user data WITHOUT the user asking for
+it, and that fact is disclosed in three places: here, `HistoryStore`'s
+own header comment, and the Settings **"Clear history"** copy (PR #281
+review, SHOULD-FIX 2/3) — which states plainly that an app update whose
+history format changes clears old history automatically, not only that
+the manual "Clear history" button itself cannot be undone. The two are
+DIFFERENT mechanisms reaching the same empty-store end state, never one
+shared code path: "Clear history" (`HistoryStore.clearAll()`) deletes
+every row through the live `ModelContext`, one at a time; the migration
+fallback (`HistoryStore.deleteStoreFiles`) deletes the SQLite/WAL/SHM
+files directly, before any `ModelContext` exists to delete rows
+through — there is no live context yet for a failed-to-open container
+to hand one to. A shared routine is not possible between "rows in an
+open store" and "files behind a store that failed to open" without
+inventing a third, artificial abstraction neither caller actually
+needs.
 
 **Demo isolation.** `.stub()`/`.demo()`/`.demoBundle()` all get a
 disposable `HistoryStore.inMemory()` — never `.live()` — picked

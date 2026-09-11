@@ -338,15 +338,32 @@ extension InboxProviding {
 // PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
 // same way as `EventHub` (`EventHub.swift`'s own comment) — the only
 // mutable state, `counter`, is only ever read or written under `lock`.
-private final class InboundFeedIDGenerator: @unchecked Sendable {
-    static let shared = InboundFeedIDGenerator()
+//
+// PR #281 review, BLOCKING 1: same fix, same reasoning as
+// `OutboxIDGenerator` (`ThreadViewModel.swift`'s own doc comment) —
+// `.shared` alone always restarted at the identical top-bit-set base
+// value on every process launch, so a second session's first inbound
+// message could alias a first session's. `public`, with an accessible
+// plain `init()`, for the identical reason: `AppGraph.init`'s
+// `inboundFeedIDGenerator:` override seam and its own tests need a
+// fresh instance that behaves exactly like a brand-new process's
+// `.shared` would, without touching global state.
+public final class InboundFeedIDGenerator: @unchecked Sendable {
+    public static let shared = InboundFeedIDGenerator()
     private let lock = NSLock()
     private var counter: UInt64 = 0x8000_0000_0000_0000
-    func next() -> UInt64 {
+    public init() {}
+    public func next() -> UInt64 {
         lock.lock(); defer { lock.unlock() }
         let value = counter
         counter &+= 1
         return value
+    }
+    /// See `OutboxIDGenerator.seed(atLeast:)`'s own doc comment — the
+    /// identical contract, one bit-space over.
+    public func seed(atLeast minimum: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        counter = Swift.max(counter, minimum)
     }
 }
 
@@ -708,13 +725,28 @@ public final class InboxViewModel {
     /// this view model against `InMemoryInboxStore` directly — so this
     /// is the one place an inbound message can reach the screen today.
     private var incomingTextObservation: Task<Void, Never>?
+    /// PR #281 review, BLOCKING 1 — see `OutboxIDGenerator`'s own doc
+    /// comment (`ThreadViewModel.swift`) for why this exists at all.
+    /// `.shared` by default; handed straight through to every
+    /// `ThreadViewModel` this view model opens (`openThread(_:)`, below)
+    /// so both view models a single `AppGraph` composes always mint into
+    /// the SAME outbox id space, whether that's the real `.shared` or an
+    /// override a test injected.
+    private let outboxIDGenerator: OutboxIDGenerator
+    /// The inbound counterpart to `outboxIDGenerator`, same reasoning —
+    /// `ingest(_:)` is this view model's own only minting call site.
+    private let inboundFeedIDGenerator: InboundFeedIDGenerator
 
     public init(provider: any InboxProviding, client: any MeshtasticClientProtocol,
-                flareSender: (any FireflyPacketSending)? = nil, currentFix: (() -> LocationFix?)? = nil) {
+                flareSender: (any FireflyPacketSending)? = nil, currentFix: (() -> LocationFix?)? = nil,
+                outboxIDGenerator: OutboxIDGenerator = .shared,
+                inboundFeedIDGenerator: InboundFeedIDGenerator = .shared) {
         self.provider = provider
         self.client = client
         self.flareSender = flareSender
         self.currentFix = currentFix
+        self.outboxIDGenerator = outboxIDGenerator
+        self.inboundFeedIDGenerator = inboundFeedIDGenerator
     }
 
     /// Idempotent, like every other view model's `observe()`.
@@ -774,7 +806,7 @@ public final class InboxViewModel {
         let isBroadcast = isBroadcastDestination(incoming.to)
         let conversation: ConversationKind = isBroadcast ? .crew : .member(incoming.from)
         let message = FeedMessage(
-            id: InboundFeedIDGenerator.shared.next(),
+            id: inboundFeedIDGenerator.next(),
             kind: .text,
             direction: isBroadcast ? .broadcast : .direct,
             senderID: incoming.from,
@@ -809,6 +841,7 @@ public final class InboxViewModel {
         }
         return ThreadViewModel(conversation: conversation, provider: provider, client: client,
                                 flareSender: flareSender, currentFix: currentFix,
-                                memberDisplayName: memberDisplayName, memberColorIndex: memberColorIndex)
+                                memberDisplayName: memberDisplayName, memberColorIndex: memberColorIndex,
+                                outboxIDGenerator: outboxIDGenerator)
     }
 }

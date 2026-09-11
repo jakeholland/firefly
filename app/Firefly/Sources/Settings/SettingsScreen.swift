@@ -260,9 +260,22 @@ struct SettingsScreen: View {
     /// text warning — the same bluntness `AdminWriteConfirmationSheet`
     /// itself uses for a write it cannot undo, applied here to a delete
     /// it cannot undo either.
+    ///
+    /// PR #281 review, SHOULD-FIX 2: a second line discloses the OTHER
+    /// way history can disappear — an app update whose on-disk format
+    /// changed, or a corrupted store file, clears it automatically, with
+    /// no button ever tapped (`HistoryStore.makeContainer`'s
+    /// drop-and-recreate fallback; that type's own header comment and
+    /// `HistorySchema.swift`'s have the full justification). The spec's
+    /// own "disclosed in three places" claim named this screen as one of
+    /// them; before this fix the copy below disclosed only that the
+    /// MANUAL button is irreversible, never the automatic case.
     private var historySection: some View {
         SettingsBlock(title: "HISTORY") {
             Text("Saved messages live only on this device. Clearing them cannot be undone.")
+                .font(.caption2)
+                .foregroundStyle(Color.ffMuted)
+            Text("If the app's history format changes, old history is cleared automatically.")
                 .font(.caption2)
                 .foregroundStyle(Color.ffMuted)
             Button("CLEAR HISTORY") { isShowingClearHistoryConfirmation = true }

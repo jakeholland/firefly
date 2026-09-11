@@ -157,6 +157,35 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertTrue(all.contains { $0.1.text == "m\(cap + 4)" }, "the newest survives")
     }
 
+    // MARK: - ID generator watermarks (PR #281 review, BLOCKING 1)
+
+    func testWatermarkDefaultsToZeroForAnUnknownKey() {
+        let store = HistoryStore.inMemory()
+        XCTAssertEqual(store.watermark(for: HistoryStore.outboxWatermarkKey), 0,
+                        "a fresh store (or an old on-disk V1 store from before this fix) has no watermark row yet")
+    }
+
+    func testRaiseWatermarkPersistsAndNeverLowers() {
+        let store = HistoryStore.inMemory()
+        store.raiseWatermark(for: HistoryStore.outboxWatermarkKey, to: 50)
+        XCTAssertEqual(store.watermark(for: HistoryStore.outboxWatermarkKey), 50)
+
+        store.raiseWatermark(for: HistoryStore.outboxWatermarkKey, to: 10) // lower — must be a no-op
+        XCTAssertEqual(store.watermark(for: HistoryStore.outboxWatermarkKey), 50,
+                        "a watermark must never regress, the same monotonic contract OutboxIDGenerator.seed(atLeast:) carries")
+
+        store.raiseWatermark(for: HistoryStore.outboxWatermarkKey, to: 75)
+        XCTAssertEqual(store.watermark(for: HistoryStore.outboxWatermarkKey), 75)
+    }
+
+    func testWatermarksForDifferentKeysAreIndependent() {
+        let store = HistoryStore.inMemory()
+        store.raiseWatermark(for: HistoryStore.outboxWatermarkKey, to: 5)
+        store.raiseWatermark(for: HistoryStore.inboundWatermarkKey, to: 0x8000_0000_0000_0005)
+        XCTAssertEqual(store.watermark(for: HistoryStore.outboxWatermarkKey), 5)
+        XCTAssertEqual(store.watermark(for: HistoryStore.inboundWatermarkKey), 0x8000_0000_0000_0005)
+    }
+
     // MARK: - Isolation between instances
 
     func testTwoInMemoryStoresNeverShareData() {

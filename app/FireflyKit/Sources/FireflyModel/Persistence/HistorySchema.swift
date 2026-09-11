@@ -18,18 +18,38 @@
 //  (`HistorySchemaV1`) plus DROP-AND-RECREATE on any mismatch
 //  `HistoryMigrationPlan` does not cover — see that type's own doc
 //  comment for the full justification. This is the one place in this
-//  app that silently discards user data on purpose; `HistoryStore`'s
-//  own header comment and the Settings "Clear history" action are the
-//  other two places this is disclosed.
+//  app that silently discards user data without the user asking for
+//  it; `HistoryStore`'s own header comment and the Settings "Clear
+//  history" copy (PR #281 review, SHOULD-FIX 2) are the other two
+//  places this is disclosed — the Settings copy states plainly that an
+//  app update can clear history automatically, not only that the
+//  manual button itself is irreversible. `clearAll()` (the manual
+//  action) and this drop-and-recreate fallback are DIFFERENT
+//  mechanisms that both end at an empty store, never one shared code
+//  path (PR #281 review, SHOULD-FIX 3) — see `HistoryStore.swift`'s own
+//  doc comments on `clearAll()`/`deleteStoreFiles` for why a shared
+//  routine isn't possible between "rows in an open store" and "files
+//  behind a store that failed to open" without inventing a third
+//  abstraction neither caller needs.
 //
 import FireflyMesh
 import Foundation
 import SwiftData
 
 /// M3's schema, version 1 — the only version that has ever shipped.
+///
+/// PR #281 review, BLOCKING 1: `IDGeneratorWatermark` joined
+/// `PersistedMessage` here (rather than becoming its own `V2`) because
+/// it is additive-only — no existing `PersistedMessage` row's shape
+/// changes, so the same drop-and-recreate fallback `makeContainer`
+/// already carries for any schema drift this migration plan does not
+/// cover is what an old on-disk V1 store (from before this fix)
+/// harmlessly falls back to: worst case, one update clears history the
+/// same disclosed way any other unrecognized-schema drift already does
+/// (`HistoryStore.swift`'s own header comment) — never a crash.
 public enum HistorySchemaV1: VersionedSchema {
     public static var versionIdentifier: Schema.Version { Schema.Version(1, 0, 0) }
-    public static var models: [any PersistentModel.Type] { [PersistedMessage.self] }
+    public static var models: [any PersistentModel.Type] { [PersistedMessage.self, IDGeneratorWatermark.self] }
 }
 
 /// The drop-and-recreate migration policy: message history is
@@ -69,7 +89,26 @@ public final class PersistedMessage {
     /// `markSent`/`setStatus(outboxID:)` use, exactly like `outbox_id`/
     /// the derived-hash id is for the live C ring (`ff_feed_item_t`'s
     /// own doc comments).
-    public var messageID: Int64
+    ///
+    /// PR #281 review, NIT (folded into BLOCKING 1's fix): `.unique`.
+    /// `AppGraph.seedIDGenerators(from:store:)` is what makes this
+    /// invariant TRUE — every id either generator mints is now seeded
+    /// past everything already in `HistoryStore` (and past a durable
+    /// watermark that survives even a row's own pruning) before a
+    /// single live id is minted, so two DIFFERENT messages sharing a
+    /// `messageID` should never happen again. This constraint is the
+    /// loud backstop for if that invariant is ever violated by a future
+    /// regression: `ModelContext.save()` throws (this file's own
+    /// `save()` already treats that as `try?`-able) instead of two
+    /// unrelated messages silently aliasing onto one row — never a
+    /// second, independent identity field (a `UUID` row id) layered on
+    /// top, since the actual cross-session collision this review found
+    /// was specifically about `messageID` reuse, and `record(_:in:)`'s
+    /// own upsert (`find(messageID:)` then `apply`/`insert`) already
+    /// depends on `messageID` being the row's real identity — a second,
+    /// disconnected identity field would not change what that upsert
+    /// keys on, only add a value nothing else reads.
+    @Attribute(.unique) public var messageID: Int64
     /// `ConversationKind.storageKey` — `"crew"` or `"member:<id>"`.
     public var conversationKey: String
     /// `MessageKind.rawValue`.
@@ -116,6 +155,42 @@ public final class PersistedMessage {
         self.packetID = packetID
         self.deliveryStateRaw = deliveryStateRaw
         self.statusAt = statusAt
+    }
+}
+
+/// PR #281 review, BLOCKING 1: a durable, per-generator monotonic
+/// high-water mark — one row per generator, keyed by
+/// `HistoryStore.outboxWatermarkKey`/`inboundWatermarkKey` — that
+/// `AppGraph.seedIDGenerators(from:store:)` consults ALONGSIDE the max
+/// `messageID` currently sitting in `PersistedMessage` (never instead
+/// of it: the two are combined with `max`). Deriving a floor from
+/// `PersistedMessage` rows ALONE is not quite enough on its own:
+/// `HistoryStore.prune()` evicts rows oldest-BY-TIMESTAMP, not
+/// oldest-by-id, so the very row that once held the highest id a
+/// generator ever minted can itself be pruned away, and a derive-only
+/// floor computed after that would silently forget it ever existed.
+/// This row survives that: `AppGraph.init` raises it to at least
+/// whatever it just derived from `PersistedMessage`, on EVERY launch —
+/// even a launch that sends or receives nothing this session — so a
+/// later launch's own derivation always has this durable floor to fall
+/// back on regardless of what pruning has since done to the rows
+/// that originally justified it.
+@Model
+public final class IDGeneratorWatermark {
+    /// `HistoryStore.outboxWatermarkKey` or `.inboundWatermarkKey` —
+    /// exactly one row ever exists per key.
+    @Attribute(.unique) public var generatorKey: String
+    /// One past the highest id this generator has EVER minted (as a
+    /// `UInt64` bit pattern, the identical convention
+    /// `PersistedMessage.messageID` uses) across every process lifetime
+    /// this store has seen — i.e., the next call to `seed(atLeast:)`
+    /// this value feeds must never let a generator hand out anything
+    /// below it.
+    public var nextValue: Int64
+
+    public init(generatorKey: String, nextValue: Int64) {
+        self.generatorKey = generatorKey
+        self.nextValue = nextValue
     }
 }
 

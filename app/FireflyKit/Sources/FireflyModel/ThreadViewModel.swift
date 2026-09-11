@@ -115,15 +115,45 @@ public enum ImmediateSendFailure: Error, Sendable, Equatable {
 // PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
 // same way as `EventHub` (`EventHub.swift`'s own comment) — the only
 // mutable state, `counter`, is only ever read or written under `lock`.
-private final class OutboxIDGenerator: @unchecked Sendable {
-    static let shared = OutboxIDGenerator()
+//
+// PR #281 review, BLOCKING 1: `.shared` alone always started counting
+// from 1 on every process launch, with nothing ever raising that floor
+// from what `HistoryStore` already had on disk — so a second session's
+// very first outbound send could mint the SAME id a first session's
+// first send did, and `HistoryStore.record`'s upsert (keyed on that id)
+// would silently overwrite the unrelated persisted row, or a restored
+// item's delivery state could be silently aliased onto the new live
+// send's (see `AppGraph.seedIDGenerators(from:store:)`, this type's own
+// production caller). `public`, and no longer singleton-only: a fresh
+// `OutboxIDGenerator()` — starting at the identical base value `.shared`
+// itself starts at — is what lets a test simulate a genuinely
+// independent process lifetime without resetting global state
+// (`AppGraph.init`'s own `outboxIDGenerator:` override seam, and
+// `AppGraphTests`' generator-collision regression test, both use this).
+// `ThreadViewModel`/`InboxViewModel` still default to `.shared` for
+// every real call site — this is a wider seam for the ONE composition
+// root (`AppGraph`) to inject through, never a call site this type's
+// own logic reaches for a second, alternate instance of on its own.
+public final class OutboxIDGenerator: @unchecked Sendable {
+    public static let shared = OutboxIDGenerator()
     private let lock = NSLock()
     private var counter: UInt64 = 1
-    func next() -> UInt64 {
+    public init() {}
+    public func next() -> UInt64 {
         lock.lock(); defer { lock.unlock() }
         let value = counter
         counter &+= 1
         return value
+    }
+    /// Raises this generator's floor to `minimum` — never lowers it.
+    /// `AppGraph.init`'s own seeding call is the only production caller:
+    /// every value `next()` returns afterward is guaranteed >=
+    /// `minimum`, so a value already sitting in `HistoryStore` (or
+    /// already promised via `HistoryStore`'s persisted watermark row)
+    /// can never be re-minted by a live send in THIS process.
+    public func seed(atLeast minimum: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        counter = Swift.max(counter, minimum)
     }
 }
 
@@ -175,6 +205,13 @@ public final class ThreadViewModel {
 
     private let provider: any InboxProviding
     private let client: any MeshtasticClientProtocol
+    /// PR #281 review, BLOCKING 1: the outbox id source every send path
+    /// below mints from — `.shared` by default (every pre-M3 call site
+    /// and every real app launch), overridable ONLY so `AppGraph` (the
+    /// one composition root) and its own tests can inject a fresh
+    /// instance that simulates an independent process lifetime. See
+    /// `OutboxIDGenerator`'s own doc comment.
+    private let outboxIDGenerator: OutboxIDGenerator
     /// The FLARE seam — see `FireflyPacketSending`'s doc comment. `nil`
     /// is today's default live wiring: no slice has landed a real
     /// portnum-269 conformance yet, so FLARE renders disabled
@@ -212,7 +249,8 @@ public final class ThreadViewModel {
 
     public init(conversation: ConversationKind, provider: any InboxProviding, client: any MeshtasticClientProtocol,
                 flareSender: (any FireflyPacketSending)? = nil, currentFix: (() -> LocationFix?)? = nil,
-                memberDisplayName: String? = nil, memberColorIndex: Int? = nil) {
+                memberDisplayName: String? = nil, memberColorIndex: Int? = nil,
+                outboxIDGenerator: OutboxIDGenerator = .shared) {
         self.conversation = conversation
         self.provider = provider
         self.client = client
@@ -220,6 +258,7 @@ public final class ThreadViewModel {
         self.currentFix = currentFix
         self.memberDisplayName = memberDisplayName
         self.memberColorIndex = memberColorIndex
+        self.outboxIDGenerator = outboxIDGenerator
     }
 
     /// Whether the FLARE control should be usable at all — `false`
@@ -360,7 +399,7 @@ public final class ThreadViewModel {
         do {
             try await flareSender.sendFlare(to: dest, durationSeconds: durationSeconds)
             let now = Date()
-            let sent = FeedMessage(id: OutboxIDGenerator.shared.next(), kind: .flare, direction: .out,
+            let sent = FeedMessage(id: outboxIDGenerator.next(), kind: .flare, direction: .out,
                                     text: "FLARE", timestamp: now, flareDurationSeconds: durationSeconds,
                                     destination: dest ?? meshBroadcastAddress, deliveryState: .sent, statusAt: now)
             provider.push(sent, into: conversation)
@@ -408,7 +447,7 @@ public final class ThreadViewModel {
         do {
             try await flareSender.sendRally(to: dest, latitude: fix.latitude, longitude: fix.longitude, name: name)
             let now = Date()
-            let sent = FeedMessage(id: OutboxIDGenerator.shared.next(), kind: .rally, direction: .out, text: name,
+            let sent = FeedMessage(id: outboxIDGenerator.next(), kind: .rally, direction: .out, text: name,
                                     timestamp: now, destination: dest ?? meshBroadcastAddress, deliveryState: .sent,
                                     statusAt: now)
             provider.push(sent, into: conversation)
@@ -432,7 +471,7 @@ public final class ThreadViewModel {
         }
         let dest = destination
         let wantAck = (conversation != .crew)
-        let outboxID = OutboxIDGenerator.shared.next()
+        let outboxID = outboxIDGenerator.next()
         let now = Date()
         let pending = FeedMessage(id: outboxID, kind: .text, direction: .out, text: text, timestamp: now,
                                    destination: dest, deliveryState: .waiting, statusAt: now)
@@ -495,7 +534,7 @@ public final class ThreadViewModel {
     private func send(text: String, kind: MessageKind, flareDurationSeconds: UInt16? = nil) async {
         let dest = destination
         let wantAck = (conversation != .crew) // nothing acks a broadcast (A01)
-        let outboxID = OutboxIDGenerator.shared.next()
+        let outboxID = outboxIDGenerator.next()
         let now = Date()
 
         // Pushed WAITING before any send is attempted — visible in the

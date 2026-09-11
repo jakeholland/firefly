@@ -88,46 +88,29 @@ final class DemoHistoryIsolationTests: XCTestCase {
                         "the seed records SENT — HistoryRestorer is what turns it into NO ACK on the way back in")
     }
 
-    /// Regression (bench-reproduced while building `DemoHistorySeed`):
-    /// `ThreadViewModel`'s own `OutboxIDGenerator.shared` is a
-    /// process-global singleton starting at outbox id 1, and
-    /// `DemoRunner.sendDemoThreadMessages()` sends live compose messages
-    /// through it in the SAME process a seeded restore just ran in. A
-    /// seeded outbound message with `id: 1` collided with the live
-    /// send's own outbox id: `markSent`/`setStatus(outboxID:)` updated
-    /// whichever item the C core found first, silently flipping the
-    /// seed's honest NO ACK to the live send's DELIVERED. This pins the
-    /// fix: a live push reusing outbox id 1 must never touch the
-    /// seeded message's own (very differently numbered) id.
-    func testALiveOutboxIDCollisionWithTheGeneratorsOwnStartingValueNeverTouchesSeededHistory() {
-        let history = HistoryStore.inMemory()
-        DemoHistorySeed.seed(into: history)
-        let graph = AppGraph(dependencies: .demo(), historyStore: history)
-
-        let before = graph.inboxProvider.thread(for: .member(DemoCrew.taylor), now: Date())
-        let seeded = try! XCTUnwrap(before.first { $0.direction == .out })
-        XCTAssertNotEqual(seeded.id, 1, "the seed must never reuse OutboxIDGenerator's own first value")
-        XCTAssertEqual(seeded.deliveryState, .noAck)
-
-        // The exact collision scenario: a live send mints outbox id 1
-        // (`OutboxIDGenerator`'s real starting value) into the SAME
-        // conversation, then resolves DELIVERED — mirroring
-        // `ThreadViewModel.attemptSend`/`DemoRunner`'s own live path.
-        let now = Date()
-        graph.inboxProvider.push(
-            FeedMessage(id: 1, kind: .text, direction: .out, text: "on my way", timestamp: now,
-                        destination: DemoCrew.taylor, packetID: 1, deliveryState: .waiting, statusAt: now),
-            into: .member(DemoCrew.taylor))
-        graph.inboxProvider.markSent(outboxID: 1, packetID: 1, at: now)
-        graph.inboxProvider.setStatus(packetID: 1, state: .delivered, at: now)
-
-        let after = graph.inboxProvider.thread(for: .member(DemoCrew.taylor), now: Date())
-        let stillSeeded = try! XCTUnwrap(after.first { $0.id == seeded.id })
-        XCTAssertEqual(stillSeeded.deliveryState, .noAck,
-                        "the seeded message's own status must be untouched by an unrelated live send")
-        let live = try! XCTUnwrap(after.first { $0.id == 1 })
-        XCTAssertEqual(live.deliveryState, .delivered, "the live send resolves independently")
-    }
+    /// PR #281 review, BLOCKING 1 superseded this test (formerly
+    /// `testALiveOutboxIDCollisionWithTheGeneratorsOwnStartingValueNeverTouchesSeededHistory`):
+    /// it pinned the OLD workaround — `DemoHistorySeed` hand-picking a
+    /// large, reserved, out-of-range constant id specifically so it
+    /// could never collide with `OutboxIDGenerator.shared`'s own real
+    /// starting value — by asserting a manually-pushed `id: 1` never
+    /// touched the seed. `DemoHistorySeed` no longer needs that
+    /// constant (its own doc comment explains why, now that
+    /// `AppGraph.init` seeds `OutboxIDGenerator.shared` from persisted
+    /// history before any live id can be minted at all), so this file's
+    /// seed now mints its own id from that SAME real, process-global
+    /// `.shared` generator — making this test's own "manually push
+    /// `id: 1`, assert the seed's id is never `1`" premise flaky by
+    /// construction (`.shared`'s ambient counter value depends on
+    /// whatever else has run earlier in this same test binary). The
+    /// generalized regression this test existed to pin — two
+    /// independent generator lifetimes over the SAME store never
+    /// collide, and a restored NO ACK never reverts to SENT when a new
+    /// session sends — now lives in `AppGraphTests
+    /// .testTwoIndependentAppGraphLifetimesOverTheSameHistoryNeverCollide`,
+    /// which injects genuinely fresh generator instances (never
+    /// `.shared`'s own ambient, cross-test state) to reproduce it
+    /// deterministically.
 
     /// The demo world's own scripted timeline (`DemoRunner`) is
     /// unaffected by a seeded history in a DIFFERENT conversation — the

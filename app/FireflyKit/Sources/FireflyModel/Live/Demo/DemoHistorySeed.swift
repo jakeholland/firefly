@@ -44,23 +44,26 @@ public enum DemoHistorySeed {
         // pre-applies that transform itself, so the demo exercises the
         // real rule rather than assuming it.
         //
-        // `id:` is a large, reserved constant — deliberately NOT `1`.
-        // `ThreadViewModel`'s own `OutboxIDGenerator.shared` is a
-        // process-global singleton that ALSO starts counting outbound
-        // ids at 1, and `DemoRunner.sendDemoThreadMessages()` sends two
-        // more live compose messages through that exact generator later
-        // in this same process — an `id: 1` here would collide with the
-        // live send's own outbox id the moment both exist in the same
-        // ring, and `markSent`/`setStatus(outboxID:)` would silently
-        // update whichever of the two items the C core happens to find
-        // first (bench-reproduced while building this: the seeded
+        // `id:` is minted from the REAL `OutboxIDGenerator.shared` —
+        // the same singleton `ThreadViewModel`'s own live sends use, and
+        // the same one `DemoRunner.sendDemoThreadMessages()` sends two
+        // more live compose messages through later in this same process.
+        // This USED to need a large, reserved, out-of-range constant
+        // instead (`id: 1` collided with the live send's own outbox id,
+        // and `markSent`/`setStatus(outboxID:)` silently updated
+        // whichever of the two items the core happened to find first —
+        // bench-reproduced while first building this: the seeded
         // message's own SENT status flipped to the LIVE send's
-        // DELIVERED, not the honest NO ACK M3 promises). Reserved here
-        // the same way `InboundFeedIDGenerator` reserves the top bit for
-        // every inbound id — out of range of any counter this process's
-        // own generators could plausibly reach in one demo run.
+        // DELIVERED, not the honest NO ACK M3 promises). PR #281
+        // review, BLOCKING 1 fixed this at its root instead:
+        // `AppGraph.init` now seeds `OutboxIDGenerator.shared` from
+        // whatever `history` already holds — including THIS row —
+        // before any live send in this process can mint an id at all,
+        // so a live send can no longer alias this seed regardless of
+        // what value it happens to be. The magic reserved constant is
+        // no longer needed anywhere this app mints an id.
         history.record(
-            FeedMessage(id: 0x0000_0000_F000_0001, kind: .text, direction: .out,
+            FeedMessage(id: OutboxIDGenerator.shared.next(), kind: .text, direction: .out,
                         text: "see you at the tower around 6", timestamp: yesterdayAfternoon,
                         destination: DemoCrew.taylor, packetID: 700_501, deliveryState: .sent,
                         statusAt: yesterdayAfternoon),

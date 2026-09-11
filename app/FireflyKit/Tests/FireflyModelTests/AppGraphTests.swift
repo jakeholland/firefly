@@ -1398,6 +1398,90 @@ final class AppGraphTests: XCTestCase {
         await graph.stop()
     }
 
+    /// PR #281 review, BLOCKING 1's own regression test: two INDEPENDENT
+    /// generator lifetimes over the SAME `HistoryStore` must never
+    /// collide, and a restored NO ACK must never revert to SENT just
+    /// because a new session's own live send happens to land in the
+    /// same conversation.
+    ///
+    /// `OutboxIDGenerator.shared`/`InboundFeedIDGenerator.shared` are
+    /// process-global and only ever count UP for the lifetime of one
+    /// test binary — there is no way to "restart" them mid-process the
+    /// way a real app relaunch gets a genuinely fresh `.shared` for
+    /// free — so within-process reuse of `.shared` alone could never
+    /// actually reproduce a "restarts from the same base value"
+    /// collision even before this fix. "Session 2" below is instead
+    /// built with FRESH `OutboxIDGenerator()`/`InboundFeedIDGenerator()`
+    /// instances, injected through `AppGraph.init`'s own override seam
+    /// (`OutboxIDGenerator`'s own doc comment, `ThreadViewModel.swift`),
+    /// which start at the IDENTICAL base values `.shared` itself would
+    /// in a genuinely new process — the only way to deterministically
+    /// reproduce the review's exact scenario in one test process.
+    func testTwoIndependentAppGraphLifetimesOverTheSameHistoryNeverCollide() async {
+        let taylor: UInt32 = 0x0000_5001
+        let history = HistoryStore.inMemory()
+
+        // Session 1 — a REAL send through the REAL production path,
+        // resolving to SENT and never further (`CountingClient` never
+        // yields a delivery event, so nothing ever acks it): exactly
+        // what a process killed before any routing ack came back would
+        // leave sitting on disk.
+        let client1 = CountingClient()
+        let graph1 = AppGraph(dependencies: dependencies(client: client1), historyStore: history)
+        await graph1.start()
+        let thread1 = graph1.makeInboxViewModel().openThread(.member(taylor))
+        thread1.observe()
+        client1.yieldLink(.ready)
+        await waitUntil { thread1.isLinkReady }
+        thread1.composeText = "session 1 message"
+        await thread1.sendCompose()
+        await waitUntil { self.graphInboxThread(graph1, .member(taylor)).first?.deliveryState == .sent }
+        let session1Message = try! XCTUnwrap(graphInboxThread(graph1, .member(taylor)).first)
+        XCTAssertEqual(session1Message.deliveryState, .sent)
+        await graph1.stop()
+
+        // Session 2 — a FRESH `AppGraph` over the SAME store, with
+        // FRESH generator instances standing in for a genuinely new
+        // process's own `.shared` (this test's own doc comment).
+        // `AppGraph.init`'s own seeding (BLOCKING 1's fix) has to run
+        // correctly here for any of the rest of this test to pass.
+        let client2 = CountingClient()
+        let graph2 = AppGraph(dependencies: dependencies(client: client2), historyStore: history,
+                               outboxIDGenerator: OutboxIDGenerator(), inboundFeedIDGenerator: InboundFeedIDGenerator())
+
+        // The restore alone (before ANY live send in session 2) already
+        // turns session 1's SENT row into NO ACK — `HistoryRestorer`'s
+        // own honesty transform, unaffected by the fix under test here.
+        let restoredBeforeAnythingElse = graphInboxThread(graph2, .member(taylor)).first { $0.id == session1Message.id }
+        XCTAssertEqual(restoredBeforeAnythingElse?.deliveryState, .noAck,
+                        "session 1's SENT message restores as NO ACK the moment session 2 launches")
+
+        await graph2.start()
+        let thread2 = graph2.makeInboxViewModel().openThread(.member(taylor))
+        thread2.observe()
+        client2.yieldLink(.ready)
+        await waitUntil { thread2.isLinkReady }
+        thread2.composeText = "session 2 message"
+        await thread2.sendCompose()
+        await waitUntil {
+            self.graphInboxThread(graph2, .member(taylor))
+                .contains { $0.text == "session 2 message" && $0.deliveryState == .sent }
+        }
+
+        let afterSession2Send = graphInboxThread(graph2, .member(taylor))
+        let live = try! XCTUnwrap(afterSession2Send.first { $0.text == "session 2 message" })
+        XCTAssertNotEqual(live.id, session1Message.id,
+                           "session 2's fresh generator, seeded from history, must never re-mint session 1's own id")
+
+        let stillRestored = try! XCTUnwrap(afterSession2Send.first { $0.id == session1Message.id })
+        XCTAssertEqual(stillRestored.deliveryState, .noAck,
+                        "session 2's own live send must never alias the restored message's outbox id " +
+                        "and revert its honest NO ACK back to SENT")
+        XCTAssertEqual(live.deliveryState, .sent, "session 2's own send still resolves normally, independently")
+
+        await graph2.stop()
+    }
+
     private func graphInboxThread(_ graph: AppGraph, _ conversation: ConversationKind) -> [FeedMessage] {
         graph.inboxProvider.thread(for: conversation, now: Date())
     }
