@@ -11,6 +11,35 @@ import FireflyModel
 import MeshtasticProto
 import XCTest
 
+/// Polls `condition` until it is true, then returns immediately — never
+/// a fixed sleep, and never a fixed-iteration-count loop whose total
+/// budget can run out before a state change actually lands. A CI run
+/// under load (GitHub's macOS runner, run 34653207182) is the whole
+/// reason this exists: `DiagnosticsViewModelTests`'
+/// `testObserveTracksLinkStateIndependentlyOfAnotherSubscriber` used to
+/// poll for `0..<200` iterations of a 5ms sleep — a 1s ceiling — and
+/// still saw `.handshaking` after 3.4s under a loaded scheduler, so the
+/// assert right after the loop read whatever the state happened to be
+/// at timeout rather than what it eventually became. `timeout` here is
+/// a generous, failure-only ceiling: it only matters when `condition`
+/// never becomes true at all (a real bug), never as a stand-in for
+/// "probably done by now" — a passing run still returns the moment the
+/// real subscriber delivers the state, in whatever time that actually
+/// takes.
+@MainActor
+private func eventually(_ description: String = "condition", timeout: TimeInterval = 15,
+                         file: StaticString = #filePath, line: UInt = #line,
+                         _ condition: () -> Bool) async {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() {
+        if Date() >= deadline {
+            XCTFail("timed out after \(timeout)s waiting for \(description)", file: file, line: line)
+            return
+        }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+}
+
 // MARK: - NearbyNodesViewModel
 
 @MainActor
@@ -593,9 +622,7 @@ final class SettingsViewModelTests: XCTestCase {
 
         vm.observe()
         client.nodeConfig = NodeConfigSnapshot(ownerLongName: "Node's Name")
-        for _ in 0..<200 where vm.nodeConfig == nil {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await eventually("vm.nodeConfig to arrive") { vm.nodeConfig != nil }
         XCTAssertEqual(vm.nodeLongName, "My Own Draft", "a typed local draft is never overwritten by node data")
         vm.stopObserving()
     }
@@ -635,9 +662,7 @@ final class SettingsViewModelTests: XCTestCase {
 
         vm.observe()
         client.nodeConfig = NodeConfigSnapshot(ownerLongName: "Node's Name", ownerShortName: "NODE")
-        for _ in 0..<200 where vm.nodeConfig == nil {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await eventually("vm.nodeConfig to arrive") { vm.nodeConfig != nil }
         XCTAssertEqual(vm.nodeLongNameSourceLabel, "from node")
         XCTAssertEqual(vm.nodeShortNameSourceLabel, "from node")
 
@@ -658,14 +683,22 @@ final class SettingsViewModelTests: XCTestCase {
                                     location: location)
         vm.setShareGPSWithNode(true)
 
-        for _ in 0..<200 where location.whenInUseRequestCount == 0 {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await eventually("a whenInUse authorization request") { location.whenInUseRequestCount > 0 }
         XCTAssertEqual(location.whenInUseRequestCount, 1)
     }
 
     /// Turning the toggle OFF never asks — only ON is the honest moment
     /// to prompt.
+    ///
+    /// Audited for the same "fixed sleep before an assert" flake this
+    /// file's positive-condition waits above were rewritten around
+    /// (`eventually(...)`): this one and
+    /// `testEnablingShareGPSDoesNotReRequestOnceAlreadyDecided` below are
+    /// absence checks — there is no state transition to wait for, only
+    /// "nothing happened by the time we looked." A longer sleep only
+    /// strengthens that assertion (never races it toward a false
+    /// failure the way waiting on a positive condition does), so a
+    /// fixed delay is the honest tool here, not a bug to fix.
     func testDisablingShareGPSNeverRequestsAuthorization() async {
         let location = ScriptedAuthSettingsLocationProvider(authorization: .notDetermined)
         let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel(),
@@ -772,9 +805,7 @@ final class DiagnosticsViewModelTests: XCTestCase {
         connect.observe()
         await connect.connect()
 
-        for _ in 0..<200 where diagnostics.link != .ready {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await eventually("diagnostics.link to reach .ready") { diagnostics.link == .ready }
         XCTAssertEqual(diagnostics.linkStateLabel, "CONNECTED")
         XCTAssertEqual(connect.link, .ready)
         diagnostics.stopObserving()
@@ -800,8 +831,8 @@ final class DiagnosticsViewModelTests: XCTestCase {
         vm.observe()
 
         client.push(.reconnecting(attempt: 2))
-        for _ in 0..<200 where vm.linkStateLabel != "RECONNECTING (attempt 2)" {
-            try? await Task.sleep(nanoseconds: 5_000_000)
+        await eventually("linkStateLabel to report the reconnect attempt") {
+            vm.linkStateLabel == "RECONNECTING (attempt 2)"
         }
         XCTAssertEqual(vm.linkStateLabel, "RECONNECTING (attempt 2)",
                         "a silent HANDSHAKING during a multi-minute retry loop is not telling the truth")
@@ -826,23 +857,17 @@ final class DiagnosticsViewModelTests: XCTestCase {
         vm.observe()
 
         try await client.connect()
-        for _ in 0..<200 where vm.link != .ready {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await eventually("vm.link to reach .ready") { vm.link == .ready }
         now = now.addingTimeInterval(90) // 1m 30s of uptime
         XCTAssertEqual(vm.uptimeLabel, "1m 30s")
 
         await client.disconnect()
-        for _ in 0..<200 where vm.link == .ready {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await eventually("vm.link to leave .ready") { vm.link != .ready }
         XCTAssertEqual(vm.uptimeLabel, "UNKNOWN", "not connected right now — no uptime to report")
 
         now = now.addingTimeInterval(10)
         try await client.connect()
-        for _ in 0..<200 where vm.link != .ready {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await eventually("vm.link to reach .ready again") { vm.link == .ready }
         XCTAssertEqual(vm.uptimeLabel, "0s", "a fresh .ready streak starts its own clock, not the old one's")
         vm.stopObserving()
     }
@@ -1132,15 +1157,11 @@ final class AdminWriteConfirmationStateMachineTests: XCTestCase {
 
         vm.observe()
         client.yieldLink(.ready)
-        for _ in 0..<200 where !vm.isConnected {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await eventually("vm.isConnected to become true") { vm.isConnected }
         XCTAssertTrue(vm.isConnected)
 
         client.yieldLink(.disconnected)
-        for _ in 0..<200 where vm.isConnected {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await eventually("vm.isConnected to become false") { !vm.isConnected }
         XCTAssertFalse(vm.isConnected)
         vm.stopObserving()
     }
@@ -1167,9 +1188,7 @@ final class AdminWriteConfirmationStateMachineTests: XCTestCase {
         XCTAssertFalse(vm.isConnected)
 
         client.yieldLink(.ready)
-        for _ in 0..<200 where !vm.isConnected {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await eventually("vm.isConnected to become true") { vm.isConnected }
         XCTAssertTrue(vm.isConnected,
                        "the Settings screen must reflect .ready even if no screen ever called observe() itself — " +
                        "SettingsViewModel.makeObserving(...) owns starting this subscription, not " +
@@ -1201,16 +1220,23 @@ private actor FakeScanner: NodeScanning {
 @MainActor
 final class PeripheralDiscoveryTests: XCTestCase {
 
-    private func waitUntil(_ condition: @escaping () -> Bool, timeout: Int = 400) async {
-        for _ in 0..<timeout where !condition() {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+    private func waitUntil(_ condition: @escaping () -> Bool, timeout: TimeInterval = 15,
+                            file: StaticString = #filePath, line: UInt = #line) async {
+        await eventually(timeout: timeout, file: file, line: line, condition)
     }
 
-    /// The async twin, for conditions that have to `await` into an actor.
-    private func waitUntilAsync(_ condition: @escaping () async -> Bool, timeout: Int = 400) async {
-        for _ in 0..<timeout {
+    /// The async twin, for conditions that have to `await` into an actor
+    /// — same generous, failure-only timeout as `eventually`/`waitUntil`
+    /// above, just able to `await` the condition itself.
+    private func waitUntilAsync(_ condition: @escaping () async -> Bool, timeout: TimeInterval = 15,
+                                 file: StaticString = #filePath, line: UInt = #line) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
             if await condition() { return }
+            if Date() >= deadline {
+                XCTFail("timed out after \(timeout)s waiting for condition", file: file, line: line)
+                return
+            }
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
     }
