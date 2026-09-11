@@ -348,6 +348,16 @@ public final class AppGraph {
     /// `ff_proto_decode` rejects is dropped silently, the same way the
     /// client drops a malformed protobuf, rather than rendered as
     /// anything.
+    // NIT (PR #275 review): no per-packet `await MainActor.run` here on
+    // purpose, and this is not an oversight to "fix" later. `AppGraph`
+    // is `@MainActor` (this file's own class declaration above), and a
+    // `Task { ... }` created from `@MainActor`-isolated code (this
+    // method) inherits that isolation for its WHOLE lifetime — not just
+    // its first line. So every iteration of `for await packet in
+    // stream`, and `self.handle(private: packet)` in particular, already
+    // runs ON the main actor as a direct, synchronous call — there is no
+    // hop to add per packet on this radio-traffic hot path, and adding
+    // one would only add latency for nothing.
     private func observePrivatePackets() {
         guard privateObservation == nil else { return }
         let stream = dependencies.client.incomingPrivate()
@@ -429,6 +439,17 @@ public final class AppGraph {
         // silent.
         model.imperial = dependencies.store.resolvedImperial()
         radar = model
+        // `makeConnectViewModel()`'s own doc comment below has the full
+        // story (the NavigationSplitView detail-column remount that
+        // orphans a screen-owned `.onAppear`/`.onDisappear` subscription
+        // for the rest of the process). `RadarView`, `InboxContainerView`
+        // and `SettingsScreen` are the same shape as `ConnectScreen` was
+        // — a process-lifetime singleton shown as one of that split
+        // view's `detail(for:)` destinations (`RootView.swift`) — so
+        // they get the identical fix: `observe()` started HERE, once,
+        // rather than left to a screen's own appear/disappear to
+        // establish or tear down.
+        model.observe()
         return model
     }
 
@@ -437,8 +458,19 @@ public final class AppGraph {
     /// the first time — `flareSender` was `nil` in every composition
     /// until a portnum-269 send existed.
     public func makeInboxViewModel() -> InboxViewModel {
-        InboxViewModel(provider: inboxProvider, client: dependencies.client, flareSender: packetSender,
-                        currentFix: { [weak self] in self?.myFix })
+        let model = InboxViewModel(provider: inboxProvider, client: dependencies.client, flareSender: packetSender,
+                                    currentFix: { [weak self] in self?.myFix })
+        // Same fix as `makeRadarViewModel(haptics:)` just above, and for
+        // the identical reason — see `makeConnectViewModel()`'s doc
+        // comment for the full NavigationSplitView remount story this is
+        // immune to by construction now. `ThreadViewModel`, which THIS
+        // view model hands out per `openThread(_:)` call, is unaffected
+        // and correctly stays screen-owned (`ThreadView.swift`'s own
+        // `.onAppear`/`.onDisappear`) — a thread pushed via a nested
+        // `NavigationStack` is genuinely per-navigation state, not a
+        // `detail(for:)` destination subject to this remount at all.
+        model.observe()
+        return model
     }
 
     public func makeConnectViewModel() -> ConnectViewModel {

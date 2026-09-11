@@ -53,6 +53,9 @@ public protocol FireflyExtraSettingsStoring: SettingsStoring {
 /// above this seam. Every key is namespaced `firefly.settings.` so this
 /// store can share a `UserDefaults` suite (or `.standard`) without
 /// colliding with anything else that reads or writes it.
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — every
+// mutable access goes through `lock`, never unguarded.
 public final class SettingsStore: FireflyExtraSettingsStoring, @unchecked Sendable {
     private let defaults: UserDefaults
     private let lock = NSLock()

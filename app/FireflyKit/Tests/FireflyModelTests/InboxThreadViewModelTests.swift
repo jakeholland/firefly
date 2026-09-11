@@ -51,7 +51,15 @@ private final class OrderingMockClient: MeshtasticClientProtocol, @unchecked Sen
     private let deliveryHub = EventHub<DeliveryEvent>()
     private let lock = NSLock()
     private var nextPacketID: UInt32 = 1
-    private(set) var sendOrder: [String] = []
+    // M3 / Swift 6 — a real bug ThreadSanitizer caught in this test
+    // double: `sendOrder` used to be a plain `private(set) var`, so
+    // `record(_:)`'s locked WRITE (below, off the main thread — this
+    // whole class exists to run `sendText` concurrently with a fresh
+    // compose send) raced the test's unlocked READ of the property.
+    // `sendOrder` is now a locked accessor over a private backing store,
+    // never a bare stored property.
+    private var _sendOrder: [String] = []
+    var sendOrder: [String] { lock.lock(); defer { lock.unlock() }; return _sendOrder }
 
     func linkState() -> AsyncStream<LinkState> { linkHub.subscribe() }
     func nodeUpdates() -> AsyncStream<MeshNodeSnapshot> { EventHub<MeshNodeSnapshot>().subscribe() }
@@ -108,7 +116,7 @@ private final class OrderingMockClient: MeshtasticClientProtocol, @unchecked Sen
     @discardableResult
     private func record(_ text: String) -> UInt32 {
         lock.lock(); defer { lock.unlock() }
-        sendOrder.append(text)
+        _sendOrder.append(text)
         let id = nextPacketID
         nextPacketID &+= 1
         return id

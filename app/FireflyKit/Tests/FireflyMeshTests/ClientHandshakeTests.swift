@@ -14,6 +14,13 @@ import FireflyMesh
 import MeshtasticProto
 import XCTest
 
+// M3 / Swift 6: `@MainActor` so a `Task { ... }` created inside a
+// test method (collecting an `AsyncStream` off a transport/client) can
+// capture `self` without a 'sending closure risks data races' diagnostic
+// — the closure is then isolated to the same actor `self` already is,
+// not crossing an isolation boundary at all. XCTest already runs a
+// test class's methods serially, so this changes no test's behavior.
+@MainActor
 final class ClientHandshakeTests: XCTestCase {
 
     // MARK: - FromRadio builders

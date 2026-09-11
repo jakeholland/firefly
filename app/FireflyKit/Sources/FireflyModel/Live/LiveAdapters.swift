@@ -14,10 +14,13 @@
 //  Threading: every adapter that touches a `ff_*` context is confined to
 //  `@MainActor`, per the threading model ("every `ff_*` context in the
 //  app lives behind ONE isolation domain"). Two of the seams they
-//  conform to (`RadarComputing`, `FindPinging`) are declared `Sendable`
-//  because they were written before a real bridge existed, so those two
-//  adapters are `@unchecked Sendable` with their confinement asserted by
-//  `MainActor.assumeIsolated` at each entry point — never by hoping.
+//  conform to (`RadarComputing`, `FindPinging`) are THEMSELVES
+//  `@MainActor`-isolated protocols (M3 / Swift 6 — see `RadarViewModel
+//  .swift`'s doc comment on `RadarComputing` for the full reasoning),
+//  so `CoreRadarComputing`/`CoreFindSession` below are plain `@MainActor`
+//  classes with no `nonisolated`/`MainActor.assumeIsolated`/`@unchecked
+//  Sendable` of their own — the compiler enforces the confinement this
+//  file used to assert by hand.
 //
 import FireflyCore
 import FireflyMesh
@@ -130,7 +133,7 @@ public final class MeshFireflyPacketSender: FireflyPacketSending {
 /// and the connected NODE's battery does not reach this app in M1), and
 /// a mesh-OK flag read from the actual link state.
 @MainActor
-public final class CoreRadarComputing: RadarComputing, @unchecked Sendable {
+public final class CoreRadarComputing: RadarComputing {
     private let crew: CrewStore
     private let radar: RadarBridge
     /// Read at compute time, not cached: the link can drop between two
@@ -144,41 +147,36 @@ public final class CoreRadarComputing: RadarComputing, @unchecked Sendable {
         self.linkIsReady = linkIsReady
     }
 
-    public nonisolated var hasPairedMembers: Bool {
-        MainActor.assumeIsolated { crew.members(now: FireflyClock.nowMillis()).contains { $0.paired } }
+    public var hasPairedMembers: Bool {
+        crew.members(now: FireflyClock.nowMillis()).contains { $0.paired }
     }
 
-    public nonisolated var selectedNodeID: UInt32? {
-        MainActor.assumeIsolated { crew.selected(now: FireflyClock.nowMillis())?.nodeID }
+    public var selectedNodeID: UInt32? {
+        crew.selected(now: FireflyClock.nowMillis())?.nodeID
     }
 
-    public nonisolated func cycleSelection() {
-        MainActor.assumeIsolated {
-            crew.selectNext()
-            // A new selection means the smoothing filter's history
-            // belongs to a different friend: keeping it would sweep the
-            // arrow from the OLD member's bearing to the new one, an
-            // animation that asserts a relationship between two
-            // unrelated readings (`ff_radar_smooth_reset`'s own "snap
-            // rather than sweep" case).
-            if crew.selected(now: FireflyClock.nowMillis())?.nodeID != lastSelectedNodeID {
-                radar.resetSmoothing()
-            }
-            lastSelectedNodeID = crew.selected(now: FireflyClock.nowMillis())?.nodeID
+    public func cycleSelection() {
+        crew.selectNext()
+        // A new selection means the smoothing filter's history belongs
+        // to a different friend: keeping it would sweep the arrow from
+        // the OLD member's bearing to the new one, an animation that
+        // asserts a relationship between two unrelated readings
+        // (`ff_radar_smooth_reset`'s own "snap rather than sweep" case).
+        if crew.selected(now: FireflyClock.nowMillis())?.nodeID != lastSelectedNodeID {
+            radar.resetSmoothing()
         }
+        lastSelectedNodeID = crew.selected(now: FireflyClock.nowMillis())?.nodeID
     }
 
-    public nonisolated func compute(headingDegrees: Double?, myFix: LocationFix?, imperial: Bool,
-                                    now: Date) -> RadarSnapshot {
-        MainActor.assumeIsolated {
-            let view = radar.compute(
-                crew: crew,
-                headingDeg: headingDegrees.map(Float.init),
-                myPosition: myFix.map { (latitude: $0.latitude, longitude: $0.longitude) },
-                imperial: imperial,
-                now: FireflyClock.millis(since: now))
-            return CoreRadarComputing.snapshot(from: view, now: now, meshOK: linkIsReady())
-        }
+    public func compute(headingDegrees: Double?, myFix: LocationFix?, imperial: Bool,
+                        now: Date) -> RadarSnapshot {
+        let view = radar.compute(
+            crew: crew,
+            headingDeg: headingDegrees.map(Float.init),
+            myPosition: myFix.map { (latitude: $0.latitude, longitude: $0.longitude) },
+            imperial: imperial,
+            now: FireflyClock.millis(since: now))
+        return CoreRadarComputing.snapshot(from: view, now: now, meshOK: linkIsReady())
     }
 
     /// `ff_radar_view_t` (via `RadarBridge.RadarView`) -> `RadarSnapshot`,
@@ -269,7 +267,7 @@ public final class CoreRadarComputing: RadarComputing, @unchecked Sendable {
 /// send is fire-and-forget — a FIND ping never enters the outbox, the
 /// same rule FLARE follows.
 @MainActor
-public final class CoreFindSession: FindPinging, @unchecked Sendable {
+public final class CoreFindSession: FindPinging {
     private let find: FindBridge
     private let sender: MeshFireflyPacketSender
     /// Set by `start`, cleared by `stop` — the wire address every ping
@@ -283,22 +281,18 @@ public final class CoreFindSession: FindPinging, @unchecked Sendable {
         self.sender = sender
     }
 
-    public nonisolated var isActive: Bool { MainActor.assumeIsolated { find.isActive } }
-    public nonisolated var targetNodeID: UInt32? { MainActor.assumeIsolated { find.targetNodeID } }
-    public nonisolated var pingCount: Int { MainActor.assumeIsolated { Int(find.pingCount) } }
+    public var isActive: Bool { find.isActive }
+    public var targetNodeID: UInt32? { find.targetNodeID }
+    public var pingCount: Int { Int(find.pingCount) }
 
-    public nonisolated func start(targetNodeID: UInt32, now: Date) {
-        MainActor.assumeIsolated {
-            find.start(targetNodeID: targetNodeID, now: FireflyClock.millis(since: now))
-            target = targetNodeID
-        }
+    public func start(targetNodeID: UInt32, now: Date) {
+        find.start(targetNodeID: targetNodeID, now: FireflyClock.millis(since: now))
+        target = targetNodeID
     }
 
-    public nonisolated func stop() {
-        MainActor.assumeIsolated {
-            find.stop()
-            target = nil
-        }
+    public func stop() {
+        find.stop()
+        target = nil
     }
 
     /// Returns true iff the core said a ping was due — i.e. iff one was
@@ -306,33 +300,31 @@ public final class CoreFindSession: FindPinging, @unchecked Sendable {
     /// requirement is synchronous), so "sent" here means "handed to the
     /// client", which is the same thing `sendText`'s own SENT means.
     @discardableResult
-    public nonisolated func tick(now: Date) -> Bool {
-        MainActor.assumeIsolated {
-            guard case .sendPing(let nonce) = find.tick(now: FireflyClock.millis(since: now)),
-                  let target else { return false }
-            let sender = sender
-            // PR #265 review, should-fix: a FIND ping's `try?` above
-            // swallowed both `SendFailure.encodingFailed` (ff_proto
-            // refused the body) and a transport-level throw with no
-            // trace anywhere — a session sitting on "pinging..." with
-            // no pong forever looked identical to a working session
-            // whose replies just hadn't arrived yet. Diagnostic-only
-            // (same `FileHandle.standardError.write` pattern
-            // `BLETransport.log` uses, for the same reason: stdout is
-            // fully block-buffered once `xcodebuild test` pipes it, so
-            // a `print()` here could sit invisible for the whole run);
-            // never surfaced to the UI — FIND has no per-ping failure
-            // affordance, only the session-level trend/haptic path.
-            Task {
-                do {
-                    try await sender.send(.ping(nonce: nonce), to: target, wantAck: false)
-                } catch {
-                    let line = "[CoreFindSession] FIND ping nonce=\(nonce) target=\(target) failed: \(error)\n"
-                    FileHandle.standardError.write(Data(line.utf8))
-                }
+    public func tick(now: Date) -> Bool {
+        guard case .sendPing(let nonce) = find.tick(now: FireflyClock.millis(since: now)),
+              let target else { return false }
+        let sender = sender
+        // PR #265 review, should-fix: a FIND ping's `try?` above
+        // swallowed both `SendFailure.encodingFailed` (ff_proto
+        // refused the body) and a transport-level throw with no
+        // trace anywhere — a session sitting on "pinging..." with
+        // no pong forever looked identical to a working session
+        // whose replies just hadn't arrived yet. Diagnostic-only
+        // (same `FileHandle.standardError.write` pattern
+        // `BLETransport.log` uses, for the same reason: stdout is
+        // fully block-buffered once `xcodebuild test` pipes it, so
+        // a `print()` here could sit invisible for the whole run);
+        // never surfaced to the UI — FIND has no per-ping failure
+        // affordance, only the session-level trend/haptic path.
+        Task {
+            do {
+                try await sender.send(.ping(nonce: nonce), to: target, wantAck: false)
+            } catch {
+                let line = "[CoreFindSession] FIND ping nonce=\(nonce) target=\(target) failed: \(error)\n"
+                FileHandle.standardError.write(Data(line.utf8))
             }
-            return true
         }
+        return true
     }
 
     /// The nonce is load-bearing here in a way `MockFindSession`'s
@@ -340,17 +332,15 @@ public final class CoreFindSession: FindPinging, @unchecked Sendable {
     /// it matches the most recently sent ping's nonce, which is what
     /// keeps a stale reply from a previous session out of the trend
     /// calculation.
-    public nonisolated func recordPong(fromNodeID: UInt32, nonce: UInt32, rssiDbm: Int16, hasSNR: Bool,
-                                       snrDb: Double, now: Date) -> FindHaptic {
-        MainActor.assumeIsolated {
-            let haptic = find.onPong(fromNodeID: fromNodeID, nonce: nonce, rssiDbm: rssiDbm,
-                                     snrDb: hasSNR ? Float(snrDb) : nil,
-                                     now: FireflyClock.millis(since: now))
-            switch haptic {
-            case .warmer: return .warmer
-            case .colder: return .colder
-            case .none: return .none
-            }
+    public func recordPong(fromNodeID: UInt32, nonce: UInt32, rssiDbm: Int16, hasSNR: Bool,
+                           snrDb: Double, now: Date) -> FindHaptic {
+        let haptic = find.onPong(fromNodeID: fromNodeID, nonce: nonce, rssiDbm: rssiDbm,
+                                 snrDb: hasSNR ? Float(snrDb) : nil,
+                                 now: FireflyClock.millis(since: now))
+        switch haptic {
+        case .warmer: return .warmer
+        case .colder: return .colder
+        case .none: return .none
         }
     }
 }

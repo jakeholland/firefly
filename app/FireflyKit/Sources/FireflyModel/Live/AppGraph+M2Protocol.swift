@@ -201,6 +201,11 @@ extension AppGraph {
     /// subscription alive for the push-to-node path (EventHub is
     /// multicast — a second, independent subscriber is free, not a
     /// conflict).
+    // NIT (PR #275 review): no `await MainActor.run` per fix, same
+    // reasoning as `AppGraph.observePrivatePackets()`'s own comment —
+    // this extension's `Task { ... }` inherits `@MainActor` isolation
+    // from `AppGraph` itself for its whole lifetime, so `self.myFix =
+    // fix` already runs on the main actor directly.
     func observeMyLocation() {
         guard locationObservation == nil else { return }
         let fixes = dependencies.location.fixes()
@@ -222,6 +227,10 @@ extension AppGraph {
     /// notification — `InboxViewModel` keeps its own, separate
     /// subscription for actually rendering the thread, and the two never
     /// interfere with each other.
+    // NIT (PR #275 review): same reasoning as `AppGraph
+    // .observePrivatePackets()`'s own comment — inherited `@MainActor`
+    // isolation, not a missing hop, is why nothing here needs
+    // `await MainActor.run` per incoming text either.
     func observeIncomingTextsForNotifications() {
         guard incomingTextNotificationObservation == nil else { return }
         let texts = dependencies.client.incomingTexts()

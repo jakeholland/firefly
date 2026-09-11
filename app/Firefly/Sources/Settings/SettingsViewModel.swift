@@ -95,6 +95,27 @@ final class SettingsViewModel {
         isConnected = client.connectedNodeNum != nil
     }
 
+    /// The composition root's own constructor — `FireflyApp.init()` calls
+    /// this instead of `SettingsViewModel(store:channelImport:client:)`
+    /// directly. Mirrors `AppGraph.makeConnectViewModel()`'s fix for the
+    /// exact same NavigationSplitView detail-column remount hazard
+    /// (`SettingsScreen` is one of `RootView`'s own `detail(for:)`
+    /// destinations, same as Connect was): `observe()` starts HERE,
+    /// once, for the life of the process, rather than being left to
+    /// `SettingsScreen`'s own `.onAppear`/`.onDisappear` to establish or
+    /// tear down. This type cannot live on `AppGraph` itself —
+    /// `ChannelImportViewModel` is app-target Swift, not `FireflyKit`,
+    /// and `AppGraph` cannot depend on the app target — so this static
+    /// factory is the composition root for this one singleton instead,
+    /// the same role `AppGraph.make*ViewModel()` plays for everything
+    /// `FireflyKit` can construct on its own.
+    static func makeObserving(store: any FireflyExtraSettingsStoring, channelImport: ChannelImportViewModel,
+                               client: any MeshtasticClientProtocol) -> SettingsViewModel {
+        let model = SettingsViewModel(store: store, channelImport: channelImport, client: client)
+        model.observe()
+        return model
+    }
+
     /// No seam exposes the connected node's actual region yet —
     /// `MeshtasticClientProtocol` carries no config/region field in M1.
     /// UNKNOWN is the honest rendering, not a placeholder.

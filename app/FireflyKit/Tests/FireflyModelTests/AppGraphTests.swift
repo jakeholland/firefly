@@ -85,31 +85,37 @@ private final class CountingClient: MeshtasticClientProtocol, @unchecked Sendabl
     func yieldLink(_ state: LinkState) { linkHub.yield(state) }
     func yieldNode(_ snapshot: MeshNodeSnapshot) { nodeHub.yield(snapshot) }
     func yieldPrivate(_ packet: IncomingPrivate) { privateHub.yield(packet) }
+    /// `InboxViewModel.observe()`'s own `incomingTexts()` subscription —
+    /// distinct from `yieldPrivate`/`yieldNode` above, and from the
+    /// graph's own `observeIncomingTextsForNotifications()` subscription
+    /// to the same stream (S1's multicast rule: every subscriber sees
+    /// every yield here, exactly like a real client).
+    func yieldText(_ text: IncomingText) { textHub.yield(text) }
 
     func connect() async throws {
-        lock.lock(); _connectCallCount += 1; lock.unlock()
+        recordConnect()
         linkHub.yield(.ready)
     }
     func disconnect() async {
-        lock.lock(); _disconnectCallCount += 1; lock.unlock()
+        recordDisconnect()
         linkHub.yield(.disconnected)
     }
 
     @discardableResult
     func sendText(_ text: String, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
-        lock.lock(); texts.append((text, destination, wantAck)); lock.unlock()
+        recordText(text, destination: destination, wantAck: wantAck)
         return 1
     }
 
     @discardableResult
     func sendPosition(_ fix: ExternalPositionFix, to destination: UInt32) async throws -> UInt32 {
-        lock.lock(); positions.append((fix, destination)); lock.unlock()
+        recordPosition(fix, destination: destination)
         return 2
     }
 
     @discardableResult
     func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
-        lock.lock(); privates.append((payload, destination, wantAck)); lock.unlock()
+        recordPrivate(payload, destination: destination, wantAck: wantAck)
         return 3
     }
 
@@ -126,6 +132,22 @@ private final class CountingClient: MeshtasticClientProtocol, @unchecked Sendabl
         RegionWriteReport(region: region)
     }
     func currentChannelTable() async throws -> [Channel] { [] }
+
+    // M3 / Swift 6: every locked mutation above happens in one of these
+    // synchronous helpers, never lexically inside an `async` function
+    // body — `NSLock.lock()`/`unlock()` are `noasync`, the same rule
+    // `DemoMeshtasticClient`'s own record helpers document.
+    private func recordConnect() { lock.lock(); _connectCallCount += 1; lock.unlock() }
+    private func recordDisconnect() { lock.lock(); _disconnectCallCount += 1; lock.unlock() }
+    private func recordText(_ text: String, destination: UInt32, wantAck: Bool) {
+        lock.lock(); texts.append((text, destination, wantAck)); lock.unlock()
+    }
+    private func recordPosition(_ fix: ExternalPositionFix, destination: UInt32) {
+        lock.lock(); positions.append((fix, destination)); lock.unlock()
+    }
+    private func recordPrivate(_ payload: Data, destination: UInt32, wantAck: Bool) {
+        lock.lock(); privates.append((payload, destination, wantAck)); lock.unlock()
+    }
 }
 
 /// A location provider a test drives by hand — it yields exactly the
@@ -243,12 +265,13 @@ final class AppGraphTests: XCTestCase {
         // to notice a text arriving while the app is backgrounded and
         // post a local notification
         // (`observeIncomingTextsForNotifications()`). `InboxViewModel`'s
-        // own subscription (below) is unaffected and unrelated: it lives
-        // only while the Inbox screen is on screen (`InboxListView`'s
-        // `onAppear`/`onDisappear`), which is exactly the lifecycle a
-        // backgrounded-app notification cannot depend on — so the graph
-        // needs one of its own rather than reusing (or stealing) the
-        // screen's.
+        // own subscription (below) is unaffected and unrelated — it is
+        // ITS OWN, separately-started subscription
+        // (`makeInboxViewModel()`'s own doc comment: process-lifetime
+        // now, started once by the composition root, same as this one,
+        // rather than tied to `InboxContainerView`'s appear/disappear)
+        // — so the graph needs one of its own rather than reusing (or
+        // stealing) the view model's.
         XCTAssertEqual(client.subscriptionCount("text"), 1)
 
         await graph.stop()
@@ -259,13 +282,20 @@ final class AppGraphTests: XCTestCase {
         let graph = AppGraph(dependencies: dependencies(client: client))
         await graph.start()
 
+        // `makeInboxViewModel()` already started `observe()` itself
+        // (`AppGraph`'s own doc comment on that method) — this second
+        // call is deliberately redundant, exercising the idempotent
+        // guard `observe()` follows everywhere in this app, same as
+        // `testStartSubscribesEachClientStreamExactlyOnceAndIsIdempotent`
+        // does for `graph.start()` above.
         let inbox = graph.makeInboxViewModel()
         inbox.observe()
 
         // S1's multicast rule: the Inbox's subscriptions are ITS own,
         // never stolen from or shared with the graph's. "2" here is the
         // graph's own M2 notification subscription (started by
-        // `graph.start()` above) plus the Inbox's own.
+        // `graph.start()` above) plus the Inbox's own (started by
+        // `makeInboxViewModel()`, not by the redundant call just above).
         XCTAssertEqual(client.subscriptionCount("text"), 2)
         XCTAssertEqual(client.subscriptionCount("delivery"), 2, "graph's + the Inbox's own")
 
@@ -1166,6 +1196,65 @@ final class AppGraphTests: XCTestCase {
                         "the Connect screen must reflect .ready even if no screen ever called observe() itself — " +
                         "makeConnectViewModel() owns starting this subscription, not ConnectScreen.onAppear")
         XCTAssertEqual(connect.statusLabel, "CONNECTED")
+
+        await graph.stop()
+    }
+
+    /// PR #276 follow-up (app: singleton view models own their
+    /// subscriptions in the composition root) — the same fix and the
+    /// same test shape as `testConnectViewModelObservesAutomaticallyWith
+    /// NoCallerEverCallingObserve` just above, now for `RadarViewModel`.
+    /// Fails pre-fix: before `makeRadarViewModel(haptics:)` started
+    /// `observe()` itself, nothing did until `RadarView.onAppear` ran,
+    /// so a fix pushed with no screen ever having appeared (or one that
+    /// appeared once and was remounted away, exactly `ConnectScreen`'s
+    /// own NavigationSplitView bug) was silently dropped.
+    func testRadarViewModelObservesAutomaticallyWithNoCallerEverCallingObserve() async {
+        let client = CountingClient()
+        let location = ScriptedLocationProvider()
+        let graph = AppGraph(dependencies: dependencies(client: client, location: location))
+        await graph.start()
+
+        let radar = graph.makeRadarViewModel()
+        // Deliberately NOT calling `radar.observe()` here — the whole
+        // point of this test.
+
+        let pushed = fix(latitude: 47.7, longitude: -122.28)
+        location.push(pushed)
+
+        await waitUntil { radar.lastFix != nil }
+        XCTAssertEqual(radar.lastFix, pushed,
+                        "the Radar screen must mirror a fix even if no screen ever called observe() itself — " +
+                        "makeRadarViewModel(haptics:) owns starting this subscription, not RadarView.onAppear")
+
+        await graph.stop()
+    }
+
+    /// Same fix, same shape, for `InboxViewModel` — fails pre-fix for
+    /// the identical reason `testRadarViewModelObservesAutomaticallyWith
+    /// NoCallerEverCallingObserve` just above does: before
+    /// `makeInboxViewModel()` started `observe()` itself, an inbound
+    /// text arriving with no Inbox screen ever having appeared was
+    /// silently lost — `ingest(_:)` is only ever reached from THIS
+    /// subscription.
+    func testInboxViewModelObservesAutomaticallyWithNoCallerEverCallingObserve() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client))
+        await graph.start()
+
+        let inbox = graph.makeInboxViewModel()
+        // Deliberately NOT calling `inbox.observe()` here — the whole
+        // point of this test.
+
+        client.yieldText(IncomingText(from: 0x02E6_06B0, to: meshBroadcastAddress, channel: 0, packetID: 11,
+                                       text: "hello crew", rxTime: Date(), rssiDbm: -60, snrDb: 6, direct: nil))
+
+        await waitUntil { inbox.conversations.first(where: { $0.kind == .crew })?.itemCount == 1 }
+        let crewRow = inbox.conversations.first(where: { $0.kind == .crew })
+        XCTAssertEqual(crewRow?.itemCount, 1,
+                        "the Inbox screen must reflect an inbound text even if no screen ever called observe() " +
+                        "itself — makeInboxViewModel() owns starting this subscription, not InboxContainerView.onAppear")
+        XCTAssertTrue(crewRow?.hasPreview ?? false)
 
         await graph.stop()
     }

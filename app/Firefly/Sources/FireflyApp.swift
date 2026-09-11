@@ -86,9 +86,14 @@ struct FireflyApp: App {
         // `dependencies.store.bool(.locationSharingEnabled)` — the
         // phone-GPS uplink above all — share ONE instance, instead of
         // agreeing only by `UserDefaults.standard` coincidence.
-        _settings = State(initialValue: SettingsViewModel(store: graph.dependencies.store,
-                                                           channelImport: importVM,
-                                                           client: graph.dependencies.client))
+        //
+        // `.makeObserving(...)`, not the plain initializer — that
+        // factory's own doc comment on `SettingsViewModel.swift` is
+        // where the fix (and the NavigationSplitView remount bug it
+        // fixes) is written up; this is the one call site that matters.
+        _settings = State(initialValue: SettingsViewModel.makeObserving(store: graph.dependencies.store,
+                                                                         channelImport: importVM,
+                                                                         client: graph.dependencies.client))
         let inboxVM = graph.makeInboxViewModel()
         _inbox = State(initialValue: inboxVM)
         #if os(iOS)

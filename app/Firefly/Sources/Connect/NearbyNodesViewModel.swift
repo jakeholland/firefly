@@ -147,3 +147,146 @@ final class NearbyNodesViewModel {
         snapshot.shortName ?? snapshot.longName ?? String(format: "!%08x", snapshot.num)
     }
 }
+
+// MARK: - NEARBY RADIOS row building (Connect screen redesign)
+//
+// Owner feedback from the first real-radio run: "the connect button
+// needs to be on the line item or something, screen needs a little
+// work". `RadioListRow`/`RadioListBuilder` are the NEARBY RADIOS
+// picker's own version of the pattern `NearbyNodesViewModel` above
+// already uses for the NEARBY crew section: raw event/scan data goes in
+// (`ConnectViewModel` + the picker's own `[DiscoveredPeripheral]`),
+// display-ready rows with a per-row action come out, pure and testable
+// without SwiftUI. Lives in this file rather than a new one — the
+// owner's task grouped it with `NearbyNodesViewModel` as "the Connect
+// view models" to touch.
+
+/// One NEARBY RADIOS row, ready for `ConnectScreen` to render verbatim.
+struct RadioListRow: Identifiable, Equatable {
+    /// A row's status chip — CONNECTED (theme amber border, per the
+    /// owner's design canvas), CONNECTING (still mid-handshake, but
+    /// already abortable — `ConnectViewModel.rowAction`'s own doc
+    /// comment on why DISCONNECT is reachable the whole time), or
+    /// REMEMBERED (persisted for next launch, not currently linked).
+    /// Every OTHER discovered peripheral carries `.none` — no chip at
+    /// all, just CONNECT.
+    enum Status: Equatable {
+        case connected
+        case connecting
+        case remembered
+        case none
+
+        var chipText: String? {
+            switch self {
+            case .connected: return "CONNECTED"
+            case .connecting: return "CONNECTING…"
+            case .remembered: return "REMEMBERED"
+            case .none: return nil
+            }
+        }
+        /// The theme-amber border the owner's design canvas gives a
+        /// node card while it is "the" radio — connected OR actively
+        /// connecting to it, never merely remembered.
+        var isHighlighted: Bool {
+            self == .connected || self == .connecting
+        }
+    }
+
+    let id: String
+    /// The best name known for this radio — its own `NodeInfo` long
+    /// name once want_config has reported one, else its BLE advertised
+    /// name, else its raw node id, else (nothing at all is known — the
+    /// remembered-but-never-scanned case) a plain placeholder. Never a
+    /// bare UUID: `MeshPeripheralDiscovery`'s `id` is a `CBPeripheral`
+    /// identifier, meaningless to a human.
+    let title: String
+    /// Whatever identity `title` did NOT already use, joined the same
+    /// way `ConnectViewModel.headerStatusText` joins its own parts —
+    /// nil when there is nothing left to add.
+    let subtitle: String?
+    let rssiDbm: Int?
+    let status: Status
+    /// Drives the FORGET row action — independent of `status`: a
+    /// remembered radio that is currently CONNECTING is still the one
+    /// FORGET should clear, not only while idle.
+    let isRemembered: Bool
+    let action: ConnectViewModel.RadioRowAction
+}
+
+@MainActor
+enum RadioListBuilder {
+    /// Builds the NEARBY RADIOS list: at most ONE synthetic "active
+    /// radio" row for whichever peripheral `connect` currently
+    /// considers remembered/connecting/connected — merged with a
+    /// live scan match when one exists — followed by every OTHER
+    /// scanned peripheral, each offering its own CONNECT.
+    ///
+    /// The active row is built from `connect`'s OWN state rather than
+    /// only from `discovered`, on purpose: a real Meshtastic radio
+    /// stops BLE-advertising once connected, so a scan can never
+    /// re-find the very radio the app is already talking to — and the
+    /// iOS Simulator's demo mode has no scanner at all
+    /// (`PeripheralDiscovery.swift`'s `StubPeripheralDiscovery`). Both
+    /// cases still need a row: "which radio am I on?" must never
+    /// depend on the scan having anything in it right now.
+    static func rows(discovered: [DiscoveredPeripheral], connect: ConnectViewModel) -> [RadioListRow] {
+        var rows: [RadioListRow] = []
+        var coveredIDs: Set<String> = []
+
+        let remembered = connect.rememberedPeripheralID
+        // Shown whenever there is something to say about "the" radio:
+        // either the link is actively doing something with it, or it is
+        // simply the one remembered from a previous session (even out
+        // of the current scan — REMEMBERED must stay reachable, with
+        // FORGET, regardless of whether a scan happens to be running).
+        let showActiveRow = connect.link != .disconnected || remembered != nil
+        if showActiveRow {
+            let id = remembered ?? "connected-radio"
+            let scanMatch = remembered.flatMap { rid in discovered.first(where: { $0.id == rid }) }
+            let bleName = connect.connectedRadio?.bleName ?? scanMatch?.name
+            let longName = connect.connectedRadio?.longName
+            let nodeID = connect.connectedNodeIDHex
+            let rssi = connect.connectedRadio?.rssiDbm ?? scanMatch?.rssiDbm
+
+            // Same priority `ConnectViewModel.headerStatusText` uses —
+            // the most specific identity known leads; everything else
+            // known becomes the subtitle, never repeated as both.
+            var identity: [String] = []
+            if let longName { identity.append(longName) }
+            if let bleName { identity.append(bleName) }
+            if let nodeID { identity.append(nodeID) }
+            let title = identity.first ?? "Remembered radio"
+            let subtitleParts = identity.dropFirst()
+
+            let isRemembered = remembered != nil
+            let status: RadioListRow.Status
+            switch connect.link {
+            case .ready: status = .connected
+            case .connecting, .handshaking, .reconnecting: status = .connecting
+            case .disconnected, .failed: status = isRemembered ? .remembered : .none
+            }
+
+            rows.append(RadioListRow(
+                id: id,
+                title: title,
+                subtitle: subtitleParts.isEmpty ? nil : subtitleParts.joined(separator: " · "),
+                rssiDbm: rssi,
+                status: status,
+                isRemembered: isRemembered,
+                action: connect.rowAction(isActivePeripheral: true)))
+            coveredIDs.insert(id)
+        }
+
+        for peripheral in discovered where !coveredIDs.contains(peripheral.id) {
+            rows.append(RadioListRow(
+                id: peripheral.id,
+                title: peripheral.name ?? peripheral.id,
+                subtitle: nil,
+                rssiDbm: peripheral.rssiDbm,
+                status: .none,
+                isRemembered: false,
+                action: connect.rowAction(isActivePeripheral: false)))
+        }
+        return rows
+    }
+}

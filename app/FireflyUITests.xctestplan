@@ -1,0 +1,24 @@
+{
+  "configurations" : [
+    {
+      "id" : "810C2DAE-4CCA-47C6-9BD3-6CDEF1387BFA",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:Firefly.xcodeproj",
+        "identifier" : "6D64813BE2A6F65CCCF908B1",
+        "name" : "FireflyUITests"
+      }
+    }
+  ],
+  "version" : 1
+}

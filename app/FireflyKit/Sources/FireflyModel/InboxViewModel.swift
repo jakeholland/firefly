@@ -241,7 +241,24 @@ public struct InboxConversationRow: Sendable, Equatable, Identifiable {
 /// mutating method mirrors one `ff_feed`/`ff_inbox` C entry point by
 /// name in its doc comment, so a future `InboxBridge` conformance is a
 /// direct translation, not a redesign.
-public protocol InboxProviding: AnyObject, Sendable {
+///
+/// M3 / Swift 6: `@MainActor`, not `Sendable` — `InboxViewModel` and
+/// `ThreadViewModel` (the only two callers) are both `@MainActor`
+/// themselves, and `CoreInboxProvider` (the real, C-core-backed
+/// conformance) only ever touches its `ff_*` contexts from the main
+/// actor already. Isolating the protocol lets the compiler prove that
+/// instead of `CoreInboxProvider` asserting it by hand with
+/// `MainActor.assumeIsolated` at each entry point — see
+/// `CoreInboxProvider.swift`'s own doc comment. `InMemoryInboxStore`
+/// (below) stays `nonisolated` + lock-protected rather than
+/// `@MainActor`: it was already genuinely thread-safe (every mutable
+/// access goes through its own `NSLock`, not an isolation domain), and
+/// a `nonisolated` witness may satisfy an isolated protocol requirement
+/// unchanged — it is safely callable from any context, main actor
+/// included, so nothing about how `InboxViewModel`/`ThreadViewModel`
+/// use it changes either.
+@MainActor
+public protocol InboxProviding: AnyObject {
     /// Mirrors `ff_inbox_build` + reading every `ff_inbox_conv_at` row —
     /// the full ordered conversation list as of `now`. CREW is always
     /// present.
@@ -284,6 +301,9 @@ public protocol InboxProviding: AnyObject, Sendable {
 /// wrong row. Reserving the top bit for every INBOUND id keeps the two
 /// generators' output disjoint for as long as either could plausibly
 /// run, not merely "in practice today".
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — the only
+// mutable state, `counter`, is only ever read or written under `lock`.
 private final class InboundFeedIDGenerator: @unchecked Sendable {
     static let shared = InboundFeedIDGenerator()
     private let lock = NSLock()
@@ -323,6 +343,9 @@ private struct SentIDRing {
 /// no traffic, no members and no presence. Everything it renders was put
 /// there by `push`/`registerMember`/`setPresence`, or by `ThreadViewModel`
 /// acting on a real (or injected) `MeshtasticClientProtocol`.
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — every
+// mutable access below goes through `lock`, never unguarded.
 public final class InMemoryInboxStore: InboxProviding, @unchecked Sendable {
     private struct Member {
         var displayName: String

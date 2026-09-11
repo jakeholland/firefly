@@ -65,6 +65,10 @@ enum SerialPortError: Error, Equatable, Sendable {
 /// is the `MeshTransport` conformance built on top of this; this type
 /// knows nothing about `ToRadio`/`FromRadio`, `EventHub`, or Meshtastic
 /// at all — just bytes in, bytes out, one port.
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — every
+// mutable access to `readSource`/`closed` goes through `stateLock`,
+// never unguarded; `fd`/`path`/`readQueue` are immutable after `init`.
 final class SerialPort: @unchecked Sendable {
     private let fd: Int32
     private let path: String

@@ -238,7 +238,19 @@ public struct RadarSnapshot: Sendable, Equatable {
 /// `compute` is the ONLY place geometry crosses this seam, and it always
 /// returns an already-computed `RadarSnapshot` — no bearing, distance, or
 /// mode-resolution logic belongs on the caller's side of this protocol.
-public protocol RadarComputing: AnyObject, Sendable {
+///
+/// M3 / Swift 6: `@MainActor`, not `Sendable`. Every conformance
+/// (`CoreRadarComputing`, `MockRadarComputing`) and every call site
+/// (`RadarViewModel`, itself `@MainActor`) already lived on the main
+/// actor; `Sendable` plus `nonisolated` plus `MainActor.assumeIsolated`
+/// at each entry point (the shape this protocol used before M3) was
+/// this seam ASSERTING that placement at runtime instead of the
+/// compiler PROVING it — exactly the ad-hoc pattern M3's concurrency
+/// review flagged. Isolating the protocol proves it instead, and no
+/// caller changes: `RadarViewModel`'s own members were already
+/// `@MainActor`-isolated.
+@MainActor
+public protocol RadarComputing: AnyObject {
     /// True when at least one crew member is currently paired — lets the
     /// view model know whether "cycle selection" has anything to do,
     /// without duplicating the crew roster itself.
@@ -270,11 +282,18 @@ public protocol RadarComputing: AnyObject, Sendable {
 /// the mesh client seam. `RadarViewModelTests` drives this directly with
 /// the exact field values transcribed from
 /// `firmware/tests/fixtures/radar_*.json`.
-public final class MockRadarComputing: RadarComputing, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _nextSnapshot: RadarSnapshot = .empty
-    private var _hasPairedMembers = false
-    private var _selectedNodeID: UInt32?
+///
+/// M3 / Swift 6: `@MainActor`, matching `RadarComputing`'s own
+/// isolation — plain stored properties, no `NSLock`. The lock this type
+/// used to carry existed only to satisfy the protocol's old `Sendable`
+/// requirement; every real caller (`RadarViewModelTests`, itself
+/// `@MainActor`) was single-threaded already, so the lock was
+/// serializing access that was never actually concurrent.
+@MainActor
+public final class MockRadarComputing: RadarComputing {
+    public var nextSnapshot: RadarSnapshot = .empty
+    public var hasPairedMembers = false
+    public var selectedNodeID: UInt32?
 
     /// Recorded calls, for cadence/observability tests.
     public private(set) var computeCallCount = 0
@@ -285,36 +304,16 @@ public final class MockRadarComputing: RadarComputing, @unchecked Sendable {
 
     public init() {}
 
-    /// What the next (and every subsequent, until changed) `compute`
-    /// call returns.
-    public var nextSnapshot: RadarSnapshot {
-        get { lock.lock(); defer { lock.unlock() }; return _nextSnapshot }
-        set { lock.lock(); defer { lock.unlock() }; _nextSnapshot = newValue }
-    }
-
-    public var hasPairedMembers: Bool {
-        get { lock.lock(); defer { lock.unlock() }; return _hasPairedMembers }
-        set { lock.lock(); defer { lock.unlock() }; _hasPairedMembers = newValue }
-    }
-
-    public var selectedNodeID: UInt32? {
-        get { lock.lock(); defer { lock.unlock() }; return _selectedNodeID }
-        set { lock.lock(); defer { lock.unlock() }; _selectedNodeID = newValue }
-    }
-
     public func cycleSelection() {
-        lock.lock(); cycleSelectionCallCount += 1; lock.unlock()
+        cycleSelectionCallCount += 1
     }
 
     public func compute(headingDegrees: Double?, myFix: LocationFix?, imperial: Bool, now: Date) -> RadarSnapshot {
-        lock.lock()
         computeCallCount += 1
         lastHeadingDegrees = headingDegrees
         lastFix = myFix
         lastImperial = imperial
-        let snapshot = _nextSnapshot
-        lock.unlock()
-        return snapshot
+        return nextSnapshot
     }
 }
 
@@ -362,7 +361,13 @@ public enum FindHaptic: Sendable, Equatable {
 /// cadence), a 30-ping/5-minute cap. `MockFindSession` below
 /// reimplements that same cadence/cap bookkeeping (session
 /// rate-limiting, not bearing/distance math) as an honest stand-in.
-public protocol FindPinging: AnyObject, Sendable {
+///
+/// M3 / Swift 6: `@MainActor`, not `Sendable` — see `RadarComputing`'s
+/// own doc comment for the full reasoning; identical situation here
+/// (`CoreFindSession`, `MockFindSession`, and every call site in
+/// `RadarViewModel` already lived on the main actor).
+@MainActor
+public protocol FindPinging: AnyObject {
     var isActive: Bool { get }
     var targetNodeID: UInt32? { get }
     var pingCount: Int { get }
@@ -413,37 +418,35 @@ public enum FindSessionConstants {
 /// file is allowed to own until the real bridge replaces it; the PONG
 /// payload itself is never invented, only fed in by a caller (tests, or
 /// eventually the real client).
-public final class MockFindSession: FindPinging, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _isActive = false
-    private var _targetNodeID: UInt32?
+///
+/// M3 / Swift 6: `@MainActor`, matching `FindPinging`'s own isolation —
+/// same reasoning, and the same lock removal, as `MockRadarComputing`
+/// above.
+@MainActor
+public final class MockFindSession: FindPinging {
+    public private(set) var isActive = false
+    public private(set) var targetNodeID: UInt32?
     private var startedAt: Date?
-    private var _pingCount = 0
+    public private(set) var pingCount = 0
     private var lastPingSentAt: Date?
     private var sampleHistory: [Double] = []
     private var lastFiredTrend = 0
 
     public init() {}
 
-    public var isActive: Bool { lock.lock(); defer { lock.unlock() }; return _isActive }
-    public var targetNodeID: UInt32? { lock.lock(); defer { lock.unlock() }; return _targetNodeID }
-    public var pingCount: Int { lock.lock(); defer { lock.unlock() }; return _pingCount }
-
     public func start(targetNodeID: UInt32, now: Date) {
-        lock.lock(); defer { lock.unlock() }
-        _isActive = true
-        _targetNodeID = targetNodeID
+        isActive = true
+        self.targetNodeID = targetNodeID
         startedAt = now
-        _pingCount = 0
+        pingCount = 0
         lastPingSentAt = nil
         sampleHistory.removeAll()
         lastFiredTrend = 0
     }
 
     public func stop() {
-        lock.lock(); defer { lock.unlock() }
-        _isActive = false
-        _targetNodeID = nil
+        isActive = false
+        targetNodeID = nil
         startedAt = nil
         lastPingSentAt = nil
         sampleHistory.removeAll()
@@ -452,18 +455,17 @@ public final class MockFindSession: FindPinging, @unchecked Sendable {
 
     @discardableResult
     public func tick(now: Date) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        guard _isActive, let startedAt else { return false }
-        if _pingCount >= FindSessionConstants.maxPings
+        guard isActive, let startedAt else { return false }
+        if pingCount >= FindSessionConstants.maxPings
             || now.timeIntervalSince(startedAt) >= FindSessionConstants.sessionMaxSeconds {
-            _isActive = false
+            isActive = false
             return false
         }
         if let lastPingSentAt, now.timeIntervalSince(lastPingSentAt) < FindSessionConstants.pingIntervalSeconds {
             return false
         }
         lastPingSentAt = now
-        _pingCount += 1
+        pingCount += 1
         return true
     }
 
@@ -471,8 +473,7 @@ public final class MockFindSession: FindPinging, @unchecked Sendable {
     /// comment. Only `CoreFindSession`/`ff_find_on_pong` checks it.
     public func recordPong(fromNodeID: UInt32, nonce: UInt32, rssiDbm: Int16, hasSNR: Bool, snrDb: Double,
                            now: Date) -> FindHaptic {
-        lock.lock(); defer { lock.unlock() }
-        guard _isActive, fromNodeID == _targetNodeID else { return .none }
+        guard isActive, fromNodeID == targetNodeID else { return .none }
         sampleHistory.append(Double(rssiDbm))
         let window = 2 * FindSessionConstants.trendSamples
         if sampleHistory.count > window { sampleHistory.removeFirst(sampleHistory.count - window) }
@@ -531,7 +532,15 @@ public enum RadarCrewPalette {
 /// this protocol stays here so `RadarViewModel` (FireflyModel, no
 /// UIKit/AppKit dependency per A01's "one target, no UI anywhere in
 /// FireflyKit") can hold one without importing UIKit.
-public protocol HapticSignaling: Sendable {
+///
+/// M3 / Swift 6: `@MainActor`, not `Sendable` — every real caller
+/// (`RadarViewModel`, `FlareTakeoverViewModel`) is itself `@MainActor`,
+/// and the real iOS conformance (`UIKitHapticSignaling`) wraps
+/// `UIImpactFeedbackGenerator`/`UINotificationFeedbackGenerator`, which
+/// the SDK itself now isolates to the main actor — its stored
+/// properties could not otherwise be default-initialized at all.
+@MainActor
+public protocol HapticSignaling {
     func warmer()
     func colder()
     /// M2, S10: inbound FLARE's "haptic pattern (3 long) — overrides

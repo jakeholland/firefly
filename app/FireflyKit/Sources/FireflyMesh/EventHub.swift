@@ -22,7 +22,15 @@ import Foundation
 /// CoreBluetooth delegate callbacks, a serial read source and a TCP
 /// receive loop all land off the main thread (see the spec's threading
 /// model) and all publish through a hub like this one.
-public final class EventHub<Element>: @unchecked Sendable {
+// M3 / Swift 6: `@unchecked Sendable` here is a real justification, not
+// a suppression — every mutable access to `continuations`/`nextID`/
+// `finished` below goes through `lock`, never unguarded, so this class
+// IS thread-safe; the compiler just cannot see through a hand-rolled
+// `NSLock` the way it can through an `actor`. Kept as a class (not an
+// `actor`) because `yield(_:)` must stay synchronous and callable from
+// CoreBluetooth's delegate queue and a serial/TCP read thread without
+// an `await` — this file's own header comment.
+public final class EventHub<Element: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuations: [Int: AsyncStream<Element>.Continuation] = [:]
     private var nextID = 0
@@ -110,7 +118,9 @@ public final class EventHub<Element>: @unchecked Sendable {
 /// `EventHub` would show it — nothing until the first real transition —
 /// so this type never invents a starting state the hub was never told
 /// to publish.
-public final class CurrentValueEventHub<Element>: @unchecked Sendable {
+// M3 / Swift 6: same `@unchecked Sendable` justification as `EventHub`
+// above — every mutable access is `lock`-guarded, never unguarded.
+public final class CurrentValueEventHub<Element: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuations: [Int: AsyncStream<Element>.Continuation] = [:]
     private var nextID = 0
@@ -186,6 +196,8 @@ public final class CurrentValueEventHub<Element>: @unchecked Sendable {
 /// the only writer, so the box can never disagree with it except by
 /// being momentarily behind, which is exactly what any snapshot read of
 /// another isolation domain's state is.
+// M3 / Swift 6: `@unchecked Sendable` justified the same way as
+// `EventHub` — `storage` is only ever read or written through `lock`.
 final class LockedValue<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: Value

@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 //
 // FireflyKit — the Firefly companion app's non-UI half.
 //
@@ -23,6 +23,16 @@
 //                    every screen is testable against a mock.
 //
 import PackageDescription
+
+// M3 (docs/specs/A01-companion-app.md, "the package builds clean under
+// SWIFT_STRICT_CONCURRENCY: complete"): every target below also carries
+// an explicit `-strict-concurrency=complete` swiftSetting. That is
+// redundant with `swiftLanguageModes: [.v6]` (Swift 6 language mode IS
+// complete concurrency checking) but is kept anyway so the setting is
+// legible target-by-target in `swift build -v` output and survives a
+// future, target-by-target rollback to `.v5` without silently losing
+// checking on the targets that stay in six.
+let strictConcurrency: [SwiftSetting] = [.unsafeFlags(["-strict-concurrency=complete"])]
 
 let package = Package(
     name: "FireflyKit",
@@ -59,12 +69,14 @@ let package = Package(
             name: "MeshtasticProto",
             dependencies: [.product(name: "SwiftProtobuf", package: "swift-protobuf")],
             path: "Sources/MeshtasticProto",
-            exclude: ["GENERATED.md"]
+            exclude: ["GENERATED.md"],
+            swiftSettings: strictConcurrency
         ),
         .target(
             name: "FireflyMesh",
             dependencies: ["FireflyCore", "MeshtasticProto"],
-            path: "Sources/FireflyMesh"
+            path: "Sources/FireflyMesh",
+            swiftSettings: strictConcurrency
         ),
         .target(
             name: "FireflyModel",
@@ -75,7 +87,8 @@ let package = Package(
             // same wire format the puck's nanopb sources use, rather
             // than hand-rolling field parsing.
             dependencies: ["FireflyCore", "FireflyMesh", "MeshtasticProto"],
-            path: "Sources/FireflyModel"
+            path: "Sources/FireflyModel",
+            swiftSettings: strictConcurrency
         ),
 
         // "FireflyModel" appended for slice B: Bridge*.swift tests
@@ -83,10 +96,10 @@ let package = Package(
         // FireflyModel, not FireflyCore itself (docs/specs/A01-companion-app.md's
         // shared-file table — a dependency appended to the array, never
         // reordering another slice's entry).
-        .testTarget(name: "FireflyCoreTests", dependencies: ["FireflyCore", "FireflyModel"], path: "Tests/FireflyCoreTests"),
-        .testTarget(name: "MeshtasticProtoTests", dependencies: ["MeshtasticProto"], path: "Tests/MeshtasticProtoTests"),
-        .testTarget(name: "FireflyMeshTests", dependencies: ["FireflyMesh"], path: "Tests/FireflyMeshTests"),
-        .testTarget(name: "FireflyModelTests", dependencies: ["FireflyModel"], path: "Tests/FireflyModelTests"),
+        .testTarget(name: "FireflyCoreTests", dependencies: ["FireflyCore", "FireflyModel"], path: "Tests/FireflyCoreTests", swiftSettings: strictConcurrency),
+        .testTarget(name: "MeshtasticProtoTests", dependencies: ["MeshtasticProto"], path: "Tests/MeshtasticProtoTests", swiftSettings: strictConcurrency),
+        .testTarget(name: "FireflyMeshTests", dependencies: ["FireflyMesh"], path: "Tests/FireflyMeshTests", swiftSettings: strictConcurrency),
+        .testTarget(name: "FireflyModelTests", dependencies: ["FireflyModel"], path: "Tests/FireflyModelTests", swiftSettings: strictConcurrency),
 
         // Serial + TCP hardware integration tests (slice F). NOT
         // CoreBluetooth, so unaffected by the TCC restriction that
@@ -101,6 +114,10 @@ let package = Package(
         .testTarget(
             name: "HardwareTests",
             dependencies: ["FireflyCore", "MeshtasticProto", "FireflyMesh", "FireflyModel"],
-            path: "Tests/HardwareTests"),
-    ]
+            path: "Tests/HardwareTests",
+            swiftSettings: strictConcurrency),
+    ],
+    // M3: Swift 6 language mode package-wide (docs/specs/A01-companion-app.md's
+    // M3 acceptance criterion). FireflyCore is C11, unaffected either way.
+    swiftLanguageModes: [.v6]
 )

@@ -51,6 +51,9 @@ struct SettingsScreen: View {
         }
         .background(Color.ffBackground)
         .navigationTitle("SETTINGS")
+        // M3: one identifying accessibility identifier per screen — see
+        // `ConnectScreen`'s own comment.
+        .accessibilityIdentifier("Screen.Settings")
         // A real push, through the same `navigationDestination`
         // mechanism the button's tap uses — `autoOpenDiagnostics` just
         // sets the same `@State` a tap would (see `InboxContainerView`
@@ -66,12 +69,17 @@ struct SettingsScreen: View {
         // moment More is opened again — `crewSettings` is only ever
         // written from a rename/remove tap otherwise.
         .onAppear { crewSettings.refresh() }
-        // M3 — a SEPARATE `.onAppear`/`.onDisappear` pair from the one
-        // above, tracking `model.isConnected` for the two confirm-then-
-        // write buttons below. SwiftUI runs every `.onAppear`/
-        // `.onDisappear` attached to a view, not just the first.
-        .onAppear { model.observe() }
-        .onDisappear { model.stopObserving() }
+        // M3's own `.onAppear`/`.onDisappear` pair that used to live
+        // here — tracking `model.isConnected` for the two confirm-then-
+        // write buttons below — is gone. `model.observe()` now starts in
+        // `SettingsViewModel.makeObserving(store:channelImport:client:)`,
+        // the composition root's own factory (`FireflyApp.init`, since
+        // this type lives in the app target, not `FireflyKit`, so
+        // `AppGraph` itself cannot construct it — `makeConnectViewModel()`
+        // 's own doc comment has the full NavigationSplitView
+        // detail-column remount story this screen is exactly as
+        // vulnerable to as Connect was: it too is one of `RootView`'s own
+        // `detail(for:)` destinations).
         .sheet(isPresented: $isShowingNameConfirmation) {
             AdminWriteConfirmationSheet(
                 title: "APPLY NAME",
@@ -107,11 +115,11 @@ struct SettingsScreen: View {
                 .font(.caption2)
                 .foregroundStyle(Color.ffMuted)
             LabeledField(label: "Long name") {
-                TextField("", text: Binding(get: { model.nodeLongName }, set: model.setNodeLongName))
+                TextField("", text: Binding(get: { model.nodeLongName }, set: { model.setNodeLongName($0) }))
                     .textFieldStyle(.roundedBorder)
             }
             LabeledField(label: "Short name") {
-                TextField("", text: Binding(get: { model.nodeShortName }, set: model.setNodeShortName))
+                TextField("", text: Binding(get: { model.nodeShortName }, set: { model.setNodeShortName($0) }))
                     .textFieldStyle(.roundedBorder)
             }
             // M3 — the write path has landed; "APPLY NAME TO NODE"
@@ -155,12 +163,12 @@ struct SettingsScreen: View {
         SettingsBlock(title: "CONNECTIVITY") {
             ToggleRow(
                 label: "Share phone GPS with node",
-                isOn: Binding(get: { model.shareGPSWithNode }, set: model.setShareGPSWithNode))
+                isOn: Binding(get: { model.shareGPSWithNode }, set: { model.setShareGPSWithNode($0) }))
             if model.shareGPSWithNode {
                 LabeledField(label: "Interval (seconds, floor 5)") {
                     TextField("30", value: Binding(
                         get: { model.locationIntervalSeconds },
-                        set: model.setLocationIntervalSeconds), format: .number)
+                        set: { model.setLocationIntervalSeconds($0) }), format: .number)
                         .textFieldStyle(.roundedBorder)
                         #if os(iOS)
                         .keyboardType(.numberPad)
@@ -179,7 +187,7 @@ struct SettingsScreen: View {
                 // keeping a radio open the setting says is off.
                 subtitle: "On: the link stays up and reconnects on its own while your phone is in your pocket. " +
                     "Off: Firefly disconnects the moment it leaves the foreground.",
-                isOn: Binding(get: { model.stayConnectedInBackground }, set: model.setStayConnectedInBackground))
+                isOn: Binding(get: { model.stayConnectedInBackground }, set: { model.setStayConnectedInBackground($0) }))
         }
     }
 
@@ -192,7 +200,7 @@ struct SettingsScreen: View {
     /// not merely "no choice made yet".
     private var unitsSection: some View {
         SettingsBlock(title: "UNITS") {
-            Picker("Units", selection: Binding(get: { model.unitsPreference }, set: model.setUnitsPreference)) {
+            Picker("Units", selection: Binding(get: { model.unitsPreference }, set: { model.setUnitsPreference($0) })) {
                 ForEach(UnitsPreference.allCases, id: \.self) { preference in
                     Text(preference.settingsLabel).tag(preference)
                 }
@@ -220,7 +228,7 @@ struct SettingsScreen: View {
         SettingsBlock(title: "APPEARANCE") {
             ToggleRow(
                 label: "Colorblind crew palette",
-                isOn: Binding(get: { model.colorblindPalette }, set: model.setColorblindPalette))
+                isOn: Binding(get: { model.colorblindPalette }, set: { model.setColorblindPalette($0) }))
         }
     }
 

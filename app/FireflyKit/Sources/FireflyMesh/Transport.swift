@@ -61,6 +61,10 @@ public enum TransportError: Error, Equatable, Sendable {
 /// data on a screen whose entire design promise is that nothing on it is
 /// fabricated (docs/ARCHITECTURE.md, "Honest state"). Tests that need
 /// traffic push exact bytes in with `inject(_:)`.
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — every
+// mutable access to `sent` goes through `lock`, never unguarded; `hub`
+// itself is already thread-safe on its own.
 public final class LoopbackTransport: MeshTransport, @unchecked Sendable {
     public let kind: TransportKind
     private let hub = EventHub<TransportEvent>()

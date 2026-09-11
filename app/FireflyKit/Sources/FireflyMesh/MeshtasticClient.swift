@@ -994,14 +994,39 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
 
     private func performHandshake() async throws {
         Self.log("performHandshake() starting")
+        // PR #275 review, BLOCKING 2 — the other half of the fix
+        // alongside `handleTransportReconnected()`'s own `Task.isCancelled`
+        // guards (see that function's doc comment for the full story).
+        // Cancelling a superseded `reconnectTask` is cooperative: it does
+        // nothing to interrupt a write already in flight, and — proven by
+        // stress-reproducing this under TSan (6/6 failures before this,
+        // sent-message counts nearly DOUBLE the expected total) — the
+        // window between "cancelled" and the NEXT check in
+        // `handleTransportReconnected()`'s loop was wide enough for an
+        // entire stale attempt (heartbeat + both `want_config` phases,
+        // real wire writes and all) to run to completion under TSan's
+        // scheduling before that outer check ever got a chance to fire.
+        // `Task.checkCancellation()` between every step here shrinks that
+        // window from "the whole handshake" to "at most one write" — a
+        // stale attempt now stops BEFORE its next wire write rather than
+        // after finishing (or retrying) the entire thing, which is what
+        // was actually breaking the "at most one handshake attempt
+        // outstanding" guarantee `reconnectTask`'s own doc comment
+        // promises. Harmless for `connect()`'s own (never deliberately
+        // cancelled mid-handshake) call to this same function — a
+        // non-cancelled `Task.checkCancellation()` is a no-op.
+        try Task.checkCancellation()
+
         // Step 2: a Heartbeat with its OWN random nonce (never 1, which
         // firmware may special-case) — a keepalive value, NOT part of
         // the want_config mechanism below (conflating the two is the
         // mistake an earlier spec draft made; see MeshtasticConfigNonce).
         try await sendHeartbeat()
+        try Task.checkCancellation()
 
         // Step 3: phase A.
         try await requestConfig(nonce: MeshtasticConfigNonce.onlyConfig, timeout: configPhaseTimeout)
+        try Task.checkCancellation()
 
         // Step 4: phase B. Never re-sent while already in flight — this
         // function is only ever invoked once per handshake attempt, and
@@ -1035,13 +1060,36 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             Self.log("requestConfig(nonce: \(nonce)): encoding ToRadio failed")
             throw MeshtasticClientError.encodingFailed
         }
+        // One more check immediately before the actual wire write — see
+        // `performHandshake()`'s own doc comment (PR #275 review,
+        // BLOCKING 2): this narrows the race window for a superseded
+        // attempt sending a `want_config` nothing asked for down to "the
+        // synchronous serialization above", as tight as a cooperative
+        // cancellation check can make it without redesigning
+        // `restartReconnectTask()` to await the old attempt's teardown.
+        try Task.checkCancellation()
         Self.log("requestConfig(nonce: \(nonce)): sending want_config, timeout=\(timeout)")
         try await writeToRadio(bytes)
 
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
-                    for await id in completions where id == nonce { return }
+                    for await id in completions where id == nonce {
+                        // PR #275 review, BLOCKING 2 — one more tightening
+                        // alongside `performHandshake()`'s own checks: a
+                        // structured child task inherits its parent's
+                        // cancellation, so if `restartReconnectTask()`
+                        // already superseded this attempt by the moment a
+                        // matching `config_complete_id` arrives, treat that
+                        // match as void rather than a real success — the
+                        // caller's own `Task.isCancelled` guards (right
+                        // after `performHandshake()` returns) already
+                        // suppress a stale attempt's `.ready`, but never
+                        // ACCEPTING a stale match here is what stops it from
+                        // consuming a reply the SURVIVING attempt needed.
+                        try Task.checkCancellation()
+                        return
+                    }
                 }
                 group.addTask {
                     try await Task.sleep(for: timeout)
@@ -1065,6 +1113,12 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         guard let bytes = try? toRadio.serializedData() else {
             throw MeshtasticClientError.encodingFailed
         }
+        // Same tightening as `requestConfig`'s own write — see
+        // `performHandshake()`'s doc comment (PR #275 review, BLOCKING
+        // 2). Harmless for the periodic heartbeat loop's own call to
+        // this function (`heartbeatTick(grace:)`): a non-cancelled
+        // `Task.checkCancellation()` is a no-op there too.
+        try Task.checkCancellation()
         try await writeToRadio(bytes)
     }
 
@@ -1124,10 +1178,40 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
 
         var attempt = 0
         while true {
+            // PR #275 review, BLOCKING 2 — a real product race found
+            // while root-causing the TSan-fragile `ClientReconnectTests`
+            // flake: this loop used to check `Task.isCancelled` only
+            // inside the FAILURE branch below. Cancellation is
+            // cooperative, not preemptive — `restartReconnectTask()`
+            // cancelling a superseded attempt does not stop it
+            // mid-flight, and `performHandshake()` can race to a genuine
+            // SUCCESS despite the task already being logically stale (a
+            // second `.ready`, or a `.rebooted`, having started a
+            // replacement while this one's `want_config` round trip was
+            // still outstanding — exactly `testRapidDoubleReadyDoes
+            // NotStartConcurrentHandshakeAttempts`'s own scenario, which
+            // is what actually flaked, not the similarly-shaped reboot
+            // test this BLOCKING item named — confirmed by reproducing
+            // it directly: `swift test --sanitize=thread --filter
+            // ClientReconnectTests` failed on its 3rd of 3 runs here with
+            // exactly this test's `readyCount` stuck at 1). Without this
+            // guard, a stale attempt's success path ran unconditionally:
+            // it would `startHeartbeatLoopIfNeeded()` and publish
+            // `.ready` for a session nothing else agrees is current,
+            // racing the REPLACEMENT task's own attempt for whichever
+            // `want_config` reply the test (or a real node) sends next —
+            // the exact "no duplicate concurrent handshake" guarantee
+            // `reconnectTask`'s own doc comment promises, silently
+            // broken under scheduling pressure real wall-clock timing
+            // rarely exposes. Checked at the TOP of every attempt (never
+            // start one that is already stale) and again right before
+            // declaring victory (never publish a stale success).
+            guard !Task.isCancelled else { return }
             attempt += 1
             publish(attempt == 1 ? .handshaking : .reconnecting(attempt: attempt))
             do {
                 try await performHandshake()
+                guard !Task.isCancelled else { return }
                 startHeartbeatLoopIfNeeded()
                 publish(.ready)
                 return
@@ -1184,9 +1268,37 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// BLOCKING item 1). `handleTransportReconnected()` reissues BOTH
     /// want_config phases from scratch, same two sentinels — never fresh
     /// ones — same as it always has.
+    ///
+    /// PR #275 review, BLOCKING 2 — the replacement task AWAITS the
+    /// superseded one's own completion before doing anything itself,
+    /// rather than firing both off with a bare `.cancel()` and letting
+    /// them race. `.cancel()` alone is cooperative, not preemptive: it
+    /// does not stop a write already in flight, only asks the old task
+    /// to notice at its next check (`performHandshake()`'s own
+    /// `Task.checkCancellation()` calls). Under TSan's scheduling that
+    /// window was wide enough for a fully-superseded attempt to still
+    /// send its own `want_config` (stress-reproduced directly: two
+    /// `.ready`s back to back with nothing answering either yet —
+    /// `testRapidDoubleReadyDoesNotStartConcurrentHandshakeAttempts`'s
+    /// own scenario — occasionally left the SURVIVING attempt's
+    /// handshake unanswered because the STALE one's still-in-flight
+    /// request consumed the reply instead, since `configCompleteHub`
+    /// dispatches by the shared want_config sentinel, not a per-attempt
+    /// correlation id). Awaiting `previous?.value` here means the new
+    /// attempt's own first send cannot happen until the old one has
+    /// fully unwound (cancelled-and-returned or, on the rare case it
+    /// legitimately raced to completion first, actually finished) — the
+    /// two can never have a request outstanding at the same time. Safe
+    /// even on the (thoroughly exercised — see `performHandshake()`'s
+    /// own comment) worst case where the old task is parked mid-`await`
+    /// when cancelled: a cancelled `Task`'s `.value` still resolves once
+    /// that task's closure actually returns, which cooperative
+    /// cancellation reliably drives promptly, not never.
     private func restartReconnectTask() {
-        reconnectTask?.cancel()
+        let previous = reconnectTask
+        previous?.cancel()
         reconnectTask = Task { [weak self] in
+            _ = await previous?.value
             await self?.handleTransportReconnected()
         }
     }
