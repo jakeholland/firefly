@@ -98,13 +98,61 @@ public struct AppDependencies: Sendable {
     /// The iOS Simulator has no Bluetooth at all — `CBCentralManager` is
     /// a dead end there (the archived app's
     /// `DependencyContainer.simulatorContainer()` exists for the same
-    /// reason) — so it always gets `.stub()`, regardless of which build
-    /// configuration asked for `.live()`.
+    /// reason) — so it always gets `.stub()` or, when `-FireflyDemo`/
+    /// `FIREFLY_DEMO=1` asked for it (`DemoLaunch.isRequested()`),
+    /// `.demo()`. Regardless of which build configuration asked for
+    /// `.live()`.
+    ///
+    /// The `DemoLaunch` check lives INSIDE `#if targetEnvironment
+    /// (simulator)`, never outside it: a real device must never be
+    /// turned into a fictional festival by a stray launch argument, so
+    /// this is the one call site that makes "live mode never constructs
+    /// the demo client" true by construction, not by convention —
+    /// `DemoRunnerTests.testLiveDependenciesNeverConstructTheDemoClient`
+    /// pins it.
     public static func current() -> AppDependencies {
         #if targetEnvironment(simulator)
-        return .stub()
+        return DemoLaunch.isRequested() ? .demo() : .stub()
         #else
         return .live()
         #endif
     }
+
+    /// Firefly Fields (`docs/specs/S20-demo-mode.md`, `DemoWorld`): the
+    /// same client/location/heading seam every other stack uses, wired
+    /// to a `DemoMeshtasticClient` that plays a scripted timeline
+    /// through the real `CoreStore`/`ff_crew`/`ff_feed` bridges instead
+    /// of a real radio. See `DemoBundle` when the caller also needs the
+    /// CONCRETE demo types (`DemoRunner` does, to drive the timeline
+    /// and to toggle the phone's fix for the no-GPS signal screenshot);
+    /// this plain `AppDependencies` is enough for anything that only
+    /// needs the protocol-shaped seam, same as `.stub()`/`.live()`.
+    public static func demo() -> AppDependencies { demoBundle().dependencies }
+
+    /// `.demo()`'s own dependencies, plus the concrete demo instances
+    /// `DemoRunner` needs a handle on. Building both from ONE call
+    /// (rather than `.demo()` internally constructing one set and a
+    /// caller building a second) is what keeps `FireflyApp`'s demo
+    /// branch from ever running two independent demo worlds that
+    /// disagree with each other.
+    public static func demoBundle(world: DemoWorld = .fireflyFields()) -> DemoBundle {
+        let client = DemoMeshtasticClient(myNodeNum: world.myNodeNum, nodes: world.nodeDB)
+        let location = DemoLocationProvider(initialFix: nil) // DemoRunner sets it once observers are live
+        let heading = DemoHeadingProvider(initialHeading: nil)
+        let dependencies = AppDependencies(client: client, location: location, heading: heading,
+                                            store: InMemorySettingsStore())
+        return DemoBundle(dependencies: dependencies, client: client, location: location, heading: heading,
+                           world: world)
+    }
+}
+
+/// `AppDependencies.demoBundle()`'s return shape — the protocol-typed
+/// `dependencies` for `AppGraph`, plus the concrete demo instances only
+/// `DemoRunner` (FireflyApp's demo composition) ever touches directly.
+public struct DemoBundle: Sendable {
+    public let dependencies: AppDependencies
+    public let client: DemoMeshtasticClient
+    public let location: DemoLocationProvider
+    public let heading: DemoHeadingProvider
+    public let world: DemoWorld
 }

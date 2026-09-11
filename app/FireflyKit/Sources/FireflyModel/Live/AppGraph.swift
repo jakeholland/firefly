@@ -104,6 +104,22 @@ public final class AppGraph {
         }
     }
 
+    /// PR #265 review, should-fix: nothing in M1 calls this. There is
+    /// no `ScenePhase` handling in `FireflyApp.swift`, and the Connect
+    /// screen's DISCONNECT button (`ConnectScreen.swift`) calls only
+    /// `ConnectViewModel.disconnect()` -> `client.disconnect()` — never
+    /// this method. That means the tick loop, the ack-timeout sweep and
+    /// the portnum-269 reader all keep running for as long as the
+    /// process is alive, even after the radio itself has disconnected
+    /// or the app has gone to the background. Deliberate for M1 (the
+    /// Settings "stay connected in background" toggle
+    /// (`SettingsScreen.swift`) says plainly that background reconnect
+    /// isn't built yet either — the two gaps are the same milestone),
+    /// not an oversight: tearing the graph down on backgrounding is a
+    /// product decision (does a backgrounded app keep tracking crew
+    /// positions or not?) that M1 has not made, so this stays reachable
+    /// and unused rather than wired to a lifecycle event nobody has
+    /// decided the behavior for yet. Tracked for M2.
     public func stop() async {
         started = false
         core.stopObserving()

@@ -50,9 +50,33 @@ struct RootView: View {
     /// (the stub stack, the iOS Simulator), which the Connect screen
     /// renders as an honestly empty picker.
     let scanner: (any NodeScanning)?
+    /// Non-nil in exactly one case: `FireflyApp.init` built a demo
+    /// graph (`-FireflyDemo`/`FIREFLY_DEMO=1`, simulator-only). This is
+    /// ALSO the one source of truth for whether the DEMO badge shows —
+    /// never a second flag that could drift from it.
+    var demoRunner: DemoRunner?
+    /// `-FireflyDemoScreen <name>`'s parsed value — see
+    /// `DemoLaunch.requestedScreen`. `nil` outside demo mode.
+    var initialDemoScreen: String?
     @State private var selection: Destination = .connect
 
     var body: some View {
+        // A full-width strip stacked ABOVE `content`, not an overlay on
+        // top of it (see `DemoBadge`'s own header comment): reserving
+        // real layout space here pushes every screen's own nav bar down
+        // instead of racing it for the same row, so the badge can never
+        // collide with a title again, on any screen.
+        VStack(spacing: 0) {
+            if demoRunner != nil {
+                DemoBadge()
+            }
+            content
+        }
+        .task { await runInitialDemoScreen() }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         #if os(macOS)
         NavigationSplitView {
             List(Destination.allCases, selection: $selection) { destination in
@@ -85,8 +109,51 @@ struct RootView: View {
         case .connect: ConnectScreen(connect: connect, client: client, channelImport: channelImport,
                                       scanner: scanner)
         case .radar: RadarView(model: radar)
-        case .inbox: InboxContainerView(model: inbox)
-        case .settings: SettingsScreen(model: settings, client: client)
+        case .inbox: InboxContainerView(model: inbox, demoInitialThread: demoThreadTarget)
+        case .settings: SettingsScreen(model: settings, client: client,
+                                        autoOpenDiagnostics: initialDemoScreen == "diagnostics")
+        }
+    }
+
+    private var demoThreadTarget: ConversationKind? {
+        initialDemoScreen == "thread" ? .member(DemoCrew.taylor) : nil
+    }
+
+    /// Maps `-FireflyDemoScreen <name>` to a tab selection plus, for
+    /// the handful of names that need more than a tab (a no-GPS fix, a
+    /// running FIND session), the one extra `DemoRunner` call that gets
+    /// it there. `InboxContainerView`/`SettingsScreen` handle "thread"/
+    /// "diagnostics" themselves (see their own `.task`s) — this only
+    /// owns tab selection and the two Radar variants.
+    private func runInitialDemoScreen() async {
+        guard let demoRunner, let initialDemoScreen else { return }
+        // `FireflyApp`'s `await graph.start(); await demoRunner?.start()`
+        // runs in a SEPARATE `.task` from this one — no ordering
+        // guarantee between them otherwise — so anything that touches
+        // `demoRunner` beyond a bare tab selection waits for `start()`
+        // to actually finish seeding the world first (`DemoRunner
+        // .isStarted`'s own doc comment: calling `withdrawPhoneFix()`
+        // before `start()`'s `location.setFix(world.phoneFix)` has run
+        // would have the LATER call silently put the fix right back).
+        await demoRunner.waitUntilStarted()
+        switch initialDemoScreen {
+        case "connect":
+            selection = .connect
+        case "radar":
+            selection = .radar
+        case "radar-signal":
+            selection = .radar
+            demoRunner.withdrawPhoneFix()
+        case "find":
+            selection = .radar
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            demoRunner.startFindOnTaylor()
+        case "inbox", "thread":
+            selection = .inbox
+        case "settings", "diagnostics":
+            selection = .settings
+        default:
+            break
         }
     }
 }

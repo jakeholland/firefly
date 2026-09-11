@@ -34,11 +34,22 @@ struct FireflyApp: App {
     /// channel rather than two disconnected copies.
     @State private var channelImport: ChannelImportViewModel
     @State private var settings: SettingsViewModel
+    /// Non-nil in exactly one case: `graph.dependencies.client` came
+    /// back a `DemoMeshtasticClient` — i.e. the iOS Simulator AND
+    /// `-FireflyDemo`/`FIREFLY_DEMO=1` (`AppDependencies.current()`'s
+    /// own `#if targetEnvironment(simulator)` gate). Recovered by
+    /// downcasting `graph.dependencies` rather than branching `init()`
+    /// on `DemoLaunch` a second time, so there is exactly ONE place
+    /// (`AppDependencies.current()`) that decides whether this process
+    /// is running the demo world at all — this is only ever the
+    /// SECOND thing to notice that decision, never the first.
+    @State private var demoRunner: DemoRunner?
 
     init() {
         let graph = AppGraph()
         _graph = State(initialValue: graph)
-        _connect = State(initialValue: graph.makeConnectViewModel())
+        let connectVM = graph.makeConnectViewModel()
+        _connect = State(initialValue: connectVM)
         let importVM = ChannelImportViewModel()
         _channelImport = State(initialValue: importVM)
         // Slice C's INTEGRATION TASK, now done: this used to construct
@@ -51,14 +62,26 @@ struct FireflyApp: App {
         // agreeing only by `UserDefaults.standard` coincidence.
         _settings = State(initialValue: SettingsViewModel(store: graph.dependencies.store,
                                                            channelImport: importVM))
-        _inbox = State(initialValue: graph.makeInboxViewModel())
+        let inboxVM = graph.makeInboxViewModel()
+        _inbox = State(initialValue: inboxVM)
         #if os(iOS)
         let haptics: any HapticSignaling = UIKitHapticSignaling()
         #else
         // No Taptic Engine on a Mac — the honest answer, not a gap.
         let haptics: any HapticSignaling = NoHapticSignaling()
         #endif
-        _radar = State(initialValue: graph.makeRadarViewModel(haptics: haptics))
+        let radarVM = graph.makeRadarViewModel(haptics: haptics)
+        _radar = State(initialValue: radarVM)
+
+        if let demoClient = graph.dependencies.client as? DemoMeshtasticClient,
+           let demoLocation = graph.dependencies.location as? DemoLocationProvider,
+           let demoHeading = graph.dependencies.heading as? DemoHeadingProvider {
+            _demoRunner = State(initialValue: DemoRunner(
+                graph: graph, client: demoClient, location: demoLocation, heading: demoHeading,
+                connect: connectVM, inbox: inboxVM, radar: radarVM))
+        } else {
+            _demoRunner = State(initialValue: nil)
+        }
     }
 
     var body: some Scene {
@@ -74,7 +97,9 @@ struct FireflyApp: App {
                 client: graph.dependencies.client,
                 inbox: inbox,
                 radar: radar,
-                scanner: graph.dependencies.scanner
+                scanner: graph.dependencies.scanner,
+                demoRunner: demoRunner,
+                initialDemoScreen: DemoLaunch.requestedScreen()
             )
             .preferredColorScheme(.dark)
             // The graph's own subscriptions (CoreStore over the client's
@@ -85,7 +110,19 @@ struct FireflyApp: App {
             // that has to keep running when no screen is on top of it,
             // because an ack that arrives while Settings is showing is
             // still an ack.
-            .task { await graph.start() }
+            //
+            // ONE chained task, not two independent `.task`s: `DemoRunner
+            // .start()` calls `client.connect()`, which immediately plays
+            // the whole scripted nodeDB dump — that must never race
+            // `graph.start()`'s own `core.observe(client:)` subscription
+            // (`EventHub`'s "a subscriber that arrives after this call
+            // does not see it" rule). Awaiting `graph.start()` fully
+            // first guarantees the subscription is live before demo mode
+            // ever calls `connect()`.
+            .task {
+                await graph.start()
+                await demoRunner?.start()
+            }
         }
         #if os(macOS)
         .defaultSize(width: 420, height: 720)

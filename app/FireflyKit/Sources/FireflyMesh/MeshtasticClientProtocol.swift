@@ -185,7 +185,12 @@ public let meshBroadcastAddress: UInt32 = 0xFFFF_FFFF
 /// answer, and it is the same empty Radar a real radio with nothing in
 /// range produces.
 public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Sendable {
-    private let linkHub = EventHub<LinkState>()
+    // `CurrentValueEventHub`, not `EventHub` (M1 review follow-up,
+    // #267): `linkState()` needs current-value semantics so a late
+    // subscriber (Thread/Diagnostics opened after `.ready`) sees the
+    // real state immediately instead of a stale `.disconnected` — see
+    // `CurrentValueEventHub`'s own doc comment.
+    private let linkHub = CurrentValueEventHub<LinkState>()
     private let nodeHub = EventHub<MeshNodeSnapshot>()
     private let deliveryHub = EventHub<DeliveryEvent>()
     // Declared but never yielded to — see this class's own header

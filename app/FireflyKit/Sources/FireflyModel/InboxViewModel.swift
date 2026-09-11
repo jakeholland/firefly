@@ -566,6 +566,26 @@ public enum InboxText {
     }
 }
 
+/// The single-character glyph `InboxListView`'s member-row avatar
+/// renders — pulled out of that view so the "no `Character("")` trap"
+/// fix (PR #267 review) is unit-testable, not just eyeballed. A paired
+/// member with no identity known yet is a real, reachable state
+/// (`ff_crew_member_t.initial`'s own "'\0' until known" rule — a member
+/// paired straight through `ff_crew_set_paired` with no `NodeInfo` ever
+/// received keeps an empty `displayName`), and
+/// `conversation.displayName.prefix(1)` on an empty string is an empty
+/// `String`, not a `Character` — `Character("")` traps (bug found via
+/// demo mode's Mo, the honest LOST case: paired, never heard, never
+/// named). A blank glyph, never "?", is the same "no invented
+/// placeholder" rule this app follows everywhere else an initial can be
+/// unknown (`RadarSnapshotDot.initial`, `CoreRadarComputing.snapshot
+/// (from:...)`).
+public enum InboxAvatar {
+    public static func avatarGlyph(for conversation: InboxConversationRow) -> String {
+        String(conversation.initial ?? conversation.displayName.first ?? " ")
+    }
+}
+
 /// The Inbox screen's state: the ordered conversation list, kept live by
 /// this view model's OWN `deliveryUpdates()` subscription (A01's Slice E
 /// entry: "a fresh EventHub subscription, S1 — this view model's own,

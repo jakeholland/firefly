@@ -135,6 +135,26 @@ final class ClientHandshakeTests: XCTestCase {
         XCTAssertEqual(myNum, 48621524)
     }
 
+    /// PR #265 review, should-fix: `disconnect()` must clear
+    /// `myNodeNum`/`connectedNodeNum`, not just tear down the transport
+    /// and the two background tasks. Before the fix, `connectedNodeNum`
+    /// kept reporting the LAST session's node between a disconnect and
+    /// the next successful handshake — `PhoneGPSUplink
+    /// .destinationNodeNum` and Diagnostics both read it synchronously,
+    /// so a phone fix arriving in that window would have gone to a node
+    /// this client is no longer connected to.
+    func testDisconnectClearsConnectedNodeNum() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport)
+
+        try await completeHandshake(transport: transport, client: client, myNodeNum: 48621524)
+        XCTAssertEqual(client.connectedNodeNum, 48621524)
+
+        await client.disconnect()
+
+        XCTAssertNil(client.connectedNodeNum, "disconnect must clear connectedNodeNum, not just stop the transport")
+    }
+
     /// A01_AC4-shaped, without hardware: the node dump populates the
     /// nodeDB, and only AFTER config_complete for phase B.
     func testNodeDBPopulatesFromPhaseBDump() async throws {

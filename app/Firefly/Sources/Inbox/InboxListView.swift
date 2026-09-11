@@ -14,6 +14,13 @@ import SwiftUI
 /// needing to know it pushes.
 struct InboxContainerView: View {
     let model: InboxViewModel
+    /// Demo-only (`-FireflyDemoScreen thread`, `RootView`'s own
+    /// mapping): pushes straight to this conversation's thread on
+    /// appear, through the SAME `navigationDestination(item:)` a real
+    /// tap uses — never a second, parallel presentation path — so the
+    /// "Thread with the delivery states" screenshot is the real Thread
+    /// screen, not a stand-in. `nil` in every non-demo build.
+    var demoInitialThread: ConversationKind?
     @State private var activeThread: ThreadViewModel?
 
     var body: some View {
@@ -29,6 +36,10 @@ struct InboxContainerView: View {
         }
         .onAppear { model.observe() }
         .onDisappear { model.stopObserving() }
+        .task {
+            guard let demoInitialThread, activeThread == nil else { return }
+            activeThread = model.openThread(demoInitialThread)
+        }
     }
 }
 
@@ -131,7 +142,15 @@ private struct InboxRow: View {
                 Image(systemName: "person.3.fill")
                     .foregroundStyle(color)
             } else {
-                Text(String(conversation.initial ?? Character(String(conversation.displayName.prefix(1)))))
+                // The "no `Character("")` trap" fix — see
+                // `InboxAvatar.avatarGlyph(for:)`'s own doc comment
+                // (FireflyModel) for why an empty `displayName` is a
+                // real, reachable state and why a blank glyph, not a
+                // crash or a "?" placeholder, is correct here. Pulled
+                // into that pure helper so the fix is unit-testable
+                // (`InboxAvatarTests`, FireflyAppTests) rather than only
+                // eyeballed in this view.
+                Text(InboxAvatar.avatarGlyph(for: conversation))
                     .font(.system(.callout, design: .rounded).weight(.bold))
                     .foregroundStyle(color)
             }

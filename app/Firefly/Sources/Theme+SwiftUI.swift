@@ -26,4 +26,9 @@ extension Color {
     static let ffMuted = Color(fireflyHex: FireflyTheme.muted)
     static let ffInk = Color(fireflyHex: FireflyTheme.ink)
     static let ffAlert = Color(fireflyHex: FireflyTheme.alert)
+    /// The DEMO badge's own color (`DemoBadge.swift`) — `staleAmber`,
+    /// per the task's own instruction, deliberately NOT `ffAmber`: the
+    /// badge should read as a caveat stamped on the screen, not as a
+    /// normal piece of live chrome sharing the app's primary accent.
+    static let ffStaleAmber = Color(fireflyHex: FireflyTheme.staleAmber)
 }
