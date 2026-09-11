@@ -159,5 +159,17 @@ schemes:
         - name: FireflyHardwareTests
           parallelizable: false
         - name: FireflyAppTests
+      # macOS launches an app-hosted test's host process via
+      # LaunchServices, which does NOT inherit the invoking shell's
+      # environment the way a plain child process would — so
+      # `FIREFLY_HARDWARE=1 xcodebuild test ...` (the command B1 and
+      # app/README.md both document) silently never reaches
+      # `ProcessInfo.processInfo.environment` inside the test without
+      # this: `$(FIREFLY_HARDWARE)` is expanded from xcodebuild's OWN
+      # process environment at scheme-launch time and threaded through
+      # explicitly. Left unset, it expands empty and the gate reads as
+      # "not set", i.e. skip — the safe default.
+      environmentVariables:
+        FIREFLY_HARDWARE: $(FIREFLY_HARDWARE)
     archive:
       config: Release

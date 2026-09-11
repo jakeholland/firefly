@@ -77,6 +77,43 @@ public struct NodePosition: Sendable, Equatable {
     }
 }
 
+/// One inbound `TEXT_MESSAGE_APP` packet, decoded off `handle(meshPacket:)`
+/// (PR #264 review, BLOCKING item 2 — "nothing decodes and republishes
+/// an inbound TEXT_MESSAGE_APP packet"). Carries everything a consumer
+/// needs to route and dedup it without reaching back into the client:
+/// `from`/`to`/`channel`/`packetID` off the packet itself, `text`
+/// decoded from the payload, `rxTime` the same way `NodeDB`'s position
+/// path reads it, and the same per-packet RSSI/SNR/hop-path meta
+/// `applyRxMeta` computes for the sender's NodeDB entry — reported here
+/// too since a message bubble is exactly the other place that meta is
+/// worth showing. `RxPath` itself never crosses this boundary (its own
+/// doc comment); `direct` is its plain-`Bool?` translation — nil when
+/// the hop path could not be established, never "assume DIRECT".
+public struct IncomingText: Sendable, Equatable {
+    public let from: UInt32
+    public let to: UInt32
+    public let channel: UInt32
+    public let packetID: UInt32
+    public let text: String
+    public let rxTime: Date?
+    public let rssiDbm: Int16?
+    public let snrDb: Float?
+    public let direct: Bool?
+
+    public init(from: UInt32, to: UInt32, channel: UInt32, packetID: UInt32, text: String,
+                rxTime: Date?, rssiDbm: Int16?, snrDb: Float?, direct: Bool?) {
+        self.from = from
+        self.to = to
+        self.channel = channel
+        self.packetID = packetID
+        self.text = text
+        self.rxTime = rxTime
+        self.rssiDbm = rssiDbm
+        self.snrDb = snrDb
+        self.direct = direct
+    }
+}
+
 public protocol MeshtasticClientProtocol: AnyObject, Sendable {
     /// A fresh, independent stream for the caller. Multicast via
     /// `EventHub` (docs/specs/A01-companion-app.md, S1): a view model
@@ -93,6 +130,15 @@ public protocol MeshtasticClientProtocol: AnyObject, Sendable {
     /// give, and is instead `CoreStore.tick(nowMs:)`'s job, mirroring
     /// `ff_feed_expire_pending_acks` being a tick sweep on the puck too.
     func deliveryUpdates() -> AsyncStream<DeliveryEvent>
+    /// One `IncomingText` per inbound `TEXT_MESSAGE_APP` packet this
+    /// client decodes — see `IncomingText`'s own doc comment. Echo-dedup
+    /// (dropping a self-originated broadcast reflected back with my own
+    /// packet id) is deliberately NOT this stream's job: the client has
+    /// no durable notion of "packets I sent" once `pendingSends` has
+    /// already been pruned or acked, so that guard lives at the one
+    /// place that actually knows which packet ids it minted itself
+    /// (`InboxViewModel.observe()` / `InMemoryInboxStore.push`).
+    func incomingTexts() -> AsyncStream<IncomingText>
 
     func connect() async throws
     func disconnect() async
@@ -114,6 +160,10 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     private let linkHub = EventHub<LinkState>()
     private let nodeHub = EventHub<MeshNodeSnapshot>()
     private let deliveryHub = EventHub<DeliveryEvent>()
+    // Declared but never yielded to — see this class's own header
+    // comment ("NEVER invents... incoming messages") and
+    // `incomingTexts()`'s protocol doc comment.
+    private let incomingTextHub = EventHub<IncomingText>()
 
     private let transport: MeshTransport
     private let lock = NSLock()
@@ -135,6 +185,7 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     public func linkState() -> AsyncStream<LinkState> { linkHub.subscribe() }
     public func nodeUpdates() -> AsyncStream<MeshNodeSnapshot> { nodeHub.subscribe() }
     public func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
+    public func incomingTexts() -> AsyncStream<IncomingText> { incomingTextHub.subscribe() }
 
     public func connect() async throws {
         linkHub.yield(.connecting)

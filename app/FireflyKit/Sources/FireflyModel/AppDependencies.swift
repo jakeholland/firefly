@@ -38,15 +38,26 @@ public struct AppDependencies: Sendable {
             store: InMemorySettingsStore())
     }
 
-    /// Milestone-1 placeholder for the real stack. Slice A's BLE client
-    /// replaces `StubMeshtasticClient` here; slice F's
-    /// `LocationProvider`/`HeadingProvider` replace the unavailable
-    /// stand-ins. `.live()` and `.stub()` are identical ON PURPOSE until
-    /// those slices land — nothing above this seam should behave
-    /// differently depending on which one is picked, which is exactly
-    /// what makes it safe to land this seam before the slices that fill
-    /// it in do.
-    public static func live() -> AppDependencies { stub() }
+    /// Milestone-1 stack, real BLE half: slice A's `MeshtasticClient`
+    /// over `BLETransport` replaces `StubMeshtasticClient` here. Slice
+    /// F's `LocationProvider`/`HeadingProvider` still owe the
+    /// `location:`/`heading:` fields below — untouched by this edit, on
+    /// purpose, so landing one slice's half of `.live()` does not block
+    /// or collide with the other's.
+    ///
+    /// Constructing `BLETransport()` here does NOT construct a
+    /// `CBCentralManager` — that only happens lazily inside `connect()`/
+    /// `scan()` — so `.live()` stays safe to call from anywhere
+    /// (including a bare `swift test` process) right up until something
+    /// actually calls `connect()` on the resulting client. See
+    /// `BLETransport.swift`'s file-level doc comment and B1.
+    public static func live() -> AppDependencies {
+        AppDependencies(
+            client: MeshtasticClient(transport: BLETransport()),
+            location: UnavailableLocationProvider(),
+            heading: NoHeadingProvider(),
+            store: InMemorySettingsStore())
+    }
 
     /// The iOS Simulator has no Bluetooth at all — `CBCentralManager` is
     /// a dead end there (the archived app's

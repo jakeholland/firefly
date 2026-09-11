@@ -273,6 +273,29 @@ public protocol InboxProviding: AnyObject, Sendable {
     func setStatus(packetID: UInt32, state: DeliveryState, at: Date)
 }
 
+/// A monotonic id source for INBOUND `FeedMessage`s
+/// (`InboxViewModel.ingest(_:)`), disjoint BY CONSTRUCTION from
+/// `ThreadViewModel.swift`'s own `OutboxIDGenerator`. Both mint into the
+/// same `FeedMessage.id: UInt64` space `InboxProviding.markSent`/
+/// `setStatus(outboxID:)` key their `mutateLocked(outboxID:)` lookups
+/// on; `OutboxIDGenerator` counts up from 1 with no reserved range, so
+/// an inbound id drawn from that same low range could alias a real
+/// outbox id and let a routing-ack-driven mutation silently land on the
+/// wrong row. Reserving the top bit for every INBOUND id keeps the two
+/// generators' output disjoint for as long as either could plausibly
+/// run, not merely "in practice today".
+private final class InboundFeedIDGenerator: @unchecked Sendable {
+    static let shared = InboundFeedIDGenerator()
+    private let lock = NSLock()
+    private var counter: UInt64 = 0x8000_0000_0000_0000
+    func next() -> UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        let value = counter
+        counter &+= 1
+        return value
+    }
+}
+
 /// A fixed-size FIFO of the most recent 64 packet ids — `InMemoryInboxStore`'s
 /// echo-dedup memory (see `mySentPacketIDs`'s doc comment). Insertion
 /// order determines eviction: the OLDEST id falls out once a 65th is
@@ -560,6 +583,16 @@ public final class InboxViewModel {
     /// see `ThreadViewModel.swift`'s `FireflyPacketSending` doc comment.
     private let flareSender: (any FireflyPacketSending)?
     private var deliveryObservation: Task<Void, Never>?
+    /// PR #264 review, BLOCKING item 2's cross-slice wiring: the one
+    /// place a decoded `IncomingText` (`MeshtasticClientProtocol`,
+    /// slice A) becomes a `FeedMessage` this screen renders (slice E).
+    /// A minimal, explicit integration edit — see this PR's own comment
+    /// for why it lives here rather than in `CoreStore`: nothing in this
+    /// tree currently wires `CoreStore.inbox` (the C-core `InboxBridge`)
+    /// to the live UI at all — `AppDependencies`/`FireflyApp` construct
+    /// this view model against `InMemoryInboxStore` directly — so this
+    /// is the one place an inbound message can reach the screen today.
+    private var incomingTextObservation: Task<Void, Never>?
 
     public init(provider: any InboxProviding, client: any MeshtasticClientProtocol,
                 flareSender: (any FireflyPacketSending)? = nil) {
@@ -572,6 +605,7 @@ public final class InboxViewModel {
     public func observe() {
         guard deliveryObservation == nil else { return }
         let deliveries = client.deliveryUpdates()
+        let incomingTexts = client.incomingTexts()
         deliveryObservation = Task { [weak self] in
             for await event in deliveries {
                 guard let self else { return }
@@ -594,6 +628,12 @@ public final class InboxViewModel {
                 }
             }
         }
+        incomingTextObservation = Task { [weak self] in
+            for await incoming in incomingTexts {
+                guard let self else { return }
+                self.ingest(incoming)
+            }
+        }
         refresh()
     }
 
@@ -602,6 +642,32 @@ public final class InboxViewModel {
     public func stopObserving() {
         deliveryObservation?.cancel()
         deliveryObservation = nil
+        incomingTextObservation?.cancel()
+        incomingTextObservation = nil
+    }
+
+    /// Routes one decoded `IncomingText` into the provider as a
+    /// `FeedMessage`. Echo-dedup (dropping a self-originated broadcast
+    /// reflected back with my own packet id) is NOT done here —
+    /// `InMemoryInboxStore.push` already guards on `mySentPacketIDs`
+    /// (that method's own doc comment); this is purely routing +
+    /// construction, same division of labor `ThreadViewModel.send`
+    /// keeps between "decide what to push" and "the provider's own
+    /// invariants about what it accepts".
+    private func ingest(_ incoming: IncomingText) {
+        let isBroadcast = incoming.to == meshBroadcastAddress
+        let conversation: ConversationKind = isBroadcast ? .crew : .member(incoming.from)
+        let message = FeedMessage(
+            id: InboundFeedIDGenerator.shared.next(),
+            kind: .text,
+            direction: isBroadcast ? .broadcast : .direct,
+            senderID: incoming.from,
+            text: incoming.text,
+            timestamp: incoming.rxTime ?? Date(),
+            unread: true,
+            packetID: incoming.packetID)
+        provider.push(message, into: conversation)
+        refresh()
     }
 
     public func refresh(now: Date = Date()) {
