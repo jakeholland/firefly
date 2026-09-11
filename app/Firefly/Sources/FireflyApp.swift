@@ -13,77 +13,79 @@ import SwiftUI
 
 @main
 struct FireflyApp: App {
-    /// `AppDependencies.current()` is `.stub()` in the iOS Simulator and
-    /// `.live()` everywhere else (today, also the stub stack — slice A's
-    /// real BLE client and slice F's real location/heading providers
-    /// replace it there; see `AppDependencies.live()`'s own comment).
-    /// Slice C wires the transport picker on top of this; nothing above
-    /// this line changes when it does, which is the point of holding
-    /// protocols rather than concrete types.
-    let dependencies: AppDependencies
+    /// THE composition root, constructed exactly once for the process.
+    ///
+    /// `AppGraph` owns the one `AppDependencies` (`.current()`:
+    /// `.stub()` in the iOS Simulator, which has no Bluetooth at all;
+    /// `.live()` — real client over `BLETransport`, real CoreLocation
+    /// providers, real `SettingsStore` — everywhere else), the one set
+    /// of `ff_*` C contexts, and every view model built on top of them.
+    ///
+    /// Nothing below this line may call `AppDependencies.current()` for
+    /// itself: doing so builds a SECOND client over a SECOND transport,
+    /// which is exactly the bug `RadarView`'s old no-argument `init()`
+    /// shipped with (see `AppGraph`'s own header comment).
+    @State private var graph: AppGraph
     @State private var connect: ConnectViewModel
-    // Slice E's hunk (A01's shared-file table): its own view model,
-    // constructed from `AppDependencies` and injected into `RootView`'s
-    // Inbox destination — never touching `connect`'s line above.
-    //
-    // `InboxProviding` is not one of `AppDependencies`' four fields
-    // (slice B's `InboxBridge`, which would normally fill this role, has
-    // not landed in this worktree — A01's six slices build in parallel).
-    // `InMemoryInboxStore()` is the same honest M1 stand-in
-    // `InboxViewModel.swift`'s header comment describes: it invents no
-    // traffic and no members, exactly like `AppDependencies.stub()`
-    // invents no nodes.
     @State private var inbox: InboxViewModel
-
-    /// Slice C's own hunk (A01's shared-file table): Settings and
-    /// Diagnostics' view models, constructed here and injected into the
-    /// destination(s) slice C owns — never touching Connect's line
-    /// above, which the skeleton PR already landed. `channelImport` is
-    /// shared between the Connect and Settings destinations (see
-    /// `SettingsViewModel`'s own comment) so both read the same
-    /// imported channel rather than two disconnected copies.
+    @State private var radar: RadarViewModel
+    /// Shared between the Connect and Settings destinations (see
+    /// `SettingsViewModel`'s own comment) so both read the same imported
+    /// channel rather than two disconnected copies.
     @State private var channelImport: ChannelImportViewModel
     @State private var settings: SettingsViewModel
 
     init() {
-        let dependencies = AppDependencies.current()
-        self.dependencies = dependencies
-        _connect = State(initialValue: ConnectViewModel(client: dependencies.client))
+        let graph = AppGraph()
+        _graph = State(initialValue: graph)
+        _connect = State(initialValue: graph.makeConnectViewModel())
         let importVM = ChannelImportViewModel()
         _channelImport = State(initialValue: importVM)
-        // INTEGRATION TASK (tracked, not fixed here — PR #262 review,
-        // SHOULD-FIX 2): this constructs its own `SettingsStore()` rather
-        // than taking one from `dependencies` because `AppDependencies`
-        // isn't owned by any slice and `AppDependencies.store` is still
-        // `InMemorySettingsStore` under both `.stub()` and `.live()`
-        // (see `AppDependencies.live()`'s own comment). The task is: once
-        // `AppDependencies.live()` is pointed at the real `SettingsStore`,
-        // change this line to `SettingsViewModel(store: dependencies.store,
-        // channelImport: importVM)` and delete this comment. Until then,
-        // `UserDefaults.standard` being a de facto singleton keeps this
-        // instance and `dependencies.store` in practical agreement, but a
-        // future Radar-screen read of
-        // `dependencies.store.bool(.locationSharingEnabled)` will not see
-        // what Settings wrote (see `SettingsViewModel.swift`'s own comment).
-        _settings = State(initialValue: SettingsViewModel(store: SettingsStore(), channelImport: importVM))
-        _inbox = State(initialValue: InboxViewModel(provider: InMemoryInboxStore(), client: dependencies.client))
+        // Slice C's INTEGRATION TASK, now done: this used to construct
+        // its own `SettingsStore()` because `AppDependencies.store` was
+        // still `InMemorySettingsStore` under both `.stub()` and
+        // `.live()`. `.live()` is pointed at the real `SettingsStore`
+        // now, so Settings and every other reader of
+        // `dependencies.store.bool(.locationSharingEnabled)` — the
+        // phone-GPS uplink above all — share ONE instance, instead of
+        // agreeing only by `UserDefaults.standard` coincidence.
+        _settings = State(initialValue: SettingsViewModel(store: graph.dependencies.store,
+                                                           channelImport: importVM))
+        _inbox = State(initialValue: graph.makeInboxViewModel())
+        #if os(iOS)
+        let haptics: any HapticSignaling = UIKitHapticSignaling()
+        #else
+        // No Taptic Engine on a Mac — the honest answer, not a gap.
+        let haptics: any HapticSignaling = NoHapticSignaling()
+        #endif
+        _radar = State(initialValue: graph.makeRadarViewModel(haptics: haptics))
     }
 
     var body: some Scene {
         WindowGroup {
             // One argument per line (SHOULD-FIX 4): every slice that adds
-            // a `RootView` dependency (slice D's `radar`, any future
-            // slice C addition) appends its own line here instead of
-            // editing this call's single line, so sibling slices'
+            // a `RootView` dependency appends its own line here instead
+            // of editing this call's single line, so sibling slices'
             // hunks land as pure insertions and never collide.
             RootView(
                 connect: connect,
                 settings: settings,
                 channelImport: channelImport,
-                client: dependencies.client,
-                inbox: inbox
+                client: graph.dependencies.client,
+                inbox: inbox,
+                radar: radar,
+                scanner: graph.dependencies.scanner
             )
             .preferredColorScheme(.dark)
+            // The graph's own subscriptions (CoreStore over the client's
+            // streams, the portnum-269 reader, the phone-GPS uplink and
+            // the ack-timeout tick) start with the window and live as
+            // long as it does — NOT per screen. A screen's `observe()`
+            // is its own, independent subscription (S1); this is the one
+            // that has to keep running when no screen is on top of it,
+            // because an ack that arrives while Settings is showing is
+            // still an ack.
+            .task { await graph.start() }
         }
         #if os(macOS)
         .defaultSize(width: 420, height: 720)

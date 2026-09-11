@@ -466,11 +466,11 @@
 		};
 		265AEE353EC5FC14C1E918C7 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
 				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -484,11 +484,11 @@
 		};
 		5D5B45EDD76F127AA5A8FDE7 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
 				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -502,11 +502,11 @@
 		};
 		6B1584BF62758C1DC9EA8C8E /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
 				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -522,8 +522,6 @@
 			baseConfigurationReference = C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_ENTITLEMENTS = Firefly/Resources/Firefly.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
@@ -607,11 +605,11 @@
 		};
 		D8F8CAAA3478DE9CFCFAD987 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
 				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -627,9 +625,7 @@
 			baseConfigurationReference = C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_ENTITLEMENTS = Firefly/Resources/Firefly.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Firefly/Resources/Firefly.Debug.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- DEBUG ONLY — this file is the Debug `CODE_SIGN_ENTITLEMENTS`
+	     (project.yml); Release keeps `Firefly.entitlements`, which is
+	     identical except that the sandbox there is ON.
+
+	     The App Sandbox is only actually ENFORCED once the app is
+	     signed, and a signed, sandboxed host cannot complete XCTest's
+	     connection to its controller. The symptom is not an error, it is
+	     a HANG: `FIREFLY_HARDWARE=1 xcodebuild test
+	     -only-testing:FireflyHardwareTests` sits for its full timeout and
+	     then reports "The test runner hung before establishing
+	     connection", with the host process logging nothing after
+	     `libsystem_secinit.dylib AppSandbox`. The same command against
+	     an UNSIGNED build passes, because an unsigned build carries no
+	     entitlements and is therefore not sandboxed at all — which is
+	     what hid this until signing was wired up.
+
+	     Adding `com.apple.security.temporary-exception.mach-lookup.
+	     global-name` for com.apple.testmanagerd / .dt.testmanagerd.runner
+	     was tried first and is NOT sufficient; turning the sandbox off
+	     for Debug is what actually lets the runner connect (verified: the
+	     suite then reaches `[BLETransport] scan() called` against a real
+	     radio). B1's requirement is a SIGNED .app with
+	     NSBluetoothAlwaysUsageDescription launched via LaunchServices —
+	     none of which is the sandbox, so this costs the hardware rig
+	     nothing.
+
+	     THE TRADEOFF, stated rather than buried: a Debug build is no
+	     longer exercising the sandbox, so a sandbox-only failure (the
+	     serial transport opening /dev/cu.* is the realistic one) will not
+	     show up until a Release build. Re-check `device.serial` /
+	     `device.usb` against a Release build before the festival.
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<key>com.apple.security.device.bluetooth</key>
+	<true/>
+	<key>com.apple.security.device.serial</key>
+	<true/>
+	<key>com.apple.security.device.usb</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.personal-information.location</key>
+	<true/>
+
+</dict>
+</plist>

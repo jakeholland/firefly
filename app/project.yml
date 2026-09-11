@@ -47,12 +47,17 @@ targets:
         product: FireflyMesh
       - package: FireflyKit
         product: FireflyModel
-    # Config/Firefly.xcconfig is committed and does nothing on its own;
-    # it `#include?`s (optional — no error if absent) a git-ignored
-    # Config/Local.xcconfig for a personal DEVELOPMENT_TEAM. See
-    # Config/Local.xcconfig.example and app/README.md, "On-device
-    # signing". CODE_SIGNING_ALLOWED below still wins for everyone else's
-    # clean checkout.
+    # Config/Firefly.xcconfig is committed and carries the signing
+    # DEFAULTS (CODE_SIGNING_ALLOWED/REQUIRED = NO), then `#include?`s
+    # (optional — no error if absent) a git-ignored Config/Local.xcconfig
+    # that can override them for a personal DEVELOPMENT_TEAM + identity.
+    #
+    # Those two settings are deliberately NOT in `settings:` below: a
+    # target-level build setting BEATS an xcconfig, so keeping them there
+    # made Local.xcconfig unable to turn signing on at all — the reason
+    # signed runs previously needed CODE_SIGNING_ALLOWED=YES passed on
+    # the xcodebuild command line. See Config/Firefly.xcconfig's own
+    # header and app/README.md, "Signed local runs".
     configFiles:
       Debug: Config/Firefly.xcconfig
       Release: Config/Firefly.xcconfig
@@ -63,12 +68,18 @@ targets:
         INFOPLIST_FILE: Firefly/Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Firefly/Resources/Firefly.entitlements
         GENERATE_INFOPLIST_FILE: NO
-        CODE_SIGNING_ALLOWED: NO
-        CODE_SIGNING_REQUIRED: NO
         ENABLE_PREVIEWS: YES
       configs:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+          # Debug carries ONE extra entitlement: the sandbox mach-lookup
+          # exception `FireflyHardwareTests` needs to reach
+          # `com.apple.testmanagerd` from inside this (sandboxed, and —
+          # once signed — actually sandbox-ENFORCED) host app. See
+          # Firefly/Resources/Firefly.Debug.entitlements' own comment.
+          # Release keeps the plain Firefly.entitlements: a release build
+          # hosts no tests and has no business talking to a test daemon.
+          CODE_SIGN_ENTITLEMENTS: Firefly/Resources/Firefly.Debug.entitlements
 
   # App-hosted BLE hardware tests (docs/specs/A01-companion-app.md, B1).
   # macOS aborts (__TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__) any
@@ -91,10 +102,20 @@ targets:
       - path: FireflyHardwareTests
     dependencies:
       - target: Firefly
+    # Same xcconfig as the host app, so a signed local run signs the
+    # test bundle too — see the Firefly target's own comment.
+    configFiles:
+      Debug: Config/Firefly.xcconfig
+      Release: Config/Firefly.xcconfig
     settings:
       base:
-        CODE_SIGNING_ALLOWED: NO
-        CODE_SIGNING_REQUIRED: NO
+        # Required for a SIGNED run: codesign needs an Info.plist in the
+        # test bundle, and a unit-test target has no INFOPLIST_FILE of
+        # its own. Without this, `xcodebuild test` with signing enabled
+        # fails with "Cannot code sign because the target does not have
+        # an Info.plist file" (slice A hit exactly this). Harmless
+        # unsigned: the generated plist is written either way.
+        GENERATE_INFOPLIST_FILE: YES
         # Set explicitly rather than left to xcodegen's own inference:
         # against a multiplatform (`supportedDestinations: [iOS, macOS]`)
         # host target, xcodegen's auto-derived TEST_HOST omits macOS's
@@ -135,10 +156,14 @@ targets:
         product: FireflyMesh
       - package: FireflyKit
         product: FireflyModel
+    configFiles:
+      Debug: Config/Firefly.xcconfig
+      Release: Config/Firefly.xcconfig
     settings:
       base:
-        CODE_SIGNING_ALLOWED: NO
-        CODE_SIGNING_REQUIRED: NO
+        # See FireflyHardwareTests' own comment — same codesign
+        # requirement, same reason.
+        GENERATE_INFOPLIST_FILE: YES
 
 schemes:
   Firefly:

@@ -302,12 +302,24 @@ struct AppDependencies: Sendable {
   `LoopbackTransport` and a location/heading provider
   (`UnavailableLocationProvider` / `NoHeadingProvider`) that reports
   **unavailable**, not fake coordinates.
-- `AppDependencies.live()` is the milestone-1 placeholder for the real
-  BLE (or serial, or TCP) stack: until slice A's client and slice F's
-  providers land, it is identical to `.stub()`, on purpose — nothing
-  above this seam should behave differently depending on which one is
-  picked, which is exactly what makes it safe to land before the slices
-  that fill it in do.
+- `AppDependencies.live()` is the real stack, and as of M1 integration
+  every field in it is real: slice A's `MeshtasticClient` over one
+  `BLETransport` (held twice, as the client's transport AND the node
+  picker's `NodeScanning` — two instances would mean two
+  `CBCentralManager`s and a picker whose selection the connecting
+  transport never sees), slice F's CoreLocation-backed
+  `LocationProvider`/`HeadingProvider`, and slice C's
+  `UserDefaults`-backed `SettingsStore`. It was identical to `.stub()`
+  while those slices were still in flight, on purpose — nothing above
+  this seam behaves differently depending on which one is picked, which
+  is exactly what made it safe to land before them.
+- `FireflyModel/Live/AppGraph.swift` is the other half of the
+  composition root: `AppDependencies` answers "which implementations",
+  `AppGraph` answers "how many, owned by whom, subscribed when". It owns
+  the one `CoreStore` (and therefore the one `ff_crew_t`/`ff_feed_t`/
+  `ff_radar_smooth_t`/`ff_find_t`), the one `PhoneGPSUplink`, the
+  portnum-269 reader and the ack-timeout tick, and it builds every view
+  model. Nothing below it may call `.current()` for itself.
 - `AppDependencies.current()` is what callers actually use: `.stub()` in
   the iOS Simulator via `#if targetEnvironment(simulator)` — an idea
   taken directly from the archived app's

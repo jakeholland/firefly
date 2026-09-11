@@ -37,10 +37,22 @@ public final class CoreStore {
     /// The event feed — slice B's `Bridge/InboxBridge.swift`, heap-owning
     /// one `ff_feed_t`. Same confinement rule as `crew`.
     public let inbox = InboxBridge()
+    /// Radar's smoothing state (`ff_radar_smooth_t`). Owned here, with
+    /// the two contexts it computes against, so the whole app has ONE
+    /// radar session rather than one per screen construction — the bug
+    /// `RadarView`'s old no-argument `init()` had, which built a second
+    /// `AppDependencies.current()` (and therefore a second client) every
+    /// time the destination was shown.
+    public let radar = RadarBridge()
+    /// The FIND session (`ff_find_t`). Same one-owner rule: a second
+    /// `ff_find_t` would be a second session, and S29 allows exactly one.
+    public let find = FindBridge()
 
     private var linkObservation: Task<Void, Never>?
     private var nodeObservation: Task<Void, Never>?
     private var deliveryObservation: Task<Void, Never>?
+    /// See `observe(client:routeDeliveriesToInbox:)`.
+    private var routeDeliveriesToInbox = true
 
     public init() {}
 
@@ -52,8 +64,29 @@ public final class CoreStore {
     /// captured HERE, synchronously, before its `Task` is created — see
     /// `ConnectViewModel.observe()`'s comment for why that ordering
     /// matters.
-    public func observe(client: any MeshtasticClientProtocol) {
+    ///
+    /// `routeDeliveriesToInbox` exists because two id spaces meet at
+    /// this seam and only one of them can own the feed's outbox keys.
+    /// `DeliveryEvent.waiting`/`.sent`/`.dropped` carry the CLIENT's
+    /// `OutboxID` (minted inside `MeshtasticClient.sendText`), while the
+    /// items in `inbox` were pushed with `ThreadViewModel`'s OWN
+    /// `OutboxIDGenerator` ids — both count up from 1, in `UInt32` and
+    /// `UInt64` respectively, and `ff_feed_item_t.outbox_id` is 32 bits.
+    /// So routing both into the same `ff_feed_t` would let the client's
+    /// outbox id 1 silently resolve `ThreadViewModel`'s message 1: the
+    /// exact aliasing bug PR #261's review already caught once.
+    ///
+    /// In the live graph (`AppGraph`) the view-model path owns those
+    /// keys — it is the path that actually pushed the items — so this is
+    /// passed `false` there and the packet-id-keyed half
+    /// (`.delivered`/`.noAck`, which `InboxViewModel`/`ThreadViewModel`
+    /// forward to the same bridge) is the only delivery routing that
+    /// runs. It defaults to `true` so a caller with no view models at
+    /// all — `CoreStoreTests`, or any future headless consumer that owns
+    /// both ends of the id space — keeps the full routing.
+    public func observe(client: any MeshtasticClientProtocol, routeDeliveriesToInbox: Bool = true) {
         guard linkObservation == nil else { return }
+        self.routeDeliveriesToInbox = routeDeliveriesToInbox
 
         let links = client.linkState()
         let nodes = client.nodeUpdates()
@@ -94,6 +127,16 @@ public final class CoreStore {
     /// there is no synthesized fallback for any of the three.
     public func apply(nodeUpdate: MeshNodeSnapshot) {
         let now = FireflyClock.nowMillis()
+
+        // Identity first: the roster slot has to exist and carry
+        // whatever names the mesh actually reported before any of the
+        // three event setters below renders against it. Nothing is
+        // synthesized — a node the radio has told us nothing but a
+        // number about keeps an empty name and a '\0' initial.
+        if nodeUpdate.shortName != nil || nodeUpdate.longName != nil {
+            crew.setIdentity(nodeID: nodeUpdate.num, shortName: nodeUpdate.shortName,
+                              longName: nodeUpdate.longName)
+        }
 
         if let position = nodeUpdate.position {
             let rxTime = position.time.map(FireflyClock.millis(since:)) ?? now
@@ -145,6 +188,7 @@ public final class CoreStore {
         // would be an ambiguous-type-name compile error, not a silent
         // pick of the wrong one — the two vocabularies really do meet
         // only at this one seam.
+        guard routeDeliveriesToInbox else { return }
         let now = FireflyClock.nowMillis()
         switch delivery {
         case .waiting(let outboxID):

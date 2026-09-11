@@ -41,6 +41,15 @@ struct RootView: View {
     // exactly one of those [switch] lines" — constructing that line's
     // view needs this view model reference alongside `connect`'s).
     let inbox: InboxViewModel
+    // Every view model is constructed ONCE, in `FireflyApp.init`, from
+    // the one `AppGraph` — never inside a destination's own `init`,
+    // which would build a second client the moment the destination was
+    // shown (`AppGraph`'s header comment).
+    let radar: RadarViewModel
+    /// The BLE node picker's scan seam — nil wherever there is no radio
+    /// (the stub stack, the iOS Simulator), which the Connect screen
+    /// renders as an honestly empty picker.
+    let scanner: (any NodeScanning)?
     @State private var selection: Destination = .connect
 
     var body: some View {
@@ -73,8 +82,9 @@ struct RootView: View {
     @ViewBuilder
     private func detail(for destination: Destination) -> some View {
         switch destination {
-        case .connect: ConnectScreen(connect: connect, client: client, channelImport: channelImport)
-        case .radar: RadarView()
+        case .connect: ConnectScreen(connect: connect, client: client, channelImport: channelImport,
+                                      scanner: scanner)
+        case .radar: RadarView(model: radar)
         case .inbox: InboxContainerView(model: inbox)
         case .settings: SettingsScreen(model: settings, client: client)
         }

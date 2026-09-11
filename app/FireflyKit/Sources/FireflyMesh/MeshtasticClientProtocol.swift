@@ -139,6 +139,21 @@ public protocol MeshtasticClientProtocol: AnyObject, Sendable {
     /// place that actually knows which packet ids it minted itself
     /// (`InboxViewModel.observe()` / `InMemoryInboxStore.push`).
     func incomingTexts() -> AsyncStream<IncomingText>
+    /// One `IncomingPrivate` per inbound packet on Firefly's own
+    /// portnum 269, carried as OPAQUE BYTES — see `IncomingPrivate`'s
+    /// own doc comment for why the client does not decode it.
+    func incomingPrivate() -> AsyncStream<IncomingPrivate>
+
+    /// The connected node's own `num` (`my_info.my_node_num`), or nil
+    /// before the handshake has produced one.
+    ///
+    /// SYNCHRONOUS, and `nonisolated` on the actor that implements it,
+    /// for one concrete caller: `PhoneGPSUplink`'s `destinationNodeNum`
+    /// is a synchronous `@Sendable () -> UInt32?` closure evaluated per
+    /// fix (`LocationProvider.swift`), and an `await` there would put an
+    /// actor hop on the cadence check of every GPS reading. Reading this
+    /// takes a lock, not an actor hop.
+    var connectedNodeNum: UInt32? { get }
 
     func connect() async throws
     func disconnect() async
@@ -146,6 +161,19 @@ public protocol MeshtasticClientProtocol: AnyObject, Sendable {
     /// a later Routing ack to this message.
     @discardableResult
     func sendText(_ text: String, to destination: UInt32, wantAck: Bool) async throws -> UInt32
+    /// Push a phone GPS fix to `destination` (the connected node itself)
+    /// as `POSITION_APP` with `location_source = LOC_EXTERNAL` — see
+    /// `ExternalPositionFix`. Returns the packet id, same contract as
+    /// `sendText`. Never `want_ack`: a position report is not a message
+    /// somebody is waiting on, and an ack for one would be noise.
+    @discardableResult
+    func sendPosition(_ fix: ExternalPositionFix, to destination: UInt32) async throws -> UInt32
+    /// Send an already-encoded `ff_proto` frame on portnum 269 — the
+    /// FLARE / RALLY / PING / PONG path (S04). `destination` is
+    /// `meshBroadcastAddress` for a whole-crew send. The bytes are
+    /// opaque here; `FireflyModel`'s `FireflyPacket.encode()` made them.
+    @discardableResult
+    func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32
 }
 
 /// Broadcast address — `0xFFFFFFFF`, Meshtastic's own.
@@ -164,6 +192,9 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     // comment ("NEVER invents... incoming messages") and
     // `incomingTexts()`'s protocol doc comment.
     private let incomingTextHub = EventHub<IncomingText>()
+    // Same rule: a stub has no mesh, so no FLARE, RALLY or PONG ever
+    // arrives on it. Tests that need one inject exact bytes.
+    private let incomingPrivateHub = EventHub<IncomingPrivate>()
 
     private let transport: MeshTransport
     private let lock = NSLock()
@@ -177,6 +208,9 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     private var nextOutboxID: UInt32 = 1
     private var nextPacketID: UInt32 = 1_000_001
     private var sentTexts: [(String, UInt32, Bool)] = []
+    private var sentPositions: [(ExternalPositionFix, UInt32)] = []
+    private var sentPrivate: [(Data, UInt32, Bool)] = []
+    private var _connectedNodeNum: UInt32?
 
     public init(transport: MeshTransport = LoopbackTransport()) {
         self.transport = transport
@@ -186,6 +220,16 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     public func nodeUpdates() -> AsyncStream<MeshNodeSnapshot> { nodeHub.subscribe() }
     public func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
     public func incomingTexts() -> AsyncStream<IncomingText> { incomingTextHub.subscribe() }
+    public func incomingPrivate() -> AsyncStream<IncomingPrivate> { incomingPrivateHub.subscribe() }
+
+    /// nil until a test sets it (`connectedNodeNum = 48_621_524`). The
+    /// stub has no `my_info` to learn one from, and inventing one would
+    /// make a GPS uplink push to a node that does not exist — exactly
+    /// the class of fabrication this type exists to refuse.
+    public var connectedNodeNum: UInt32? {
+        get { lock.lock(); defer { lock.unlock() }; return _connectedNodeNum }
+        set { lock.lock(); defer { lock.unlock() }; _connectedNodeNum = newValue }
+    }
 
     public func connect() async throws {
         linkHub.yield(.connecting)
@@ -209,6 +253,50 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
         // No DELIVERED is fabricated. A stub has no mesh to ack it, and
         // a broadcast would never be acked even by a real one.
         return packetID
+    }
+
+    /// Records and returns a packet id; sends nothing anywhere, exactly
+    /// like `sendText`. A stub has no radio to tell a position to.
+    @discardableResult
+    public func sendPosition(_ fix: ExternalPositionFix, to destination: UInt32) async throws -> UInt32 {
+        try await transport.send(Data())
+        return recordPosition(fix, to: destination)
+    }
+
+    /// Records and returns a packet id — no `DeliveryEvent` and no
+    /// DELIVERED is fabricated, same as `sendText`.
+    @discardableResult
+    public func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
+        try await transport.send(payload)
+        return recordPrivate(payload, to: destination, wantAck: wantAck)
+    }
+
+    // Non-async on purpose, same rule as `nextOutbox`/`nextPacket`
+    // below: an `NSLock` taken across a suspension point is a Swift 6
+    // error, so every locked mutation here happens in a synchronous
+    // helper called from the async entry point.
+    private func recordPosition(_ fix: ExternalPositionFix, to destination: UInt32) -> UInt32 {
+        lock.lock()
+        sentPositions.append((fix, destination))
+        lock.unlock()
+        return nextPacket()
+    }
+
+    private func recordPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) -> UInt32 {
+        lock.lock()
+        sentPrivate.append((payload, destination, wantAck))
+        lock.unlock()
+        return nextPacket()
+    }
+
+    public var sentPositionLog: [(ExternalPositionFix, UInt32)] {
+        lock.lock(); defer { lock.unlock() }
+        return sentPositions
+    }
+
+    public var sentPrivateLog: [(Data, UInt32, Bool)] {
+        lock.lock(); defer { lock.unlock() }
+        return sentPrivate
     }
 
     // Non-async on purpose — see LoopbackTransport.record(_:).

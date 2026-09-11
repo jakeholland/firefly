@@ -43,6 +43,11 @@ private final class OrderingMockClient: MeshtasticClientProtocol, @unchecked Sen
     func nodeUpdates() -> AsyncStream<MeshNodeSnapshot> { EventHub<MeshNodeSnapshot>().subscribe() }
     func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
     func incomingTexts() -> AsyncStream<IncomingText> { EventHub<IncomingText>().subscribe() }
+    func incomingPrivate() -> AsyncStream<IncomingPrivate> { EventHub<IncomingPrivate>().subscribe() }
+
+    /// This double exists to order `sendText` calls; it has no handshake
+    /// and therefore no node num to report. nil is the honest answer.
+    var connectedNodeNum: UInt32? { nil }
 
     func connect() async throws { linkHub.yield(.ready) }
     func disconnect() async { linkHub.yield(.disconnected) }
@@ -57,8 +62,22 @@ private final class OrderingMockClient: MeshtasticClientProtocol, @unchecked Sen
         return id
     }
 
+    /// Unused by these tests — this double's whole purpose is
+    /// `sendText` ordering — but part of the protocol, so it fails
+    /// loudly rather than silently pretending to send.
+    @discardableResult
+    func sendPosition(_ fix: ExternalPositionFix, to destination: UInt32) async throws -> UInt32 {
+        record("position")
+    }
+
+    @discardableResult
+    func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
+        record("private")
+    }
+
     // Non-async on purpose — NSLock may not be held across a suspension
     // point (the same `LoopbackTransport.record(_:)` convention).
+    @discardableResult
     private func record(_ text: String) -> UInt32 {
         lock.lock(); defer { lock.unlock() }
         sendOrder.append(text)

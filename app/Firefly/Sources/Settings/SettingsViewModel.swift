@@ -2,17 +2,20 @@
 //  SettingsViewModel.swift — the Settings destination's state (docs/
 //  specs/A01-companion-app.md, Design language > More/Settings).
 //
-//  Backed by ONE `SettingsStore` (FireflyModel, real UserDefaults —
-//  slice C's own addition) rather than `AppDependencies.store`: that
-//  seam is still `InMemorySettingsStore` under both `.stub()` and
-//  `.live()` today (AppDependencies.swift, landed, not slice-owned —
-//  see its own comment on why `.live() == .stub()` for now), and this
-//  screen's whole point is settings that actually survive a relaunch.
-//  A future integration step — pointing `AppDependencies.live()` at
-//  `SettingsStore` — will make the two converge; until then, writes
-//  made here are real but a Radar-screen (slice D) read of
-//  `dependencies.store.bool(.locationSharingEnabled)` will not see
-//  them. Flagged rather than hidden.
+//  Backed by `AppDependencies.store` — the ONE store the whole app
+//  shares. That integration step is done: `.live()` now builds a real
+//  `SettingsStore` (`UserDefaults`-backed, so settings survive a
+//  relaunch) and hands the same instance to this screen and to the
+//  phone-GPS uplink, so `shareGPSWithNode` written here is the exact
+//  `SettingsKey.locationSharingEnabled` `PhoneGPSUplinkPolicy.shouldPush`
+//  reads on the next fix — not a second store that agrees by
+//  `UserDefaults.standard` coincidence.
+//
+//  The type is `any FireflyExtraSettingsStoring` rather than the
+//  concrete `SettingsStore` (MVVM convention #2: "takes its dependencies
+//  as protocol existentials in init, and stores no concrete service
+//  type"): this screen needs the six shared keys AND its own four from
+//  one instance, which is exactly what that refining protocol is.
 //
 import FireflyModel
 import Foundation
@@ -21,7 +24,7 @@ import Observation
 @MainActor
 @Observable
 final class SettingsViewModel {
-    private let store: SettingsStore
+    private let store: any FireflyExtraSettingsStoring
     /// The SAME instance the Connect screen imports channels into
     /// (`FireflyApp.swift` constructs one and hands it to both) — so
     /// this screen's "Channel" row reads exactly what Connect showed,
@@ -35,7 +38,7 @@ final class SettingsViewModel {
     var stayConnectedInBackground: Bool
     var colorblindPalette: Bool
 
-    init(store: SettingsStore, channelImport: ChannelImportViewModel) {
+    init(store: any FireflyExtraSettingsStoring, channelImport: ChannelImportViewModel) {
         self.store = store
         self.channelImport = channelImport
         nodeLongName = store.nodeLongNamePreference ?? ""

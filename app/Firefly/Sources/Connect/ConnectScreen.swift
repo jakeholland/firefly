@@ -24,16 +24,26 @@ struct ConnectScreen: View {
     let channelImport: ChannelImportViewModel
 
     @State private var nearby: NearbyNodesViewModel
-    @State private var discovery: any PeripheralDiscovering = StubPeripheralDiscovery()
+    /// The real BLE scan when there is a radio behind it
+    /// (`AppDependencies.live()`), and `StubPeripheralDiscovery` — which
+    /// discovers nothing — when there is not (the iOS Simulator). Built
+    /// here rather than injected from `AppGraph` because the picker's
+    /// list is this screen's own state: nothing else in the app reads a
+    /// scan result.
+    @State private var discovery: any PeripheralDiscovering
     @State private var peripherals: [DiscoveredPeripheral] = []
+    @State private var selectedPeripheralID: String?
     @State private var channelURLText = ""
     @State private var isShowingScanner = false
 
-    init(connect: ConnectViewModel, client: any MeshtasticClientProtocol, channelImport: ChannelImportViewModel) {
+    init(connect: ConnectViewModel, client: any MeshtasticClientProtocol,
+         channelImport: ChannelImportViewModel, scanner: (any NodeScanning)?) {
         self.connect = connect
         self.client = client
         self.channelImport = channelImport
         _nearby = State(initialValue: NearbyNodesViewModel(client: client))
+        _discovery = State(initialValue: scanner.map { MeshPeripheralDiscovery(scanner: $0) }
+                            ?? StubPeripheralDiscovery())
     }
 
     var body: some View {
@@ -51,10 +61,20 @@ struct ConnectScreen: View {
         .onAppear {
             connect.observe()
             nearby.observe()
+            // Deliberately NOT auto-started. Starting a scan builds the
+            // `CBCentralManager`, which is what makes macOS put up its
+            // one-time Bluetooth permission dialog — and merely SHOWING
+            // this screen is not the moment to ask. It is also the
+            // moment `FireflyHardwareTests` launches its host app, so an
+            // auto-scan here pops a modal in front of a test runner and
+            // hangs it ("The test runner hung before establishing
+            // connection", observed). RESCAN is the trigger; an empty
+            // picker until the user asks is the honest state anyway.
         }
         .onDisappear {
             connect.stopObserving()
             nearby.stopObserving()
+            discovery.stopScanning()
         }
         .task {
             for await found in discovery.peripherals() {
@@ -140,14 +160,33 @@ struct ConnectScreen: View {
                     .foregroundStyle(Color.ffMuted)
             } else {
                 ForEach(peripherals) { peripheral in
-                    HStack {
-                        Text(peripheral.name ?? peripheral.id)
-                            .foregroundStyle(Color.ffInk)
-                        Spacer()
-                        Text("\(peripheral.rssiDbm) dBm")
-                            .font(.system(.footnote, design: .monospaced))
-                            .foregroundStyle(Color.ffMuted)
+                    Button {
+                        // Tapping a row does ONE thing: tell the
+                        // transport which peripheral a subsequent
+                        // CONNECT should prefer. It deliberately does
+                        // not connect — connecting is the CONNECT
+                        // button's job, and a picker that silently
+                        // starts a connection is a picker that can
+                        // start one you did not mean.
+                        discovery.select(peripheral.id)
+                        selectedPeripheralID = peripheral.id
+                    } label: {
+                        HStack {
+                            Text(peripheral.name ?? peripheral.id)
+                                .foregroundStyle(Color.ffInk)
+                            if peripheral.id == selectedPeripheralID {
+                                Text("SELECTED")
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(Color.ffAmber)
+                            }
+                            Spacer()
+                            Text("\(peripheral.rssiDbm) dBm")
+                                .font(.system(.footnote, design: .monospaced))
+                                .foregroundStyle(Color.ffMuted)
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     .frame(minHeight: 44)
                 }
             }

@@ -374,4 +374,78 @@ public final class InboxBridge {
     public func markThreadRead(_ kind: ConversationKind) -> Int {
         Int(ff_inbox_mark_thread_read(context, kind.ffKind, kind.nodeID))
     }
+
+    /// The RAW feed items belonging to `conversation`, oldest first —
+    /// the same membership rulebook `thread(_:crew:now:)` uses, because
+    /// it is literally the same predicate (`ff_inbox_item_in_conv`,
+    /// "exposed so build / thread extraction / mark-read demonstrably
+    /// share one rulebook").
+    ///
+    /// This exists because `ff_inbox_msg_t` — what
+    /// `thread(_:crew:now:)` projects — is a RENDER projection and
+    /// deliberately carries no `outbox_id`, no `packet_id` and no
+    /// absolute timestamp, while `FireflyModel`'s own `FeedMessage`
+    /// vocabulary (`InboxViewModel.swift`) is keyed on exactly those:
+    /// `markSent(outboxID:packetID:)` and `setStatus(packetID:)` must be
+    /// able to find the row they just changed. Reading the underlying
+    /// `ff_feed_item_t` gives a KEYED join rather than a positional one
+    /// — a positional join would silently attribute one message's
+    /// delivery state to another the first time the C core's membership
+    /// rules and a Swift mirror disagreed (a DM from an UNPAIRED sender
+    /// belongs to no conversation at all; pairing changes mid-session).
+    ///
+    /// Still "C types never leave the bridge": what comes back is a
+    /// plain Swift value, and no pointer escapes this call.
+    public func records(in conversation: ConversationKind) -> [FeedItemRecord] {
+        let n = Int(ff_feed_count(context))
+        guard n > 0 else { return [] }
+        return (0..<n).compactMap { idx -> FeedItemRecord? in
+            guard let item = ff_feed_at(context, UInt8(idx)) else { return nil }
+            guard ff_inbox_item_in_conv(item, conversation.ffKind, conversation.nodeID) else { return nil }
+            return FeedItemRecord(item.pointee)
+        }
+    }
+}
+
+/// One feed item as the C core actually stores it — every field
+/// `ff_feed_item_t` carries, including the two identity keys
+/// `ff_inbox_msg_t` does not project (`outboxID`, `packetID`).
+/// Read-only by construction: the only initializer is internal, and
+/// mutation still goes exclusively through `InboxBridge`'s setters, so
+/// this can never become a second, divergent way to write the feed.
+public struct FeedItemRecord: Sendable, Equatable {
+    public let kind: FeedKind
+    public let fromNode: UInt32
+    public let atMs: UInt32
+    public let text: String
+    public let unread: Bool
+    public let direction: FeedDirection
+    /// Meaningful iff `direction == .out`: the destination node, or 0
+    /// for a whole-crew broadcast (the C core's own sentinel — mapping
+    /// `meshBroadcastAddress` to 0 is the push site's job).
+    public let toNode: UInt32
+    public let sendStatus: FeedSendStatus
+    public let wantAck: Bool
+    /// 0 until `markSent` stamps it — and for every inbound item.
+    public let packetID: PacketID
+    /// 0 = not tracked: every inbound item, and any outgoing item that
+    /// predates outbox tracking.
+    public let outboxID: OutboxID
+    /// The clock reading of the most recent `sendStatus` transition.
+    public let statusAtMs: UInt32
+
+    init(_ raw: ff_feed_item_t) {
+        self.kind = FeedKind(ffKind: raw.kind)
+        self.fromNode = raw.from_node
+        self.atMs = raw.at_ms
+        self.text = FixedCString.decode(raw.text)
+        self.unread = raw.unread
+        self.direction = FeedDirection(ffDir: raw.dir)
+        self.toNode = raw.to_node
+        self.sendStatus = FeedSendStatus(ffStatus: raw.send_status)
+        self.wantAck = raw.want_ack
+        self.packetID = PacketID(raw.packet_id)
+        self.outboxID = OutboxID(raw.outbox_id)
+        self.statusAtMs = raw.status_at_ms
+    }
 }

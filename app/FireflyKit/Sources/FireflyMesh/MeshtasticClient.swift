@@ -53,11 +53,21 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     private let nodeHub = EventHub<MeshNodeSnapshot>()
     private let deliveryHub = EventHub<DeliveryEvent>()
     private let incomingTextHub = EventHub<IncomingText>()
+    private let incomingPrivateHub = EventHub<IncomingPrivate>()
 
     private var nodeDB = NodeDB()
     private var framer = StreamFramer()
 
-    private var myNodeNum: UInt32?
+    /// The actor-isolated value every internal read uses. Its `didSet`
+    /// mirrors it into `nodeNumBox` for the one caller that has to read
+    /// it with no actor hop — see `connectedNodeNum`.
+    private var myNodeNum: UInt32? {
+        didSet { nodeNumBox.value = myNodeNum }
+    }
+    /// A lock-protected mirror of `myNodeNum`, written ONLY by that
+    /// property's `didSet`. Not a second source of truth: nothing else
+    /// writes it, and it always holds whatever the actor stored last.
+    private let nodeNumBox = LockedValue<UInt32?>(nil)
     /// Extra, non-protocol state — useful to `FireflyHardwareTests`
     /// (which holds a concrete `MeshtasticClient`, not just the
     /// protocol existential) and to a future Diagnostics screen. Not
@@ -166,6 +176,13 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     public nonisolated func nodeUpdates() -> AsyncStream<MeshNodeSnapshot> { nodeHub.subscribe() }
     public nonisolated func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
     public nonisolated func incomingTexts() -> AsyncStream<IncomingText> { incomingTextHub.subscribe() }
+    public nonisolated func incomingPrivate() -> AsyncStream<IncomingPrivate> { incomingPrivateHub.subscribe() }
+
+    /// `nonisolated` for the same reason the stream accessors are: the
+    /// one caller (`PhoneGPSUplink`'s synchronous `destinationNodeNum`
+    /// closure) cannot `await`. Safe because `nodeNumBox` is an
+    /// immutable `let` of a lock-protected class.
+    public nonisolated var connectedNodeNum: UInt32? { nodeNumBox.value }
 
     public func connect() async throws {
         resetSessionState()
@@ -262,6 +279,90 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         pendingSends[id] = PendingSend(isBroadcast: isBroadcast, wantAck: effectiveWantAck, sentAt: Date())
         prunePendingSends()
         deliveryHub.yield(.sent(outboxID: OutboxID(outboxID), packetID: PacketID(id), wantAck: effectiveWantAck))
+        return id
+    }
+
+    /// `POSITION_APP` + `LOC_EXTERNAL` — the phone-GPS uplink
+    /// (docs/specs/A01-companion-app.md, "Phone GPS -> node"). NOT an
+    /// admin message, and never `set_fixed_position`: an external fix is
+    /// a measurement with a time on it.
+    ///
+    /// No `DeliveryEvent` is published for this at all. The delivery
+    /// vocabulary (WAITING/SENT/DELIVERED/NO ACK) belongs to messages a
+    /// person is waiting on; attaching it to a 30-second position
+    /// heartbeat would flood the Inbox's own outbox bookkeeping with
+    /// rows nothing renders.
+    @discardableResult
+    public func sendPosition(_ fix: ExternalPositionFix, to destination: UInt32) async throws -> UInt32 {
+        var position = Position()
+        position.latitudeI = Int32((fix.latitude * 1e7).rounded())
+        position.longitudeI = Int32((fix.longitude * 1e7).rounded())
+        position.time = UInt32(max(0, fix.time.timeIntervalSince1970))
+        position.locationSource = .locExternal
+        if let altitude = fix.altitudeMeters {
+            position.altitude = Int32(altitude.rounded())
+        }
+        // Both are "only when the value means something" fields, per the
+        // spec's payload rule — an absent speed is not 0 m/s, and an
+        // absent course is not due north.
+        if let speed = fix.groundSpeedMetersPerSecond, speed > 0 {
+            position.groundSpeed = UInt32(speed.rounded())
+        }
+        if let track = fix.groundTrackDegrees, track > 0, track <= 360 {
+            position.groundTrack = UInt32(track.rounded())
+        }
+        // `sats_in_view` and `precision_bits` are deliberately unset:
+        // CoreLocation reports no satellite count, and precision is the
+        // CHANNEL's setting (`position_precision`), asserted by the node
+        // itself — claiming either here would be inventing wire data.
+
+        guard let payload = try? position.serializedData() else {
+            throw MeshtasticClientError.encodingFailed
+        }
+        return try await sendData(payload, portnum: .positionApp, to: destination, wantAck: false)
+    }
+
+    /// Portnum 269, Firefly's own (S04) — `payload` is an already
+    /// encoded `ff_proto` frame and stays opaque here.
+    ///
+    /// Like `sendPosition`, this publishes no `DeliveryEvent`: FLARE and
+    /// the FIND pings are fire-and-forget by design
+    /// (`ThreadViewModel.sendFlare`'s own doc comment — "never enters
+    /// the outbox"), so there is no outbox row for a WAITING/SENT pair
+    /// to attach to.
+    @discardableResult
+    public func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
+        // Nothing acks a broadcast — same rule `sendText` applies.
+        let effectiveWantAck = (destination == meshBroadcastAddress) ? false : wantAck
+        let portnum = PortNum(rawValue: Int(fireflyPrivatePortNum)) ?? .privateApp
+        return try await sendData(payload, portnum: portnum, to: destination, wantAck: effectiveWantAck)
+    }
+
+    /// The one packet-minting/writing path `sendPosition` and
+    /// `sendPrivate` share. Deliberately NOT shared with `sendText`:
+    /// that one additionally mints an outbox id, publishes
+    /// WAITING/SENT/DROPPED and registers a `pendingSends` entry so a
+    /// routing ack can find it — none of which applies here.
+    private func sendData(_ payload: Data, portnum: PortNum, to destination: UInt32,
+                          wantAck: Bool) async throws -> UInt32 {
+        var data = DataMessage()
+        data.portnum = portnum
+        data.payload = payload
+
+        let id = nextPacketID()
+        var packet = MeshPacket()
+        packet.id = id
+        packet.to = destination
+        packet.wantAck = wantAck
+        packet.decoded = data
+
+        var toRadio = ToRadio()
+        toRadio.packet = packet
+
+        guard let bytes = try? toRadio.serializedData() else {
+            throw MeshtasticClientError.encodingFailed
+        }
+        try await writeToRadio(bytes)
         return id
     }
 
@@ -563,8 +664,22 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
                 rxTime: rxTime, rssiDbm: meta.rssiDbm, snrDb: meta.snrDb, direct: meta.direct))
 
         default:
-            break // out of decode scope for M1 (telemetry/etc. have no
-                   // consumer through MeshtasticClientProtocol yet)
+            // Firefly's own portnum (269) is not a case in the generated
+            // `PortNum` enum at all — it arrives as `.UNRECOGNIZED(269)`
+            // (`WireFormatTests.testFireflyPortnumSurvivesAsUnrecognized`
+            // pins that), so it is matched on `rawValue` here rather
+            // than by case. The frame itself stays OPAQUE: decoding it
+            // is `FireflyPacket`/`ff_proto`'s job on the other side of
+            // the bridge boundary (`IncomingPrivate`'s doc comment).
+            guard data.portnum.rawValue == Int(fireflyPrivatePortNum) else {
+                break // out of decode scope for M1 (telemetry/etc. have
+                       // no consumer through MeshtasticClientProtocol)
+            }
+            let rxTime: Date? = pkt.hasRxTime ? Date(timeIntervalSince1970: TimeInterval(pkt.rxTime)) : nil
+            let meta = rxMeta(for: pkt)
+            incomingPrivateHub.yield(IncomingPrivate(
+                from: pkt.from, to: pkt.to, channel: pkt.channel, packetID: pkt.id, payload: data.payload,
+                rxTime: rxTime, rssiDbm: meta.rssiDbm, snrDb: meta.snrDb, direct: meta.direct))
         }
     }
 
