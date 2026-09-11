@@ -164,6 +164,78 @@ public actor BLETransport: MeshTransport, NodeScanning {
     public private(set) var bondedPeripheralIDs: Set<UUID>
     public private(set) var lastPairingFailure: BLEPairingFailure?
 
+    /// M2 — "stays connected in a pocket, reconnects on its own"
+    /// (docs/specs/A01-companion-app.md). Whether an UNEXPECTED
+    /// disconnect (`handleDisconnected`) should re-arm a pending
+    /// `central.connect()` on the same `CBPeripheral`. Set true the
+    /// moment a connect chain actually succeeds (`completeConnect
+    /// (throwing: nil)`) or a restored session is picked back up
+    /// (`handleWillRestoreState`); cleared by an explicit `disconnect()`
+    /// (user-initiated — never reconnect after that) and by a terminal
+    /// `BLEPairingFailure.bondLost` (retrying a lost bond can never fix
+    /// it — that case's own doc comment).
+    private var shouldAutoReconnect = false
+
+    /// SHOULD-FIX 4 (PR #272 review): the identifier `central.connect()`
+    /// was last issued for and has not yet resolved (`completeConnect
+    /// (throwing:)` — "the ONE place a connect chain finishes" — clears
+    /// it either way). Three call sites can each independently decide to
+    /// (re-)arm a connect on the SAME peripheral: an explicit `connect()`
+    /// call's own `performConnectSequence()`, `handleDisconnected`'s
+    /// reconnect-on-loss re-arm, and `handleWillRestoreState`'s
+    /// re-arm for a `.disconnected`/`.disconnecting` restored session —
+    /// e.g. a cold relaunch where restoration races `AppGraph.start()`'s
+    /// own launch auto-connect, or a manual CONNECT tap landing in the
+    /// brief `.disconnected` window between a BLE-level loss and
+    /// `handleDisconnected` regaining `.ready`. All three now go through
+    /// `issueConnect(_:)`, which checks this before calling
+    /// `central.connect()` again. CoreBluetooth tolerates a redundant
+    /// `connect()` on an already-connecting peripheral in practice
+    /// (coalescing onto the one real operation), but that is observed
+    /// behaviour, not a documented contract — this makes "at most one
+    /// native connect outstanding per peripheral" an explicit guarantee
+    /// instead, and one `BLETransportConnectGatingTests` can verify with
+    /// no `CBCentralManager` at all (`shouldIssueConnect(for:pending:)`,
+    /// below, is the pure predicate it drives).
+    private var pendingConnectPeripheralID: UUID?
+
+    /// Pure and testable with no `CBCentralManager` — constructing one
+    /// outside a signed, LaunchServices-launched `.app` bundle aborts
+    /// the process (this file's own header comment), which is exactly
+    /// why the identifier-equality decision itself is split out rather
+    /// than only living inline in `issueConnect(_:)`.
+    public static func shouldIssueConnect(for target: UUID, pendingConnectPeripheralID: UUID?) -> Bool {
+        pendingConnectPeripheralID != target
+    }
+
+    /// The single place a NATIVE `central.connect()` is issued
+    /// (SHOULD-FIX 4). No-ops — does not touch CoreBluetooth at all —
+    /// when a connect for this SAME peripheral is already outstanding;
+    /// whichever delegate callback the already-pending native connect
+    /// eventually produces resolves everyone waiting on it, via the one
+    /// shared `completeConnect(throwing:)` path.
+    private func issueConnect(_ target: CBPeripheral) {
+        guard Self.shouldIssueConnect(for: target.identifier, pendingConnectPeripheralID: pendingConnectPeripheralID) else {
+            BLETransport.log("issueConnect: connect already pending for \(target.identifier) — not re-issuing")
+            return
+        }
+        pendingConnectPeripheralID = target.identifier
+        central?.connect(target, options: nil)
+    }
+
+    /// Fired from `setPreferredPeripheral(_:)` — the composition root's
+    /// hook for persisting "which peripheral to auto-connect to at
+    /// launch" (`SettingsKey.lastPeripheralID`,
+    /// `AppDependencies.live()`). `FireflyMesh` cannot depend on
+    /// `FireflyModel` (`SettingsStoring` lives there, and the dependency
+    /// graph runs the other way — `Package.swift`'s own header), so this
+    /// is a plain closure injected at construction rather than a stored
+    /// settings reference.
+    private let onPreferredPeripheralChanged: (@Sendable (UUID) -> Void)?
+    /// Fired from `markBonded(_:)` — same reasoning, for
+    /// `SettingsKey.bondedPeripheralIDs`.
+    private let onBonded: (@Sendable (UUID) -> Void)?
+
     private static let serviceUUID = CBUUID(string: MeshtasticBLE.serviceUUIDString)
     private static let toRadioUUID = CBUUID(string: MeshtasticBLE.toRadioUUIDString)
     private static let fromRadioUUID = CBUUID(string: MeshtasticBLE.fromRadioUUIDString)
@@ -197,21 +269,27 @@ public actor BLETransport: MeshTransport, NodeScanning {
         bondedPeripheralIDs: Set<UUID> = [],
         connectRetryLimit: Int = 2,
         firstBondConnectTimeout: Duration = .seconds(90),
-        knownBondConnectTimeout: Duration = .seconds(5)
+        knownBondConnectTimeout: Duration = .seconds(5),
+        onPreferredPeripheralChanged: (@Sendable (UUID) -> Void)? = nil,
+        onBonded: (@Sendable (UUID) -> Void)? = nil
     ) {
         self.preferredPeripheralID = preferredPeripheralID
         self.bondedPeripheralIDs = bondedPeripheralIDs
         self.connectRetryLimit = connectRetryLimit
         self.firstBondConnectTimeout = firstBondConnectTimeout
         self.knownBondConnectTimeout = knownBondConnectTimeout
+        self.onPreferredPeripheralChanged = onPreferredPeripheralChanged
+        self.onBonded = onBonded
     }
 
     public func setPreferredPeripheral(_ id: UUID?) {
         preferredPeripheralID = id
+        if let id { onPreferredPeripheralChanged?(id) }
     }
 
     public func markBonded(_ id: UUID) {
         bondedPeripheralIDs.insert(id)
+        onBonded?(id)
     }
 
     public var currentPeripheralID: UUID? { peripheral?.identifier }
@@ -282,7 +360,13 @@ public actor BLETransport: MeshTransport, NodeScanning {
             try await group.next()
             group.cancelAll()
         }
-        hub.yield(.ready)
+        // `.ready` is yielded by `completeConnect(throwing:)` — the ONE
+        // place a connect chain actually finishes successfully, whether
+        // driven by THIS method's own continuation or by a background
+        // reconnect-on-loss / restored-session completion that has no
+        // continuation waiting at all (see that method's own doc
+        // comment). Yielding it here too would double-publish `.ready`
+        // for the ordinary path this method drives.
     }
 
     /// Resumes whichever `performConnectSequence()` continuation is
@@ -322,7 +406,13 @@ public actor BLETransport: MeshTransport, NodeScanning {
         BLETransport.log("performConnectSequence: calling central.connect(\(target.identifier))")
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             self.connectContinuation = cont
-            central.connect(target, options: nil)
+            // SHOULD-FIX 4 (PR #272 review): `issueConnect(_:)`, not a
+            // bare `central.connect(target, options: nil)` — see
+            // `pendingConnectPeripheralID`'s own doc comment for why a
+            // redundant native connect on this identifier must not be
+            // re-issued when a restore or a reconnect-on-loss already
+            // armed one.
+            self.issueConnect(target)
         }
         BLETransport.log("performConnectSequence: central.connect completed")
     }
@@ -356,12 +446,21 @@ public actor BLETransport: MeshTransport, NodeScanning {
     }
 
     public func disconnect() async {
+        // User-initiated — clear the reconnect-on-loss flag BEFORE
+        // `cancelPeripheralConnection`, which itself delivers an
+        // asynchronous `didDisconnectPeripheral` callback
+        // (`handleDisconnected`) later: without this, that callback
+        // would see a peripheral that just disconnected and re-arm a
+        // pending connect on it, undoing the very disconnect the caller
+        // asked for.
+        shouldAutoReconnect = false
         central?.stopScan()
         if let peripheral {
             central?.cancelPeripheralConnection(peripheral)
         }
         failAllPending(TransportError.notConnected)
         peripheral = nil
+        pendingConnectPeripheralID = nil
         toRadioChar = nil; fromRadioChar = nil; fromNumChar = nil; logRadioChar = nil
         hub.yield(.disconnected(reason: nil))
     }
@@ -544,7 +643,34 @@ public actor BLETransport: MeshTransport, NodeScanning {
 
     private func ensureCentralManagerExists() {
         guard central == nil else { return }
-        central = CBCentralManager(delegate: bridge, queue: nil)
+        central = CBCentralManager(delegate: bridge, queue: nil, options: Self.centralManagerOptions)
+    }
+
+    /// M2 — CoreBluetooth state restoration
+    /// (`CBCentralManagerOptionRestoreIdentifierKey`). A FIXED identifier
+    /// is what lets CoreBluetooth reassociate a process iOS relaunches in
+    /// the background (after suspending or killing it while still
+    /// connected) with the peripheral it was talking to —
+    /// `BLEDelegateBridge.centralManager(_:willRestoreState:)` /
+    /// `handleWillRestoreState(peripherals:)` below only fire when the
+    /// manager was created with this key. Behaviour borrowed from
+    /// Meshtastic-Apple's `BLETransport.swift`
+    /// (`kCentralRestoreID`/`centralManagerOptions(restoreIdentifier:)`,
+    /// GPL-3.0, license-compatible per docs/LICENSING.md) —
+    /// re-implemented, not copied source.
+    ///
+    /// iOS only: macOS apps are not relaunched in the background by
+    /// CoreBluetooth the way iOS apps are (there is no background-app
+    /// lifecycle to restore INTO), so `willRestoreState` has nothing to
+    /// do there — the M2 task's own scope note, "on macOS: reconnect on
+    /// loss the same way minus restoration". An empty options dict on
+    /// macOS is the honest "nothing extra requested" default.
+    private static var centralManagerOptions: [String: Any] {
+        #if os(iOS)
+        [CBCentralManagerOptionRestoreIdentifierKey: "com.jakeholland.firefly.ble-central"]
+        #else
+        [:]
+        #endif
     }
 
     /// Waits for `CBManagerState.poweredOn`. Throws plainly for the
@@ -650,13 +776,40 @@ public actor BLETransport: MeshTransport, NodeScanning {
 
     func handleDisconnected(peripheral: CBPeripheral, error: Error?) {
         BLETransport.log("didDisconnectPeripheral \(peripheral.identifier) error=\(String(describing: error))")
+        // Whatever connect WAS pending (if any) is over now, from
+        // CoreBluetooth's own perspective — cleared unconditionally
+        // before the reconnect-on-loss branch below re-arms a fresh one
+        // through `issueConnect(_:)`, so a stale identifier here can
+        // never suppress a legitimate re-arm.
+        pendingConnectPeripheralID = nil
+        var isBondLost = false
         if let error, let failure = BLEPairingFailure(classifying: error) {
             lastPairingFailure = failure
+            isBondLost = (failure == .bondLost)
         }
-        self.peripheral = nil
         toRadioChar = nil; fromRadioChar = nil; fromNumChar = nil; logRadioChar = nil
         failAllPending(error ?? TransportError.notConnected)
         hub.yield(.disconnected(reason: error.map { String(describing: $0) }))
+
+        // M2 — reconnect-on-loss ("stays connected in a pocket,
+        // reconnects on its own", docs/specs/A01-companion-app.md). A
+        // lost bond is terminal (`BLEPairingFailure`'s own doc comment);
+        // any other unexpected loss re-issues `central.connect()` on the
+        // SAME `CBPeripheral` object rather than clearing it.
+        if shouldAutoReconnect, !isBondLost {
+            // This is a PENDING connect, not a poll: CoreBluetooth holds
+            // it open — even backgrounded, given `bluetooth-central` in
+            // `UIBackgroundModes` — until the peripheral is back in range
+            // or powered back on, and resumes exactly where
+            // `handleConnected` picks up. No scanning, no timer — the
+            // battery-conscious mechanism the M2 task calls out ("use
+            // that rather than polling scans"). `issueConnect(_:)`, not
+            // a bare `central?.connect(...)` — SHOULD-FIX 4.
+            issueConnect(peripheral)
+        } else {
+            self.peripheral = nil
+            shouldAutoReconnect = false
+        }
     }
 
     func handleDiscoveredServices(peripheral: CBPeripheral, error: Error?) {
@@ -724,7 +877,7 @@ public actor BLETransport: MeshTransport, NodeScanning {
             return
         }
         if let id = peripheral?.identifier {
-            bondedPeripheralIDs.insert(id)
+            markBonded(id)
         }
         completeConnect(throwing: nil)
         kickDrain() // trigger: subscriptionAcknowledged
@@ -770,13 +923,118 @@ public actor BLETransport: MeshTransport, NodeScanning {
         }
     }
 
+    /// The ONE place a connect chain finishes — successfully or not,
+    /// whether driven by an active `connect()` call's own continuation
+    /// or (M2) by a background reconnect-on-loss / restored-session
+    /// completion that has none (`handleDisconnected`'s re-armed
+    /// `central.connect()`, `handleWillRestoreState`'s `.connecting`/
+    /// `.connected` cases — none of those go through
+    /// `performConnectSequence()`, so `connectContinuation` is nil for
+    /// them). `hub.yield(.ready)` and `shouldAutoReconnect = true` on
+    /// success live HERE, unconditionally, rather than in
+    /// `attemptConnect()` (which only drives the continuation-backed
+    /// path), so both shapes end up honestly `.ready` and re-armed for
+    /// the NEXT loss.
     private func completeConnect(throwing error: Error?) {
-        guard let cont = connectContinuation else { return }
-        connectContinuation = nil
+        // SHOULD-FIX 4 (PR #272 review): this IS the connect chain's own
+        // completion, whichever of the three `issueConnect(_:)` call
+        // sites armed it — clear the pending-identifier guard
+        // unconditionally, success or failure, so the NEXT legitimate
+        // connect attempt for this (or any) peripheral is never silently
+        // suppressed by a stale value.
+        pendingConnectPeripheralID = nil
         if let error {
+            guard let cont = connectContinuation else { return }
+            connectContinuation = nil
             cont.resume(throwing: error)
-        } else {
+            return
+        }
+        if let cont = connectContinuation {
+            connectContinuation = nil
+            shouldAutoReconnect = true
+            hub.yield(.ready)
             cont.resume()
+            return
+        }
+        // No continuation waiting: only a background reconnect-on-loss /
+        // restored-session completion should reach here (see this
+        // method's own doc comment) — and only while a peripheral is
+        // still actually tracked. A stray delegate callback arriving
+        // after an explicit `disconnect()` (which clears `peripheral`)
+        // must not resurrect a `.ready` for a connection nobody asked to
+        // keep.
+        guard peripheral != nil else { return }
+        shouldAutoReconnect = true
+        hub.yield(.ready)
+    }
+
+    /// M2 — CoreBluetooth state restoration
+    /// (`CBCentralManagerOptionRestoreIdentifierKey`, `ensureCentralManagerExists`'s
+    /// own doc comment). Called from `BLEDelegateBridge.centralManager
+    /// (_:willRestoreState:)` when the OS relaunches this process while
+    /// it was still connected (or mid-connect) to a peripheral in the
+    /// background. Never constructs a second `CBCentralManager` — this
+    /// fires on the SAME manager `ensureCentralManagerExists()` just
+    /// created with the restore identifier — and never duplicates
+    /// `hub`/`discoveryHub` subscriptions, since it does not touch them
+    /// at all beyond the normal connect-chain path every other
+    /// connection completes through (`completeConnect(throwing:)`).
+    ///
+    /// Behaviour borrowed from Meshtastic-Apple's `BLETransport.swift`
+    /// (`handleWillRestoreState(dict:central:)`, GPL-3.0,
+    /// license-compatible per docs/LICENSING.md) — re-implemented, not
+    /// copied source: branch on the restored peripheral's own
+    /// `CBPeripheralState` rather than assume one.
+    func handleWillRestoreState(peripherals: [CBPeripheral]) {
+        guard let restored = peripherals.first(where: { $0.identifier == preferredPeripheralID }) ?? peripherals.first else {
+            BLETransport.log("willRestoreState: no peripherals in the restore dictionary")
+            return
+        }
+        BLETransport.log("willRestoreState: restoring \(restored.identifier), CBPeripheralState=\(restored.state.rawValue)")
+        peripheral = restored
+        restored.delegate = bridge
+        // `setPreferredPeripheral(_:)`, not a raw assignment: on the
+        // (rare) path where no already-remembered id matched anything
+        // in the restore dictionary and this fell back to `.first`,
+        // `restored.identifier` may be a DIFFERENT id than whatever was
+        // last persisted — routing it through the same setter keeps
+        // `SettingsKey.lastPeripheralID` honestly current either way.
+        setPreferredPeripheral(restored.identifier)
+        shouldAutoReconnect = true
+
+        switch restored.state {
+        case .connected:
+            // Already connected at the GATT level. THIS process's own
+            // characteristic references are gone (a fresh launch) —
+            // rediscover them; no `central.connect()` needed, it already
+            // is connected. Flows into the same `handleDiscoveredServices`
+            // → ... → `completeConnect(throwing: nil)` chain as any other
+            // connect, so `.ready` is published the same honest way.
+            restored.discoverServices([Self.serviceUUID])
+        case .connecting:
+            // A pending connect from before the relaunch — CoreBluetooth
+            // resumes it on its own; `didConnect` fires when it lands.
+            // Recorded as pending (SHOULD-FIX 4, PR #272 review) so an
+            // explicit `connect()` call racing this relaunch
+            // (`performConnectSequence()`, via `issueConnect(_:)`) does
+            // not redundantly issue a SECOND native `central.connect()`
+            // for the very same peripheral.
+            pendingConnectPeripheralID = restored.identifier
+        default:
+            // .disconnected/.disconnecting: re-arm a pending connect the
+            // same way `handleDisconnected` does for a mid-session drop.
+            // `issueConnect(_:)` (SHOULD-FIX 4, PR #272 review) is what
+            // keeps this from double-issuing `central.connect()` against
+            // an explicit `connect()` call already mid-
+            // `performConnectSequence()` for the very same peripheral
+            // (both would otherwise race the instant this process
+            // launches with a pending auto-connect, `AppGraph.start()`'s
+            // own doc comment) — a strict generalization of the old
+            // `connectContinuation == nil` guard this replaces: that
+            // only caught HALF of this race (restoration losing to an
+            // already-in-flight `performConnectSequence()`), never the
+            // reciprocal direction.
+            issueConnect(restored)
         }
     }
 }

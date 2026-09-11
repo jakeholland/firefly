@@ -125,6 +125,12 @@ struct ConnectScreen: View {
                     .foregroundStyle(statusColor)
             }
 
+            if let lastConnected = connect.lastConnectedLabel {
+                Text(lastConnected)
+                    .font(.footnote)
+                    .foregroundStyle(Color.ffMuted)
+            }
+
             if let error = connect.lastError {
                 Text(error)
                     .font(.footnote)
@@ -132,25 +138,49 @@ struct ConnectScreen: View {
             }
 
             HStack(spacing: 12) {
-                Button("CONNECT") { Task { await connect.connect() } }
+                // NIT (PR #272 review): `connect.connectButtonLabel` reads
+                // "RETRY" once the bounded handshake-retry loop has given
+                // up (`.failed`) — a visible terminal-state action,
+                // rather than a silent re-enable of a button still
+                // labeled for a first-time connect.
+                Button(connect.connectButtonLabel) { Task { await connect.connect() } }
                     .buttonStyle(.borderedProminent)
                     .tint(.ffAmber)
                     .foregroundStyle(Color.ffBackground)
-                    .disabled(connect.link == .ready || connect.link == .connecting || connect.link == .handshaking)
+                    .disabled(connect.isBusyOrConnected)
 
+                // SHOULD-FIX 3 (PR #272 review): gated on
+                // `ConnectViewModel.isDisconnectable`, not `link == .ready`
+                // — see that property's own doc comment for why a
+                // `.connecting`/`.handshaking`/`.reconnecting` link must
+                // stay abortable.
                 Button("DISCONNECT") { Task { await connect.disconnect() } }
                     .buttonStyle(.bordered)
                     .tint(.ffMuted)
-                    .disabled(connect.link != .ready)
+                    .disabled(!connect.isDisconnectable)
+
+                Button("FORGET") { Task { await connect.forgetNode() } }
+                    .buttonStyle(.bordered)
+                    .tint(.ffAlert)
+                    .disabled(!connect.canForgetNode)
             }
             .frame(minHeight: 44)
+
+            // SHOULD-FIX 5 (PR #272 review): plain DISCONNECT deliberately
+            // never clears the remembered node — matches Meshtastic-Apple's
+            // own `AccessoryManager.disconnect()`, which also never
+            // touches `UserDefaults.preferredPeripheralId`. FORGET, above,
+            // is the only action that does.
+            Text("DISCONNECT keeps this radio remembered for next launch. FORGET clears it.")
+                .font(.caption2)
+                .foregroundStyle(Color.ffMuted)
         }
     }
 
     private var statusColor: Color {
         switch connect.link {
         case .ready: return .ffLiveGreen
-        case .handshaking, .connecting: return .ffAmber
+        case .handshaking, .connecting, .reconnecting: return .ffAmber
         case .failed: return .ffAlert
         case .disconnected: return .ffMuted
         }

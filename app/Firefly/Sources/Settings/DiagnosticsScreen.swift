@@ -11,6 +11,7 @@ struct DiagnosticsScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 row(label: "Link state", value: model.linkStateLabel, isLive: true)
+                row(label: "Link uptime", value: model.uptimeLabel, isLive: true)
                 row(label: "Heard in last 10 min", value: model.heardInLast10MinCount, isLive: false)
                 row(label: "Packets in", value: model.packetsIn, isLive: false)
                 row(label: "Packets out", value: model.packetsOut, isLive: false)

@@ -33,4 +33,100 @@ final class BLEContractTests: XCTestCase {
         XCTAssertEqual(Set(FromRadioDrainPolicy.Trigger.allCases),
                        [.subscriptionAcknowledged, .fromNumNotification, .toRadioWriteCompleted])
     }
+
+    // MARK: - M2: peripheral-persistence closures (no CoreBluetooth
+    // involved — merely constructing `BLETransport()` is safe anywhere,
+    // per its own file-level doc comment and
+    // `DemoRunnerTests.testLiveDependenciesNeverConstructTheDemoClient`,
+    // which already does exactly that via `AppDependencies.live()`;
+    // only `connect()`/`scan()` ever touch a real `CBCentralManager`,
+    // and neither is called here).
+
+    /// `AppDependencies.live()`'s composition-root wiring
+    /// (`onPreferredPeripheralChanged`/`onBonded`) is a thin pass-through
+    /// onto these two calls — this pins the calls themselves, which is
+    /// where `SettingsKey.lastPeripheralID`/`.bondedPeripheralIDs`
+    /// actually get kept current (docs/specs/A01-companion-app.md, M2:
+    /// "remembering the last connected peripheral identifier").
+    func testSetPreferredPeripheralFiresThePersistenceClosure() async {
+        let id = UUID()
+        let changed = Locked<UUID?>(nil)
+        let transport = BLETransport(onPreferredPeripheralChanged: { changed.value = $0 })
+
+        await transport.setPreferredPeripheral(id)
+
+        XCTAssertEqual(changed.value, id)
+        let stored = await transport.preferredPeripheralID
+        XCTAssertEqual(stored, id)
+    }
+
+    /// Setting `nil` (e.g. "forget this node") must not fire the
+    /// closure with a bogus value — there is nothing to persist.
+    func testSetPreferredPeripheralToNilDoesNotFireTheClosure() async {
+        let calls = Locked<Int>(0)
+        let transport = BLETransport(onPreferredPeripheralChanged: { _ in calls.value += 1 })
+
+        await transport.setPreferredPeripheral(nil)
+
+        XCTAssertEqual(calls.value, 0)
+    }
+
+    // MARK: - SHOULD-FIX 4 (PR #272 review): connect-pending guard
+    //
+    // `BLETransport.performConnectSequence()` can no longer be exercised
+    // with a real `CBCentralManager` in `swift test` (that would abort
+    // the process — this type's own file-level doc comment), so this
+    // pins the PURE decision the guard is built on
+    // (`shouldIssueConnect(for:pendingConnectPeripheralID:)`) rather
+    // than the CoreBluetooth call site itself: whether a NEW native
+    // `central.connect()` should be issued for a peripheral, given
+    // whichever identifier (if any) already has one outstanding — the
+    // guard `issueConnect(_:)` uses at all three call sites that can
+    // arm a connect (an explicit `connect()`'s own
+    // `performConnectSequence()`, `handleDisconnected`'s
+    // reconnect-on-loss re-arm, `handleWillRestoreState`'s re-arm).
+
+    func testShouldIssueConnectWhenNothingIsPending() {
+        let target = UUID()
+        XCTAssertTrue(BLETransport.shouldIssueConnect(for: target, pendingConnectPeripheralID: nil))
+    }
+
+    func testShouldNotIssueConnectWhenTheSamePeripheralIsAlreadyPending() {
+        let target = UUID()
+        XCTAssertFalse(BLETransport.shouldIssueConnect(for: target, pendingConnectPeripheralID: target),
+                        "a restore or a reconnect-on-loss re-arm already has this exact peripheral pending — " +
+                        "an explicit connect() must not redundantly issue a second native central.connect()")
+    }
+
+    func testShouldIssueConnectForADifferentPeripheralEvenWhileAnotherIsPending() {
+        let pending = UUID()
+        let other = UUID()
+        XCTAssertTrue(BLETransport.shouldIssueConnect(for: other, pendingConnectPeripheralID: pending),
+                       "a pending connect for a DIFFERENT identifier must never suppress a fresh one")
+    }
+
+    func testMarkBondedFiresThePersistenceClosureAndRecordsTheID() async {
+        let id = UUID()
+        let bonded = Locked<[UUID]>([])
+        let transport = BLETransport(onBonded: { bonded.value.append($0) })
+
+        await transport.markBonded(id)
+
+        XCTAssertEqual(bonded.value, [id])
+        let stored = await transport.bondedPeripheralIDs
+        XCTAssertEqual(stored, [id])
+    }
+
+    /// A test-local lock box — `NSLock`-backed, same shape as
+    /// `FireflyMesh.LockedValue`, kept private to this file rather than
+    /// widening that internal type's access level just for a test.
+    private final class Locked<Value>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: Value
+        init(_ initial: Value) { storage = initial }
+        var value: Value {
+            get { lock.lock(); defer { lock.unlock() }; return storage }
+            set { lock.lock(); defer { lock.unlock() }; storage = newValue }
+        }
+    }
 }

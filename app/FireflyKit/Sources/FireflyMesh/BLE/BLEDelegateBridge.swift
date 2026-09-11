@@ -30,6 +30,15 @@ final class BLEDelegateBridge: NSObject, CBCentralManagerDelegate, CBPeripheralD
         Task { await transport?.handleCentralStateUpdate(central.state) }
     }
 
+    /// M2 — CoreBluetooth state restoration
+    /// (`BLETransport.ensureCentralManagerExists`'s own doc comment).
+    /// Only fires on iOS, and only when the manager was created with
+    /// `CBCentralManagerOptionRestoreIdentifierKey`.
+    func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+        let peripherals = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral]) ?? []
+        Task { await transport?.handleWillRestoreState(peripherals: peripherals) }
+    }
+
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                          advertisementData: [String: Any], rssi RSSI: NSNumber) {
         let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name
