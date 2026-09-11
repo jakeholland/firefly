@@ -30,6 +30,14 @@ public final class CoreStore {
     /// the view model's.
     public private(set) var linkState: LinkState = .disconnected
 
+    /// The crew roster — slice B's `Bridge/CrewStore.swift`, heap-owning
+    /// one `ff_crew_t`. Confined to this `@MainActor` instance, per the
+    /// threading model: the C core has no locks, by design.
+    public let crew = CrewStore()
+    /// The event feed — slice B's `Bridge/InboxBridge.swift`, heap-owning
+    /// one `ff_feed_t`. Same confinement rule as `crew`.
+    public let inbox = InboxBridge()
+
     private var linkObservation: Task<Void, Never>?
     private var nodeObservation: Task<Void, Never>?
     private var deliveryObservation: Task<Void, Never>?
@@ -79,12 +87,50 @@ public final class CoreStore {
         deliveryObservation?.cancel(); deliveryObservation = nil
     }
 
-    /// Slice B fills this in: route into `ff_crew_on_position` /
+    /// Routes a node snapshot into `ff_crew_on_position` /
     /// `ff_crew_on_rssi` / `ff_crew_on_heard` through
-    /// `Bridge/CrewStore.swift`. A no-op here on purpose.
-    public func apply(nodeUpdate: MeshNodeSnapshot) {}
+    /// `Bridge/CrewStore.swift`. Never fabricates: a field the snapshot
+    /// doesn't carry (no position, no direct RSSI) simply isn't fed —
+    /// there is no synthesized fallback for any of the three.
+    public func apply(nodeUpdate: MeshNodeSnapshot) {
+        let now = FireflyClock.nowMillis()
 
-    /// Slice B/E fills this in: `ff_feed_set_send_status_by_outbox_id`
-    /// through `Bridge/InboxBridge.swift`.
-    public func apply(delivery: (packetID: UInt32, state: DeliveryState)) {}
+        if let position = nodeUpdate.position {
+            let rxTime = position.time.map(FireflyClock.millis(since:)) ?? now
+            let meta = CrewStore.PositionMeta(asserted: position.source == .manual,
+                                               precisionBits: position.precisionBits)
+            crew.onPosition(nodeID: nodeUpdate.num, latitude: position.latitude, longitude: position.longitude,
+                             rxTimeMs: rxTime, meta: meta)
+        }
+
+        // RSSI/SNR are per-packet and only attributable when the packet
+        // came directly (docs/specs/A01-companion-app.md, "NodeDB"): a
+        // bare `hopsAway == 0` is what the client layer (slice A) uses
+        // to mean DIRECT, never a default for "unknown".
+        let direct = nodeUpdate.hopsAway == 0
+        if direct, let rssiDbm = nodeUpdate.rssiDbm {
+            crew.onRSSI(nodeID: nodeUpdate.num, rssiDbm: rssiDbm)
+        }
+
+        let heardAt = nodeUpdate.lastHeard.map(FireflyClock.millis(since:)) ?? now
+        crew.onHeard(nodeID: nodeUpdate.num, rxTimeMs: heardAt, direct: direct)
+    }
+
+    /// Routes a delivery-state transition into
+    /// `ff_feed_set_send_status_by_outbox_id` through
+    /// `Bridge/InboxBridge.swift`. `DeliveryState` (FireflyMesh) and
+    /// `FeedSendStatus` (this module's Bridge/* vocabulary, which never
+    /// imports FireflyMesh — see InboxBridge.swift's top comment) meet
+    /// exactly here, the one seam that legitimately depends on both.
+    public func apply(delivery: (packetID: UInt32, state: DeliveryState)) {
+        let status: FeedSendStatus
+        switch delivery.state {
+        case .waiting: status = .waiting
+        case .sent: status = .sent
+        case .delivered: status = .delivered
+        case .noAck: status = .noAck
+        case .dropped: status = .dropped
+        }
+        inbox.setSendStatus(outboxID: delivery.packetID, status: status, atMs: FireflyClock.nowMillis())
+    }
 }
