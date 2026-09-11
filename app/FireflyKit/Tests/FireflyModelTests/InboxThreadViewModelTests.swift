@@ -42,6 +42,7 @@ private final class OrderingMockClient: MeshtasticClientProtocol, @unchecked Sen
     func linkState() -> AsyncStream<LinkState> { linkHub.subscribe() }
     func nodeUpdates() -> AsyncStream<MeshNodeSnapshot> { EventHub<MeshNodeSnapshot>().subscribe() }
     func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
+    func incomingTexts() -> AsyncStream<IncomingText> { EventHub<IncomingText>().subscribe() }
 
     func connect() async throws { linkHub.yield(.ready) }
     func disconnect() async { linkHub.yield(.disconnected) }
