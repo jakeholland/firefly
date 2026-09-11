@@ -175,13 +175,49 @@ final class BridgeCrewStoreTests: XCTestCase {
         XCTAssertNil(store.member(nodeID: 1, now: 0)?.batteryPercent)
     }
 
-    // MARK: - Roster policy: no eviction when full (FF_CREW_MAX = 8).
+    // MARK: - Roster policy: bounded unpaired-LRU eviction (FF_CREW_MAX = 8),
+    // 2026-09-11 [api] ff_crew.h's S02 amendment (issue #266). Mirrors
+    // firmware/core/tests/test_crew.c's S02_AC10* group.
 
-    func testRosterHasNoEvictionWhenFull() {
+    func testRosterEvictsLRUStrangerWhenFullOfUnpaired() {
         let store = CrewStore(now: { 0 })
         for id in 1...8 { XCTAssertTrue(store.upsert(nodeID: UInt32(id))) }
-        XCTAssertFalse(store.upsert(nodeID: 9), "a 9th distinct id must be rejected, not evict an existing one")
-        XCTAssertEqual(store.members(now: 0).count, 8)
+        // A 9th distinct id now succeeds by evicting the LRU stranger,
+        // rather than being rejected outright.
+        XCTAssertTrue(store.upsert(nodeID: 9), "a roster full of mere strangers must admit a genuinely new node")
+        XCTAssertEqual(store.members(now: 0).count, 8, "still bounded at FF_CREW_MAX - a slot was reused, not grown")
+    }
+
+    func testPairingNewNodeOnFullStrangerRosterSucceeds() {
+        // The issue's actual complaint: a public-mesh-flooded roster must
+        // not block pairing a real friend.
+        let store = CrewStore(now: { 0 })
+        for id in 1...8 { XCTAssertTrue(store.upsert(nodeID: UInt32(id))) }
+        XCTAssertTrue(store.setPaired(nodeID: 999, paired: true))
+        XCTAssertEqual(store.member(nodeID: 999, now: 0)?.paired, true)
+    }
+
+    func testNinthPairingFailsOnlyOnceEightAreAlreadyPaired() {
+        let store = CrewStore(now: { 0 })
+        for id in 1...8 { XCTAssertTrue(store.setPaired(nodeID: UInt32(id), paired: true)) }
+        XCTAssertFalse(store.upsert(nodeID: 999))
+        XCTAssertFalse(store.setPaired(nodeID: 999, paired: true))
+        // Every original paired member is untouched.
+        for id in 1...8 {
+            XCTAssertEqual(store.member(nodeID: UInt32(id), now: 0)?.paired, true)
+        }
+    }
+
+    func testPairedMembersAreNeverEvictedByStrangerChurn() {
+        let store = CrewStore(now: { 0 })
+        store.setPaired(nodeID: 1, paired: true)
+        store.setPaired(nodeID: 2, paired: true)
+        for id in UInt32(100)...UInt32(199) {
+            store.upsert(nodeID: id)
+        }
+        XCTAssertEqual(store.member(nodeID: 1, now: 0)?.paired, true)
+        XCTAssertEqual(store.member(nodeID: 2, now: 0)?.paired, true)
+        XCTAssertEqual(store.count, 8)
     }
 
     // MARK: - Selection.

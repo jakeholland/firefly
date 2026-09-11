@@ -186,3 +186,177 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
   exists purely for RADAR_SIGNAL's direct-vs-relay distinction. This
   spec's own AC9 tests are unaffected; the new field is covered by S29's
   own `test_crew.c`/`test_shell.c` additions instead.
+
+- **2026-09-11, maintainer decision — bounded unpaired-LRU roster
+  eviction** (issue #266: "`ff_crew` roster (FF_CREW_MAX 8, no eviction)
+  fills with strangers on a busy public mesh"). `ff_crew_t`'s fixed 8
+  slots previously had a hard "no eviction in v1" policy (old AC2): once
+  full, `ff_crew_upsert`/`ff_crew_set_paired` returned NULL/no-op for any
+  node not already present, EVEN IF every occupied slot was merely heard,
+  never paired. On a busy public mesh this starves real pairing before it
+  can ever happen.
+
+  **Root cause, verified before writing this amendment (AGENTS.md "measure,
+  not reasoning harder"):** firmware's own RF ingestion was NOT actually
+  exposed to this — `app/ff_wiring.c` and `app/ff_shell.c`'s
+  `shell_ev_rx_meta`/`shell_ev_position` already gate every inbound path
+  behind a READ-ONLY `ff_crew_find` first (see `ff_shell.h`'s "THE ROSTER
+  TRUST POLICY" block and `ff_wiring.h`'s matching note, both from the
+  earlier S08 PR #25 fix) — an unknown/unpaired sender is noted in the
+  separate, bounded, LRU-evictable `core/include/ff_heard.h` list and
+  NEVER touches `ff_crew_t` at all. The actual live exposure, confirmed by
+  reading `app/FireflyKit/Sources/FireflyModel/CoreStore.swift`'s
+  `apply(nodeUpdate:)` (wired up in PR #265's M1 integration, which is
+  what surfaced #266): it calls `crew.onPosition`/`crew.onRSSI`/
+  `crew.onHeard`/`crew.setIdentity` **unconditionally** for every node
+  snapshot the mesh client reports, with none of `ff_shell.c`'s
+  paired-gating and no companion-app equivalent of `ff_heard_t` to bounce
+  strangers into instead. On a busy public mesh (the bench Heltecs already
+  hear ~199 nodes; Lost Lands will be busier) the 8-slot roster fills with
+  strangers via the companion app before the wearer pairs anyone, and the
+  pre-amendment policy then let NO further pairing succeed at all.
+
+  **Ruling: fix this in `ff_crew_t` itself, not only in the Swift
+  bridge.** Teaching `CoreStore.swift` to replicate `ff_shell.c`'s
+  paired-gate (or to grow its own `ff_heard`-equivalent) would fix the one
+  known caller, but the issue is filed and scoped as `core:` for a reason
+  — `ff_crew_upsert`/`ff_crew_set_paired`/`ff_crew_on_*` are the shared
+  contract every current AND future caller (firmware, the companion app,
+  the sim bench) relies on, and a caller-side workaround leaves the same
+  footgun for the next one. The core API should be safe to call the way
+  its own doc comments already describe it ("find-or-creates the slot"),
+  not safe only for callers that happen to pre-gate correctly.
+
+  **New policy (`ff_crew.h`/`ff_crew.c`):** `FF_CREW_MAX` stays 8 — no
+  struct growth (`_Static_assert` in `ff_crew.h`, `firmware/tools/
+  check_dram_budget.py` both still pass; nothing new was added to
+  `ff_crew_member_t` or `ff_crew_t`, only `crew_find_or_create`'s
+  internal behavior changed). Paired members are **pinned**: never a
+  candidate for eviction, full stop. Unpaired ("merely heard") members
+  share the SAME `FF_CREW_MAX` array slots as a **bounded LRU keyed on
+  `last_heard_ms`**. When the roster is full (`count == FF_CREW_MAX`) and
+  a genuinely new node id needs a slot — reached through
+  `ff_crew_upsert`, `ff_crew_set_paired`, `ff_crew_on_position`,
+  `ff_crew_on_rssi`, or `ff_crew_on_heard`, all of which still share the
+  one `crew_find_or_create` implementation — the UNPAIRED occupant with
+  the OLDEST `last_heard_ms` is evicted and its slot reused for the new
+  id. An unpaired occupant that has never once been the target of
+  `ff_crew_on_heard` (`has_heard == false` — e.g. a slot created purely
+  via `ff_crew_upsert`/`ff_crew_on_position`/`ff_crew_on_rssi` with no
+  accompanying "heard" call) is treated as maximally stale and evicted
+  before any occupant with real heard evidence, on the reasoning that "no
+  heard timestamp at all" is a weaker claim on the slot than "heard X ms
+  ago", however large X is. The node currently being upserted is never
+  itself an eviction candidate — it doesn't own a slot yet by
+  definition. `crew_find_or_create` returns NULL — an **honest failure**
+  — only when every one of the 8 occupied slots is paired; by
+  construction that is exactly the "8 already paired" case, since if
+  `paired_count < count == FF_CREW_MAX` there is always at least one
+  unpaired occupant to evict (pigeonhole). Net effect: **pairing a node
+  not currently in the roster always succeeds while `paired_count <
+  FF_CREW_MAX`** (evicting the LRU stranger if the roster happens to be
+  full of them), and fails honestly only once all 8 slots are genuinely
+  paired — exactly the issue's proposed fix, implemented as one shared
+  policy inside the existing 8 slots rather than a second array.
+
+  **`ff_crew_set_paired` signature change `[api]`:** `void` →
+  `bool`, returning whether `node_id` ended up in the roster with the
+  requested `paired` value (false only on the "8 already paired, `node_id`
+  wasn't one of them" failure). Every call site is audited in this same
+  change (grep for `ff_crew_set_paired`); C callers that ignore the
+  return value (most existing ones — `ff_shell.c`'s `shell_pair` already
+  pre-checks via `ff_crew_upsert`'s own NULL return) compile and behave
+  identically. The Swift bridge (`CrewStore.setPaired`) now returns and
+  is `@discardableResult`, so the not-yet-built pairing UI can show an
+  honest "roster full" failure instead of a silent no-op.
+
+  **What happens to an evicted stranger's data — decision: DROPPED,
+  entirely, including RSSI trend history.** A reused slot is
+  `memset`-zeroed exactly like a brand-new one (same code path,
+  `crew_find_or_create`'s existing zeroing), and its parallel RSSI
+  trend-window ring buffer (`ff_crew_t.rssi_hist[idx]`/
+  `rssi_hist_count[idx]`/`rssi_hist_head[idx]`) is reset alongside it —
+  nothing about the evicted node's position, battery, status, RSSI
+  history, or heard timestamp survives. This is a deliberate
+  simplification, not an oversight: an evicted stranger was, by
+  definition, the LEAST recently heard unpaired occupant in the roster at
+  the moment of eviction — the roster's least valuable entry — and if
+  that same node id is heard again later it starts a fresh record like
+  any other new node, which is honest (CLAUDE.md: never fake freshness)
+  rather than surprising (a lingering `rssi_dbm`/`pos` from a since-evicted
+  sighting would be stale data with no way for a reader to know it
+  belonged to a DIFFERENT occupancy of the slot). The "surface recently
+  heard strangers for pairing" use case this data would otherwise serve
+  is `core/include/ff_heard.h`'s job, not `ff_crew_t`'s — see below.
+
+  **Selection/persistence order — an accepted, documented consequence,
+  not fixed here.** `ff_crew_selected`'s self-heal ("first paired
+  member") and `shell_sync_paired_settings`'s persisted `paired_ids` both
+  read the roster in SLOT order. Before this amendment, with zero
+  eviction ever, slot order was ALWAYS identical to pairing chronological
+  order (every new id was simply appended). After this amendment, a
+  paired member's slot is still stable for its entire paired lifetime
+  (paired members are pinned, never moved or evicted) — but slot order no
+  longer necessarily equals the order the wearer actually paired people
+  in, if an eviction happened to reuse a lower-index slot for a
+  later-paired friend than a higher-index slot already held. Preserving
+  literal pairing chronology would need a separate monotonic sequence
+  field per member — struct growth this amendment deliberately avoids
+  (`check_dram_budget.py`, "do not silently grow the struct"). Flagged
+  here rather than silently guessed at; revisit if product ever needs
+  "my crew, in the order I added them" as a literal guarantee.
+  `firmware/app/ff_shell.c`'s `shell_pair` also had a latent bug this
+  amendment's eviction would have exposed: its app-assigned `color_idx`
+  used to be derived from `sh->crew.count - 1` (valid only when every new
+  member is APPENDED, i.e. exactly the old no-eviction world) — fixed in
+  this same change to use the member's actual slot index
+  (`m - sh->crew.members`), which is correct whether the slot was
+  appended or reused via eviction.
+
+  **"Add from heard nodes" — should it read the same roster? Reasoned
+  answer: NO for firmware, YES-BY-DEFAULT-ALREADY for the companion app,
+  and that split is correct, not an oversight.** `firmware/app/ff_shell.c`'s
+  CREW page already reads its "add from heard nodes" list from
+  `sh->heard` (`core/include/ff_heard.h`, `FF_HEARD_MAX` = 16), a
+  SEPARATE bounded LRU sized independently of how many friends are
+  already paired — this is NOT changed by this amendment, and should not
+  be: `ff_crew_t`'s own unpaired-LRU capacity is `FF_CREW_MAX -
+  paired_count`, which SHRINKS toward zero as the wearer pairs more
+  friends and hits exactly zero at a full 8/8 roster — precisely the
+  moment "who else is nearby, in case I want to swap someone in" matters
+  most. Pointing the CREW page at `ff_crew_t` instead of `ff_heard_t`
+  would be a strict regression (fewer, shrinking slots vs. a fixed 16),
+  so it stays on `ff_heard_t`. The companion app (`app/FireflyKit`) has
+  no Swift-side equivalent of `ff_heard_t` yet, so a future Nearby list
+  there will necessarily read `CrewStore.members(now:)` filtered to
+  `paired == false` — which this amendment makes honestly bounded and
+  self-evicting instead of "fills up and then silently stops admitting
+  strangers", a real improvement — but it inherits the same
+  shrinks-as-you-pair ceiling `ff_heard_t` was built to avoid on the
+  firmware side. Flagged, not silently accepted as equivalent: a
+  companion-app-side `ff_heard` bridge (mirroring firmware's split) is
+  the correct long-term fix for that gap and is out of scope for this PR.
+
+  **New AC10 — roster eviction policy** (`firmware/core/tests/
+  test_crew.c`'s `S02_AC10_*` group):
+  - Filling all `FF_CREW_MAX` slots with never-paired strangers, then
+    pairing a brand-new node succeeds and evicts the least-recently-heard
+    stranger (by `last_heard_ms`), never an arbitrary one.
+  - With all `FF_CREW_MAX` slots paired, a 9th pairing attempt fails
+    honestly (`ff_crew_upsert` returns NULL, `ff_crew_set_paired` returns
+    false) and leaves every existing paired member untouched.
+  - A paired member is never evicted no matter how many strangers arrive
+    afterward — exercised both directly and via a fuzz-style burst.
+  - Eviction order follows `last_heard_ms` strictly, including the
+    never-heard-is-maximally-stale rule above; a targeted fixture with
+    known timestamps names the exact expected victim at each step.
+  - Evicting a stranger who had a position/RSSI/status recorded drops all
+    of it cleanly — the reused slot reads exactly like a brand-new one
+    (`has_pos == false`, `battery_pct == -1`, `rssi_dbm == INT16_MIN`,
+    `has_heard == false`), never a stale leftover field from the evicted
+    occupant.
+  - Fuzz smoke: 10k random heard/pair/unpair operations over a bounded id
+    space never corrupt roster invariants — `count` never exceeds
+    `FF_CREW_MAX`, no duplicate `node_id`s, every currently-paired member
+    is never seen to vanish or change identity across the run, no
+    out-of-bounds slot index is ever produced.

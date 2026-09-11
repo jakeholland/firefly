@@ -175,6 +175,19 @@ public final class CrewStore {
     /// tuple with no per-index accessor in the public header; `members`
     /// below reads each one back through `ff_crew_find`, the same
     /// public entry point any other caller would use).
+    ///
+    /// 2026-09-11 [api] S02 amendment (issue #266): now that core can
+    /// evict an unpaired occupant, an id can vanish from `ff_crew_t`
+    /// while staying in this array (`members(now:)`'s `compactMap`
+    /// already filters it out correctly via `member(nodeID:now:)`
+    /// returning nil for a miss — no incorrect member is ever returned).
+    /// This array itself is never pruned on eviction, so it grows by one
+    /// entry per DISTINCT id ever seen for the life of the store, not
+    /// bounded by `FF_CREW_MAX` — acceptable for a `UInt32` array (a
+    /// festival-length session on a busy public mesh is thousands of
+    /// entries, not millions), flagged here rather than silently ignored
+    /// as a known, deliberately-unaddressed consequence of this PR
+    /// rather than something it introduces as a "fix".
     private var nodeIDs: [UInt32] = []
 
     public init(now: @escaping () -> UInt32 = FireflyClock.nowMillis) {
@@ -204,8 +217,13 @@ public final class CrewStore {
     }
 
     /// Find-or-create a slot for `nodeID`. Returns `false` only when the
-    /// roster is full (`FF_CREW_MAX` = 8) and `nodeID` isn't already one
-    /// of them — no eviction in v1 (ff_crew.h's own documented policy).
+    /// roster is full (`FF_CREW_MAX` = 8) AND every occupied slot is
+    /// already paired — 2026-09-11 [api] ff_crew.h's S02 amendment
+    /// (issue #266): a full roster of merely-heard strangers no longer
+    /// blocks this. When full, core evicts the least-recently-heard
+    /// UNPAIRED occupant (never a paired one) to admit `nodeID`; that
+    /// evicted occupant's own record — including RSSI trend history —
+    /// is dropped, per the same amendment's own documented decision.
     @discardableResult
     public func upsert(nodeID: UInt32) -> Bool {
         let ok = ff_crew_upsert(context, nodeID) != nil
@@ -213,9 +231,22 @@ public final class CrewStore {
         return ok
     }
 
-    public func setPaired(nodeID: UInt32, paired: Bool) {
-        ff_crew_set_paired(context, nodeID, paired)
-        track(nodeID)
+    /// Mark `nodeID` paired/unpaired. 2026-09-11 [api] ff_crew.h's S02
+    /// amendment (issue #266): `ff_crew_set_paired` now returns whether
+    /// `nodeID` ends this call in the roster with the requested `paired`
+    /// state — `false` only when the roster is full of `FF_CREW_MAX`
+    /// (8) members who are ALL already paired (the one honest "no room"
+    /// case left; pairing a node not yet in the roster otherwise always
+    /// succeeds, evicting an unpaired stranger if needed). Marked
+    /// `@discardableResult` since most existing callers don't need to
+    /// react to the (usually impossible outside a fully-paired roster)
+    /// failure; a future pairing UI can check it to show an honest
+    /// "crew full" state instead of a silent no-op.
+    @discardableResult
+    public func setPaired(nodeID: UInt32, paired: Bool) -> Bool {
+        let ok = ff_crew_set_paired(context, nodeID, paired)
+        if ok { track(nodeID) }
+        return ok
     }
 
     /// Write the identity fields the MESH reports (`NodeInfo.user`'s
