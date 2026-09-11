@@ -1052,4 +1052,139 @@ final class AppGraphTests: XCTestCase {
 
         await graph.stop()
     }
+
+    // MARK: - "app: fix live connect path never reaching CONNECTED on
+    // macOS" — the live-graph reproduction the investigation itself
+    // asked for.
+    //
+    // Every test above this line drives `AppGraph` against
+    // `CountingClient`, an honest double that publishes exactly what the
+    // test tells it to and nothing else — it cannot reproduce a bug that
+    // lives in how a REAL `MeshtasticClient` (its reentrancy guard, its
+    // own `CurrentValueEventHub`, its actual want_config handshake) and
+    // the graph built on top of it interact. `BLEHardwareTests`
+    // (`FireflyHardwareTests`, gated, real board only) constructs
+    // `MeshtasticClient` directly and passes — it never goes through
+    // `AppGraph`/`ConnectViewModel` at all. This is the missing middle:
+    // the exact same live wiring the Connect screen uses — `AppGraph`
+    // composition root, a REAL `MeshtasticClient`, `ConnectViewModel`
+    // observing it — with `LoopbackTransport` standing in for
+    // `BLETransport` so the test needs no radio, matching the mocked-
+    // transport discipline `ConnectViewModelTests`/`ClientReconnectTests`
+    // already use elsewhere in this suite.
+    func testConnectViewModelReachesReadyThroughTheLiveGraphOverLoopback() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport)
+        // A fresh `InMemorySettingsStore()` — nothing remembered — so
+        // `AppGraph.start()`'s own launch auto-connect never fires here;
+        // that race is `ConnectViewModelTests
+        // .testAlreadyConnectingRaceNeverShowsFailed`'s own, already
+        // pinned scenario. This test isolates the OTHER question: does a
+        // single, ordinary CONNECT tap ever reach `.ready` when routed
+        // through the whole live graph, not just a bare client?
+        let graph = AppGraph(dependencies: AppDependencies(
+            client: client, location: UnavailableLocationProvider(), heading: NoHeadingProvider(),
+            store: InMemorySettingsStore()))
+
+        await graph.start()
+        let connect = graph.makeConnectViewModel()
+        // Same ordering `ConnectScreen.onAppear` uses — subscribe BEFORE
+        // the CONNECT button's own `connect()` call, never after (S1).
+        connect.observe()
+
+        // Fired as its own `Task`, NOT awaited inline — exactly what
+        // `ConnectScreen`'s own `Button(...) { Task { await connect
+        // .connect() } }` does. `connect.connect()` does not return
+        // until the whole handshake resolves (success or the 30s/120s
+        // phase timeout), so awaiting it inline here — before this test
+        // has injected anything for it to resolve WITH — would just
+        // reproduce this test's own mistake, not the product's: a real
+        // board answers want_config on its own over the wire while
+        // `connect()` is in flight, which is what firing this off lets
+        // the two injects below stand in for.
+        let connectTask = Task { await connect.connect() }
+
+        // Drive the real want_config handshake exactly the way
+        // `ConnectViewModelTests.testAlreadyConnectingRaceNeverShowsFailed`
+        // does against the same `MeshtasticClient` type — this transport
+        // has no scripted board behind it, so nothing answers unless
+        // this test injects it.
+        try await waitForSentCount(2, on: transport) // heartbeat, want_config(onlyConfig)
+        // Firefly 1's own node number (!02e606b0) — not load-bearing for
+        // the assertion, just an honest stand-in rather than an
+        // arbitrary magic number.
+        transport.inject(fromRadio { $0.myInfo.myNodeNum = 48_629_424 })
+        transport.inject(fromRadio { $0.configCompleteID = MeshtasticConfigNonce.onlyConfig })
+        try await waitForSentCount(3, on: transport) // want_config(onlyNodeDB)
+        transport.inject(fromRadio { $0.configCompleteID = MeshtasticConfigNonce.onlyNodeDB })
+        _ = await connectTask.value
+
+        for _ in 0..<200 where connect.link != .ready {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(connect.link, .ready,
+                        "CONNECT through the live graph (AppGraph + real MeshtasticClient + LoopbackTransport) " +
+                        "must reach .ready — if this fails, the defect is in the graph, not the transport")
+        XCTAssertEqual(connect.statusLabel, "CONNECTED")
+        XCTAssertNil(connect.lastError)
+
+        connect.stopObserving()
+        await graph.stop()
+    }
+
+    /// The actual bug, pinned: `ConnectViewModel.observe()` must start on
+    /// its own, from `AppGraph.makeConnectViewModel()`, the moment the
+    /// view model is built — NEVER left for a caller (`ConnectScreen
+    /// .onAppear`, in production) to start later. Before the fix, a
+    /// `NavigationSplitView` detail-column remount at launch (bench-
+    /// reproduced against a real board, 2026-09-11, no user action at
+    /// all) fired `ConnectScreen`'s `.onDisappear` once with no matching
+    /// `.onAppear` ever following it — `connect.stopObserving()`
+    /// cancelled the ONE subscription before anything had called
+    /// `connect()`, and `MeshtasticClient` going on to reach `.ready`
+    /// perfectly (`BLETransport`'s own log showed a clean connect
+    /// sequence) changed nothing: nobody was listening any more. This
+    /// test never calls `connect.observe()` at all — reproducing exactly
+    /// that "screen never got the chance to subscribe" shape — and
+    /// still expects `.ready` to arrive, because `makeConnectViewModel()`
+    /// itself is supposed to have already started it.
+    func testConnectViewModelObservesAutomaticallyWithNoCallerEverCallingObserve() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client))
+        await graph.start()
+
+        let connect = graph.makeConnectViewModel()
+        // Deliberately NOT calling `connect.observe()` here — the whole
+        // point of this test.
+
+        client.yieldLink(.connecting)
+        client.yieldLink(.handshaking)
+        client.yieldLink(.ready)
+
+        await waitUntil { connect.link == .ready }
+        XCTAssertEqual(connect.link, .ready,
+                        "the Connect screen must reflect .ready even if no screen ever called observe() itself — " +
+                        "makeConnectViewModel() owns starting this subscription, not ConnectScreen.onAppear")
+        XCTAssertEqual(connect.statusLabel, "CONNECTED")
+
+        await graph.stop()
+    }
+
+    private struct GraphTestTimeout: Error {}
+
+    private func waitForSentCount(_ n: Int, on transport: LoopbackTransport,
+                                   file: StaticString = #filePath, line: UInt = #line) async throws {
+        for _ in 0..<400 {
+            if transport.sentMessages.count >= n { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTFail("timed out waiting for \(n) sent message(s); saw \(transport.sentMessages.count)", file: file, line: line)
+        throw GraphTestTimeout()
+    }
+
+    private func fromRadio(_ build: (inout FromRadio) -> Void) -> Data {
+        var fr = FromRadio()
+        build(&fr)
+        return (try? fr.serializedData()) ?? Data()
+    }
 }

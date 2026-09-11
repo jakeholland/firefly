@@ -57,6 +57,8 @@ public final class ConnectViewModel {
     /// a `deinit` cannot touch main-actor state under strict
     /// concurrency. The SwiftUI shell calls this from `.onDisappear`.
     public func stopObserving() {
+        guard observation != nil else { return }
+        Self.log("stopObserving(): cancelling the linkState() subscription")
         observation?.cancel()
         observation = nil
     }
@@ -72,21 +74,31 @@ public final class ConnectViewModel {
     /// publish anything, regardless of how the cooperative pool happens
     /// to schedule the `Task`.
     public func observe() {
-        guard observation == nil else { return }
+        guard observation == nil else {
+            Self.log("observe(): already observing — no-op")
+            return
+        }
+        Self.log("observe(): subscribing to client.linkState()")
         let stream = client.linkState()
         observation = Task { [weak self] in
             for await state in stream {
                 guard let self else { return }
+                Self.log("observe(): linkState() stream yielded \(state)")
                 self.apply(state)
             }
+            Self.log("observe(): linkState() stream ended")
         }
     }
 
     public func connect() async {
+        Self.log("connect() called — current link=\(link)")
         lastError = nil
         do {
             try await client.connect()
+            Self.log("connect(): client.connect() returned successfully (link=\(link))")
         } catch MeshtasticClientError.alreadyConnecting {
+            Self.log("connect(): client.connect() threw .alreadyConnecting — deliberately NOT touching link/lastError; " +
+                      "the call already in flight (AppGraph's launch auto-connect, most likely) owns the real outcome")
             // BLOCKING 2 (PR #272 review): `.alreadyConnecting` is a
             // benign race, not a real failure — this call simply lost to
             // an already in-flight `connect()` (`AppGraph`'s launch
@@ -100,9 +112,23 @@ public final class ConnectViewModel {
             // `linkState()` stream events (already subscribed via
             // `observe()`) are what report the real outcome.
         } catch {
+            Self.log("connect(): client.connect() threw \(error) — publishing .failed")
             lastError = String(describing: error)
             link = .failed(String(describing: error))
         }
+    }
+
+    /// Same discipline as `BLETransport.log(_:)`/`MeshtasticClient.log(_:)`
+    /// — a raw stderr write, unconditional: this is the ONE place a
+    /// user's own CONNECT tap enters the live graph, and it had NO
+    /// logging at all before this (the app: fix live connect path
+    /// investigation's own finding — `BLETransport` and, now,
+    /// `MeshtasticClient` both log every step of their half of a
+    /// connect; the view-model half that decides what the button
+    /// actually DOES with the result had none).
+    private static func log(_ message: String) {
+        let line = "[ConnectViewModel] \(message)\n"
+        FileHandle.standardError.write(Data(line.utf8))
     }
 
     /// SHOULD-FIX 5 (PR #272 review): deliberately does NOT clear the

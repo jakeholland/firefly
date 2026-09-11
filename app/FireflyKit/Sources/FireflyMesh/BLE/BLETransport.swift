@@ -95,7 +95,40 @@ public actor BLETransport: MeshTransport, NodeScanning {
     private var fromNumChar: CBCharacteristic?
     private var logRadioChar: CBCharacteristic?
 
-    private var poweredOnContinuation: CheckedContinuation<Void, Error>?
+    /// BUGFIX (app: fix live connect path never reaching CONNECTED on
+    /// macOS) — keyed by `nextToken()`, same shape as
+    /// `writeContinuations`/`readContinuations` below, and for the same
+    /// reason: `waitForPoweredOn()` has TWO independent callers that can
+    /// genuinely run concurrently — `connect()` (via `attemptConnect()`)
+    /// and `scan()` (the node picker's own RESCAN) — most reliably right
+    /// after a cold launch, while `CBCentralManager`'s `state` is still
+    /// `.unknown` and BOTH `AppGraph`'s own launch auto-connect AND the
+    /// Connect screen's first scan race to be the first to ask "is
+    /// Bluetooth on yet". A single `CheckedContinuation?` here (what this
+    /// used to be) can hold only ONE waiter: the second concurrent call
+    /// overwrites it, orphaning the first — a continuation the Swift
+    /// runtime reports "leaked... without resuming it", and the caller
+    /// it belonged to hangs forever, `isConnectAttemptInFlight` stuck
+    /// `true`, so every subsequent CONNECT tap loses the reentrancy
+    /// guard to `.alreadyConnecting` and is silently swallowed
+    /// (`ConnectViewModel.connect()`'s own doc comment) — "NOT
+    /// CONNECTED", indefinitely, with `BLETransport`'s own log showing a
+    /// clean connect sequence for whichever call WON the race, because
+    /// the one that mattered never got to run at all. Reproduced live
+    /// (2026-09-11, signed macOS build, `-FireflyAutoConnect
+    /// Meshtastic_06b0` racing `AppGraph`'s launch auto-connect against a
+    /// remembered peripheral): "SWIFT TASK CONTINUATION MISUSE:
+    /// waitForPoweredOn() leaked its continuation without resuming it."
+    /// followed by the OTHER caller's `transport.connect()` throwing
+    /// `CancellationError()` — the orphaned continuation's own
+    /// cancellation handler resuming whichever continuation the shared
+    /// slot happened to hold by the time it ran, not necessarily its
+    /// own. A dictionary gives every caller its own slot, so `handleCentralStateUpdate`
+    /// below resumes ALL of them together (state is one value, true for
+    /// every waiter at once) and a cancelled caller's own handler
+    /// (`cancelPoweredOnWait(token:)`) can only ever remove and resume
+    /// its OWN entry, never a stranger's.
+    private var poweredOnContinuations: [UInt64: CheckedContinuation<Void, Error>] = [:]
     /// Resumed once, at the END of the connect chain — the FROMNUM
     /// subscription ACK (`didUpdateNotificationStateFor`). Every
     /// intermediate delegate step (discoverServices →
@@ -688,19 +721,22 @@ public actor BLETransport: MeshTransport, NodeScanning {
         }
         // Cancellation-safe like `performConnectSequence`'s wrapper
         // above: an externally-cancelled `connect()` must not leave this
-        // continuation dangling forever.
+        // continuation dangling forever. `token` (own doc comment on
+        // `poweredOnContinuations`) is what keeps THIS call's own
+        // cancellation from ever resuming a DIFFERENT concurrent
+        // `waitForPoweredOn()` caller's continuation instead of its own.
+        let token = nextToken()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-                poweredOnContinuation = cont
+                poweredOnContinuations[token] = cont
             }
         } onCancel: {
-            Task { await self.cancelPoweredOnWait() }
+            Task { await self.cancelPoweredOnWait(token: token) }
         }
     }
 
-    private func cancelPoweredOnWait() {
-        guard let cont = poweredOnContinuation else { return }
-        poweredOnContinuation = nil
+    private func cancelPoweredOnWait(token: UInt64) {
+        guard let cont = poweredOnContinuations.removeValue(forKey: token) else { return }
         cont.resume(throwing: CancellationError())
     }
 
@@ -731,14 +767,22 @@ public actor BLETransport: MeshTransport, NodeScanning {
     // MARK: - Delegate callbacks (forwarded from BLEDelegateBridge)
 
     func handleCentralStateUpdate(_ state: CBManagerState) {
-        BLETransport.log("centralManagerDidUpdateState \(state.rawValue)")
-        guard let cont = poweredOnContinuation else { return }
+        BLETransport.log("centralManagerDidUpdateState \(state.rawValue) (waiters=\(poweredOnContinuations.count))")
+        guard !poweredOnContinuations.isEmpty else { return }
+        // State is one value, true for every current waiter at once —
+        // unlike a write/read reply, which answers exactly one queued
+        // request, ALL of them resolve together here. See
+        // `poweredOnContinuations`'s own doc comment for why this used
+        // to be a single `CheckedContinuation?` (and the live-graph bug
+        // that shape caused).
         if state == .poweredOn {
-            poweredOnContinuation = nil
-            cont.resume()
+            let waiters = poweredOnContinuations
+            poweredOnContinuations.removeAll()
+            for (_, cont) in waiters { cont.resume() }
         } else if let error = terminalError(for: state) {
-            poweredOnContinuation = nil
-            cont.resume(throwing: error)
+            let waiters = poweredOnContinuations
+            poweredOnContinuations.removeAll()
+            for (_, cont) in waiters { cont.resume(throwing: error) }
         }
         // .resetting / .unknown: transient, keep waiting.
     }

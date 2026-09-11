@@ -72,7 +72,19 @@ struct ConnectScreen: View {
         }
         .background(Color.ffBackground)
         .onAppear {
-            connect.observe()
+            // `connect.observe()` is deliberately NOT called here any
+            // more — `AppGraph.makeConnectViewModel()` starts it once,
+            // for the life of the graph, and that file's own doc comment
+            // is where the "app: fix live connect path never reaching
+            // CONNECTED on macOS" root cause and its fix are written up.
+            // Tying it to THIS screen's own appear/disappear is exactly
+            // what broke: a `NavigationSplitView` detail-column remount
+            // at launch (bench-reproduced, no user action at all) fires
+            // `.onDisappear` once with no matching `.onAppear` ever
+            // following it, permanently orphaning the subscription for
+            // the rest of the process — "NOT CONNECTED" forever, no
+            // matter how many times CONNECT is tapped afterward, even
+            // though `MeshtasticClient` itself reaches `.ready` cleanly.
             nearby.observe()
             // Deliberately NOT auto-started. Starting a scan builds the
             // `CBCentralManager`, which is what makes macOS put up its
@@ -85,7 +97,12 @@ struct ConnectScreen: View {
             // picker until the user asks is the honest state anyway.
         }
         .onDisappear {
-            connect.stopObserving()
+            // `connect.stopObserving()` is deliberately NOT called here
+            // any more — see `.onAppear`'s own comment just above. Link
+            // state is process-lifetime state now, not per-screen state;
+            // `nearby`'s own (genuinely screen-scoped: a node/inbox feed
+            // IS meaningless while its screen is off-screen) subscription
+            // is unaffected by this and still stops here as before.
             nearby.stopObserving()
             discovery.stopScanning()
         }
@@ -94,6 +111,7 @@ struct ConnectScreen: View {
                 peripherals = found
             }
         }
+        .task { await runAutoConnectIfRequested() }
         #if os(iOS)
         .sheet(isPresented: $isShowingScanner) {
             QRScannerSheet { payload in
@@ -265,6 +283,30 @@ struct ConnectScreen: View {
                 .buttonStyle(.bordered)
                 .tint(.ffMuted)
                 .frame(minHeight: 44)
+        }
+    }
+
+    /// `-FireflyAutoConnect <name>` (`FireflyAutoConnectLaunch`'s own doc
+    /// comment) — performs EXACTLY the manual UI path a person taking
+    /// this screen would: RESCAN, wait for a peripheral whose advertised
+    /// name matches, tap it (`discovery.select(_:)`), tap CONNECT
+    /// (`connect.connect()`). Never touches `MeshtasticClient`/
+    /// `BLETransport` directly — the whole point is to reproduce the
+    /// live graph path a real tap takes, not a shortcut around it. A
+    /// no-op on every ordinary launch (`requestedPeripheralName()`
+    /// reads nil) and on any build with no scanner (`discovery` is
+    /// `StubPeripheralDiscovery`, which discovers nothing — this loop
+    /// then simply waits forever off its own `.task`, harmlessly, same
+    /// as an ungranted permission would).
+    private func runAutoConnectIfRequested() async {
+        guard let targetName = FireflyAutoConnectLaunch.requestedPeripheralName() else { return }
+        discovery.startScanning()
+        for await found in discovery.peripherals() {
+            guard let match = found.first(where: { $0.name == targetName }) else { continue }
+            discovery.select(match.id)
+            selectedPeripheralID = match.id
+            await connect.connect()
+            return
         }
     }
 
