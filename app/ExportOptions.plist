@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- ExportOptions.plist — passed to `xcodebuild -exportArchive` by
+	     app/tools/testflight.sh; not meant to be used by hand. See that
+	     script and app/README.md, "Shipping a TestFlight build".
+
+	     `destination: upload` here is the real target: with an App
+	     Store Connect API key on hand (ASC_KEY_ID / ASC_ISSUER_ID /
+	     ASC_KEY_PATH), `-exportArchive` both exports and uploads the
+	     build in one step. Without a key, testflight.sh writes a
+	     TEMPORARY copy of this file with `destination` patched to
+	     `export` instead — same signing, same bundle, but it stops at
+	     a local .ipa rather than erroring out for lack of credentials
+	     to authenticate an upload with. This file itself always says
+	     `upload`; the temporary copy is what changes. -->
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>destination</key>
+	<string>upload</string>
+	<key>teamID</key>
+	<string>SU4T96VBX6</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>uploadSymbols</key>
+	<true/>
+	<key>stripSwiftSymbols</key>
+	<true/>
+</dict>
+</plist>

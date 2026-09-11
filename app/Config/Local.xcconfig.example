@@ -13,3 +13,16 @@
 //   #   DEVELOPMENT_TEAM is set here).
 //
 DEVELOPMENT_TEAM = YOUR_TEAM_ID
+
+// TestFlight archives (app/tools/testflight.sh) need nothing more from
+// this file than DEVELOPMENT_TEAM above. Do NOT add a per-config
+// CODE_SIGN_IDENTITY override here to force "Apple Distribution" for
+// Release — that was tried and Xcode rejects it outright ("conflicting
+// provisioning settings") against CODE_SIGN_STYLE = Automatic. The
+// archive step signs with whatever identity is already available
+// (typically Apple Development); the EXPORT step
+// (app/tools/testflight.sh, ExportOptions.plist's `signingStyle:
+// automatic` + `method: app-store-connect`) is what actually asks
+// Apple for a Distribution certificate and an App Store provisioning
+// profile and re-signs with those — standard Xcode behavior, not
+// something this file needs to arrange.
