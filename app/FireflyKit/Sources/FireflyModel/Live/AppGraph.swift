@@ -33,6 +33,12 @@ public final class AppGraph {
     public let inboxProvider: CoreInboxProvider
     /// Portnum 269 (FLARE, and FIND's PING).
     public let packetSender: MeshFireflyPacketSender
+    /// M2: the one place a crew member is paired/unpaired/renamed —
+    /// writes both `core.crew` (live) and `dependencies.crewPairingStore`
+    /// (persisted) together, so Connect's Nearby section and the Crew
+    /// section in More can never drift from each other or from what
+    /// Radar/Inbox render. See `CrewPairingStore.swift`.
+    public let crewPairing: CrewPairingController
     private let uplink: PhoneGPSUplink
 
     private var privateObservation: Task<Void, Never>?
@@ -83,6 +89,7 @@ public final class AppGraph {
         self.inboxProvider = CoreInboxProvider(inbox: core.inbox, crew: core.crew)
         self.packetSender = MeshFireflyPacketSender(client: dependencies.client)
         self.flareTakeover = FlareTakeoverViewModel(crew: self.core.crew)
+        self.crewPairing = CrewPairingController(crew: core.crew, store: dependencies.crewPairingStore)
         let client = dependencies.client
         self.uplink = PhoneGPSUplink(
             location: dependencies.location,
@@ -95,6 +102,17 @@ public final class AppGraph {
         // Only safe now: every stored property above is set, so `self`
         // may finally be captured (`setCurrentFix`'s own doc comment).
         self.flareTakeover.setCurrentFix { [weak self] in self?.myFix }
+        // M2: replay the persisted paired list onto `core.crew` NOW —
+        // before `start()` ever subscribes `core` to the client's
+        // `nodeUpdates()` stream (`start()` is a separate, later call;
+        // nothing above this line touches the client's streams either).
+        // A want_config replay's `CoreStore.apply(nodeUpdate:)` ->
+        // `crew.setIdentity` must never be the first thing to see a
+        // reconnecting member's slot — restoring PAIRED (and the
+        // member's persisted colour) here first is what keeps that flag
+        // from ever reading as lost for even one frame.
+        // `CrewPairingRestorer`'s own doc comment.
+        CrewPairingRestorer.restore(from: dependencies.crewPairingStore, into: core.crew)
     }
 
     /// `FireflyApp`'s `ScenePhase` observation calls this — the one

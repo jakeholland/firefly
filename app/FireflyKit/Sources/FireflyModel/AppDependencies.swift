@@ -32,15 +32,25 @@ public struct AppDependencies: Sendable {
     /// unchanged (S5 is landed, frozen infra other slices already
     /// depend on by its current shape).
     public var scanner: (any NodeScanning)?
+    /// M2's persisted crew-pairing seam (`CrewPairingStore.swift`) —
+    /// appended after `scanner`, same "every existing call site keeps
+    /// compiling" reasoning, with a default so `.stub()` (which does not
+    /// specify it below) gets the same "same shape, nothing persisted"
+    /// in-memory stand-in `.stub()`'s `store` already gets.
+    /// `AppGraph.init` restores this into `core.crew` before anything
+    /// can observe a client (`CrewPairingRestorer`'s own doc comment).
+    public var crewPairingStore: any CrewPairingStoring
 
     public init(client: any MeshtasticClientProtocol, location: any LocationProviding,
                 heading: any HeadingProviding, store: any FireflyExtraSettingsStoring,
-                scanner: (any NodeScanning)? = nil) {
+                scanner: (any NodeScanning)? = nil,
+                crewPairingStore: any CrewPairingStoring = InMemoryCrewPairingStore()) {
         self.client = client
         self.location = location
         self.heading = heading
         self.store = store
         self.scanner = scanner
+        self.crewPairingStore = crewPairingStore
     }
 
     /// The stub stack: `StubMeshtasticClient` over `LoopbackTransport`,
@@ -92,7 +102,8 @@ public struct AppDependencies: Sendable {
             location: LocationProvider(),
             heading: HeadingProvider(),
             store: SettingsStore(),
-            scanner: transport)
+            scanner: transport,
+            crewPairingStore: CrewPairingStore())
     }
 
     /// The iOS Simulator has no Bluetooth at all — `CBCentralManager` is

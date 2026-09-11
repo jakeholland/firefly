@@ -35,13 +35,21 @@ struct ConnectScreen: View {
     @State private var selectedPeripheralID: String?
     @State private var channelURLText = ""
     @State private var isShowingScanner = false
+    /// `SettingsViewModel.colorblindPalette`, read fresh from `RootView`
+    /// on every redraw (M2) — the SAME flag Radar's ring and the Inbox
+    /// read, so a paired member's swatch here never disagrees with
+    /// theirs. Never stored: this only selects WHICH palette a
+    /// `colorIndex` resolves against at render time.
+    let colorblind: Bool
 
     init(connect: ConnectViewModel, client: any MeshtasticClientProtocol,
-         channelImport: ChannelImportViewModel, scanner: (any NodeScanning)?) {
+         channelImport: ChannelImportViewModel, scanner: (any NodeScanning)?,
+         pairing: CrewPairingController, colorblind: Bool) {
         self.connect = connect
         self.client = client
         self.channelImport = channelImport
-        _nearby = State(initialValue: NearbyNodesViewModel(client: client))
+        self.colorblind = colorblind
+        _nearby = State(initialValue: NearbyNodesViewModel(client: client, pairing: pairing))
         _discovery = State(initialValue: scanner.map { MeshPeripheralDiscovery(scanner: $0) }
                             ?? StubPeripheralDiscovery())
     }
@@ -198,7 +206,7 @@ struct ConnectScreen: View {
         }
     }
 
-    // MARK: - Nearby heard nodes (Add to crew)
+    // MARK: - Nearby heard nodes (Add / Remove from crew)
 
     private var nearbySection: some View {
         SectionBlock(title: "NEARBY") {
@@ -208,26 +216,25 @@ struct ConnectScreen: View {
                     .font(.footnote)
                     .foregroundStyle(Color.ffMuted)
             } else {
+                // Paired crew first (their own colour + presence), then
+                // strangers by signal tier — `NearbyNodesViewModel
+                // .rebuild()`'s own ordering, rendered verbatim.
                 ForEach(nearby.nodes) { node in
-                    HStack(spacing: 12) {
-                        SignalBars(tier: node.tier)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(node.displayName)
-                                .foregroundStyle(Color.ffInk)
-                            Text(node.tier.label)
-                                .font(.caption2)
-                                .foregroundStyle(Color.ffMuted)
+                    NearbyRow(node: node, colorblind: colorblind) {
+                        if node.isCrew {
+                            nearby.removeFromCrew(node.id)
+                        } else {
+                            nearby.addToCrew(node.id)
                         }
-                        Spacer()
-                        Button(node.isCrew ? "IN CREW" : "ADD TO CREW") {
-                            nearby.toggleCrew(node.id)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(node.isCrew ? .ffLiveGreen : .ffAmber)
-                        .font(.caption)
                     }
-                    .frame(minHeight: 44)
                 }
+            }
+            // The honest 8-limit message (M2's own acceptance
+            // criterion) — never a silently-ignored tap.
+            if let limitMessage = nearby.limitMessage {
+                Text(limitMessage)
+                    .font(.footnote)
+                    .foregroundStyle(Color.ffAlert)
             }
         }
     }
@@ -320,6 +327,46 @@ private struct SectionBlock<Content: View>: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.ffSurface, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+/// One Nearby row: a paired member (colour swatch + presence tag) or a
+/// stranger (signal bars only) — `NearbyNodesViewModel.NearbyNode`'s own
+/// two shapes, rendered verbatim rather than re-derived here.
+private struct NearbyRow: View {
+    let node: NearbyNodesViewModel.NearbyNode
+    let colorblind: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if let colorIndex = node.colorIndex {
+                Circle()
+                    .fill(Color(fireflyHex: RadarCrewPalette.hex(index: colorIndex, colorblind: colorblind)))
+                    .frame(width: 14, height: 14)
+            } else {
+                SignalBars(tier: node.tier)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(node.displayName)
+                    .foregroundStyle(Color.ffInk)
+                if let presence = node.presence {
+                    Text(presence.rawValue)
+                        .font(.caption2)
+                        .foregroundStyle(Color.ffMuted)
+                } else {
+                    Text(node.tier.label)
+                        .font(.caption2)
+                        .foregroundStyle(Color.ffMuted)
+                }
+            }
+            Spacer()
+            Button(node.isCrew ? "REMOVE" : "ADD TO CREW", action: onToggle)
+                .buttonStyle(.bordered)
+                .tint(node.isCrew ? .ffLiveGreen : .ffAmber)
+                .font(.caption)
+        }
+        .frame(minHeight: 44)
     }
 }
 

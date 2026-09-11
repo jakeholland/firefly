@@ -196,13 +196,27 @@ public final class ThreadViewModel {
     /// flush's own chained unit has fully finished.
     private var sendChainTail: Task<Void, Never>?
 
+    /// M2: the paired member's name/colour for this thread's header —
+    /// `nil` for `.crew` (a broadcast thread has no single member) and
+    /// for a `.member` conversation whose row `InboxViewModel.openThread
+    /// (_:)` could not find (should not happen for a real tap, since a
+    /// thread only opens from a row that already exists). Read straight
+    /// off the SAME `InboxConversationRow` the Inbox list rendered —
+    /// never re-derived — so the Thread header's swatch can never
+    /// disagree with the avatar the row it was opened from showed.
+    public let memberDisplayName: String?
+    public let memberColorIndex: Int?
+
     public init(conversation: ConversationKind, provider: any InboxProviding, client: any MeshtasticClientProtocol,
-                flareSender: (any FireflyPacketSending)? = nil, currentFix: (() -> LocationFix?)? = nil) {
+                flareSender: (any FireflyPacketSending)? = nil, currentFix: (() -> LocationFix?)? = nil,
+                memberDisplayName: String? = nil, memberColorIndex: Int? = nil) {
         self.conversation = conversation
         self.provider = provider
         self.client = client
         self.flareSender = flareSender
         self.currentFix = currentFix
+        self.memberDisplayName = memberDisplayName
+        self.memberColorIndex = memberColorIndex
     }
 
     /// Whether the FLARE control should be usable at all — `false`

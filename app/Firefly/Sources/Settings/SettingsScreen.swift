@@ -9,11 +9,23 @@ import SwiftUI
 struct SettingsScreen: View {
     @Bindable var model: SettingsViewModel
     let client: any MeshtasticClientProtocol
+    /// M2's own state: the Crew section's rows (rename/remove), backed
+    /// by the SAME `CrewPairingController` Connect's Nearby section
+    /// writes through.
+    @State private var crewSettings: CrewSettingsViewModel
     /// Demo-only (`-FireflyDemoScreen diagnostics`, `RootView`'s own
     /// mapping): pushes straight to Diagnostics on appear. `false` in
     /// every non-demo build.
     var autoOpenDiagnostics: Bool = false
     @State private var showDiagnostics = false
+
+    init(model: SettingsViewModel, client: any MeshtasticClientProtocol, pairing: CrewPairingController,
+         autoOpenDiagnostics: Bool = false) {
+        self.model = model
+        self.client = client
+        self.autoOpenDiagnostics = autoOpenDiagnostics
+        _crewSettings = State(initialValue: CrewSettingsViewModel(pairing: pairing))
+    }
 
     var body: some View {
         ScrollView {
@@ -22,6 +34,7 @@ struct SettingsScreen: View {
                 channelSection
                 connectivitySection
                 unitsSection
+                crewSection
                 appearanceSection
                 Button("DIAGNOSTICS") { showDiagnostics = true }
                     .buttonStyle(.bordered)
@@ -42,6 +55,11 @@ struct SettingsScreen: View {
         .task {
             if autoOpenDiagnostics { showDiagnostics = true }
         }
+        // A pairing made on Connect while this screen was off-screen
+        // (or a mesh name that has arrived since) must show up the
+        // moment More is opened again — `crewSettings` is only ever
+        // written from a rename/remove tap otherwise.
+        .onAppear { crewSettings.refresh() }
     }
 
     private var nodeIdentitySection: some View {
@@ -139,6 +157,26 @@ struct SettingsScreen: View {
                 isOn: Binding(get: { model.colorblindPalette }, set: model.setColorblindPalette))
         }
     }
+
+    // MARK: - Crew (M2)
+
+    private var crewSection: some View {
+        SettingsBlock(title: "CREW") {
+            if crewSettings.rows.isEmpty {
+                Text("Nobody paired yet. Add crew from Connect \u{2192} Nearby.")
+                    .font(.footnote)
+                    .foregroundStyle(Color.ffMuted)
+            } else {
+                ForEach(crewSettings.rows) { row in
+                    CrewMemberRow(
+                        row: row,
+                        colorblind: model.colorblindPalette,
+                        onRename: { crewSettings.rename(row.id, to: $0) },
+                        onRemove: { crewSettings.remove(row.id) })
+                }
+            }
+        }
+    }
 }
 
 private struct SettingsBlock<Content: View>: View {
@@ -185,6 +223,36 @@ private struct LabeledRow: View {
             Text(value)
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(Color.ffInk)
+        }
+        .frame(minHeight: 44)
+    }
+}
+
+/// One Crew-section row: colour swatch, rename field (a LOCAL DRAFT —
+/// see `CrewSettingsViewModel.Row.nickname`'s own doc comment), and
+/// REMOVE, which unpairs through the same `CrewPairingController` every
+/// other crew action uses.
+private struct CrewMemberRow: View {
+    let row: CrewSettingsViewModel.Row
+    let colorblind: Bool
+    let onRename: (String) -> Void
+    let onRemove: () -> Void
+
+    @State private var nicknameDraft: String = ""
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(Color(fireflyHex: RadarCrewPalette.hex(index: row.colorIndex, colorblind: colorblind)))
+                .frame(width: 16, height: 16)
+            TextField(row.meshName.isEmpty ? row.displayName : row.meshName, text: $nicknameDraft)
+                .textFieldStyle(.roundedBorder)
+                .onAppear { nicknameDraft = row.nickname ?? "" }
+                .onSubmit { onRename(nicknameDraft) }
+            Button("REMOVE", action: onRemove)
+                .buttonStyle(.bordered)
+                .tint(.ffMuted)
+                .font(.caption)
         }
         .frame(minHeight: 44)
     }

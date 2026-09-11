@@ -110,7 +110,8 @@ struct FireflyApp: App {
                 scanner: graph.dependencies.scanner,
                 demoRunner: demoRunner,
                 initialDemoScreen: DemoLaunch.requestedScreen(),
-                flareTakeover: graph.flareTakeover
+                flareTakeover: graph.flareTakeover,
+                pairing: graph.crewPairing
             )
             .preferredColorScheme(.dark)
             // M2: `AppGraph.setForegrounded(_:)` is the one thing that

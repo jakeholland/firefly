@@ -146,6 +146,11 @@ targets:
       - path: Firefly/Sources/Connect/PeripheralDiscovery.swift
       - path: Firefly/Sources/Settings/SettingsViewModel.swift
       - path: Firefly/Sources/Settings/DiagnosticsViewModel.swift
+      # M2's addition: the Crew section's own view model (rename/remove,
+      # backed by CrewPairingController) — appended, not inserted, so
+      # this stays a pure addition to the list the other four already
+      # occupy.
+      - path: Firefly/Sources/Settings/CrewSettingsViewModel.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit

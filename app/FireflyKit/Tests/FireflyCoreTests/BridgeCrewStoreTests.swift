@@ -289,4 +289,42 @@ final class BridgeCrewStoreTests: XCTestCase {
         XCTAssertEqual(FreshnessCategory.allCases.count, 5,
                        "a new ff_freshness_t value needs a matching FreshnessCategory case")
     }
+
+    // MARK: - M2: setColorIndex / setIdentity's colour hand-off
+    // (docs/specs/A01-companion-app.md, M2 — CrewPairingStore.swift's
+    // own header comment on why colour assignment moved out of
+    // `setIdentity`).
+
+    func testSetColorIndexWritesTheMembersColorIdx() {
+        let store = CrewStore(now: { 0 })
+        store.upsert(nodeID: 1)
+        store.setColorIndex(nodeID: 1, index: 5)
+        XCTAssertEqual(store.member(nodeID: 1, now: 0)?.colorIndex, 5)
+    }
+
+    func testSetColorIndexFindOrCreatesASlot() {
+        let store = CrewStore(now: { 0 })
+        store.setColorIndex(nodeID: 9, index: 2) // no prior upsert
+        XCTAssertEqual(store.member(nodeID: 9, now: 0)?.colorIndex, 2)
+    }
+
+    /// The bug this M2 change fixes: `setIdentity` used to re-derive
+    /// `color_idx` from `nodeID % 8` on EVERY call, silently reassigning
+    /// a member's colour on a routine NodeInfo re-announcement. It must
+    /// now leave whatever colour is already there untouched.
+    func testSetIdentityNeverTouchesAnAlreadyAssignedColorIndex() {
+        let store = CrewStore(now: { 0 })
+        store.upsert(nodeID: 1)
+        store.setColorIndex(nodeID: 1, index: 6)
+        store.setIdentity(nodeID: 1, shortName: "SAM", longName: "Sam")
+        XCTAssertEqual(store.member(nodeID: 1, now: 0)?.colorIndex, 6,
+                        "an identity re-announcement must never reassign a member's colour")
+    }
+
+    func testSetIdentityOnABrandNewSlotDefaultsColorIndexToZero() {
+        let store = CrewStore(now: { 0 })
+        store.setIdentity(nodeID: 1, shortName: "SAM", longName: "Sam")
+        XCTAssertEqual(store.member(nodeID: 1, now: 0)?.colorIndex, 0,
+                        "a zeroed slot's honest default, before any app-assigned colour is set")
+    }
 }

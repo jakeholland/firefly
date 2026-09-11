@@ -62,6 +62,10 @@ struct RootView: View {
     /// (`docs/specs/S10-flare.md`). Owned by `AppGraph` like every other
     /// `ff_*`-backed view model — one per process, same as `radar`/`inbox`.
     var flareTakeover: FlareTakeoverViewModel
+    /// M2's hunk: the one place a crew member is paired/unpaired/
+    /// renamed (`AppGraph.crewPairing`'s own doc comment) — handed to
+    /// Connect (Nearby's Add/Remove) and Settings (the Crew section).
+    let pairing: CrewPairingController
     @State private var selection: Destination = .connect
 
     var body: some View {
@@ -129,10 +133,11 @@ struct RootView: View {
     private func detail(for destination: Destination) -> some View {
         switch destination {
         case .connect: ConnectScreen(connect: connect, client: client, channelImport: channelImport,
-                                      scanner: scanner)
-        case .radar: RadarView(model: radar)
-        case .inbox: InboxContainerView(model: inbox, demoInitialThread: demoThreadTarget)
-        case .settings: SettingsScreen(model: settings, client: client,
+                                      scanner: scanner, pairing: pairing, colorblind: settings.colorblindPalette)
+        case .radar: RadarView(model: radar, colorblind: settings.colorblindPalette)
+        case .inbox: InboxContainerView(model: inbox, demoInitialThread: demoThreadTarget,
+                                         colorblind: settings.colorblindPalette)
+        case .settings: SettingsScreen(model: settings, client: client, pairing: pairing,
                                         autoOpenDiagnostics: initialDemoScreen == "diagnostics")
         }
     }

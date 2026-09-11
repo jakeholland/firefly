@@ -707,7 +707,18 @@ public final class InboxViewModel {
     public func openThread(_ conversation: ConversationKind) -> ThreadViewModel {
         provider.markRead(conversation)
         refresh()
+        // M2: hand the Thread header the SAME name/colour the row it
+        // was opened from just showed — read from `conversations` AFTER
+        // `refresh()` above, never re-derived independently. `nil` for
+        // `.crew` (a broadcast thread has no single member).
+        var memberDisplayName: String?
+        var memberColorIndex: Int?
+        if case .member = conversation, let row = conversations.first(where: { $0.kind == conversation }) {
+            memberDisplayName = row.displayName
+            memberColorIndex = row.colorIndex
+        }
         return ThreadViewModel(conversation: conversation, provider: provider, client: client,
-                                flareSender: flareSender, currentFix: currentFix)
+                                flareSender: flareSender, currentFix: currentFix,
+                                memberDisplayName: memberDisplayName, memberColorIndex: memberColorIndex)
     }
 }

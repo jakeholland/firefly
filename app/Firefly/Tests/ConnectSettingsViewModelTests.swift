@@ -21,9 +21,16 @@ final class NearbyNodesViewModelTests: XCTestCase {
                           lastHeard: nil, rssiDbm: rssi, snrDb: nil, hopsAway: nil)
     }
 
+    private func makeController() -> CrewPairingController {
+        CrewPairingController(crew: CrewStore(), store: InMemoryCrewPairingStore())
+    }
+
+    private func makeVM(_ pairing: CrewPairingController? = nil) -> NearbyNodesViewModel {
+        NearbyNodesViewModel(client: StubMeshtasticClient(), pairing: pairing ?? makeController())
+    }
+
     func testStartsEmpty() {
-        let vm = NearbyNodesViewModel(client: StubMeshtasticClient())
-        XCTAssertTrue(vm.nodes.isEmpty)
+        XCTAssertTrue(makeVM().nodes.isEmpty)
     }
 
     /// A node with no RSSI is not "nearby" at all — Nearby is
@@ -31,30 +38,31 @@ final class NearbyNodesViewModelTests: XCTestCase {
     /// only knows a position for (no packet RSSI attributable to it)
     /// must not show up ranked by a tier it never measured.
     func testNodesWithoutRSSIAreExcluded() {
-        let vm = NearbyNodesViewModel(client: StubMeshtasticClient())
+        let vm = makeVM()
         vm.apply(snapshot(num: 1, rssi: nil))
         XCTAssertTrue(vm.nodes.isEmpty)
     }
 
     func testAppliedSnapshotAppearsWithItsTier() {
-        let vm = NearbyNodesViewModel(client: StubMeshtasticClient())
+        let vm = makeVM()
         vm.apply(snapshot(num: 1, shortName: "AB1", rssi: -55)) // strong, per SignalTierTests
         XCTAssertEqual(vm.nodes.count, 1)
         XCTAssertEqual(vm.nodes[0].displayName, "AB1")
         XCTAssertEqual(vm.nodes[0].tier, .strong)
         XCTAssertFalse(vm.nodes[0].isCrew)
+        XCTAssertNil(vm.nodes[0].colorIndex, "a stranger has no crew colour to render")
     }
 
     /// A node named only by number renders Meshtastic's own `!%08x`
     /// convention, never a blank row.
     func testUnnamedNodeFallsBackToHexID() {
-        let vm = NearbyNodesViewModel(client: StubMeshtasticClient())
+        let vm = makeVM()
         vm.apply(snapshot(num: 0xAB, shortName: nil, rssi: -55))
         XCTAssertEqual(vm.nodes[0].displayName, "!000000ab")
     }
 
     func testNodesAreRankedStrongestFirst() {
-        let vm = NearbyNodesViewModel(client: StubMeshtasticClient())
+        let vm = makeVM()
         vm.apply(snapshot(num: 1, shortName: "WEAK", rssi: -96))
         vm.apply(snapshot(num: 2, shortName: "STRONG", rssi: -55))
         vm.apply(snapshot(num: 3, shortName: "GOOD", rssi: -80))
@@ -64,43 +72,71 @@ final class NearbyNodesViewModelTests: XCTestCase {
     /// A later snapshot for the same node updates it in place rather
     /// than appending a duplicate row.
     func testReapplyingTheSameNodeUpdatesRatherThanDuplicates() {
-        let vm = NearbyNodesViewModel(client: StubMeshtasticClient())
+        let vm = makeVM()
         vm.apply(snapshot(num: 1, shortName: "A", rssi: -96))
         vm.apply(snapshot(num: 1, shortName: "A", rssi: -55))
         XCTAssertEqual(vm.nodes.count, 1)
         XCTAssertEqual(vm.nodes[0].tier, .strong)
     }
 
-    func testToggleCrewFlipsAndRemembersPerNode() {
-        let vm = NearbyNodesViewModel(client: StubMeshtasticClient())
+    /// M2: Add/Remove go through the real `CrewPairingController` — a
+    /// paired row gets a real colour and sorts ahead of strangers.
+    func testAddToCrewPairsAndAssignsAColourAndSortsAhead() {
+        let vm = makeVM()
         vm.apply(snapshot(num: 1, shortName: "A", rssi: -55))
-        vm.apply(snapshot(num: 2, shortName: "B", rssi: -55))
+        vm.apply(snapshot(num: 2, shortName: "B", rssi: -20)) // stronger signal, still a stranger
 
-        vm.toggleCrew(1)
+        vm.addToCrew(1)
+
         XCTAssertTrue(vm.nodes.first { $0.id == 1 }!.isCrew)
-        XCTAssertFalse(vm.nodes.first { $0.id == 2 }!.isCrew)
-
-        vm.toggleCrew(1)
-        XCTAssertFalse(vm.nodes.first { $0.id == 1 }!.isCrew)
+        XCTAssertNotNil(vm.nodes.first { $0.id == 1 }!.colorIndex)
+        XCTAssertEqual(vm.nodes.map(\.id), [1, 2], "paired members sort ahead of strangers regardless of signal")
     }
 
-    /// Crew membership is session-only in M1 (see the view model's own
-    /// doc comment) — a fresh instance never inherits a prior one's
-    /// toggles, because nothing was ever persisted.
-    func testCrewMembershipDoesNotSurviveAFreshViewModel() {
-        let first = NearbyNodesViewModel(client: StubMeshtasticClient())
-        first.apply(snapshot(num: 1, shortName: "A", rssi: -55))
-        first.toggleCrew(1)
-        XCTAssertTrue(first.nodes[0].isCrew)
+    func testRemoveFromCrewUnpairsAndDropsItsColour() {
+        let vm = makeVM()
+        vm.apply(snapshot(num: 1, shortName: "A", rssi: -55))
+        vm.addToCrew(1)
+        vm.removeFromCrew(1)
+        XCTAssertFalse(vm.nodes.first { $0.id == 1 }!.isCrew)
+        XCTAssertNil(vm.nodes.first { $0.id == 1 }!.colorIndex)
+    }
 
-        let second = NearbyNodesViewModel(client: StubMeshtasticClient())
+    /// M2's honest 8-limit message — the 9th distinct pairing is
+    /// refused with a visible explanation, never a silently-ignored tap.
+    func testAddingANinthMemberSetsTheHonestLimitMessage() {
+        let pairing = makeController()
+        let vm = makeVM(pairing)
+        for nodeID in UInt32(1)...8 {
+            vm.apply(snapshot(num: nodeID, shortName: "N\(nodeID)", rssi: -55))
+            vm.addToCrew(nodeID)
+        }
+        XCTAssertNil(vm.limitMessage, "no message while the roster still has room")
+
+        vm.apply(snapshot(num: 9, shortName: "NINE", rssi: -55))
+        vm.addToCrew(9)
+
+        XCTAssertNotNil(vm.limitMessage)
+        XCTAssertFalse(vm.nodes.first { $0.id == 9 }!.isCrew, "the 9th add must not have silently succeeded")
+    }
+
+    /// M2's replacement for the OLD session-only behaviour: pairing now
+    /// persists through the controller's own store, so a FRESH view
+    /// model over the SAME controller sees what the first one paired.
+    func testCrewMembershipSurvivesAFreshViewModelOverTheSamePairingController() {
+        let pairing = makeController()
+        let first = makeVM(pairing)
+        first.apply(snapshot(num: 1, shortName: "A", rssi: -55))
+        first.addToCrew(1)
+
+        let second = makeVM(pairing)
         second.apply(snapshot(num: 1, shortName: "A", rssi: -55))
-        XCTAssertFalse(second.nodes[0].isCrew)
+        XCTAssertTrue(second.nodes[0].isCrew, "the SAME controller's store, not a fresh in-memory one")
     }
 
     func testObserveDeliversNodeUpdatesFromTheClient() async {
         let client = StubMeshtasticClient()
-        let vm = NearbyNodesViewModel(client: client)
+        let vm = NearbyNodesViewModel(client: client, pairing: makeController())
         vm.observe()
         vm.observe() // idempotent, matching ConnectViewModel.observe()
 
@@ -436,5 +472,79 @@ final class PeripheralDiscoveryTests: XCTestCase {
         await waitUntilAsync { await scanner.stopCount == 1 }
         let stops = await scanner.stopCount
         XCTAssertEqual(stops, 1)
+    }
+}
+
+// MARK: - CrewSettingsViewModel (M2's "Crew" section in More)
+
+@MainActor
+final class CrewSettingsViewModelTests: XCTestCase {
+    private func makeController() -> CrewPairingController {
+        CrewPairingController(crew: CrewStore(), store: InMemoryCrewPairingStore())
+    }
+
+    func testStartsWithNoRowsWhenNobodyIsPaired() {
+        let vm = CrewSettingsViewModel(pairing: makeController())
+        XCTAssertTrue(vm.rows.isEmpty)
+    }
+
+    func testARowUsesTheMeshNameUntilAskedForANickname() {
+        let pairing = makeController()
+        pairing.crew.setIdentity(nodeID: 1, shortName: "SAM", longName: "Sam")
+        pairing.pair(nodeID: 1)
+
+        let vm = CrewSettingsViewModel(pairing: pairing)
+        XCTAssertEqual(vm.rows.count, 1)
+        XCTAssertEqual(vm.rows[0].meshName, "Sam")
+        XCTAssertNil(vm.rows[0].nickname)
+        XCTAssertEqual(vm.rows[0].displayName, "Sam")
+    }
+
+    /// An unnamed node (the mesh has not reported a name yet) falls
+    /// back to the same honest `!nodeid` convention Nearby uses — never
+    /// a blank row.
+    func testAnUnnamedPairedMemberFallsBackToHexID() {
+        let pairing = makeController()
+        pairing.pair(nodeID: 0xAB)
+        let vm = CrewSettingsViewModel(pairing: pairing)
+        XCTAssertEqual(vm.rows[0].displayName, "!000000ab")
+    }
+
+    func testRenamePersistsThroughTheControllerAndPrefersTheNickname() {
+        let pairing = makeController()
+        pairing.crew.setIdentity(nodeID: 1, shortName: "SAM", longName: "Sam")
+        pairing.pair(nodeID: 1)
+        let vm = CrewSettingsViewModel(pairing: pairing)
+
+        vm.rename(1, to: "Sammy")
+
+        XCTAssertEqual(vm.rows[0].nickname, "Sammy")
+        XCTAssertEqual(vm.rows[0].displayName, "Sammy", "a nickname takes priority over the mesh name")
+        XCTAssertEqual(pairing.pairedRecords().first?.nickname, "Sammy", "the SAME persisted record, not a local copy")
+    }
+
+    func testRemoveDropsTheRowAndUnpairsThroughTheController() {
+        let pairing = makeController()
+        pairing.pair(nodeID: 1)
+        let vm = CrewSettingsViewModel(pairing: pairing)
+
+        vm.remove(1)
+
+        XCTAssertTrue(vm.rows.isEmpty)
+        XCTAssertEqual(pairing.crew.member(nodeID: 1, now: FireflyClock.nowMillis())?.paired, false)
+    }
+
+    /// `refresh()` picks up a pairing made elsewhere (e.g. Connect's
+    /// Nearby section, through the SAME controller) — the Crew section
+    /// is never its own disconnected copy of the roster.
+    func testRefreshPicksUpAPairingMadeThroughTheSameController() {
+        let pairing = makeController()
+        let vm = CrewSettingsViewModel(pairing: pairing)
+        XCTAssertTrue(vm.rows.isEmpty)
+
+        pairing.pair(nodeID: 1)
+        vm.refresh()
+
+        XCTAssertEqual(vm.rows.count, 1)
     }
 }
