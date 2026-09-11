@@ -132,3 +132,58 @@ App Store Connect after Apple finishes processing it (again, usually a
 few minutes). Testers already added (above) get notified automatically
 for internal testing, or once you submit the build to their external
 group.
+
+## Testers
+
+Firefly Festival Compass (`com.jakeholland.Firefly`, App Store Connect app id
+`6811207165`) distributes builds through TestFlight to two different kinds of
+tester, and they don't get a build the same way:
+
+- **External testers** — anyone added to a named beta group (e.g. a `Crew`
+  group of friends). The **first build offered to an external group must pass
+  Apple's Beta App Review** before any tester in that group can install it —
+  this typically takes about a day, sometimes longer. Every build after the
+  first review approval goes out without a new review, as long as the app's
+  export-compliance/encryption answers don't change. Until that first review
+  clears, testers you've added will show as invited but have nothing to
+  install yet.
+- **Internal testers** — people added directly under Users and Access with an
+  App Store Connect role (Admin, App Manager, Developer, etc.), not through a
+  beta group. Internal testers get **immediate** access to any build already
+  processed for TestFlight — no Beta App Review wait. The tradeoff is they
+  must already be a member of the App Store Connect team, so this only works
+  for people the owner is willing to add to the team itself.
+
+**The owner decides which kind fits a given person.** Someone outside the
+team (a friend testing at a festival, a reviewer) has to be an external
+tester and has to wait on the first review. Someone the owner wants to give
+a permanent, review-free path to every build has to be added as an internal
+team member instead — `asc_testers.sh` only manages external beta-group
+testers; adding an internal tester is a Users and Access action done in the
+App Store Connect UI (or via the `/v1/users` API), not this tool.
+
+### `app/tools/asc_testers.sh`
+
+A small bash + curl + python3 tool that drives the App Store Connect API
+directly (no Fastlane, no App Store Connect API client library) to manage
+external beta-group testers:
+
+```
+app/tools/asc_testers.sh list-groups
+app/tools/asc_testers.sh ensure-group <name>
+app/tools/asc_testers.sh add-tester <email> <first> <last> <group>
+app/tools/asc_testers.sh list-testers <group>
+```
+
+It authenticates with an ES256-signed JWT built locally from an App Store
+Connect API key (`ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_PATH` in the
+environment — see the script's header comment for the full credential-
+handling contract: the private key's contents are never read into the shell,
+logged, or echoed, only its path is handed to `openssl dgst -sign`, and the
+signed token itself is never printed).
+
+`ensure-group <name>` creates the group if it doesn't already exist, with
+feedback enabled and the public link disabled (so testers only get in by
+being added by email — nobody can self-enroll off a shared link).
+`add-tester` is idempotent: if the tester already exists in App Store
+Connect it's linked to the requested group rather than re-created.
