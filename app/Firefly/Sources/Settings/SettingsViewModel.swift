@@ -37,6 +37,12 @@ final class SettingsViewModel {
     var locationIntervalSeconds: Double
     var stayConnectedInBackground: Bool
     var colorblindPalette: Bool
+    /// M2: `.system` (the default) follows the phone's own locale —
+    /// see `UnitsPreference.resolvedImperial(locale:)` — until this row
+    /// overrides it. Read/write through `SettingsStoring`'s own tri-state
+    /// helpers, not `.bool(.unitsMetric)` (that key's bool shape is the
+    /// exact bug this replaces; see `SettingsStoring.swift`).
+    var unitsPreference: UnitsPreference
 
     init(store: any FireflyExtraSettingsStoring, channelImport: ChannelImportViewModel) {
         self.store = store
@@ -47,6 +53,7 @@ final class SettingsViewModel {
         locationIntervalSeconds = store.double(.locationSharingIntervalSeconds) ?? 30
         stayConnectedInBackground = store.backgroundConnectEnabled
         colorblindPalette = store.colorblindPaletteEnabled
+        unitsPreference = store.unitsPreference()
     }
 
     /// No seam exposes the connected node's actual region yet —
@@ -92,5 +99,10 @@ final class SettingsViewModel {
     func setColorblindPalette(_ value: Bool) {
         colorblindPalette = value
         store.colorblindPaletteEnabled = value
+    }
+
+    func setUnitsPreference(_ value: UnitsPreference) {
+        unitsPreference = value
+        store.setUnitsPreference(value)
     }
 }

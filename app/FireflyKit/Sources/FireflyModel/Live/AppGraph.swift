@@ -187,15 +187,24 @@ public final class AppGraph {
             location: dependencies.location,
             find: CoreFindSession(find: core.find, sender: packetSender),
             haptics: haptics)
-        // Units stay METRIC here, deliberately, and not by reading
-        // `SettingsKey.unitsMetric`: `SettingsStoring.bool` cannot tell
-        // "the user chose imperial" from "nobody has ever written this
-        // key", and nothing writes it yet (M1's Settings units row is
-        // not built). `!store.bool(.unitsMetric)` would therefore make
-        // every fresh install imperial by accident — a wrong unit on
-        // every distance, from an unset default. Wiring this up needs
-        // the Settings row AND a tri-state read; tracked, not guessed.
-        model.imperial = false
+        // M2: was hard-`false` here (METRIC always) — see git history on
+        // this line for the reasoning that used to justify it, now moot.
+        // `SettingsKey.unitsMetric`'s bool could never distinguish "the
+        // user chose imperial" from "nobody has ever written this key",
+        // so a naive `!store.bool(.unitsMetric)` would have made every
+        // fresh install imperial by accident. `resolvedImperial()`
+        // (`SettingsStoring.swift`'s "Units preference" section) is the
+        // tri-state fix: `.system` — the real default — follows the
+        // phone's own locale instead of guessing, and only an explicit
+        // Settings-row choice ever overrides it. This is a one-time read
+        // at view-model construction (every view model in this graph is
+        // built once, in `FireflyApp.init` — `RootView`'s own header
+        // comment), the same timing every other settings-backed field
+        // here already uses; a change made mid-session on the Settings
+        // screen takes effect on the next launch, not live — a narrower
+        // gap than the bug this replaces, and tracked here rather than
+        // silent.
+        model.imperial = dependencies.store.resolvedImperial()
         radar = model
         return model
     }

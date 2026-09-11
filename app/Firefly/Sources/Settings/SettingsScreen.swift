@@ -21,6 +21,7 @@ struct SettingsScreen: View {
                 nodeIdentitySection
                 channelSection
                 connectivitySection
+                unitsSection
                 appearanceSection
                 Button("DIAGNOSTICS") { showDiagnostics = true }
                     .buttonStyle(.bordered)
@@ -95,6 +96,39 @@ struct SettingsScreen: View {
                 // change what the app does when it is backgrounded.
                 subtitle: "Background reconnect isn't built yet (M2) \u{2014} this only saves the preference for now.",
                 isOn: Binding(get: { model.stayConnectedInBackground }, set: model.setStayConnectedInBackground))
+        }
+    }
+
+    /// M2: replaces the M1 gap PR #265's own review flagged — a units
+    /// row that actually writes something (`AppGraph
+    /// .makeRadarViewModel`'s own comment had nowhere honest to read
+    /// from before this existed). `.system` — the default — is spelled
+    /// out in the segment label rather than left implicit, since
+    /// picking it is itself a meaningful choice ("follow my phone"),
+    /// not merely "no choice made yet".
+    private var unitsSection: some View {
+        SettingsBlock(title: "UNITS") {
+            Picker("Units", selection: Binding(get: { model.unitsPreference }, set: model.setUnitsPreference)) {
+                ForEach(UnitsPreference.allCases, id: \.self) { preference in
+                    Text(preference.settingsLabel).tag(preference)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(minHeight: 44)
+            Text(unitsCaption)
+                .font(.caption2)
+                .foregroundStyle(Color.ffMuted)
+        }
+    }
+
+    private var unitsCaption: String {
+        switch model.unitsPreference {
+        case .system:
+            return "Follows this phone's own region for distance — metric or imperial, whichever it uses."
+        case .metric:
+            return "Distances always show in meters/kilometers, regardless of region."
+        case .imperial:
+            return "Distances always show in feet/miles, regardless of region."
         }
     }
 
@@ -177,6 +211,19 @@ private struct ToggleRow: View {
                     .font(.caption2)
                     .foregroundStyle(Color.ffMuted)
             }
+        }
+    }
+}
+
+/// UI-only labels — kept here rather than on `UnitsPreference` itself
+/// (`FireflyModel`, no SwiftUI/display-string concerns of its own) so
+/// the model stays a plain, presentation-agnostic tri-state.
+private extension UnitsPreference {
+    var settingsLabel: String {
+        switch self {
+        case .system: return "System"
+        case .metric: return "Metric"
+        case .imperial: return "Imperial"
         }
     }
 }
