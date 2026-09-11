@@ -56,9 +56,20 @@ public struct StreamFramer: Sendable {
                 state = .wantLenLo(hi: byte)
             case .wantLenLo(let hi):
                 let len = Int(hi) << 8 | Int(byte)
-                if len == 0 || len > Self.maxPayload {
-                    // Oversize/empty stated length: drop it and resync.
-                    // Never allocate against an untrusted length.
+                if len > Self.maxPayload {
+                    // Oversize stated length: never allocate against an
+                    // untrusted length. Drop it and resync — matches
+                    // `mc_framer_feed`'s `expected > MC_MAX_FRAME` check
+                    // in firmware/meshclient/src/mc_framing.c.
+                    state = .wantMagic0
+                } else if len == 0 {
+                    // Degenerate zero-length frame: a VALID frame with
+                    // an empty payload, complete immediately — matches
+                    // `mc_framer_feed`'s `expected == 0` case exactly
+                    // (its own doc comment: "may be 0 for a degenerate
+                    // zero-length frame"). Not garbage, not resynced
+                    // past.
+                    out.append(Data())
                     state = .wantMagic0
                 } else {
                     body.removeAll(keepingCapacity: true)
@@ -80,9 +91,11 @@ public struct StreamFramer: Sendable {
     }
 
     /// Wrap a `ToRadio` protobuf for a stream transport. Returns nil
-    /// rather than truncating when the payload cannot be framed.
+    /// rather than truncating when the payload cannot be framed. An
+    /// empty payload IS permitted — matches `mc_frame_encode`, which
+    /// only rejects `payload_len > MC_MAX_FRAME`, never a zero length.
     public static func frame(_ payload: Data) -> Data? {
-        guard !payload.isEmpty, payload.count <= maxPayload else { return nil }
+        guard payload.count <= maxPayload else { return nil }
         var out = Data([magic0, magic1, UInt8(payload.count >> 8), UInt8(payload.count & 0xFF)])
         out.append(payload)
         return out

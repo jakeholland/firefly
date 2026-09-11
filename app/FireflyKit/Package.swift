@@ -87,5 +87,20 @@ let package = Package(
         .testTarget(name: "MeshtasticProtoTests", dependencies: ["MeshtasticProto"], path: "Tests/MeshtasticProtoTests"),
         .testTarget(name: "FireflyMeshTests", dependencies: ["FireflyMesh"], path: "Tests/FireflyMeshTests"),
         .testTarget(name: "FireflyModelTests", dependencies: ["FireflyModel"], path: "Tests/FireflyModelTests"),
+
+        // Serial + TCP hardware integration tests (slice F). NOT
+        // CoreBluetooth, so unaffected by the TCC restriction that
+        // forces the BLE hardware suite into app/FireflyHardwareTests
+        // (B1) — this one is a normal SwiftPM test target, gated at
+        // runtime by FIREFLY_HARDWARE=1 (+ FIREFLY_SERIAL_PORT for the
+        // serial tests) and skipping cleanly without them:
+        //
+        //   FIREFLY_HARDWARE=1 swift test --filter Hardware
+        //
+        // (docs/specs/A01-companion-app.md, "Test strategy" + Slice F).
+        .testTarget(
+            name: "HardwareTests",
+            dependencies: ["FireflyCore", "MeshtasticProto", "FireflyMesh", "FireflyModel"],
+            path: "Tests/HardwareTests"),
     ]
 )
