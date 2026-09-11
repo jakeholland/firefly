@@ -987,6 +987,157 @@ final class PeripheralDiscoveryTests: XCTestCase {
     }
 }
 
+// MARK: - RadioListBuilder (Connect screen redesign — owner feedback:
+// "not sure to which radio, the connect button needs to be on the line
+// item or something")
+
+@MainActor
+final class RadioListBuilderTests: XCTestCase {
+
+    private func peripheral(_ id: String, name: String?, rssi: Int) -> DiscoveredPeripheral {
+        DiscoveredPeripheral(id: id, name: name, rssiDbm: rssi)
+    }
+
+    private func snapshot(num: UInt32, longName: String?) -> MeshNodeSnapshot {
+        MeshNodeSnapshot(num: num, shortName: nil, longName: longName, position: nil,
+                          lastHeard: nil, rssiDbm: nil, snrDb: nil, hopsAway: nil)
+    }
+
+    /// Nothing remembered, nothing scanned, link disconnected — the
+    /// honest empty answer, same rule `StubPeripheralDiscovery` itself
+    /// follows: no row is better than an invented one.
+    func testEmptyWithNothingRememberedAndNothingDiscovered() {
+        let connect = ConnectViewModel(client: StubMeshtasticClient())
+        let rows = RadioListBuilder.rows(discovered: [], connect: connect)
+        XCTAssertTrue(rows.isEmpty)
+    }
+
+    func testEveryDiscoveredPeripheralGetsItsOwnConnectRowWhenDisconnected() {
+        let connect = ConnectViewModel(client: StubMeshtasticClient())
+        let discovered = [peripheral("AA", name: "Meshtastic_06b0", rssi: -80),
+                           peripheral("BB", name: "Meshtastic_e7d4", rssi: -40)]
+        let rows = RadioListBuilder.rows(discovered: discovered, connect: connect)
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertTrue(rows.allSatisfy { $0.action == .connect && $0.status == .none && !$0.isRemembered })
+    }
+
+    /// Owner feedback item 2's REMEMBERED/FORGET row: must stay visible
+    /// (and forgettable) even when a scan happens not to be running, or
+    /// hasn't found it — a real radio stops advertising once connected,
+    /// so "was it ever re-scanned" is not a fact worth gating FORGET on.
+    func testRememberedPeripheralShowsAsRememberedEvenWhenNotInTheCurrentScan() {
+        let store = InMemorySettingsStore()
+        store.setString("11111111-1111-1111-1111-111111111111", .lastPeripheralID)
+        let connect = ConnectViewModel(client: StubMeshtasticClient(), store: store)
+
+        let rows = RadioListBuilder.rows(discovered: [], connect: connect)
+
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].status, .remembered)
+        XCTAssertTrue(rows[0].isRemembered)
+        XCTAssertEqual(rows[0].action, .connect)
+    }
+
+    func testActiveRowMergesTheScanNameAndRSSIWhenTheRememberedPeripheralIsInRange() {
+        let store = InMemorySettingsStore()
+        store.setString("11111111-1111-1111-1111-111111111111", .lastPeripheralID)
+        let connect = ConnectViewModel(client: StubMeshtasticClient(), store: store)
+        let discovered = [peripheral("11111111-1111-1111-1111-111111111111", name: "Meshtastic_e7d4", rssi: -52)]
+
+        let rows = RadioListBuilder.rows(discovered: discovered, connect: connect)
+
+        XCTAssertEqual(rows.count, 1, "the remembered radio's own scan sighting must not double as a second row")
+        XCTAssertEqual(rows[0].title, "Meshtastic_e7d4")
+        XCTAssertEqual(rows[0].rssiDbm, -52)
+    }
+
+    func testConnectedRowShowsConnectedChipAndOffersDisconnect() {
+        let store = InMemorySettingsStore()
+        store.setString("11111111-1111-1111-1111-111111111111", .lastPeripheralID)
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 0x02e5_e3d4
+        let connect = ConnectViewModel(client: client, store: store)
+        connect.noteSelectedPeripheral(name: "Meshtastic_e7d4", rssiDbm: -56)
+        connect.apply(.ready)
+        connect.apply(snapshot(num: 0x02e5_e3d4, longName: "Firefly 2"))
+
+        let rows = RadioListBuilder.rows(discovered: [], connect: connect)
+
+        XCTAssertEqual(rows.count, 1)
+        let row = rows[0]
+        XCTAssertEqual(row.status, .connected)
+        XCTAssertTrue(row.status.isHighlighted)
+        XCTAssertEqual(row.action, .disconnect)
+        XCTAssertEqual(row.title, "Firefly 2", "the node's own long name leads once want_config has it")
+        XCTAssertEqual(row.subtitle, "Meshtastic_e7d4 · !02e5e3d4")
+    }
+
+    /// The specific regression the owner's UX complaint named: DISCONNECT
+    /// (an abort) must stay reachable on the active row through the
+    /// WHOLE connecting/handshaking window, matching
+    /// `ConnectViewModel.isDisconnectable` — not just once `.ready`.
+    func testConnectingRowShowsConnectingChipAndStillOffersDisconnect() {
+        let store = InMemorySettingsStore()
+        store.setString("11111111-1111-1111-1111-111111111111", .lastPeripheralID)
+        let connect = ConnectViewModel(client: StubMeshtasticClient(), store: store)
+        connect.noteSelectedPeripheral(name: "Meshtastic_e7d4", rssiDbm: -56)
+        connect.apply(.handshaking)
+
+        let rows = RadioListBuilder.rows(discovered: [], connect: connect)
+
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].status, .connecting)
+        XCTAssertTrue(rows[0].status.isHighlighted)
+        XCTAssertEqual(rows[0].action, .disconnect, "an abort must stay reachable mid-handshake")
+    }
+
+    /// Owner feedback item 2's per-row gating, the other half: every
+    /// OTHER row's CONNECT is unavailable while the app is busy with a
+    /// different radio — this app only ever talks to one at a time.
+    func testOtherRowsAreUnavailableWhileTheActiveRowIsBusy() {
+        let store = InMemorySettingsStore()
+        store.setString("11111111-1111-1111-1111-111111111111", .lastPeripheralID)
+        let connect = ConnectViewModel(client: StubMeshtasticClient(), store: store)
+        connect.apply(.handshaking)
+        let discovered = [peripheral("22222222-2222-2222-2222-222222222222", name: "Meshtastic_06b0", rssi: -70)]
+
+        let rows = RadioListBuilder.rows(discovered: discovered, connect: connect)
+
+        XCTAssertEqual(rows.count, 2)
+        let other = rows.first { $0.id == "22222222-2222-2222-2222-222222222222" }
+        XCTAssertEqual(other?.action, .unavailable)
+        XCTAssertEqual(other?.status, RadioListRow.Status.none, "'.none' here — never Optional.none; the row itself is very much present")
+    }
+
+    /// The acceptance criterion named directly: demo mode (the iOS
+    /// Simulator) has NO scanner at all (`StubPeripheralDiscovery`) and
+    /// never persists a remembered peripheral (`DemoRunner.start()`
+    /// calls `client.connect()` directly, never through the picker) —
+    /// yet once it reaches `.ready` there must still be a connected row,
+    /// or "which radio am I on?" goes right back to unanswered.
+    func testDemoModeStyleConnectShowsAConnectedRowWithNoScanAndNoRememberedID() {
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 0x0000_1001
+        let connect = ConnectViewModel(client: client) // no store — nothing ever remembered
+        connect.apply(.ready)
+
+        let rows = RadioListBuilder.rows(discovered: [], connect: connect)
+
+        XCTAssertEqual(rows.count, 1, "demo mode must still show a connected row")
+        XCTAssertEqual(rows[0].status, .connected)
+        XCTAssertEqual(rows[0].title, "!00001001", "no BLE name and no NodeInfo — the node id is all that's known")
+        XCTAssertFalse(rows[0].isRemembered, "demo mode never persists a peripheral id")
+    }
+
+    func testFullyDisconnectedWithNothingRememberedShowsNoRowForAPastSession() {
+        let connect = ConnectViewModel(client: StubMeshtasticClient())
+        connect.apply(.failed("x"))
+        connect.apply(.disconnected)
+        let rows = RadioListBuilder.rows(discovered: [], connect: connect)
+        XCTAssertTrue(rows.isEmpty)
+    }
+}
+
 // MARK: - CrewSettingsViewModel (M2's "Crew" section in More)
 
 @MainActor

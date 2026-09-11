@@ -269,4 +269,174 @@ final class ConnectViewModelTests: XCTestCase {
         XCTAssertEqual(vm.link, .disconnected)
         vm.stopObserving()
     }
+
+    // MARK: - Connect-screen redesign (owner feedback: "not sure to
+    // which radio, the connect button needs to be on the line item")
+
+    private func snapshot(num: UInt32, longName: String?) -> MeshNodeSnapshot {
+        MeshNodeSnapshot(num: num, shortName: nil, longName: longName, position: nil,
+                          lastHeard: nil, rssiDbm: nil, snrDb: nil, hopsAway: nil)
+    }
+
+    /// `headerStatusText`'s "state → header text" table for every
+    /// `LinkState` that does not depend on a real node identity — the
+    /// full CONNECTED example (BLE name + node long name + id + RSSI
+    /// together) is its own test below, since it needs a connected
+    /// node num to hang the id off.
+    func testHeaderStatusTextTable() {
+        let cases: [(setup: (ConnectViewModel) -> Void, expected: String)] = [
+            ({ _ in }, "NOT CONNECTED"),
+            ({ vm in
+                vm.noteSelectedPeripheral(name: "Meshtastic_e7d4", rssiDbm: nil)
+                vm.apply(.connecting)
+            }, "CONNECTING · Meshtastic_e7d4"),
+            ({ vm in
+                vm.noteSelectedPeripheral(name: "Meshtastic_e7d4", rssiDbm: nil)
+                vm.apply(.handshaking)
+            }, "HANDSHAKING · Meshtastic_e7d4"),
+            ({ vm in vm.apply(.reconnecting(attempt: 2)) }, "RECONNECTING (attempt 2)"),
+            ({ vm in vm.apply(.failed("timeout")) }, "FAILED"),
+        ]
+        for (setup, expected) in cases {
+            let vm = ConnectViewModel(client: StubMeshtasticClient())
+            setup(vm)
+            XCTAssertEqual(vm.headerStatusText, expected)
+        }
+    }
+
+    /// The owner's own worked example, verbatim: "CONNECTED ·
+    /// Meshtastic_e7d4 · Firefly 2 · !02e5e3d4 · −56 dBm".
+    func testHeaderStatusTextOnceReadyNamesTheRadioNodeAndSignal() {
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 0x02e5_e3d4
+        let vm = ConnectViewModel(client: client)
+        vm.noteSelectedPeripheral(name: "Meshtastic_e7d4", rssiDbm: -56)
+        vm.apply(.ready)
+        vm.apply(snapshot(num: 0x02e5_e3d4, longName: "Firefly 2"))
+        XCTAssertEqual(vm.headerStatusText, "CONNECTED · Meshtastic_e7d4 · Firefly 2 · !02e5e3d4 · -56 dBm")
+    }
+
+    func testHeaderStatusTextClearsTheRadioOnAFullDisconnect() {
+        let vm = ConnectViewModel(client: StubMeshtasticClient())
+        vm.noteSelectedPeripheral(name: "Meshtastic_e7d4", rssiDbm: -56)
+        vm.apply(.connecting)
+        XCTAssertNotEqual(vm.headerStatusText, "NOT CONNECTED")
+
+        vm.apply(.disconnected)
+        XCTAssertEqual(vm.headerStatusText, "NOT CONNECTED",
+                        "a clean disconnect has no 'which radio' left to keep naming")
+    }
+
+    // MARK: - `apply(_:MeshNodeSnapshot)` — node-identity half of `connectedRadio`
+
+    func testApplySnapshotIgnoresAnotherNodesLongName() {
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 100
+        let vm = ConnectViewModel(client: client)
+        vm.apply(snapshot(num: 200, longName: "Somebody Else"))
+        XCTAssertNil(vm.connectedRadio?.longName, "a stranger's NodeInfo must never name MY radio")
+    }
+
+    func testApplySnapshotFillsInTheConnectedNodesLongName() {
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 100
+        let vm = ConnectViewModel(client: client)
+        vm.apply(snapshot(num: 100, longName: "Firefly 2"))
+        XCTAssertEqual(vm.connectedRadio?.longName, "Firefly 2")
+    }
+
+    func testApplySnapshotIgnoresABlankLongName() {
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 100
+        let vm = ConnectViewModel(client: client)
+        vm.apply(snapshot(num: 100, longName: ""))
+        XCTAssertNil(vm.connectedRadio?.longName, "an empty name is not a name — never shown as a blank bullet")
+    }
+
+    func testNoteSelectedPeripheralResetsLongNameForAFreshSelection() {
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 5
+        let vm = ConnectViewModel(client: client)
+        vm.apply(snapshot(num: 5, longName: "Old Radio"))
+        XCTAssertEqual(vm.connectedRadio?.longName, "Old Radio")
+
+        vm.noteSelectedPeripheral(name: "Meshtastic_9999", rssiDbm: -70)
+        XCTAssertNil(vm.connectedRadio?.longName,
+                      "a fresh row tap is a DIFFERENT radio — must not keep the old one's name")
+        XCTAssertEqual(vm.connectedRadio?.bleName, "Meshtastic_9999")
+        XCTAssertEqual(vm.connectedRadio?.rssiDbm, -70)
+    }
+
+    // MARK: - `connectedNodeIDHex`
+
+    func testConnectedNodeIDHexNilBeforeAnyConnectAttempt() {
+        XCTAssertNil(ConnectViewModel(client: StubMeshtasticClient()).connectedNodeIDHex)
+    }
+
+    /// The demo-mode case: `DemoWorld.nodeDB` deliberately never
+    /// includes "my" own node, so there is no `NodeInfo` snapshot to
+    /// learn an id from — `connectedNodeNum` must still name it.
+    func testConnectedNodeIDHexUsesConnectedNodeNumEvenWithoutANodeInfoSnapshot() {
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 0x0000_1001
+        let vm = ConnectViewModel(client: client)
+        vm.apply(.ready)
+        XCTAssertEqual(vm.connectedNodeIDHex, "!00001001")
+    }
+
+    func testConnectedNodeIDHexClearsOnDisconnect() {
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 0x0000_1001
+        let vm = ConnectViewModel(client: client)
+        vm.apply(.ready)
+        client.connectedNodeNum = nil
+        vm.apply(.disconnected)
+        XCTAssertNil(vm.connectedNodeIDHex)
+    }
+
+    // MARK: - `rememberedPeripheralID`
+
+    func testRememberedPeripheralIDReflectsTheStore() {
+        let store = InMemorySettingsStore()
+        let vm = ConnectViewModel(client: StubMeshtasticClient(), store: store)
+        XCTAssertNil(vm.rememberedPeripheralID, "nothing persisted yet")
+
+        store.setString("11111111-1111-1111-1111-111111111111", .lastPeripheralID)
+        XCTAssertEqual(vm.rememberedPeripheralID, "11111111-1111-1111-1111-111111111111")
+    }
+
+    // MARK: - `rowAction(isActivePeripheral:)` — per-row CONNECT/DISCONNECT gating
+
+    /// Owner feedback: "the connect button needs to be on the line
+    /// item or something". Pinned as one table, same convention as
+    /// `testConnectDisconnectGatingStateMatrix` above: connect disabled
+    /// on every OTHER row while busy, and disconnect reachable ONLY on
+    /// the active row.
+    func testRowActionGatingTable() {
+        let vm = ConnectViewModel(client: StubMeshtasticClient())
+        let cases: [(LinkState, active: ConnectViewModel.RadioRowAction, other: ConnectViewModel.RadioRowAction)] = [
+            (.disconnected, .connect, .connect),
+            (.connecting, .disconnect, .unavailable),
+            (.handshaking, .disconnect, .unavailable),
+            (.ready, .disconnect, .unavailable),
+            (.reconnecting(attempt: 1), .disconnect, .unavailable),
+            (.failed("x"), .connect, .connect),
+        ]
+        for (state, active, other) in cases {
+            vm.apply(state)
+            XCTAssertEqual(vm.rowAction(isActivePeripheral: true), active, "active row wrong for \(state)")
+            XCTAssertEqual(vm.rowAction(isActivePeripheral: false), other, "other row wrong for \(state)")
+        }
+    }
+
+    /// The specific regression this table guards against: DISCONNECT
+    /// must be reachable on the active row throughout the WHOLE busy
+    /// window, matching `isDisconnectable`'s own rule above, not just
+    /// once `.ready`.
+    func testActiveRowStaysDisconnectableThroughoutReconnecting() {
+        let vm = ConnectViewModel(client: StubMeshtasticClient())
+        vm.apply(.reconnecting(attempt: 4))
+        XCTAssertEqual(vm.rowAction(isActivePeripheral: true), .disconnect)
+        XCTAssertTrue(vm.isDisconnectable, "a stuck retry loop must always be abortable")
+    }
 }
