@@ -105,7 +105,7 @@ public final class LoopbackTransport: MeshTransport, @unchecked Sendable {
         lock.lock()
         sent.append(data)
         let count = sent.count
-        var readyWaiters: [CheckedContinuation<Void, Never>] = []
+        var readyWaiters: [CheckedContinuation<Void, Error>] = []
         sentCountWaiters.removeAll { waiter in
             guard waiter.threshold <= count else { return false }
             readyWaiters.append(waiter.continuation)
@@ -140,15 +140,54 @@ public final class LoopbackTransport: MeshTransport, @unchecked Sendable {
     /// injecting the matching reply eats directly into that real budget.
     /// This closes that gap: resolved directly from `record(_:)` the
     /// instant the threshold is met, no interval to stretch.
-    private var sentCountWaiters: [(threshold: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    ///
+    /// PR #286 review, BLOCKING 3: each waiter is keyed by its own `id`
+    /// (not just `threshold`, which several concurrent waiters can
+    /// share) so `cancelSentCountWaiter(id:)` can find and resume
+    /// exactly the one continuation a cancelled `waitForSentCount(_:)`
+    /// call is suspended on, without disturbing any other waiter parked
+    /// on the same threshold.
+    private struct Waiter {
+        let id: UUID
+        let threshold: Int
+        let continuation: CheckedContinuation<Void, Error>
+    }
+    private var sentCountWaiters: [Waiter] = []
+
+    /// `waitForSentCount`/`cancelSentCountWaiter` can race each other:
+    /// `withTaskCancellationHandler`'s `onCancel` closure may run
+    /// concurrently with — including strictly BEFORE — the operation
+    /// closure that registers the waiter (this is explicitly permitted
+    /// by the API's own contract, not a bug in the caller). Recording an
+    /// early cancellation here, keyed by `id`, lets
+    /// `registerSentCountWaiter(id:threshold:continuation:)` notice it
+    /// and resume with `CancellationError` immediately instead of
+    /// registering a waiter that has already been cancelled and will
+    /// then never be resumed (the exact hang this whole mechanism exists
+    /// to prevent).
+    private var earlyCancellations: Set<UUID> = []
 
     /// Suspends until at least `n` messages have been sent so far, or
     /// returns immediately if that is already true — see
     /// `sentCountWaiters`'s own doc comment for why this replaced a
     /// polling wait.
-    public func waitForSentCount(_ n: Int) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            registerSentCountWaiter(threshold: n, continuation: continuation)
+    ///
+    /// PR #286 review, BLOCKING 3: cancellation-safe. Cancelling the
+    /// awaiting task (e.g. a test's own watchdog racing this against a
+    /// timeout) removes the waiter under `lock` and resumes it by
+    /// throwing `CancellationError`, rather than leaving it parked on
+    /// the continuation forever — the prior version had no
+    /// `withTaskCancellationHandler` at all, so `Task.cancel()` only
+    /// flipped `Task.isCancelled` and never actually unblocked a waiter
+    /// whose threshold never arrived.
+    public func waitForSentCount(_ n: Int) async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                registerSentCountWaiter(id: id, threshold: n, continuation: continuation)
+            }
+        } onCancel: {
+            cancelSentCountWaiter(id: id)
         }
     }
 
@@ -157,16 +196,39 @@ public final class LoopbackTransport: MeshTransport, @unchecked Sendable {
     // in one locked critical section (rather than `waitForSentCount`
     // checking `sentMessages` first and registering separately) closes
     // the TOCTOU race a send arriving between those two steps would
-    // otherwise open.
-    private func registerSentCountWaiter(threshold: Int, continuation: CheckedContinuation<Void, Never>) {
+    // otherwise open. Also consults `earlyCancellations` under the same
+    // lock, closing the `onCancel`-before-registration race described on
+    // that set's own doc comment.
+    private func registerSentCountWaiter(id: UUID, threshold: Int, continuation: CheckedContinuation<Void, Error>) {
         lock.lock()
+        if earlyCancellations.remove(id) != nil {
+            lock.unlock()
+            continuation.resume(throwing: CancellationError())
+            return
+        }
         if sent.count >= threshold {
             lock.unlock()
             continuation.resume()
             return
         }
-        sentCountWaiters.append((threshold: threshold, continuation: continuation))
+        sentCountWaiters.append(Waiter(id: id, threshold: threshold, continuation: continuation))
         lock.unlock()
+    }
+
+    // Same locking rationale as `registerSentCountWaiter` above.
+    private func cancelSentCountWaiter(id: UUID) {
+        lock.lock()
+        guard let index = sentCountWaiters.firstIndex(where: { $0.id == id }) else {
+            // Not registered yet — `onCancel` beat the operation closure
+            // to the lock. Remember it so registration resumes with
+            // `CancellationError` instead of parking forever.
+            earlyCancellations.insert(id)
+            lock.unlock()
+            return
+        }
+        let waiter = sentCountWaiters.remove(at: index)
+        lock.unlock()
+        waiter.continuation.resume(throwing: CancellationError())
     }
 
     /// Deliver bytes as if the radio had sent them.
