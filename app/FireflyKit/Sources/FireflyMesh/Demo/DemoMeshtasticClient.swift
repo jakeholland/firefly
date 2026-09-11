@@ -56,6 +56,11 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     private let deliveryHub = EventHub<DeliveryEvent>()
     private let incomingTextHub = EventHub<IncomingText>()
     private let incomingPrivateHub = EventHub<IncomingPrivate>()
+    // PR #282 review, SHOULD-FIX: same `CurrentValueEventHub` pattern as
+    // `linkHub` above, for the same reason — Settings can be opened
+    // AFTER `connect()` already reached `.ready`, and needs the scripted
+    // config immediately rather than waiting on the next change.
+    private let nodeConfigHub = CurrentValueEventHub<NodeConfigSnapshot>()
 
     private let lock = NSLock()
     private let myNodeNum: UInt32
@@ -68,6 +73,7 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     private var nextOutboxID: UInt32 = 1
     private var nextPacketID: UInt32 = 1
     private var _connectedNodeNum: UInt32?
+    private var _nodeConfig: NodeConfigSnapshot?
     /// FIFO, consumed once per `wantAck: true` send — see
     /// `DemoAckOutcome`. Repeats the LAST entry once exhausted, rather
     /// than falling back to a hidden default, so a test can see exactly
@@ -97,6 +103,29 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     public func incomingTexts() -> AsyncStream<IncomingText> { incomingTextHub.subscribe() }
     public func incomingPrivate() -> AsyncStream<IncomingPrivate> { incomingPrivateHub.subscribe() }
 
+    // PR #282 review, SHOULD-FIX: the passive read seam Settings needs
+    // (`MeshtasticClientProtocol.nodeConfigUpdates()`'s own doc comment)
+    // — without this, Demo mode's Settings screen fell through to the
+    // protocol's "reports nothing" default extension and regressed to
+    // "UNKNOWN" Region/Channel and un-prefilled name fields, exactly the
+    // empty-Simulator experience this whole file's header comment says
+    // Demo mode exists to avoid. `scriptedNodeConfig` is yielded once
+    // `connect()` reaches `.ready`, same as the scripted node dump.
+    public func nodeConfigUpdates() -> AsyncStream<NodeConfigSnapshot> { nodeConfigHub.subscribe() }
+    public var connectedNodeConfig: NodeConfigSnapshot? {
+        lock.lock(); defer { lock.unlock() }; return _nodeConfig
+    }
+
+    /// "JAKE" for both owner names mirrors `DemoCrew.jake` being "my"
+    /// node (`DemoWorld.swift`); region/modem/primary-channel match
+    /// Firefly Fields' own festpack conventions
+    /// (`docs/specs/S20-demo-mode.md`) — a real-looking node config, not
+    /// an arbitrary placeholder, per this file's own "only THIS type is
+    /// allowed to be fictional" rule.
+    public static let scriptedNodeConfig = NodeConfigSnapshot(
+        ownerLongName: "JAKE", ownerShortName: "JAKE",
+        region: .us, modemPreset: .longFast, primaryChannelName: "Firefly Fields")
+
     public var connectedNodeNum: UInt32? {
         get { lock.lock(); defer { lock.unlock() }; return _connectedNodeNum }
         set { lock.lock(); defer { lock.unlock() }; _connectedNodeNum = newValue }
@@ -119,6 +148,7 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
         for node in scriptedNodes {
             nodeHub.yield(node)
         }
+        publishNodeConfig(Self.scriptedNodeConfig)
         connectedNodeNum = myNodeNum
         linkHub.yield(.ready)
     }
@@ -272,6 +302,15 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
 
     private func recordPrivate(_ payload: Data, destination: UInt32, wantAck: Bool) {
         lock.lock(); sentPrivate.append((payload, destination, wantAck)); lock.unlock()
+    }
+
+    /// Same `noasync`-lock reasoning as the record helpers above — sets
+    /// the synchronous cache `connectedNodeConfig` reads AND publishes
+    /// to `nodeConfigUpdates()`, same two-writes-in-one-call convention
+    /// `nodeConfig`'s setter uses on `StubMeshtasticClient`.
+    private func publishNodeConfig(_ snapshot: NodeConfigSnapshot) {
+        lock.lock(); _nodeConfig = snapshot; lock.unlock()
+        nodeConfigHub.yield(snapshot)
     }
 
     private func scheduleAck(packetID: UInt32) {

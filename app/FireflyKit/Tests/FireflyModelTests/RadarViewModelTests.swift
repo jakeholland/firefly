@@ -455,13 +455,114 @@ final class RadarViewModelTests: XCTestCase {
 
     // MARK: - "your position" line (always present, never blank)
 
+    /// Finding 3 (first real-radio session, macOS): a bare "no fix" —
+    /// the exact reported bug — never says WHY. `UnavailableLocationProvider`
+    /// reports `.deniedOrRestricted`, so the honest reason is spelled out.
     func testMyPositionLineNamesSourceAndAgeEvenWhenUnavailable() {
         let s = snapshot(mode: .noSel)
         let (model, _, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
         // NoHeadingProvider/UnavailableLocationProvider: both halves
         // honestly unavailable, never a fabricated placeholder.
-        XCTAssertEqual(model.myPositionLine, "your position: no fix; heading: unavailable")
+        XCTAssertEqual(model.myPositionLine,
+                       "your position: location permission not granted — enable in System Settings; " +
+                       "heading: unavailable")
+    }
+
+    /// Every `LocationAuthorization` reads its own distinct, honest
+    /// reason — never a generic "no fix" that hides WHY.
+    func testMyPositionLineNamesEveryAuthorizationReasonHonestly() {
+        let cases: [(LocationAuthorization, String)] = [
+            (.notDetermined, "location permission not granted — enable in System Settings"),
+            (.deniedOrRestricted, "location permission not granted — enable in System Settings"),
+            (.locationServicesDisabled, "location services off"),
+            (.whenInUse, "no fix yet"),
+            (.always, "no fix yet"),
+        ]
+        for (authorization, reason) in cases {
+            let radar = MockRadarComputing()
+            radar.nextSnapshot = snapshot(mode: .noSel)
+            let model = RadarViewModel(radar: radar, heading: NoHeadingProvider(),
+                                        location: ScriptedAuthLocationProvider(authorization: authorization),
+                                        find: MockFindSession())
+            model.observe(); defer { model.stopObserving() }
+            XCTAssertEqual(model.myPositionLine, "your position: \(reason); heading: unavailable",
+                           "wrong reason for \(authorization)")
+        }
+    }
+
+    /// Finding 3: opening Radar while permission is genuinely undecided
+    /// asks for it — nothing in this app ever did before this finding.
+    func testObserveRequestsLocationAuthorizationWhenNotDetermined() async {
+        let radar = MockRadarComputing()
+        radar.nextSnapshot = snapshot(mode: .noSel)
+        let location = ScriptedAuthLocationProvider(authorization: .notDetermined)
+        let model = RadarViewModel(radar: radar, heading: NoHeadingProvider(), location: location, find: MockFindSession())
+        model.observe(); defer { model.stopObserving() }
+
+        for _ in 0..<200 where location.whenInUseRequestCount == 0 {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(location.whenInUseRequestCount, 1)
+    }
+
+    /// A user who already decided (either way) must never be re-prompted
+    /// just for opening Radar again.
+    func testObserveDoesNotReRequestAuthorizationOnceAlreadyDecided() async {
+        for authorization: LocationAuthorization in [.deniedOrRestricted, .whenInUse, .always, .locationServicesDisabled] {
+            let radar = MockRadarComputing()
+            radar.nextSnapshot = snapshot(mode: .noSel)
+            let location = ScriptedAuthLocationProvider(authorization: authorization)
+            let model = RadarViewModel(radar: radar, heading: NoHeadingProvider(), location: location, find: MockFindSession())
+            model.observe(); defer { model.stopObserving() }
+
+            // Race against a short window rather than asserting
+            // "eventually zero," which could flake either way — same
+            // pattern `LocationProviderTests`' own negative tests use.
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            XCTAssertEqual(location.whenInUseRequestCount, 0, "must not re-prompt for \(authorization)")
+        }
+    }
+
+    /// PR #282 review, BLOCKING fix: the real `LocationProvider`'s old
+    /// `authorization` getter called
+    /// `CLLocationManager.locationServicesEnabled()` synchronously, live,
+    /// on every read — Apple's own docs warn against exactly that
+    /// main-thread-blocking pattern, and `myPositionLine` is read
+    /// roughly once a second for as long as Radar stays open
+    /// (`observe()`'s own `recompute()` loop). This is the "counting
+    /// mock provider" the review asked for: it proves `myPositionLine`
+    /// reads authorization EXACTLY once per call, through the injected
+    /// `LocationProviding` only — the one and only seam this view model
+    /// can ever reach — never a second, hidden services check of its
+    /// own creeping back in here.
+    func testMyPositionLineReadsAuthorizationExactlyOncePerCallThroughTheInjectedProviderOnly() {
+        let radar = MockRadarComputing()
+        radar.nextSnapshot = snapshot(mode: .noSel)
+        let location = ScriptedAuthLocationProvider(authorization: .whenInUse)
+        let model = RadarViewModel(radar: radar, heading: NoHeadingProvider(), location: location, find: MockFindSession())
+        model.observe(); defer { model.stopObserving() }
+
+        let before = location.authorizationReadCount
+        for _ in 0..<50 { _ = model.myPositionLine }
+        XCTAssertEqual(location.authorizationReadCount - before, 50,
+                       "myPositionLine must read the injected provider's cached authorization exactly once per call, never a second hidden check")
+    }
+
+    /// Same regression guard as above, for `observe()`'s own
+    /// `.notDetermined` check — exactly one read per `observe()` call,
+    /// not re-checked on every heading/fix event the observation loop
+    /// processes afterward.
+    func testObserveReadsAuthorizationExactlyOnceRegardlessOfSubsequentEvents() async {
+        let radar = MockRadarComputing()
+        radar.nextSnapshot = snapshot(mode: .noSel)
+        let location = ScriptedAuthLocationProvider(authorization: .whenInUse)
+        let model = RadarViewModel(radar: radar, heading: NoHeadingProvider(), location: location, find: MockFindSession())
+
+        model.observe(); defer { model.stopObserving() }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(location.authorizationReadCount, 1,
+                       "observe() must read authorization exactly once at startup, never per event afterward")
     }
 
     // MARK: - FIND (S29 PR2): cadence, cap, cancel-on-new-target, stop
@@ -592,4 +693,57 @@ final class RadarViewModelTests: XCTestCase {
     func testSignalRingDisclaimerIsExplicit() {
         XCTAssertEqual(RadarViewModel.signalRingDisclaimer, "Ring is signal order, not direction")
     }
+}
+
+/// A location provider whose `authorization` a test sets directly and
+/// whose `requestWhenInUseAuthorization()` calls it can count — finding
+/// 3's own test seam, distinct from `UnavailableLocationProvider`
+/// (permanently `.deniedOrRestricted`, no counting) and `DemoLocationProvider`
+/// (permanently `.whenInUse`). Never yields a fix: these tests only
+/// exercise the authorization half.
+///
+/// PR #282 review, BLOCKING fix: also counts reads of `authorization`
+/// itself — the "counting mock provider" the review asked for, so a
+/// test can prove `RadarViewModel`'s hot paths
+/// (`myPositionLine`/`observe()`) read ONLY this injected, cached
+/// value, never a second, hidden services check of their own. Real
+/// `LocationProvider.authorization` never does synchronous CoreLocation
+/// I/O any more either (see that type's own fix), but a mock like this
+/// one is what actually guards the VIEW-MODEL call sites: it is the
+/// only `LocationProviding` conformer those methods can ever reach —
+/// if either of them starts poking at some second, separate
+/// authorization source, this count stops matching.
+private final class ScriptedAuthLocationProvider: LocationProviding, @unchecked Sendable {
+    private let lock = NSLock()
+    private let _authorization: LocationAuthorization
+    private var _whenInUseRequestCount = 0
+    private var _authorizationReadCount = 0
+
+    init(authorization: LocationAuthorization) { self._authorization = authorization }
+
+    var authorization: LocationAuthorization {
+        recordAuthorizationRead()
+        return _authorization
+    }
+    var whenInUseRequestCount: Int { lock.lock(); defer { lock.unlock() }; return _whenInUseRequestCount }
+    var authorizationReadCount: Int { lock.lock(); defer { lock.unlock() }; return _authorizationReadCount }
+
+    // `NSLock.lock()`/`unlock()` are `noasync` (Swift 6) — a locked
+    // mutation lexically inside an `async` function body is a hard
+    // error even with no suspension point between the two calls, same
+    // rule `StubMeshtasticClient`'s own record helpers document — so
+    // the mutation happens in this synchronous helper instead.
+    private func recordRequest() {
+        lock.lock(); _whenInUseRequestCount += 1; lock.unlock()
+    }
+    // Also synchronous, same reason — `authorization` itself is a plain
+    // (non-`async`) computed property, but keeping every locked mutation
+    // in this file behind a synchronous helper is the one consistent
+    // rule to follow rather than special-casing this one.
+    private func recordAuthorizationRead() {
+        lock.lock(); _authorizationReadCount += 1; lock.unlock()
+    }
+    func requestWhenInUseAuthorization() async { recordRequest() }
+    func requestAlwaysAuthorization() async {}
+    func fixes() -> AsyncStream<LocationFix?> { AsyncStream { _ in } }
 }

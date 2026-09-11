@@ -644,8 +644,17 @@ private struct NearbyRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(node.displayName)
                     .foregroundStyle(Color.ffInk)
+                // Paired: the HEARD-presence tag (`ff_crew`'s own
+                // freshness buckets). Stranger: the honest "how long
+                // ago" text (finding 1) — never the tier label alone,
+                // which for a want_config-replayed stranger is almost
+                // always NONE and would say nothing.
                 if let presence = node.presence {
                     Text(presence.rawValue)
+                        .font(.caption2)
+                        .foregroundStyle(Color.ffMuted)
+                } else if let heardAgo = node.heardAgo {
+                    Text(heardAgo)
                         .font(.caption2)
                         .foregroundStyle(Color.ffMuted)
                 } else {

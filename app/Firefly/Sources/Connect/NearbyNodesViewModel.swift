@@ -1,9 +1,10 @@
 //
 //  NearbyNodesViewModel.swift — the Connect screen's "Nearby" section:
 //  paired crew (colour + presence) first, then strangers ranked by
-//  signal TIER, never by an invented distance (docs/specs/
-//  A01-companion-app.md, Design language; M2's "crew pairing and
-//  colours, driven by `ff_crew`").
+//  last-heard recency, never an invented distance or a tier the client
+//  never measured (docs/specs/A01-companion-app.md, Design language;
+//  M2's "crew pairing and colours, driven by `ff_crew`"; finding 1 from
+//  the first real-radio session — see `rebuild()`'s own doc comment).
 //
 //  A fresh, independent `nodeUpdates()` subscription (S1's multicast
 //  rule): `CoreStore` and Radar (slice D) each hold their own too, and
@@ -28,6 +29,12 @@ final class NearbyNodesViewModel {
     struct NearbyNode: Identifiable, Equatable {
         let id: UInt32
         let displayName: String
+        /// DIRECT RSSI only (`SignalTierPresentation.tier(rssiDbm:)`) —
+        /// `.none` whenever the client has never attributed a direct
+        /// packet's RSSI to this node, which is the honest, common case
+        /// for everything the want_config nodeDB replay seeds (finding
+        /// 1: a replayed `NodeInfo` carries `last_heard`, never RSSI).
+        /// Never invented from a relayed reading or a guess.
         let tier: SignalTierPresentation
         let isCrew: Bool
         /// `ff_crew_member_t.color_idx`, for a paired row only — `nil`
@@ -35,9 +42,15 @@ final class NearbyNodesViewModel {
         /// guessed one).
         let colorIndex: Int?
         /// The HEARD-presence axis (`ff_crew_presence`), for a paired
-        /// row only — a stranger's presence is the tier bars already
-        /// showing, not a second, redundant tag.
+        /// row only — a stranger's presence is `heardAgo` below, not a
+        /// second, redundant tag.
         let presence: PresenceTag?
+        /// A stranger row's own honest "how long ago" text — nil for a
+        /// paired row (`presence` already tells that story off
+        /// `ff_crew`'s own freshness buckets). "NEVER HEARD" when the
+        /// nodeDB carries no `lastHeard` for this id at all — never
+        /// fabricated. See `NearbyNodesViewModel.heardAgoLabel(for:now:)`.
+        let heardAgo: String?
     }
 
     private(set) var nodes: [NearbyNode] = []
@@ -82,7 +95,38 @@ final class NearbyNodesViewModel {
 
     func apply(_ snapshot: MeshNodeSnapshot) {
         byNum[snapshot.num] = snapshot
+        enforceUnpairedBound()
         rebuild()
+    }
+
+    /// Bounded LRU for UNPAIRED entries only — mirrors the puck's own
+    /// roster policy (`ff_heard.h`'s own header comment: the paired
+    /// roster is protected, "heard but unpaired" is a separate, bounded,
+    /// LRU-evictable list; core issue #268) rather than letting a busy
+    /// public mesh's want_config replay (~200 nodeDB entries in the
+    /// session that surfaced this — finding 1) grow this dictionary
+    /// without limit. Paired rows are NEVER evicted here, matching the
+    /// same "paired pinned" rule — this dictionary is this screen's OWN
+    /// app-side heard list (issue #273's own "keep the heard list
+    /// app-side... never `ff_crew_upsert`-per-packet" intent); it is not
+    /// `ff_crew`, so its bound is sized for a phone's scrollable Nearby
+    /// section, not the puck's 16-slot `ff_heard_t`.
+    private static let maxUnpairedTracked = 64
+
+    private func enforceUnpairedBound() {
+        let pairedIDs = Set(pairing.pairedRecords().map(\.nodeID))
+        let unpairedIDs = byNum.keys.filter { !pairedIDs.contains($0) }
+        guard unpairedIDs.count > Self.maxUnpairedTracked else { return }
+        // Evict the least-recently-heard unpaired entries first — never
+        // heard (`lastHeard == nil`) sorts as infinitely old, evicted
+        // before anything with a real timestamp (same rule `rebuild()`'s
+        // stranger ordering and `heardAgoLabel` both use for "NEVER").
+        let sorted = unpairedIDs.sorted { lhs, rhs in
+            (byNum[lhs]?.lastHeard ?? .distantPast) < (byNum[rhs]?.lastHeard ?? .distantPast)
+        }
+        for id in sorted.prefix(unpairedIDs.count - Self.maxUnpairedTracked) {
+            byNum.removeValue(forKey: id)
+        }
     }
 
     /// Pairs `num` through the real seam: `ff_crew_set_paired` plus a
@@ -106,32 +150,74 @@ final class NearbyNodesViewModel {
         rebuild()
     }
 
+    /// Finding 1 (first real-radio session, node !02e606b0): a
+    /// want_config nodeDB replay carries every node's `NodeInfo.lastHeard`
+    /// but never a direct RSSI (no packet arrived on THIS session to
+    /// attribute one to) — the OLD `guard let rssi = snapshot.rssiDbm
+    /// else { continue }` here dropped every one of those rows, so
+    /// "NEARBY" stayed on its empty state ("Nobody heard yet") even
+    /// though the client had, in fact, just reported ~200 heard nodes.
+    /// Every node this screen has ever `apply`-ed a snapshot for is now
+    /// shown — never excluded for lacking a field nothing promised it
+    /// would have.
     private func rebuild() {
         let now = FireflyClock.nowMillis()
+        let nowDate = Date()
         let rosterOrder = pairing.pairedRecords().map(\.nodeID)
 
         var crewRows: [NearbyNode] = []
         var strangerRows: [NearbyNode] = []
         for snapshot in byNum.values {
-            guard let rssi = snapshot.rssiDbm else { continue }
             let member = pairing.crew.member(nodeID: snapshot.num, now: now)
             let paired = member?.paired ?? false
+            // DIRECT RSSI only — a replayed or relayed sighting carries
+            // none, and `.none` is the honest tier for that, never an
+            // invented one (finding 1's own wording: "tier NONE, never
+            // invented").
+            let tier = snapshot.rssiDbm.map(SignalTierPresentation.tier(rssiDbm:)) ?? .none
             let node = NearbyNode(
                 id: snapshot.num,
                 displayName: Self.displayName(for: snapshot),
-                tier: SignalTierPresentation.tier(rssiDbm: rssi),
+                tier: tier,
                 isCrew: paired,
                 colorIndex: paired ? Int(member?.colorIndex ?? 0) : nil,
-                presence: paired ? Self.presenceTag(for: member?.heardPresence) : nil)
+                presence: paired ? Self.presenceTag(for: member?.heardPresence) : nil,
+                heardAgo: paired ? nil : Self.heardAgoLabel(for: snapshot.lastHeard, now: nowDate))
             if paired { crewRows.append(node) } else { strangerRows.append(node) }
         }
         // Paired members: roster order (first paired, first shown) —
         // the same canonical ordering the Crew section in More and
         // `CrewPairingRestorer` use, never re-sorted by a transient
-        // signal reading. Strangers: strongest signal first, as before.
+        // signal reading.
+        //
+        // Strangers: most-recently-heard first (finding 1) — NOT signal
+        // tier any more. Most strangers arrive from the want_config
+        // nodeDB replay with no RSSI at all (tier NONE for all of them),
+        // so ranking by tier would leave the whole list in nodeDB
+        // iteration order; last-heard recency is the one honest signal
+        // every heard node actually carries. Never-heard nodes
+        // (`lastHeard == nil`) sort last, same rule `heardAgoLabel`/
+        // `enforceUnpairedBound` both use.
+        strangerRows.sort { lhs, rhs in
+            (byNum[lhs.id]?.lastHeard ?? .distantPast) > (byNum[rhs.id]?.lastHeard ?? .distantPast)
+        }
         crewRows.sort { (rosterOrder.firstIndex(of: $0.id) ?? .max) < (rosterOrder.firstIndex(of: $1.id) ?? .max) }
-        strangerRows.sort { $0.tier.barFill > $1.tier.barFill }
         nodes = crewRows + strangerRows
+    }
+
+    /// "HEARD 2M AGO" / "HEARD JUST NOW" / "NEVER HEARD" — the one
+    /// honest thing every Nearby stranger row can say about itself.
+    /// "NEVER HEARD" only for a `lastHeard` the client has genuinely
+    /// never reported — not a zero, not a guess.
+    static func heardAgoLabel(for lastHeard: Date?, now: Date) -> String {
+        guard let lastHeard else { return "NEVER HEARD" }
+        let age = max(0, now.timeIntervalSince(lastHeard))
+        if age < 60 { return "HEARD JUST NOW" }
+        let minutes = Int(age / 60)
+        if minutes < 60 { return "HEARD \(minutes)M AGO" }
+        let hours = minutes / 60
+        if hours < 24 { return "HEARD \(hours)H AGO" }
+        return "HEARD \(hours / 24)D AGO"
     }
 
     private static func presenceTag(for heard: HeardPresence?) -> PresenceTag {

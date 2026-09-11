@@ -131,6 +131,23 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     private let deliveryHub = EventHub<DeliveryEvent>()
     private let incomingTextHub = EventHub<IncomingText>()
     private let incomingPrivateHub = EventHub<IncomingPrivate>()
+    /// Finding 2 — the passive config-read seam. `CurrentValueEventHub`
+    /// for the same reason `linkHub` is one: a Settings screen opened
+    /// after want_config already finished must see the current values
+    /// immediately, not silence until the next change.
+    private let nodeConfigHub = CurrentValueEventHub<NodeConfigSnapshot>()
+    /// The actor-isolated draft `handle(fromRadio:)` fills in piece by
+    /// piece as `.config`/`.channel`/self-`.nodeInfo` frames arrive, and
+    /// `applyChannelSet`/`setOwner`/`setRegion` refresh after their own
+    /// read-back. Reset to empty at the start of every new handshake —
+    /// a stale region from a previous node is not an honest "current"
+    /// value for this one. `didSet` mirrors it into `nodeConfigBox`,
+    /// same pattern as `myNodeNum`/`nodeNumBox` just above, for
+    /// `connectedNodeConfig`'s synchronous, `nonisolated` read.
+    private var nodeConfig = NodeConfigSnapshot() {
+        didSet { nodeConfigBox.value = nodeConfig }
+    }
+    private let nodeConfigBox = LockedValue<NodeConfigSnapshot?>(nil)
 
     private var nodeDB = NodeDB()
     private var framer = StreamFramer()
@@ -323,6 +340,12 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     public nonisolated func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
     public nonisolated func incomingTexts() -> AsyncStream<IncomingText> { incomingTextHub.subscribe() }
     public nonisolated func incomingPrivate() -> AsyncStream<IncomingPrivate> { incomingPrivateHub.subscribe() }
+    /// Finding 2 — see `MeshtasticClientProtocol.nodeConfigUpdates()`'s
+    /// own doc comment.
+    public nonisolated func nodeConfigUpdates() -> AsyncStream<NodeConfigSnapshot> { nodeConfigHub.subscribe() }
+    /// `nonisolated`, same `nodeNumBox` pattern as `connectedNodeNum`
+    /// just below.
+    public nonisolated var connectedNodeConfig: NodeConfigSnapshot? { nodeConfigBox.value }
 
     /// `nonisolated` for the same reason the stream accessors are: the
     /// one caller (`PhoneGPSUplink`'s synchronous `destinationNodeNum`
@@ -648,6 +671,17 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             throw AdminWriteError.readBackMismatch(
                 "did not read back as written: \(mismatches.joined(separator: ", "))\(partialNote)")
         }
+        // Finding 2: refresh the passive-read snapshot FROM this
+        // authoritative read-back — never a second, separate read, and
+        // never assumed from what was merely requested.
+        if let primary = readChannels.first(where: { $0.role == .primary }) {
+            nodeConfig.primaryChannelName = primary.settings.name
+        }
+        if let readLora {
+            nodeConfig.region = readLora.region
+            nodeConfig.modemPreset = readLora.modemPreset
+        }
+        if !readChannels.isEmpty || readLora != nil { nodeConfigHub.yield(nodeConfig) }
         return ChannelWriteReport(channels: readChannels, loraConfig: readLora)
     }
 
@@ -675,6 +709,11 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         guard got.longName == longName, got.shortName == shortName else {
             throw AdminWriteError.readBackMismatch("owner name did not read back as written")
         }
+        // Finding 2: refresh the passive-read snapshot from this write's
+        // own authoritative read-back.
+        nodeConfig.ownerLongName = got.longName
+        nodeConfig.ownerShortName = got.shortName
+        nodeConfigHub.yield(nodeConfig)
         return OwnerWriteReport(longName: got.longName, shortName: got.shortName)
     }
 
@@ -718,6 +757,11 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         guard got.region == region else {
             throw AdminWriteError.readBackMismatch("region did not read back as written")
         }
+        // Finding 2: refresh the passive-read snapshot from this write's
+        // own authoritative read-back.
+        nodeConfig.region = got.region
+        nodeConfig.modemPreset = got.modemPreset
+        nodeConfigHub.yield(nodeConfig)
         return RegionWriteReport(region: got.region)
     }
 
@@ -1175,6 +1219,12 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         Self.log("handleTransportReconnected() starting the bounded handshake-retry loop")
         nodeDB.reset()
         pendingSends.removeAll()
+        // Finding 2: same reasoning as `resetSessionState()`'s own
+        // comment — a stale region/owner/channel from the session that
+        // just dropped is not an honest "current" value for the fresh
+        // one this retry loop is about to establish.
+        nodeConfig = NodeConfigSnapshot()
+        nodeConfigHub.yield(nodeConfig)
 
         var attempt = 0
         while true {
@@ -1312,6 +1362,13 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         firmwareVersion = nil
         isFirmwareBelowSupportedFloor = false
         channelNames.removeAll()
+        // Finding 2: a stale region/owner/channel from whatever node we
+        // were last connected to is not an honest "current" value for
+        // this handshake — published so a Settings screen already
+        // reading `nodeConfigUpdates()` sees the clear too, not a value
+        // that quietly stops being true.
+        nodeConfig = NodeConfigSnapshot()
+        nodeConfigHub.yield(nodeConfig)
         framer = StreamFramer()
         lastRxAt = nil
         hasCompletedInitialConnect = false
@@ -1463,6 +1520,16 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         case .nodeInfo(let info):
             let snapshot = nodeDB.apply(nodeInfo: info)
             nodeHub.yield(snapshot)
+            // Finding 2: OUR OWN NodeInfo entry (want_config replays
+            // every node's, including the connected one's own) is where
+            // the owner long/short name actually lives — `.myInfo` only
+            // ever carries `my_node_num`, never a name. Order-independent
+            // of `.myInfo`: if `myNodeNum` is not known yet, the
+            // `applyOwnerFromNodeDB` catch-up at `.configCompleteID`
+            // below handles it.
+            if info.num == myNodeNum, info.hasUser {
+                applyOwnerFromNodeDB(num: info.num, shortName: info.user.shortName, longName: info.user.longName)
+            }
 
         case .metadata(let meta):
             firmwareVersion = meta.firmwareVersion
@@ -1470,6 +1537,31 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         case .channel(let ch):
             if ch.hasSettings {
                 channelNames.insert(ch.settings.name)
+                // Finding 2: the PRIMARY channel's name, passively —
+                // never guessed, and never the first channel in whatever
+                // order the radio happens to report them (the OLD
+                // `SettingsViewModel.currentChannelName` bug this
+                // replaces: it read the first IMPORTED channel, not the
+                // node's actual primary).
+                if ch.role == .primary {
+                    nodeConfig.primaryChannelName = ch.settings.name
+                    nodeConfigHub.yield(nodeConfig)
+                }
+            }
+
+        case .config(let cfg):
+            // Finding 2: previously unhandled — `.config` fell through
+            // to `default: break` below and want_config's own region/
+            // modem-preset report was silently dropped, which is why
+            // Settings could never show anything but "UNKNOWN" for
+            // either without a SEPARATE admin round trip. `Config` is
+            // itself a oneof (`payloadVariant`) covering every config
+            // section the radio can send, one `.config` frame per
+            // section — only the `.lora` case carries region/preset.
+            if case .lora(let lora)? = cfg.payloadVariant {
+                nodeConfig.region = lora.region
+                nodeConfig.modemPreset = lora.modemPreset
+                nodeConfigHub.yield(nodeConfig)
             }
 
         case .configCompleteID(let id):
@@ -1480,6 +1572,12 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             // silently dropped rather than treated as an error, per
             // mc_client.c's own `config_complete_id` branch.
             Self.log("handle(fromRadio:): .configCompleteID(\(id))")
+            // Finding 2: catches the case where our own `.nodeInfo` was
+            // replayed BEFORE `.myInfo` named `myNodeNum` — by the time
+            // the whole handshake is done, both are known either way.
+            if let me = myNodeNum, let mine = nodeDB.node(me) {
+                applyOwnerFromNodeDB(num: me, shortName: mine.shortName, longName: mine.longName)
+            }
             configCompleteHub.yield(id)
 
         case .packet(let pkt):
@@ -1488,6 +1586,29 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         default:
             break
         }
+    }
+
+    /// Finding 2's owner-name half — called from both the
+    /// order-dependent path (our own `.nodeInfo` arrives after
+    /// `.myInfo` already named us) and the order-independent catch-up
+    /// at `.configCompleteID` (our own `.nodeInfo` arrived FIRST, before
+    /// `myNodeNum` was known). `shortName`/`longName` empty-string
+    /// clears are treated the same way `NodeDB.apply(nodeInfo:)` treats
+    /// them — an empty proto3 string here means "the field was not
+    /// actually set," never "the owner cleared their name to blank" —
+    /// so an empty value is ignored rather than overwriting a real one.
+    private func applyOwnerFromNodeDB(num: UInt32, shortName: String?, longName: String?) {
+        guard num == myNodeNum else { return }
+        var changed = false
+        if let shortName, !shortName.isEmpty, nodeConfig.ownerShortName != shortName {
+            nodeConfig.ownerShortName = shortName
+            changed = true
+        }
+        if let longName, !longName.isEmpty, nodeConfig.ownerLongName != longName {
+            nodeConfig.ownerLongName = longName
+            changed = true
+        }
+        if changed { nodeConfigHub.yield(nodeConfig) }
     }
 
     private func handle(meshPacket pkt: MeshPacket) {

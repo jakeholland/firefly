@@ -131,17 +131,35 @@ struct SettingsScreen: View {
 
     private var nodeIdentitySection: some View {
         SettingsBlock(title: "NODE NAME") {
-            Text("A LOCAL DRAFT — not yet sent to the node. Renaming the radio itself is an " +
-                 "admin message, out of scope until M3.")
+            // Finding 2 (first real-radio session): the write path has
+            // shipped since M3 (PR #274) — the OLD "out of scope until
+            // M3" copy was stale the moment that PR landed. Plain words
+            // about what actually happens, not a scope note nobody
+            // reading Settings cares about.
+            Text("Rename on the node. Applies after confirmation, node restarts.")
                 .font(.caption2)
                 .foregroundStyle(Color.ffMuted)
             LabeledField(label: "Long name") {
                 TextField("", text: Binding(get: { model.nodeLongName }, set: { model.setNodeLongName($0) }))
                     .textFieldStyle(.roundedBorder)
             }
+            // NIT (PR #282 review): same "from node" label the
+            // Region/Channel rows use just below in `channelSection`,
+            // shown only while THIS field is still the node's own
+            // pre-filled owner name rather than a typed local draft.
+            if let source = model.nodeLongNameSourceLabel {
+                Text(source)
+                    .font(.caption2)
+                    .foregroundStyle(Color.ffMuted)
+            }
             LabeledField(label: "Short name") {
                 TextField("", text: Binding(get: { model.nodeShortName }, set: { model.setNodeShortName($0) }))
                     .textFieldStyle(.roundedBorder)
+            }
+            if let source = model.nodeShortNameSourceLabel {
+                Text(source)
+                    .font(.caption2)
+                    .foregroundStyle(Color.ffMuted)
             }
             // M3 — the write path has landed; "APPLY NAME TO NODE"
             // reaches it behind a confirmation sheet, disabled whenever
@@ -159,11 +177,18 @@ struct SettingsScreen: View {
         SettingsBlock(title: "CHANNEL") {
             LabeledRow(label: "Region", value: model.region)
             LabeledRow(label: "Channel", value: model.currentChannelName)
-            // M3 — a region PICKED here is only a staged selection
+            // Finding 2: both rows above now read the client's own
+            // config snapshot (want_config, refreshed after an admin
+            // write's read-back) — "from node" names that source
+            // honestly, only once it has actually reported something.
+            if let source = model.nodeConfigSourceLabel {
+                Text(source)
+                    .font(.caption2)
+                    .foregroundStyle(Color.ffMuted)
+            }
+            // A region PICKED here is only a staged selection
             // (`SettingsViewModel.regionSelection`) until "APPLY REGION"
-            // is confirmed; it never overrides the "Region" row above,
-            // which stays UNKNOWN per that row's own doc comment (no
-            // passive read-back seam exists yet).
+            // is confirmed; it never overrides the "Region" row above.
             Picker("Set region", selection: $model.regionSelection) {
                 ForEach(Config.LoRaConfig.RegionCode.allCases, id: \.self) { region in
                     Text(String(describing: region).uppercased()).tag(region)

@@ -44,6 +44,30 @@ public enum LocationAuthorization: Sendable, Equatable {
     case whenInUse
     case always
     case deniedOrRestricted
+    /// The SYSTEM-WIDE "Location Services" switch is off — distinct
+    /// from `deniedOrRestricted` (a per-app denial): CoreLocation
+    /// reports both as `.denied` at the per-app authorization level, so
+    /// `LocationProvider` checks `CLLocationManager.locationServicesEnabled()`
+    /// separately to tell them apart (finding 3, first real-radio
+    /// session: the fix for one is System Settings > Privacy & Security
+    /// > Location Services; the fix for the other is a per-app toggle
+    /// one level down — different instructions, so a different case).
+    case locationServicesDisabled
+
+    /// Finding 3: the WHY behind a bare "no fix" — Radar (and, once a
+    /// screen exists to show it, Diagnostics) read this instead of
+    /// silence. Reported honestly off CoreLocation's own state, never
+    /// guessed from timing or a retry count.
+    public var noFixReasonText: String {
+        switch self {
+        case .notDetermined, .deniedOrRestricted:
+            return "location permission not granted — enable in System Settings"
+        case .locationServicesDisabled:
+            return "location services off"
+        case .whenInUse, .always:
+            return "no fix yet"
+        }
+    }
 }
 
 public protocol LocationProviding: AnyObject, Sendable {

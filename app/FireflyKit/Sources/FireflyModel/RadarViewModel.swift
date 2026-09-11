@@ -646,6 +646,19 @@ public final class RadarViewModel {
     /// pump (age text keeps advancing even when neither input changes).
     public func observe() {
         guard headingObservation == nil else { return }
+        // Finding 3 (first real-radio session, macOS): nothing in this
+        // app ever called `requestWhenInUseAuthorization()` before this
+        // — Radar silently sat on "no fix" forever instead of asking.
+        // Opening Radar is exactly the moment a real user expects that
+        // system prompt, on macOS the same as iOS (`LocationProvider`
+        // is the one CoreLocation-backed implementation for both — its
+        // own doc comment). Only while genuinely undecided: a user who
+        // already denied or granted it must never be re-prompted just
+        // for opening this screen again.
+        if location.authorization == .notDetermined {
+            let location = self.location
+            Task { await location.requestWhenInUseAuthorization() }
+        }
         let headings = heading.headings()
         let fixes = location.fixes()
 
@@ -970,7 +983,10 @@ public final class RadarViewModel {
                 posText = "your position: phone GPS"
             }
         } else {
-            posText = "your position: no fix"
+            // Finding 3: WHY, not a bare "no fix" — the exact reported
+            // bug ("your position: no fix; heading: unavailable" on
+            // macOS, with nothing ever having asked for permission).
+            posText = "your position: \(location.authorization.noFixReasonText)"
         }
         let headingText: String
         if let lastHeading, lastHeading.isValid {

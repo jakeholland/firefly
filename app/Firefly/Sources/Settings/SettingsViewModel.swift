@@ -55,7 +55,18 @@ final class SettingsViewModel {
     /// no-op so every pre-M3 call site (`SettingsViewModel(store:
     /// channelImport:)` in tests) keeps compiling unchanged.
     private let clearHistory: () -> Void
+    /// Finding 3 (first real-radio session, macOS): the seam
+    /// `setShareGPSWithNode(true)` requests authorization through — the
+    /// SAME instance `RadarViewModel`/`PhoneGPSUplink` hold
+    /// (`AppDependencies.location`), never a second `CLLocationManager`.
+    private let location: any LocationProviding
     private var linkObservation: Task<Void, Never>?
+    /// Finding 2 (first real-radio session): the passive read seam —
+    /// `client.nodeConfigUpdates()`'s own `CurrentValueEventHub` replay
+    /// means this observation sees the current values immediately, even
+    /// if want_config finished before this screen was ever opened.
+    private var nodeConfigObservation: Task<Void, Never>?
+    private(set) var nodeConfig: NodeConfigSnapshot?
 
     var nodeLongName: String
     var nodeShortName: String
@@ -89,12 +100,18 @@ final class SettingsViewModel {
     /// Defaulted so every existing call site (`SettingsViewModel(store:
     /// channelImport:)` in tests predating M3) keeps compiling — same
     /// convention `ChannelImportViewModel.init`'s own comment cites.
+    /// `location` defaults to `UnavailableLocationProvider()` for the
+    /// same reason: every pre-finding-3 test call site that never
+    /// mentioned location gets the honest "permanently unavailable"
+    /// double, never a real `CLLocationManager` it didn't ask for.
     init(store: any FireflyExtraSettingsStoring, channelImport: ChannelImportViewModel,
-         client: any MeshtasticClientProtocol = StubMeshtasticClient(), clearHistory: @escaping () -> Void = {}) {
+         client: any MeshtasticClientProtocol = StubMeshtasticClient(), clearHistory: @escaping () -> Void = {},
+         location: any LocationProviding = UnavailableLocationProvider()) {
         self.store = store
         self.channelImport = channelImport
         self.client = client
         self.clearHistory = clearHistory
+        self.location = location
         nodeLongName = store.nodeLongNamePreference ?? ""
         nodeShortName = store.nodeShortNamePreference ?? ""
         shareGPSWithNode = store.bool(.locationSharingEnabled)
@@ -103,6 +120,18 @@ final class SettingsViewModel {
         colorblindPalette = store.colorblindPaletteEnabled
         unitsPreference = store.unitsPreference()
         isConnected = client.connectedNodeNum != nil
+        // Finding 2: a synchronous initial read, same convention as
+        // `isConnected` just above (`client.connectedNodeNum` — not a
+        // stream wait) — a Settings screen opened AFTER want_config
+        // already completed must not sit on a placeholder until the
+        // NEXT config change, which might never come.
+        nodeConfig = client.connectedNodeConfig
+        if nodeLongName.isEmpty, let ownerLongName = nodeConfig?.ownerLongName {
+            nodeLongName = ownerLongName
+        }
+        if nodeShortName.isEmpty, let ownerShortName = nodeConfig?.ownerShortName {
+            nodeShortName = ownerShortName
+        }
     }
 
     /// The composition root's own constructor — `FireflyApp.init()` calls
@@ -121,24 +150,60 @@ final class SettingsViewModel {
     /// `FireflyKit` can construct on its own.
     static func makeObserving(store: any FireflyExtraSettingsStoring, channelImport: ChannelImportViewModel,
                                client: any MeshtasticClientProtocol,
-                               clearHistory: @escaping () -> Void = {}) -> SettingsViewModel {
+                               clearHistory: @escaping () -> Void = {},
+                               location: any LocationProviding = UnavailableLocationProvider()) -> SettingsViewModel {
         let model = SettingsViewModel(store: store, channelImport: channelImport, client: client,
-                                       clearHistory: clearHistory)
+                                       clearHistory: clearHistory, location: location)
         model.observe()
         return model
     }
 
-    /// No seam exposes the connected node's actual region yet —
-    /// `MeshtasticClientProtocol` carries no config/region field in M1.
-    /// UNKNOWN is the honest rendering, not a placeholder.
-    var region: String { "UNKNOWN" }
+    /// Finding 2 (first real-radio session): read from the client's own
+    /// passive config snapshot — `nodeConfig.region`, filled in by
+    /// want_config and refreshed after `applyRegion()`'s own read-back —
+    /// not a second source of truth. UNKNOWN only for as long as no
+    /// handshake has reported one yet, never a permanent placeholder.
+    var region: String {
+        guard let region = nodeConfig?.region else { return "UNKNOWN" }
+        return String(describing: region).uppercased()
+    }
 
-    /// UNKNOWN until a channel has actually been imported on the
-    /// Connect screen this session — never a guess, and never the
-    /// primary channel's name if more than one was in the link.
+    /// Finding 2: the node's own PRIMARY channel, read passively off
+    /// `nodeConfig` — falls back to a channel actually imported on the
+    /// Connect screen this session (the OLD-and-still-valid M1 seam,
+    /// for a node this client has never been connected to), and only
+    /// then to UNKNOWN. Never a guess either way.
     var currentChannelName: String {
+        if let primary = nodeConfig?.primaryChannelName {
+            return primary.isEmpty ? "(default channel)" : primary
+        }
         guard let first = channelImport.result?.channelSet.settings.first else { return "UNKNOWN" }
         return first.name.isEmpty ? "(default channel)" : first.name
+    }
+
+    /// Finding 2: "from node" is true once `nodeConfig` has reported
+    /// ANY field — the Settings screen uses this to label the CHANNEL
+    /// block's source honestly rather than implying every row it shows
+    /// came from the same place.
+    var nodeConfigSourceLabel: String? {
+        nodeConfig != nil ? "from node" : nil
+    }
+
+    /// NIT (PR #282 review): the NODE NAME block's own version of
+    /// `nodeConfigSourceLabel` just above — the Long/Short name fields
+    /// pre-fill from the node's own owner name (`applyNodeConfig`'s own
+    /// doc comment) exactly the same way the Region/Channel rows
+    /// pre-fill from `nodeConfig`, but had no matching label, leaving a
+    /// user who typed nothing with no way to tell a pre-filled name
+    /// came from the radio rather than a stored local draft. Each field
+    /// reads its OWN prefill condition — the exact one
+    /// `applyNodeConfig`/`init` gate the prefill itself on — since a
+    /// user may have drafted one field but not the other.
+    var nodeLongNameSourceLabel: String? {
+        store.nodeLongNamePreference == nil && nodeConfig?.ownerLongName != nil ? "from node" : nil
+    }
+    var nodeShortNameSourceLabel: String? {
+        store.nodeShortNamePreference == nil && nodeConfig?.ownerShortName != nil ? "from node" : nil
     }
 
     func setNodeLongName(_ value: String) {
@@ -154,6 +219,16 @@ final class SettingsViewModel {
     func setShareGPSWithNode(_ value: Bool) {
         shareGPSWithNode = value
         store.setBool(value, .locationSharingEnabled)
+        // Finding 3 (first real-radio session, macOS): turning this ON
+        // is exactly the moment the user expects a location-permission
+        // prompt — nothing in this app ever asked before this finding.
+        // Only while genuinely undecided, same guard `RadarViewModel
+        // .observe()` uses: a user who already denied or granted it is
+        // never re-prompted just for toggling this again.
+        if value, location.authorization == .notDetermined {
+            let location = self.location
+            Task { await location.requestWhenInUseAuthorization() }
+        }
     }
 
     /// Floored at 5 s per the spec's "Phone GPS -> node" cadence rule.
@@ -190,11 +265,42 @@ final class SettingsViewModel {
                 self?.isConnected = (state == .ready)
             }
         }
+        // Finding 2 — the passive read seam. `nodeConfigUpdates()`'s
+        // `CurrentValueEventHub` replay means this sees whatever
+        // want_config already reported, immediately, even if it
+        // finished before `observe()` was ever called (same ordering
+        // rule every other `observe()` in this app follows: subscribe
+        // BEFORE anything can be missed, S1).
+        let configs = client.nodeConfigUpdates()
+        nodeConfigObservation = Task { [weak self] in
+            for await snapshot in configs {
+                self?.applyNodeConfig(snapshot)
+            }
+        }
     }
 
     func stopObserving() {
         linkObservation?.cancel()
         linkObservation = nil
+        nodeConfigObservation?.cancel()
+        nodeConfigObservation = nil
+    }
+
+    /// Merges in a fresh config snapshot and, only while the user has
+    /// never typed a LOCAL draft of their own (`store.nodeLongNamePreference`/
+    /// `nodeShortNamePreference` still nil), pre-fills the name fields
+    /// from the node's own owner — finding 2's "the name fields pre-fill
+    /// from the node's owner." The moment the user types anything,
+    /// `setNodeLongName`/`setNodeShortName` persist a real local draft
+    /// and this stops overriding it, on any later refresh.
+    private func applyNodeConfig(_ snapshot: NodeConfigSnapshot) {
+        nodeConfig = snapshot
+        if store.nodeLongNamePreference == nil, let ownerLongName = snapshot.ownerLongName {
+            nodeLongName = ownerLongName
+        }
+        if store.nodeShortNamePreference == nil, let ownerShortName = snapshot.ownerShortName {
+            nodeShortName = ownerShortName
+        }
     }
 
     /// Everything the name-change confirmation sheet shows.
