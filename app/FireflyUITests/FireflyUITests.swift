@@ -66,10 +66,10 @@ final class FireflyUITests: XCTestCase {
         // applied to a `TabView` ForEach item's content does NOT reach
         // the generated `UITabBarButton` on this SDK, only the label
         // text does.
-        app.tabBars.buttons["Radar"].tap()
+        tapDestination("Radar", in: app)
         assertScreen("Screen.Radar", in: app)
 
-        app.tabBars.buttons["Inbox"].tap()
+        tapDestination("Inbox", in: app)
         assertScreen("Screen.Inbox", in: app)
 
         // CREW is always present (`InboxViewModel`'s own "CREW is
@@ -86,13 +86,35 @@ final class FireflyUITests: XCTestCase {
         // last stop.
         app.navigationBars.buttons.element(boundBy: 0).tap()
 
-        app.tabBars.buttons["Settings"].tap()
+        tapDestination("Settings", in: app)
         assertScreen("Screen.Settings", in: app)
 
         // Round back to Connect, matching the spec's own "visit all
         // destinations" framing — the walk ends where it started.
-        app.tabBars.buttons["Connect"].tap()
+        tapDestination("Connect", in: app)
         assertScreen("Screen.Connect", in: app)
+    }
+
+    /// Taps a `Destination`'s tab, whether it is still directly on the tab
+    /// bar or has been pushed into iOS's own auto-generated "More" list —
+    /// standard `UITabBarController` behavior for ANY app once its tab
+    /// count passes five, not a Firefly-specific redesign. `RootView`'s own
+    /// `Destination` crossed that threshold once Lineup (#285) and Map
+    /// (#283) each appended their own tab on top of the original four —
+    /// Connect/Radar/Inbox/Lineup stay direct, Map/Settings now live under
+    /// "More". Written generally (checks `.exists` first) so this test
+    /// keeps working regardless of exactly where that boundary falls after
+    /// a future destination is appended.
+    private func tapDestination(_ name: String, in app: XCUIApplication) {
+        let direct = app.tabBars.buttons[name]
+        if direct.exists {
+            direct.tap()
+            return
+        }
+        app.tabBars.buttons["More"].tap()
+        let overflowRow = app.tables.staticTexts[name]
+        XCTAssertTrue(overflowRow.waitForExistence(timeout: 5), "\(name) not found directly on the tab bar or under More")
+        overflowRow.tap()
     }
 
     private func assertScreen(_ identifier: String, in app: XCUIApplication) {
