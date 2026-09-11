@@ -18,11 +18,16 @@
 		71D8EF04CB8A979CD7738201 /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 4982066A256926406E7325EB /* FireflyModel */; };
 		736AA63B4C8C5FAD424729FA /* PeripheralDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 899B46141ED5400385D53007 /* PeripheralDiscovery.swift */; };
 		76BA2F3212D5F595105F68D0 /* Theme+SwiftUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */; };
+		79D200DF169D9565E09C7EF4 /* RadarRingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 154087BCAC0E87D7868BF253 /* RadarRingView.swift */; };
 		7BA796CE1A065E6D5A96DCDB /* MeshtasticProto in Frameworks */ = {isa = PBXBuildFile; productRef = 6C4B001C31CDD7B9E82BE94A /* MeshtasticProto */; };
 		7DDDFABD54883171C0FD887A /* ConnectSettingsViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5AE4486A9AE4EFDBC5455E6 /* ConnectSettingsViewModelTests.swift */; };
 		7E079696E764A0A0F9E02426 /* DiagnosticsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */; };
+		7FA385525E20C469998B9B83 /* HapticSignaling+UIKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDC28160EF0A8DD53FB3FFEB /* HapticSignaling+UIKit.swift */; };
 		8205769443841156A848715C /* MeshtasticProto in Frameworks */ = {isa = PBXBuildFile; productRef = 1302957B4A2DCE64A8D5EC14 /* MeshtasticProto */; };
+		9CEECC7E8F408FEDB03E85E8 /* RadarColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E99266CE9867C281FAC9513 /* RadarColors.swift */; };
+		A17AFA6D2194A215E8B2C3F7 /* RadarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 378BC076CD59300BFAE0D0AD /* RadarView.swift */; };
 		AC8AFA0CD87BCDBC83DDB4BD /* QRScannerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FF340B133498D33D74D3976 /* QRScannerSheet.swift */; };
+		AFD1E54EF5873B6717B88291 /* FindPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEAE3E2DCB691E1E510ACF57 /* FindPanel.swift */; };
 		B11B507435D69A999AC9DD1E /* ChannelImportViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36054428E7138397E791F1DD /* ChannelImportViewModel.swift */; };
 		B770F947CF8B1EDB0E8FDBD5 /* FireflyMesh in Frameworks */ = {isa = PBXBuildFile; productRef = B4C3D1CEE6287442EA267E68 /* FireflyMesh */; };
 		C03641377EDB721D4C81DE9D /* BLEHardwareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */; };
@@ -48,10 +53,13 @@
 
 /* Begin PBXFileReference section */
 		05D20D18F962B7E51C03A90B /* FireflyKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FireflyKit; path = FireflyKit; sourceTree = SOURCE_ROOT; };
+		154087BCAC0E87D7868BF253 /* RadarRingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadarRingView.swift; sourceTree = "<group>"; };
 		19687863E32B4CA54C5752D8 /* DiagnosticsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsScreen.swift; sourceTree = "<group>"; };
 		2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyNodesViewModel.swift; sourceTree = "<group>"; };
 		336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectScreen.swift; sourceTree = "<group>"; };
 		36054428E7138397E791F1DD /* ChannelImportViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelImportViewModel.swift; sourceTree = "<group>"; };
+		378BC076CD59300BFAE0D0AD /* RadarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadarView.swift; sourceTree = "<group>"; };
+		3E99266CE9867C281FAC9513 /* RadarColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadarColors.swift; sourceTree = "<group>"; };
 		3FF340B133498D33D74D3976 /* QRScannerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerSheet.swift; sourceTree = "<group>"; };
 		45BBB6E81333013CC2CE55F2 /* SettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsScreen.swift; sourceTree = "<group>"; };
 		543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Theme+SwiftUI.swift"; sourceTree = "<group>"; };
@@ -66,6 +74,8 @@
 		C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Firefly.xcconfig; sourceTree = "<group>"; };
 		CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsViewModel.swift; sourceTree = "<group>"; };
 		E56FC0B8574441CB2FD171FD /* FireflyHardwareTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FireflyHardwareTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		EDC28160EF0A8DD53FB3FFEB /* HapticSignaling+UIKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HapticSignaling+UIKit.swift"; sourceTree = "<group>"; };
+		FEAE3E2DCB691E1E510ACF57 /* FindPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindPanel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -94,6 +104,18 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		04298E47A0AEA46AE6AC544E /* Radar */ = {
+			isa = PBXGroup;
+			children = (
+				FEAE3E2DCB691E1E510ACF57 /* FindPanel.swift */,
+				EDC28160EF0A8DD53FB3FFEB /* HapticSignaling+UIKit.swift */,
+				3E99266CE9867C281FAC9513 /* RadarColors.swift */,
+				154087BCAC0E87D7868BF253 /* RadarRingView.swift */,
+				378BC076CD59300BFAE0D0AD /* RadarView.swift */,
+			);
+			path = Radar;
+			sourceTree = "<group>";
+		};
 		09E7A41B35847DF880B89F6C = {
 			isa = PBXGroup;
 			children = (
@@ -186,6 +208,7 @@
 				A1E30FCFD8A9260E48E8617D /* RootView.swift */,
 				543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */,
 				11421C91FBEAF497D1C0A149 /* Connect */,
+				04298E47A0AEA46AE6AC544E /* Radar */,
 				30C10335F64F3BEB0DDD3F59 /* Settings */,
 			);
 			path = Sources;
@@ -322,10 +345,15 @@
 				47E0809C008E900451404953 /* ConnectScreen.swift in Sources */,
 				C669919991622119FE5BA2FA /* DiagnosticsScreen.swift in Sources */,
 				7E079696E764A0A0F9E02426 /* DiagnosticsViewModel.swift in Sources */,
+				AFD1E54EF5873B6717B88291 /* FindPanel.swift in Sources */,
 				FB71020F3A2D6764FDD8FE64 /* FireflyApp.swift in Sources */,
+				7FA385525E20C469998B9B83 /* HapticSignaling+UIKit.swift in Sources */,
 				63F4CB9CD8015973BF2A6A87 /* NearbyNodesViewModel.swift in Sources */,
 				736AA63B4C8C5FAD424729FA /* PeripheralDiscovery.swift in Sources */,
 				AC8AFA0CD87BCDBC83DDB4BD /* QRScannerSheet.swift in Sources */,
+				9CEECC7E8F408FEDB03E85E8 /* RadarColors.swift in Sources */,
+				79D200DF169D9565E09C7EF4 /* RadarRingView.swift in Sources */,
+				A17AFA6D2194A215E8B2C3F7 /* RadarView.swift in Sources */,
 				0318ED28B405C25C7661E064 /* RootView.swift in Sources */,
 				6EED1D607A836BC23FCF5D43 /* SettingsScreen.swift in Sources */,
 				59A003F0821E61E9DE8E99F5 /* SettingsViewModel.swift in Sources */,
