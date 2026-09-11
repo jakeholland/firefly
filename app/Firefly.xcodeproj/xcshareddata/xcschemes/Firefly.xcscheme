@@ -49,14 +49,37 @@
                ReferencedContainer = "container:Firefly.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "6D64813BE2A6F65CCCF908B1"
+               BuildableName = "FireflyUITests.xctest"
+               BlueprintName = "FireflyUITests"
+               ReferencedContainer = "container:Firefly.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
       buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
-      shouldUseLaunchSchemeArgsEnv = "NO"
+      shouldUseLaunchSchemeArgsEnv = "YES"
       onlyGenerateCoverageForSpecifiedTargets = "NO">
+      <TestPlans>
+         <TestPlanReference
+            reference = "container:FireflyUITests.xctestplan">
+         </TestPlanReference>
+         <TestPlanReference
+            default = "YES"
+            reference = "container:Firefly.xctestplan">
+         </TestPlanReference>
+      </TestPlans>
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
@@ -67,38 +90,9 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "2E869653C9A7BA8AA66ED9F5"
-               BuildableName = "FireflyHardwareTests.xctest"
-               BlueprintName = "FireflyHardwareTests"
-               ReferencedContainer = "container:Firefly.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "61EA809CD815CB1D1128C085"
-               BuildableName = "FireflyAppTests.xctest"
-               BlueprintName = "FireflyAppTests"
-               ReferencedContainer = "container:Firefly.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
       </Testables>
       <CommandLineArguments>
       </CommandLineArguments>
-      <EnvironmentVariables>
-         <EnvironmentVariable
-            key = "FIREFLY_HARDWARE"
-            value = "$(FIREFLY_HARDWARE)"
-            isEnabled = "YES">
-         </EnvironmentVariable>
-      </EnvironmentVariables>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"

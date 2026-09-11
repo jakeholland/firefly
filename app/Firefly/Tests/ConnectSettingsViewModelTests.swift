@@ -655,24 +655,41 @@ private final class RecordingAdminWriteClient: MeshtasticClientProtocol, @unchec
     @discardableResult
     func applyChannelSet(_ request: ChannelWriteRequest) async throws -> ChannelWriteReport {
         if let shouldThrow { throw shouldThrow }
-        lock.lock(); _channelWrites.append(request); lock.unlock()
+        recordChannelWrite(request)
         return ChannelWriteReport(channels: request.channels, loraConfig: request.loraConfig)
     }
     @discardableResult
     func setOwner(longName: String, shortName: String) async throws -> OwnerWriteReport {
         if let shouldThrow { throw shouldThrow }
-        lock.lock(); _ownerWrites.append((longName, shortName)); lock.unlock()
+        recordOwnerWrite(longName: longName, shortName: shortName)
         return OwnerWriteReport(longName: longName, shortName: shortName)
     }
     @discardableResult
     func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
         if let shouldThrow { throw shouldThrow }
-        lock.lock(); _regionWrites.append(region); lock.unlock()
+        recordRegionWrite(region)
         return RegionWriteReport(region: region)
     }
     func currentChannelTable() async throws -> [Channel] {
         if let channelTableError { throw channelTableError }
         return channelTable
+    }
+
+    // M3 / Swift 6: every locked mutation above happens in one of these
+    // synchronous helpers, never lexically inside an `async` function
+    // body — `NSLock.lock()`/`unlock()` are `noasync`, the same rule
+    // `DemoMeshtasticClient`'s/`AppGraphTests.CountingClient`'s own
+    // record helpers document (PR #275 review fixing this: this file's
+    // three write methods above were still locking directly inside an
+    // `async` body).
+    private func recordChannelWrite(_ request: ChannelWriteRequest) {
+        lock.lock(); _channelWrites.append(request); lock.unlock()
+    }
+    private func recordOwnerWrite(longName: String, shortName: String) {
+        lock.lock(); _ownerWrites.append((longName, shortName)); lock.unlock()
+    }
+    private func recordRegionWrite(_ region: Config.LoRaConfig.RegionCode) {
+        lock.lock(); _regionWrites.append(region); lock.unlock()
     }
 }
 

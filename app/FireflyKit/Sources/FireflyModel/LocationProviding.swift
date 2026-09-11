@@ -63,6 +63,10 @@ public protocol LocationProviding: AnyObject, Sendable {
 /// Reports denied and yields nothing but `nil` — the same honesty rule
 /// `StubMeshtasticClient` follows: an "unavailable" answer is truthful,
 /// a fabricated coordinate is not.
+// PR #275 review, SHOULD-FIX 3 (a site the review itself did not list,
+// found completing its sweep): `@unchecked Sendable` here needs no lock
+// at all — every stored property is an immutable `let`, and there is no
+// mutable state of any kind to race on.
 public final class UnavailableLocationProvider: LocationProviding, @unchecked Sendable {
     public let authorization: LocationAuthorization = .deniedOrRestricted
     public init() {}

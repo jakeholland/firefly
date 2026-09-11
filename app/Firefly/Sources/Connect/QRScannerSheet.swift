@@ -45,7 +45,17 @@ private struct QRScannerRepresentable: UIViewControllerRepresentable {
 /// A minimal `AVCaptureMetadataOutput` QR reader. No dependency beyond
 /// AVFoundation — this is a real scanner, not a placeholder, but it is
 /// deliberately narrow: one delegate callback, one payload, done.
-final class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
+///
+/// M3 / Swift 6: `@preconcurrency` on the delegate conformance below —
+/// `AVCaptureMetadataOutputObjectsDelegate` is a nonisolated
+/// Objective-C protocol, but `configureSession()` registers this
+/// delegate with `queue: .main` explicitly (not the default private
+/// AVFoundation queue), so `metadataOutput(_:didOutput:from:)` always
+/// actually runs on the main actor this `UIViewController` subclass is
+/// already isolated to. `@preconcurrency` documents that guarantee at
+/// the one place it is made rather than fighting the framework's
+/// un-isolated protocol declaration.
+final class QRScannerViewController: UIViewController, @preconcurrency AVCaptureMetadataOutputObjectsDelegate {
     private let onScanned: (String) -> Void
     private let session = AVCaptureSession()
     private var hasScanned = false

@@ -24,6 +24,13 @@ import Foundation
 /// iOS and macOS — CoreLocation is the same framework on both, and
 /// there is no reason for two implementations (the same argument the
 /// spec makes for BLE).
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` is justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — every
+// mutable access to `_authorization`/`pendingAuthContinuations` goes
+// through `lock`, never unguarded. `manager` itself is only ever
+// touched from `init` and from `CLLocationManagerDelegate` callbacks,
+// which CoreLocation delivers serially on the queue this object was
+// created on.
 public final class LocationProvider: NSObject, LocationProviding, @unchecked Sendable {
     private let manager: CLLocationManager
     private let hub = EventHub<LocationFix?>()

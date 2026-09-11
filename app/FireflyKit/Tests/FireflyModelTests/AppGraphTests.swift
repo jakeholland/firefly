@@ -93,29 +93,29 @@ private final class CountingClient: MeshtasticClientProtocol, @unchecked Sendabl
     func yieldText(_ text: IncomingText) { textHub.yield(text) }
 
     func connect() async throws {
-        lock.lock(); _connectCallCount += 1; lock.unlock()
+        recordConnect()
         linkHub.yield(.ready)
     }
     func disconnect() async {
-        lock.lock(); _disconnectCallCount += 1; lock.unlock()
+        recordDisconnect()
         linkHub.yield(.disconnected)
     }
 
     @discardableResult
     func sendText(_ text: String, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
-        lock.lock(); texts.append((text, destination, wantAck)); lock.unlock()
+        recordText(text, destination: destination, wantAck: wantAck)
         return 1
     }
 
     @discardableResult
     func sendPosition(_ fix: ExternalPositionFix, to destination: UInt32) async throws -> UInt32 {
-        lock.lock(); positions.append((fix, destination)); lock.unlock()
+        recordPosition(fix, destination: destination)
         return 2
     }
 
     @discardableResult
     func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
-        lock.lock(); privates.append((payload, destination, wantAck)); lock.unlock()
+        recordPrivate(payload, destination: destination, wantAck: wantAck)
         return 3
     }
 
@@ -132,6 +132,22 @@ private final class CountingClient: MeshtasticClientProtocol, @unchecked Sendabl
         RegionWriteReport(region: region)
     }
     func currentChannelTable() async throws -> [Channel] { [] }
+
+    // M3 / Swift 6: every locked mutation above happens in one of these
+    // synchronous helpers, never lexically inside an `async` function
+    // body — `NSLock.lock()`/`unlock()` are `noasync`, the same rule
+    // `DemoMeshtasticClient`'s own record helpers document.
+    private func recordConnect() { lock.lock(); _connectCallCount += 1; lock.unlock() }
+    private func recordDisconnect() { lock.lock(); _disconnectCallCount += 1; lock.unlock() }
+    private func recordText(_ text: String, destination: UInt32, wantAck: Bool) {
+        lock.lock(); texts.append((text, destination, wantAck)); lock.unlock()
+    }
+    private func recordPosition(_ fix: ExternalPositionFix, destination: UInt32) {
+        lock.lock(); positions.append((fix, destination)); lock.unlock()
+    }
+    private func recordPrivate(_ payload: Data, destination: UInt32, wantAck: Bool) {
+        lock.lock(); privates.append((payload, destination, wantAck)); lock.unlock()
+    }
 }
 
 /// A location provider a test drives by hand — it yields exactly the

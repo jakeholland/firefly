@@ -25,12 +25,13 @@ import Foundation
 /// `InboxProviding` backed by `ff_feed`/`ff_inbox`/`ff_crew`.
 ///
 /// `@MainActor`-confined like every other `ff_*` owner (A01, "Threading
-/// model"). `InboxProviding` is declared `Sendable` because it was
-/// written before a C-backed conformance existed, so this is
-/// `@unchecked Sendable` with the confinement asserted at each entry
-/// point rather than assumed — the same shape `CoreRadarComputing` uses.
+/// model"). M3 / Swift 6: `InboxProviding` is itself `@MainActor`-isolated
+/// now (see that protocol's own doc comment), so this type is a plain
+/// `@MainActor` class — no `nonisolated`/`MainActor.assumeIsolated`/
+/// `@unchecked Sendable` needed; the compiler enforces the confinement
+/// this file used to assert by hand at every entry point.
 @MainActor
-public final class CoreInboxProvider: InboxProviding, @unchecked Sendable {
+public final class CoreInboxProvider: InboxProviding {
     private let inbox: InboxBridge
     private let crew: CrewStore
     private let now: @Sendable () -> Date
@@ -49,19 +50,17 @@ public final class CoreInboxProvider: InboxProviding, @unchecked Sendable {
 
     // MARK: - Reads
 
-    public nonisolated func conversations(now: Date) -> [InboxConversationRow] {
-        MainActor.assumeIsolated {
-            let nowMs = FireflyClock.millis(since: now)
-            // ORDERING IS THE C CORE'S, not this type's: `ff_inbox_build`
-            // already applies S24 AC2's rule (unread-first newest-first,
-            // then read-with-traffic, then quiet members by presence
-            // freshness, CREW first among equals), so the rows come back
-            // in final order and are NOT re-sorted here. Re-sorting them
-            // in Swift would be a second rulebook, which is the whole
-            // thing linking the core in was meant to avoid.
-            return inbox.conversations(crew: crew, now: nowMs).map { conversation in
-                row(from: conversation, now: now, nowMs: nowMs)
-            }
+    public func conversations(now: Date) -> [InboxConversationRow] {
+        let nowMs = FireflyClock.millis(since: now)
+        // ORDERING IS THE C CORE'S, not this type's: `ff_inbox_build`
+        // already applies S24 AC2's rule (unread-first newest-first,
+        // then read-with-traffic, then quiet members by presence
+        // freshness, CREW first among equals), so the rows come back
+        // in final order and are NOT re-sorted here. Re-sorting them
+        // in Swift would be a second rulebook, which is the whole
+        // thing linking the core in was meant to avoid.
+        return inbox.conversations(crew: crew, now: nowMs).map { conversation in
+            row(from: conversation, now: now, nowMs: nowMs)
         }
     }
 
@@ -129,19 +128,17 @@ public final class CoreInboxProvider: InboxProviding, @unchecked Sendable {
         }
     }
 
-    public nonisolated func thread(for conversation: ConversationKind, now: Date) -> [FeedMessage] {
-        MainActor.assumeIsolated {
-            let nowMs = FireflyClock.millis(since: now)
-            // Read from the RAW records rather than `ff_inbox_thread_build`'s
-            // render projection: `ff_inbox_msg_t` deliberately carries no
-            // `outbox_id`/`packet_id`/absolute timestamp, and `FeedMessage`
-            // is keyed on exactly those (`InboxBridge.records(in:)`'s own
-            // doc comment). Membership and order are still the core's —
-            // `records(in:)` uses `ff_inbox_item_in_conv`, the same
-            // predicate thread-building uses.
-            return inbox.records(in: conversation).map { record in
-                message(from: record, nowMs: nowMs, now: now)
-            }
+    public func thread(for conversation: ConversationKind, now: Date) -> [FeedMessage] {
+        let nowMs = FireflyClock.millis(since: now)
+        // Read from the RAW records rather than `ff_inbox_thread_build`'s
+        // render projection: `ff_inbox_msg_t` deliberately carries no
+        // `outbox_id`/`packet_id`/absolute timestamp, and `FeedMessage`
+        // is keyed on exactly those (`InboxBridge.records(in:)`'s own
+        // doc comment). Membership and order are still the core's —
+        // `records(in:)` uses `ff_inbox_item_in_conv`, the same
+        // predicate thread-building uses.
+        return inbox.records(in: conversation).map { record in
+            message(from: record, nowMs: nowMs, now: now)
         }
     }
 
@@ -209,91 +206,83 @@ public final class CoreInboxProvider: InboxProviding, @unchecked Sendable {
 
     // MARK: - Writes
 
-    public nonisolated func markRead(_ conversation: ConversationKind) -> Int {
-        MainActor.assumeIsolated { inbox.markThreadRead(conversation) }
+    public func markRead(_ conversation: ConversationKind) -> Int {
+        inbox.markThreadRead(conversation)
     }
 
-    public nonisolated func push(_ message: FeedMessage, into conversation: ConversationKind) {
-        MainActor.assumeIsolated {
-            // Echo-dedup, scoped to MY OWN sent packet ids — see this
-            // file's header and `InMemoryInboxStore.mySentPacketIDs`.
-            if let packetID = message.packetID, message.direction != .out, mySentPacketIDs.contains(packetID) {
-                return
-            }
-            // An inbound item's sender must exist in the roster for the
-            // core to be able to join an identity onto it — and, for a
-            // DIRECT message, for the conversation to exist at all
-            // ("A conversation exists only for CREW and for PAIRED
-            // members"). Upserting the sender records the FACT that a
-            // node exists; it does NOT pair them (`setPaired` is the
-            // user's decision, made on the Connect screen) and it
-            // invents no name.
-            if message.direction != .out, let senderID = message.senderID, senderID != 0 {
-                crew.upsert(nodeID: senderID)
-            }
+    public func push(_ message: FeedMessage, into conversation: ConversationKind) {
+        // Echo-dedup, scoped to MY OWN sent packet ids — see this
+        // file's header and `InMemoryInboxStore.mySentPacketIDs`.
+        if let packetID = message.packetID, message.direction != .out, mySentPacketIDs.contains(packetID) {
+            return
+        }
+        // An inbound item's sender must exist in the roster for the
+        // core to be able to join an identity onto it — and, for a
+        // DIRECT message, for the conversation to exist at all
+        // ("A conversation exists only for CREW and for PAIRED
+        // members"). Upserting the sender records the FACT that a
+        // node exists; it does NOT pair them (`setPaired` is the
+        // user's decision, made on the Connect screen) and it
+        // invents no name.
+        if message.direction != .out, let senderID = message.senderID, senderID != 0 {
+            crew.upsert(nodeID: senderID)
+        }
 
-            let atMs = FireflyClock.millis(since: message.timestamp)
-            inbox.push(
-                FeedItem(
-                    kind: message.kind.feedKind,
-                    fromNode: message.senderID ?? 0,
-                    atMs: atMs,
-                    text: message.text,
-                    direction: message.direction.feedDirection,
-                    // The core's own broadcast sentinel is 0, not
-                    // 0xFFFFFFFF: "core stays mesh-agnostic: mapping
-                    // MC_ADDR_BROADCAST -> 0 is the push site's job"
-                    // (ff_feed.h). This is that push site.
-                    toNode: (message.destination == meshBroadcastAddress) ? 0 : (message.destination ?? 0),
-                    outboxID: OutboxID(UInt32(truncatingIfNeeded: message.id))),
-                unread: message.unread)
+        let atMs = FireflyClock.millis(since: message.timestamp)
+        inbox.push(
+            FeedItem(
+                kind: message.kind.feedKind,
+                fromNode: message.senderID ?? 0,
+                atMs: atMs,
+                text: message.text,
+                direction: message.direction.feedDirection,
+                // The core's own broadcast sentinel is 0, not
+                // 0xFFFFFFFF: "core stays mesh-agnostic: mapping
+                // MC_ADDR_BROADCAST -> 0 is the push site's job"
+                // (ff_feed.h). This is that push site.
+                toNode: (message.destination == meshBroadcastAddress) ? 0 : (message.destination ?? 0),
+                outboxID: OutboxID(UInt32(truncatingIfNeeded: message.id))),
+            unread: message.unread)
 
-            // WAITING is a real, stored transition — the row has to show
-            // it the instant SEND is pressed (S24's 2026-09-07
-            // amendment) — but `ff_feed_push` writes FF_SEND_NONE, so the
-            // state the caller pushed is applied through the sanctioned
-            // setter immediately after.
-            if message.direction == .out, let state = message.deliveryState, state == .waiting || state == .dropped {
-                inbox.setSendStatus(outboxID: OutboxID(UInt32(truncatingIfNeeded: message.id)),
-                                     status: FeedSendStatus(delivery: state), atMs: atMs)
-            }
+        // WAITING is a real, stored transition — the row has to show
+        // it the instant SEND is pressed (S24's 2026-09-07
+        // amendment) — but `ff_feed_push` writes FF_SEND_NONE, so the
+        // state the caller pushed is applied through the sanctioned
+        // setter immediately after.
+        if message.direction == .out, let state = message.deliveryState, state == .waiting || state == .dropped {
+            inbox.setSendStatus(outboxID: OutboxID(UInt32(truncatingIfNeeded: message.id)),
+                                 status: FeedSendStatus(delivery: state), atMs: atMs)
         }
     }
 
-    public nonisolated func markSent(outboxID: UInt64, packetID: UInt32, at: Date) {
-        MainActor.assumeIsolated {
-            let key = OutboxID(UInt32(truncatingIfNeeded: outboxID))
-            // `want_ack` is not the caller's to state twice: it is a fact
-            // about the destination (nothing acks a broadcast — A01), and
-            // the item the core already holds is where that destination
-            // lives. Read it back rather than re-deriving it here.
-            let wantAck = recordAnywhere(outboxID: key).map { $0.toNode != 0 } ?? false
-            mySentPacketIDs.insert(packetID)
-            inbox.markSent(outboxID: key, packetID: PacketID(packetID), wantAck: wantAck,
-                            atMs: FireflyClock.millis(since: at))
-        }
+    public func markSent(outboxID: UInt64, packetID: UInt32, at: Date) {
+        let key = OutboxID(UInt32(truncatingIfNeeded: outboxID))
+        // `want_ack` is not the caller's to state twice: it is a fact
+        // about the destination (nothing acks a broadcast — A01), and
+        // the item the core already holds is where that destination
+        // lives. Read it back rather than re-deriving it here.
+        let wantAck = recordAnywhere(outboxID: key).map { $0.toNode != 0 } ?? false
+        mySentPacketIDs.insert(packetID)
+        inbox.markSent(outboxID: key, packetID: PacketID(packetID), wantAck: wantAck,
+                        atMs: FireflyClock.millis(since: at))
     }
 
-    public nonisolated func setStatus(outboxID: UInt64, state: DeliveryState, at: Date) {
-        MainActor.assumeIsolated {
-            inbox.setSendStatus(outboxID: OutboxID(UInt32(truncatingIfNeeded: outboxID)),
-                                 status: FeedSendStatus(delivery: state),
-                                 atMs: FireflyClock.millis(since: at))
-        }
+    public func setStatus(outboxID: UInt64, state: DeliveryState, at: Date) {
+        inbox.setSendStatus(outboxID: OutboxID(UInt32(truncatingIfNeeded: outboxID)),
+                             status: FeedSendStatus(delivery: state),
+                             atMs: FireflyClock.millis(since: at))
     }
 
-    public nonisolated func setStatus(packetID: UInt32, state: DeliveryState, at: Date) {
-        MainActor.assumeIsolated {
-            // Keyed by packet id, gated inside the C library by its own
-            // SENT + want_ack precondition — this wrapper adds none of
-            // its own (`InboxBridge.setAck`'s doc comment). Anything but
-            // DELIVERED/NO ACK has no packet-id-keyed meaning and is
-            // ignored rather than forced through as an ack.
-            switch state {
-            case .delivered: inbox.setAck(packetID: PacketID(packetID), ok: true, atMs: FireflyClock.millis(since: at))
-            case .noAck: inbox.setAck(packetID: PacketID(packetID), ok: false, atMs: FireflyClock.millis(since: at))
-            case .waiting, .sent, .dropped: break
-            }
+    public func setStatus(packetID: UInt32, state: DeliveryState, at: Date) {
+        // Keyed by packet id, gated inside the C library by its own
+        // SENT + want_ack precondition — this wrapper adds none of its
+        // own (`InboxBridge.setAck`'s doc comment). Anything but
+        // DELIVERED/NO ACK has no packet-id-keyed meaning and is
+        // ignored rather than forced through as an ack.
+        switch state {
+        case .delivered: inbox.setAck(packetID: PacketID(packetID), ok: true, atMs: FireflyClock.millis(since: at))
+        case .noAck: inbox.setAck(packetID: PacketID(packetID), ok: false, atMs: FireflyClock.millis(since: at))
+        case .waiting, .sent, .dropped: break
         }
     }
 

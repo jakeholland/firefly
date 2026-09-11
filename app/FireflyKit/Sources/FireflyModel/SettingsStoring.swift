@@ -49,6 +49,10 @@ public protocol SettingsStoring: AnyObject, Sendable {
 /// stub stack: same shape as a real `UserDefaults`-backed store, with
 /// nothing that survives a process relaunch — exactly what a test needs
 /// to stay hermetic between runs.
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — every
+// mutable access to the dictionaries below goes through `lock`, never
+// unguarded.
 public final class InMemorySettingsStore: FireflyExtraSettingsStoring, @unchecked Sendable {
     private let lock = NSLock()
     private var strings: [SettingsKey: String] = [:]

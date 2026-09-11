@@ -282,6 +282,60 @@ Neither suite ever runs WITH a board or `FIREFLY_HARDWARE=1` in CI: a
 hosted runner has no radio and no serial device. CI only proves both
 suites still build and skip cleanly. See `.github/workflows/app.yml`.
 
+### Run the UI smoke tests
+
+`FireflyUITests` (`docs/specs/A01-companion-app.md`, "UI") holds one
+XCUITest per platform — see the file's own header comment for what
+each one does and why they differ. Both live in their own,
+**non-default** test plan (`FireflyUITests.xctestplan`), not the
+scheme's default `Firefly.xctestplan` — see `app/project.yml`'s scheme
+`test:` comment for the full reasoning. Select it explicitly with
+`-testPlan FireflyUITests`.
+
+**iOS Simulator — this is what CI runs, no setup needed:**
+
+```sh
+cd app
+xcodebuild test \
+  -project Firefly.xcodeproj -scheme Firefly \
+  -testPlan FireflyUITests \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -only-testing:FireflyUITests
+```
+
+**macOS — opt-in only, never run in CI (Review PR #275, BLOCKING 1).**
+macOS XCUITest automation needs the Accessibility permission granted to
+the process driving it — normally Xcode itself (`Xcode.app`) when you
+run tests from the IDE, or the `xcodebuild`/`Terminal` process when you
+run from the command line, and a hosted GitHub Actions runner can
+neither grant this ahead of time nor persist it between ephemeral runs.
+Locally, one time:
+
+1. **System Settings > Privacy & Security > Accessibility.**
+2. Add and enable **Xcode** (running tests via `⌘U`) or your terminal
+   app (running `xcodebuild` from the command line) — whichever one is
+   actually going to drive the test.
+3. Then run:
+
+   ```sh
+   cd app
+   xcodebuild test \
+     -project Firefly.xcodeproj -scheme Firefly \
+     -testPlan FireflyUITests \
+     -destination 'platform=macOS' \
+     -only-testing:FireflyUITests
+   ```
+
+   or, in Xcode: select the **FireflyUITests** test plan (Test
+   navigator > the scheme's test plan picker, or Product > Test Plan),
+   pick **My Mac** as the destination, and run
+   `FireflyUITests/testLaunchesToConnectScreen` directly.
+
+Without that grant the run does not fail cleanly — the runner crashes
+on launch ("Early unexpected exit... Test crashed with signal kill
+before establishing connection"), which is exactly the failure mode
+BLOCKING 1 found when this leg was still wired into CI.
+
 ### The serial + TCP rig (slice F)
 
 `FireflyKit/Tests/HardwareTests` needs a second env var alongside
@@ -436,3 +490,9 @@ cd app && xcodegen generate
 ```
 
 Commit both `project.yml` and the regenerated `Firefly.xcodeproj`.
+
+**The test plans** (`Firefly.xctestplan`, `FireflyUITests.xctestplan`) —
+xcodegen only wires the *reference* to these from `project.yml`'s scheme
+`test.testPlans`; their content is hand-edited JSON, not generated. Edit
+them directly, then `xcodegen generate` to pick up any reference change
+(which plan is default, which plans are attached) and commit both.

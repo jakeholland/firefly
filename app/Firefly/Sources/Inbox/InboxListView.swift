@@ -35,6 +35,9 @@ struct InboxContainerView: View {
             }
             .navigationTitle("INBOX")
             .background(Color.ffBackground)
+            // M3: one identifying accessibility identifier per screen —
+            // see `ConnectScreen`'s own comment.
+            .accessibilityIdentifier("Screen.Inbox")
             .navigationDestination(item: $activeThread) { thread in
                 ThreadContainerView(model: thread, colorblind: colorblind)
             }
@@ -75,6 +78,12 @@ struct InboxListView: View {
                     InboxRow(conversation: conversation, colorblind: colorblind)
                 }
                 .buttonStyle(.plain)
+                // M3: the CREW row always exists (`InboxViewModel`'s own
+                // "CREW is always present"), so this is a stable tap
+                // target into Thread for `FireflyUITests`' smoke test —
+                // never a member row, which only exists once someone is
+                // paired.
+                .accessibilityIdentifier(conversation.kind == .crew ? "InboxRow.Crew" : "InboxRow.Member")
             }
             .listRowBackground(Color.ffBackground)
         }

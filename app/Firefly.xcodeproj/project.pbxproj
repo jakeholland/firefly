@@ -14,7 +14,6 @@
 		3B69F83116726CF8C396257C /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 9011CC84111BB0A130A3D3C7 /* FireflyModel */; };
 		452890E34DD01B6CD4D436CA /* ThreadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B41C74CB306C16EC81337A30 /* ThreadView.swift */; };
 		47E0809C008E900451404953 /* ConnectScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */; };
-		1A2C3FA7F689E8B3EC758FA1 /* FireflyAutoConnectLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0A84CBAE95A81B699A26E02 /* FireflyAutoConnectLaunch.swift */; };
 		59A003F0821E61E9DE8E99F5 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */; };
 		63F4CB9CD8015973BF2A6A87 /* NearbyNodesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */; };
 		6640FC7A5590E35700C97181 /* DiagnosticsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */; };
@@ -25,6 +24,7 @@
 		76BA2F3212D5F595105F68D0 /* Theme+SwiftUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */; };
 		79D200DF169D9565E09C7EF4 /* RadarRingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 154087BCAC0E87D7868BF253 /* RadarRingView.swift */; };
 		7BA796CE1A065E6D5A96DCDB /* MeshtasticProto in Frameworks */ = {isa = PBXBuildFile; productRef = 6C4B001C31CDD7B9E82BE94A /* MeshtasticProto */; };
+		7D848900827679BC7A2E22C0 /* FireflyUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500341CFF93F2572F5EABA8C /* FireflyUITests.swift */; };
 		7DDDFABD54883171C0FD887A /* ConnectSettingsViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5AE4486A9AE4EFDBC5455E6 /* ConnectSettingsViewModelTests.swift */; };
 		7E079696E764A0A0F9E02426 /* DiagnosticsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */; };
 		7FA385525E20C469998B9B83 /* HapticSignaling+UIKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDC28160EF0A8DD53FB3FFEB /* HapticSignaling+UIKit.swift */; };
@@ -41,6 +41,7 @@
 		D7A2904C961D1D75584D0142 /* AdminWriteConfirmationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */; };
 		D7A6BDAFEAE4556C2D49508D /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 52CE41AF9EE8F2A1C1595D75 /* FireflyCore */; };
 		E3CC4E9340C161539EDE9E85 /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1798EBF71029584D9BCBDE5F /* FireflyCore */; };
+		E466917345D124C8F9F6B557 /* FireflyAutoConnectLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */; };
 		E6551196CD37E34092E3B5D8 /* DemoBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657F1057B225B7D58F60D158 /* DemoBadge.swift */; };
 		EBE7033561E014B40A656D0B /* InboxListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 918AE027165FB4634094A385 /* InboxListView.swift */; };
 		F06690C87C2BC2F7A3802A3C /* InboxAvatarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E76A5B24A4204914C9C30817 /* InboxAvatarTests.swift */; };
@@ -58,6 +59,13 @@
 			remoteGlobalIDString = C71E9AFEE04A0936A7C43A16;
 			remoteInfo = Firefly;
 		};
+		FECB72AC344F42CBCF4D7432 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4026AF10827D497B0169E9AB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C71E9AFEE04A0936A7C43A16;
+			remoteInfo = Firefly;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
@@ -66,7 +74,6 @@
 		19687863E32B4CA54C5752D8 /* DiagnosticsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsScreen.swift; sourceTree = "<group>"; };
 		2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyNodesViewModel.swift; sourceTree = "<group>"; };
 		336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectScreen.swift; sourceTree = "<group>"; };
-		A0A84CBAE95A81B699A26E02 /* FireflyAutoConnectLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyAutoConnectLaunch.swift; sourceTree = "<group>"; };
 		36054428E7138397E791F1DD /* ChannelImportViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelImportViewModel.swift; sourceTree = "<group>"; };
 		378BC076CD59300BFAE0D0AD /* RadarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadarView.swift; sourceTree = "<group>"; };
 		3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdminWriteConfirmationSheet.swift; sourceTree = "<group>"; };
@@ -74,15 +81,18 @@
 		3FF340B133498D33D74D3976 /* QRScannerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerSheet.swift; sourceTree = "<group>"; };
 		45BBB6E81333013CC2CE55F2 /* SettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsScreen.swift; sourceTree = "<group>"; };
 		4E1D66A6EFF83C09A11DB7FB /* CrewSettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewSettingsViewModel.swift; sourceTree = "<group>"; };
+		500341CFF93F2572F5EABA8C /* FireflyUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyUITests.swift; sourceTree = "<group>"; };
 		543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Theme+SwiftUI.swift"; sourceTree = "<group>"; };
 		657F1057B225B7D58F60D158 /* DemoBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoBadge.swift; sourceTree = "<group>"; };
 		668B4901B03CB440509CA401 /* Firefly.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Firefly.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
 		7C40E6DFE5C85637929993F5 /* FireflyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyApp.swift; sourceTree = "<group>"; };
+		829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyAutoConnectLaunch.swift; sourceTree = "<group>"; };
 		899B46141ED5400385D53007 /* PeripheralDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeripheralDiscovery.swift; sourceTree = "<group>"; };
 		918AE027165FB4634094A385 /* InboxListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxListView.swift; sourceTree = "<group>"; };
 		9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEHardwareTests.swift; sourceTree = "<group>"; };
 		A1E30FCFD8A9260E48E8617D /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		AF78D752270B8DEF9E445B92 /* FireflyUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FireflyUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B41C74CB306C16EC81337A30 /* ThreadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadView.swift; sourceTree = "<group>"; };
 		B5AE4486A9AE4EFDBC5455E6 /* ConnectSettingsViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectSettingsViewModelTests.swift; sourceTree = "<group>"; };
 		B726C9DB8EA6DA10A760203D /* FireflyAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FireflyAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -140,6 +150,7 @@
 				16B4A8ECBDE17B9CEFEFB25B /* Config */,
 				95A1A3DC3288FC10DBD418FD /* Firefly */,
 				C4AE56DE0E12B77768ED63B4 /* FireflyHardwareTests */,
+				15B2E435A10A6915FED5ADE3 /* FireflyUITests */,
 				2F20B465437E7EE376895CE7 /* Packages */,
 				1B43B2AE74C8064189181E87 /* Products */,
 			);
@@ -151,12 +162,20 @@
 				3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */,
 				36054428E7138397E791F1DD /* ChannelImportViewModel.swift */,
 				336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */,
-				A0A84CBAE95A81B699A26E02 /* FireflyAutoConnectLaunch.swift */,
+				829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */,
 				2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */,
 				899B46141ED5400385D53007 /* PeripheralDiscovery.swift */,
 				3FF340B133498D33D74D3976 /* QRScannerSheet.swift */,
 			);
 			path = Connect;
+			sourceTree = "<group>";
+		};
+		15B2E435A10A6915FED5ADE3 /* FireflyUITests */ = {
+			isa = PBXGroup;
+			children = (
+				500341CFF93F2572F5EABA8C /* FireflyUITests.swift */,
+			);
+			path = FireflyUITests;
 			sourceTree = "<group>";
 		};
 		16B4A8ECBDE17B9CEFEFB25B /* Config */ = {
@@ -173,6 +192,7 @@
 				668B4901B03CB440509CA401 /* Firefly.app */,
 				B726C9DB8EA6DA10A760203D /* FireflyAppTests.xctest */,
 				E56FC0B8574441CB2FD171FD /* FireflyHardwareTests.xctest */,
+				AF78D752270B8DEF9E445B92 /* FireflyUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -290,6 +310,24 @@
 			productReference = B726C9DB8EA6DA10A760203D /* FireflyAppTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		6D64813BE2A6F65CCCF908B1 /* FireflyUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 307BE6014F94D5EB02E446A2 /* Build configuration list for PBXNativeTarget "FireflyUITests" */;
+			buildPhases = (
+				85BAF3CB0776BA837D9DD6EE /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				28F25718A920BC34ABB99C28 /* PBXTargetDependency */,
+			);
+			name = FireflyUITests;
+			packageProductDependencies = (
+			);
+			productName = FireflyUITests;
+			productReference = AF78D752270B8DEF9E445B92 /* FireflyUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		C71E9AFEE04A0936A7C43A16 /* Firefly */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 773591CF2C9657F0283AC4F0 /* Build configuration list for PBXNativeTarget "Firefly" */;
@@ -327,6 +365,10 @@
 					61EA809CD815CB1D1128C085 = {
 						ProvisioningStyle = Automatic;
 					};
+					6D64813BE2A6F65CCCF908B1 = {
+						ProvisioningStyle = Automatic;
+						TestTargetID = C71E9AFEE04A0936A7C43A16;
+					};
 					C71E9AFEE04A0936A7C43A16 = {
 						ProvisioningStyle = Automatic;
 					};
@@ -352,6 +394,7 @@
 				C71E9AFEE04A0936A7C43A16 /* Firefly */,
 				61EA809CD815CB1D1128C085 /* FireflyAppTests */,
 				2E869653C9A7BA8AA66ED9F5 /* FireflyHardwareTests */,
+				6D64813BE2A6F65CCCF908B1 /* FireflyUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -372,6 +415,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		85BAF3CB0776BA837D9DD6EE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7D848900827679BC7A2E22C0 /* FireflyUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		BBBA8791B6AEDDD2FBC4F69A /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -385,7 +436,7 @@
 				7E079696E764A0A0F9E02426 /* DiagnosticsViewModel.swift in Sources */,
 				AFD1E54EF5873B6717B88291 /* FindPanel.swift in Sources */,
 				FB71020F3A2D6764FDD8FE64 /* FireflyApp.swift in Sources */,
-				1A2C3FA7F689E8B3EC758FA1 /* FireflyAutoConnectLaunch.swift in Sources */,
+				E466917345D124C8F9F6B557 /* FireflyAutoConnectLaunch.swift in Sources */,
 				124E5B4431C5B0C9509B4C85 /* FlareTakeoverView.swift in Sources */,
 				7FA385525E20C469998B9B83 /* HapticSignaling+UIKit.swift in Sources */,
 				EBE7033561E014B40A656D0B /* InboxListView.swift in Sources */,
@@ -418,6 +469,11 @@
 			isa = PBXTargetDependency;
 			target = C71E9AFEE04A0936A7C43A16 /* Firefly */;
 			targetProxy = 8D9766009667DE33D0AF6FF0 /* PBXContainerItemProxy */;
+		};
+		28F25718A920BC34ABB99C28 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C71E9AFEE04A0936A7C43A16 /* Firefly */;
+			targetProxy = FECB72AC344F42CBCF4D7432 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -485,8 +541,8 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_STRICT_CONCURRENCY = minimal;
-				SWIFT_VERSION = 5.9;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
@@ -542,6 +598,50 @@
 				SDKROOT = macosx;
 			};
 			name = Release;
+		};
+		82CD4B52032DB29AEC875876 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jakeholland.FireflyUITests;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Firefly;
+			};
+			name = Release;
+		};
+		8D2CAFF8D0CA1347D13315C6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jakeholland.FireflyUITests;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Firefly;
+			};
+			name = Debug;
 		};
 		AA189CFD48F0B439F0EDD299 /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -624,8 +724,8 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				SWIFT_STRICT_CONCURRENCY = minimal;
-				SWIFT_VERSION = 5.9;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
 		};
@@ -689,6 +789,15 @@
 			buildConfigurations = (
 				063F743E88C06D9BFBCE05B7 /* Debug */,
 				BD2F0EA8CA7A0968A0B3FC48 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		307BE6014F94D5EB02E446A2 /* Build configuration list for PBXNativeTarget "FireflyUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8D2CAFF8D0CA1347D13315C6 /* Debug */,
+				82CD4B52032DB29AEC875876 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

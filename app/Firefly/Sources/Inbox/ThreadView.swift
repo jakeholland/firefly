@@ -57,6 +57,9 @@ struct ThreadView: View {
         }
         .background(Color.ffBackground)
         .navigationTitle(title)
+        // M3: one identifying accessibility identifier per screen — see
+        // `ConnectScreen`'s own comment.
+        .accessibilityIdentifier("Screen.Thread")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
