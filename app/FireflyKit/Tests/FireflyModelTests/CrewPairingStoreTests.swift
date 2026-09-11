@@ -3,7 +3,12 @@
 //  A01-companion-app.md, M2: "Crew pairing and colours, driven by
 //  `ff_crew`"). Covers: store round-trip, colour-assignment stability
 //  (first free index in roster order), restore-before-replay ordering,
-//  and the 8-limit message.
+//  the 8-limit message, `unpair()`'s crash-safe write order (persisted
+//  record removed before the live flag clears — PR #270 review,
+//  SHOULD-FIX 1), and a regression pin for `pair()` staying honest
+//  about "full" when the roster's 8 slots are unpaired strangers
+//  rather than paired members (PR #270 review, SHOULD-FIX 2 — depends
+//  on core PR #268's eviction).
 //
 import FireflyModel
 import XCTest
@@ -91,6 +96,26 @@ final class InMemoryCrewPairingStoreTests: XCTestCase {
         first.upsert(CrewPairingRecord(nodeID: 1, colorIndex: 0))
         let second = InMemoryCrewPairingStore()
         XCTAssertTrue(second.records().isEmpty, "the in-memory stand-in is deliberately ephemeral")
+    }
+}
+
+/// Wraps an `InMemoryCrewPairingStore` but captures, at the instant
+/// `remove(nodeID:)` runs, what `ff_crew`'s live paired flag was still
+/// reporting for that node — used by
+/// `CrewPairingControllerTests.testUnpairRemovesThePersistedRecordBeforeClearingTheLiveFlag`
+/// to prove `CrewPairingController.unpair()` clears the persisted
+/// record before the live flag, not after (PR #270 review, SHOULD-FIX
+/// 1: the crash-safe order).
+private final class OrderSpyCrewPairingStore: CrewPairingStoring, @unchecked Sendable {
+    private let wrapped = InMemoryCrewPairingStore()
+    var crew: CrewStore!
+    private(set) var pairedFlagAtRemoveTime: Bool?
+
+    func records() -> [CrewPairingRecord] { wrapped.records() }
+    func upsert(_ record: CrewPairingRecord) { wrapped.upsert(record) }
+    func remove(nodeID: UInt32) {
+        pairedFlagAtRemoveTime = crew.member(nodeID: nodeID, now: FireflyClock.nowMillis())?.paired
+        wrapped.remove(nodeID: nodeID)
     }
 }
 
@@ -219,6 +244,68 @@ final class CrewPairingControllerTests: XCTestCase {
         controller.unpair(nodeID: 1)
         XCTAssertEqual(crew.member(nodeID: 1, now: FireflyClock.nowMillis())?.paired, false)
         XCTAssertTrue(store.records().isEmpty)
+    }
+
+    /// Crash-safe ordering (PR #270 review, SHOULD-FIX 1): `unpair()`
+    /// must remove the persisted record BEFORE it clears `ff_crew`'s
+    /// live paired flag. The persisted store is what a relaunch
+    /// rebuilds `ff_crew` from (`CrewPairingRestorer.restore`), so a
+    /// process kill between the two writes must never leave the
+    /// persisted record still saying "paired" for someone the live
+    /// flag has already dropped — that's the failure mode that would
+    /// silently re-pair a removed member on the next launch. This test
+    /// uses a spy store that captures the live flag's value at the
+    /// instant `remove` runs: it must still read `true`, proving
+    /// `store.remove` executes first.
+    func testUnpairRemovesThePersistedRecordBeforeClearingTheLiveFlag() {
+        let spyStore = OrderSpyCrewPairingStore()
+        let crew = CrewStore()
+        spyStore.crew = crew
+        let controller = CrewPairingController(crew: crew, store: spyStore)
+
+        controller.pair(nodeID: 1)
+        controller.unpair(nodeID: 1)
+
+        XCTAssertEqual(
+            spyStore.pairedFlagAtRemoveTime, true,
+            "the live flag must still read paired when the persisted record is removed — " +
+            "proving store.remove() runs before crew.setPaired(false), the crash-safe order"
+        )
+        // ...and both halves still end up consistent once unpair() returns.
+        XCTAssertEqual(crew.member(nodeID: 1, now: FireflyClock.nowMillis())?.paired, false)
+        XCTAssertTrue(spyStore.records().isEmpty)
+    }
+
+    /// Regression pin (PR #270 review, SHOULD-FIX 2): before core PR
+    /// #268's eviction lands, a roster whose 8 slots are all occupied
+    /// by unpaired strangers (heard off `nodeUpdates()`, never paired)
+    /// makes `crew.upsert(nodeID:)` fail for a 9th, distinct node even
+    /// though 0 members are actually paired — `pair()` would then
+    /// return `.full(limit: 8)` and the UI would show "Crew is full"
+    /// while genuinely nobody is paired, a real honesty bug on a busy
+    /// public mesh. #268's eviction makes `ff_crew_upsert` evict an
+    /// unpaired stranger to make room instead, so this must SUCCEED.
+    /// This test is expected to start passing only once #268 has
+    /// landed and this branch has rebased onto it — that is the point:
+    /// CI pins the day the misbehavior described above stops
+    /// reproducing.
+    func testPairingSucceedsWithEightUnpairedStrangersAlreadyOccupyingTheRoster() {
+        let (controller, store, crew) = makeController()
+        // 8 strangers heard off the mesh, never paired — exactly what
+        // fills a busy public mesh's roster before anyone pairs at all.
+        for nodeID in 1...8 {
+            crew.upsert(nodeID: UInt32(nodeID))
+        }
+        XCTAssertEqual(store.records().count, 0, "none of the 8 strangers are paired yet")
+
+        let result = controller.pair(nodeID: 100)
+
+        XCTAssertNotEqual(result, .full(limit: 8),
+            "0 paired members must never report the roster as full, even when all 8 slots are held by unpaired strangers")
+        guard case .paired = result else {
+            return XCTFail("pairing the first-ever member must succeed once #268's eviction is in place, got \(result)")
+        }
+        XCTAssertEqual(store.records().map(\.nodeID), [100])
     }
 
     /// Unpairing one member frees its colour for a later pairing —

@@ -218,6 +218,11 @@ public enum CrewPairingRestorer {
 /// old local-only toggle risked. `@MainActor`-confined: `crew` is a
 /// `CrewStore`, and every `ff_*` context in this app is confined to
 /// one isolation domain (A01's threading model).
+///
+/// `CrewPairingController` is the ONLY writer of `ff_crew`'s paired
+/// flag: the persisted store is authoritative, and `ff_crew` is always
+/// rebuilt from it at launch (`CrewPairingRestorer.restore`, above) —
+/// so on any conflict between the two, the persisted record wins.
 @MainActor
 public final class CrewPairingController {
     /// Mirrors `FF_CREW_MAX` (`ff_crew.h`) — the roster cap this
@@ -285,13 +290,23 @@ public final class CrewPairingController {
         return .paired(colorIndex: colorIndex)
     }
 
-    /// Unpairs `nodeID`: `ff_crew_set_paired(false)` (the member's slot
-    /// stays, merely-heard, per `ff_crew.h`'s own "no eviction" policy)
-    /// and removes its persisted record so a relaunch does not bring it
-    /// back paired.
+    /// Unpairs `nodeID`: removes its persisted record — the durable,
+    /// authoritative half — BEFORE `ff_crew_set_paired(false)` (the
+    /// member's slot stays, merely-heard, per `ff_crew.h`'s own "no
+    /// eviction" policy). This order matters for crash safety: the
+    /// persisted store is what `CrewPairingRestorer.restore` rebuilds
+    /// `ff_crew`'s paired flags from at next launch, so if the process
+    /// is killed between these two lines, removing the persisted
+    /// record first means the worst case is a member who still reads
+    /// as paired for the REST OF THIS LAUNCH ONLY — safe to lose, and
+    /// corrected the moment the record is gone. Writing `ff_crew`
+    /// first (the old order) had the opposite, unsafe failure mode: a
+    /// kill between the two lines left the persisted record still
+    /// saying "paired," so the next restore silently re-paired someone
+    /// the user had just removed.
     public func unpair(nodeID: UInt32) {
-        crew.setPaired(nodeID: nodeID, paired: false)
         store.remove(nodeID: nodeID)
+        crew.setPaired(nodeID: nodeID, paired: false)
     }
 
     /// Sets (or clears, for `nil`/empty) a paired member's LOCAL

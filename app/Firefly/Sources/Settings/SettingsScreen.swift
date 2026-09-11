@@ -238,7 +238,23 @@ private struct CrewMemberRow: View {
     let onRename: (String) -> Void
     let onRemove: () -> Void
 
-    @State private var nicknameDraft: String = ""
+    // Seeded once from `row.nickname` in `init`, NOT re-synced on every
+    // `.onAppear` (PR #270 review NIT): `.onAppear` can fire again for
+    // an already-created row (e.g. a `refresh()` that re-renders this
+    // list while a rename is mid-edit), and resetting the draft there
+    // would discard whatever the user was typing. `@State`'s own
+    // initial-value semantics already give the right behavior for
+    // free — it's read once per view identity (`ForEach` keys rows by
+    // `nodeID`) — so this only has to stop overriding it a second time.
+    @State private var nicknameDraft: String
+
+    init(row: CrewSettingsViewModel.Row, colorblind: Bool, onRename: @escaping (String) -> Void, onRemove: @escaping () -> Void) {
+        self.row = row
+        self.colorblind = colorblind
+        self.onRename = onRename
+        self.onRemove = onRemove
+        self._nicknameDraft = State(initialValue: row.nickname ?? "")
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -247,7 +263,6 @@ private struct CrewMemberRow: View {
                 .frame(width: 16, height: 16)
             TextField(row.meshName.isEmpty ? row.displayName : row.meshName, text: $nicknameDraft)
                 .textFieldStyle(.roundedBorder)
-                .onAppear { nicknameDraft = row.nickname ?? "" }
                 .onSubmit { onRename(nicknameDraft) }
             Button("REMOVE", action: onRemove)
                 .buttonStyle(.bordered)
