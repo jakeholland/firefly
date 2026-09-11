@@ -23,15 +23,28 @@ struct FireflyApp: App {
     let dependencies: AppDependencies
     @State private var connect: ConnectViewModel
 
+    /// Slice C's own hunk (A01's shared-file table): Settings and
+    /// Diagnostics' view models, constructed here and injected into the
+    /// destination(s) slice C owns — never touching Connect's line
+    /// above, which the skeleton PR already landed. `channelImport` is
+    /// shared between the Connect and Settings destinations (see
+    /// `SettingsViewModel`'s own comment) so both read the same
+    /// imported channel rather than two disconnected copies.
+    @State private var channelImport: ChannelImportViewModel
+    @State private var settings: SettingsViewModel
+
     init() {
         let dependencies = AppDependencies.current()
         self.dependencies = dependencies
         _connect = State(initialValue: ConnectViewModel(client: dependencies.client))
+        let importVM = ChannelImportViewModel()
+        _channelImport = State(initialValue: importVM)
+        _settings = State(initialValue: SettingsViewModel(store: SettingsStore(), channelImport: importVM))
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView(connect: connect)
+            RootView(connect: connect, settings: settings, channelImport: channelImport, client: dependencies.client)
                 .preferredColorScheme(.dark)
         }
         #if os(macOS)

@@ -9,12 +9,31 @@
 /* Begin PBXBuildFile section */
 		0318ED28B405C25C7661E064 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E30FCFD8A9260E48E8617D /* RootView.swift */; };
 		04CD563093000516B80C6D62 /* FireflyMesh in Frameworks */ = {isa = PBXBuildFile; productRef = 6D80661B0E11F75CD5DBFD53 /* FireflyMesh */; };
+		3B69F83116726CF8C396257C /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 9011CC84111BB0A130A3D3C7 /* FireflyModel */; };
+		47E0809C008E900451404953 /* ConnectScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */; };
+		59A003F0821E61E9DE8E99F5 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */; };
+		63F4CB9CD8015973BF2A6A87 /* NearbyNodesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */; };
+		6640FC7A5590E35700C97181 /* DiagnosticsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */; };
+		6EED1D607A836BC23FCF5D43 /* SettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45BBB6E81333013CC2CE55F2 /* SettingsScreen.swift */; };
 		71D8EF04CB8A979CD7738201 /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 4982066A256926406E7325EB /* FireflyModel */; };
+		736AA63B4C8C5FAD424729FA /* PeripheralDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 899B46141ED5400385D53007 /* PeripheralDiscovery.swift */; };
 		76BA2F3212D5F595105F68D0 /* Theme+SwiftUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */; };
 		7BA796CE1A065E6D5A96DCDB /* MeshtasticProto in Frameworks */ = {isa = PBXBuildFile; productRef = 6C4B001C31CDD7B9E82BE94A /* MeshtasticProto */; };
+		7DDDFABD54883171C0FD887A /* ConnectSettingsViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5AE4486A9AE4EFDBC5455E6 /* ConnectSettingsViewModelTests.swift */; };
+		7E079696E764A0A0F9E02426 /* DiagnosticsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */; };
+		8205769443841156A848715C /* MeshtasticProto in Frameworks */ = {isa = PBXBuildFile; productRef = 1302957B4A2DCE64A8D5EC14 /* MeshtasticProto */; };
+		AC8AFA0CD87BCDBC83DDB4BD /* QRScannerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FF340B133498D33D74D3976 /* QRScannerSheet.swift */; };
+		B11B507435D69A999AC9DD1E /* ChannelImportViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36054428E7138397E791F1DD /* ChannelImportViewModel.swift */; };
+		B770F947CF8B1EDB0E8FDBD5 /* FireflyMesh in Frameworks */ = {isa = PBXBuildFile; productRef = B4C3D1CEE6287442EA267E68 /* FireflyMesh */; };
 		C03641377EDB721D4C81DE9D /* BLEHardwareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */; };
+		C669919991622119FE5BA2FA /* DiagnosticsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19687863E32B4CA54C5752D8 /* DiagnosticsScreen.swift */; };
+		D4509A6BF45005057BE62C69 /* PeripheralDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 899B46141ED5400385D53007 /* PeripheralDiscovery.swift */; };
 		D7A6BDAFEAE4556C2D49508D /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 52CE41AF9EE8F2A1C1595D75 /* FireflyCore */; };
+		E3CC4E9340C161539EDE9E85 /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1798EBF71029584D9BCBDE5F /* FireflyCore */; };
+		F6C0D0DF3F349E930AD52E4C /* ChannelImportViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36054428E7138397E791F1DD /* ChannelImportViewModel.swift */; };
+		F743AE393385BA397AC457C9 /* NearbyNodesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */; };
 		FB71020F3A2D6764FDD8FE64 /* FireflyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C40E6DFE5C85637929993F5 /* FireflyApp.swift */; };
+		FDA4D7E8A140B83CAEBB792F /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -29,16 +48,38 @@
 
 /* Begin PBXFileReference section */
 		05D20D18F962B7E51C03A90B /* FireflyKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FireflyKit; path = FireflyKit; sourceTree = SOURCE_ROOT; };
+		19687863E32B4CA54C5752D8 /* DiagnosticsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsScreen.swift; sourceTree = "<group>"; };
+		2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyNodesViewModel.swift; sourceTree = "<group>"; };
+		336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectScreen.swift; sourceTree = "<group>"; };
+		36054428E7138397E791F1DD /* ChannelImportViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelImportViewModel.swift; sourceTree = "<group>"; };
+		3FF340B133498D33D74D3976 /* QRScannerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerSheet.swift; sourceTree = "<group>"; };
+		45BBB6E81333013CC2CE55F2 /* SettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsScreen.swift; sourceTree = "<group>"; };
 		543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Theme+SwiftUI.swift"; sourceTree = "<group>"; };
 		668B4901B03CB440509CA401 /* Firefly.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Firefly.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
 		7C40E6DFE5C85637929993F5 /* FireflyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyApp.swift; sourceTree = "<group>"; };
+		899B46141ED5400385D53007 /* PeripheralDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeripheralDiscovery.swift; sourceTree = "<group>"; };
 		9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEHardwareTests.swift; sourceTree = "<group>"; };
 		A1E30FCFD8A9260E48E8617D /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		B5AE4486A9AE4EFDBC5455E6 /* ConnectSettingsViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectSettingsViewModelTests.swift; sourceTree = "<group>"; };
+		B726C9DB8EA6DA10A760203D /* FireflyAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FireflyAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Firefly.xcconfig; sourceTree = "<group>"; };
+		CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsViewModel.swift; sourceTree = "<group>"; };
 		E56FC0B8574441CB2FD171FD /* FireflyHardwareTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FireflyHardwareTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		2E4CEB8BDE34099D64E7636C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E3CC4E9340C161539EDE9E85 /* FireflyCore in Frameworks */,
+				8205769443841156A848715C /* MeshtasticProto in Frameworks */,
+				B770F947CF8B1EDB0E8FDBD5 /* FireflyMesh in Frameworks */,
+				3B69F83116726CF8C396257C /* FireflyModel in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		CA3A2D75976D151ED86A005C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -64,6 +105,18 @@
 			);
 			sourceTree = "<group>";
 		};
+		11421C91FBEAF497D1C0A149 /* Connect */ = {
+			isa = PBXGroup;
+			children = (
+				36054428E7138397E791F1DD /* ChannelImportViewModel.swift */,
+				336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */,
+				2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */,
+				899B46141ED5400385D53007 /* PeripheralDiscovery.swift */,
+				3FF340B133498D33D74D3976 /* QRScannerSheet.swift */,
+			);
+			path = Connect;
+			sourceTree = "<group>";
+		};
 		16B4A8ECBDE17B9CEFEFB25B /* Config */ = {
 			isa = PBXGroup;
 			children = (
@@ -76,6 +129,7 @@
 			isa = PBXGroup;
 			children = (
 				668B4901B03CB440509CA401 /* Firefly.app */,
+				B726C9DB8EA6DA10A760203D /* FireflyAppTests.xctest */,
 				E56FC0B8574441CB2FD171FD /* FireflyHardwareTests.xctest */,
 			);
 			name = Products;
@@ -89,10 +143,30 @@
 			name = Packages;
 			sourceTree = "<group>";
 		};
+		30C10335F64F3BEB0DDD3F59 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				19687863E32B4CA54C5752D8 /* DiagnosticsScreen.swift */,
+				CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */,
+				45BBB6E81333013CC2CE55F2 /* SettingsScreen.swift */,
+				762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		7D968AF42091B0CBB04FBE40 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				B5AE4486A9AE4EFDBC5455E6 /* ConnectSettingsViewModelTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
 		95A1A3DC3288FC10DBD418FD /* Firefly */ = {
 			isa = PBXGroup;
 			children = (
 				D89F0E02F6B60E29752F8E37 /* Sources */,
+				7D968AF42091B0CBB04FBE40 /* Tests */,
 			);
 			path = Firefly;
 			sourceTree = "<group>";
@@ -111,6 +185,8 @@
 				7C40E6DFE5C85637929993F5 /* FireflyApp.swift */,
 				A1E30FCFD8A9260E48E8617D /* RootView.swift */,
 				543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */,
+				11421C91FBEAF497D1C0A149 /* Connect */,
+				30C10335F64F3BEB0DDD3F59 /* Settings */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -134,6 +210,28 @@
 			);
 			productName = FireflyHardwareTests;
 			productReference = E56FC0B8574441CB2FD171FD /* FireflyHardwareTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		61EA809CD815CB1D1128C085 /* FireflyAppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4FE583A5C52549761DA68906 /* Build configuration list for PBXNativeTarget "FireflyAppTests" */;
+			buildPhases = (
+				1D66D99D68B8543D5B706035 /* Sources */,
+				2E4CEB8BDE34099D64E7636C /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = FireflyAppTests;
+			packageProductDependencies = (
+				1798EBF71029584D9BCBDE5F /* FireflyCore */,
+				1302957B4A2DCE64A8D5EC14 /* MeshtasticProto */,
+				B4C3D1CEE6287442EA267E68 /* FireflyMesh */,
+				9011CC84111BB0A130A3D3C7 /* FireflyModel */,
+			);
+			productName = FireflyAppTests;
+			productReference = B726C9DB8EA6DA10A760203D /* FireflyAppTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
 		C71E9AFEE04A0936A7C43A16 /* Firefly */ = {
@@ -170,6 +268,9 @@
 					2E869653C9A7BA8AA66ED9F5 = {
 						ProvisioningStyle = Automatic;
 					};
+					61EA809CD815CB1D1128C085 = {
+						ProvisioningStyle = Automatic;
+					};
 					C71E9AFEE04A0936A7C43A16 = {
 						ProvisioningStyle = Automatic;
 					};
@@ -193,18 +294,41 @@
 			projectRoot = "";
 			targets = (
 				C71E9AFEE04A0936A7C43A16 /* Firefly */,
+				61EA809CD815CB1D1128C085 /* FireflyAppTests */,
 				2E869653C9A7BA8AA66ED9F5 /* FireflyHardwareTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXSourcesBuildPhase section */
+		1D66D99D68B8543D5B706035 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F6C0D0DF3F349E930AD52E4C /* ChannelImportViewModel.swift in Sources */,
+				7DDDFABD54883171C0FD887A /* ConnectSettingsViewModelTests.swift in Sources */,
+				6640FC7A5590E35700C97181 /* DiagnosticsViewModel.swift in Sources */,
+				F743AE393385BA397AC457C9 /* NearbyNodesViewModel.swift in Sources */,
+				D4509A6BF45005057BE62C69 /* PeripheralDiscovery.swift in Sources */,
+				FDA4D7E8A140B83CAEBB792F /* SettingsViewModel.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		BBBA8791B6AEDDD2FBC4F69A /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B11B507435D69A999AC9DD1E /* ChannelImportViewModel.swift in Sources */,
+				47E0809C008E900451404953 /* ConnectScreen.swift in Sources */,
+				C669919991622119FE5BA2FA /* DiagnosticsScreen.swift in Sources */,
+				7E079696E764A0A0F9E02426 /* DiagnosticsViewModel.swift in Sources */,
 				FB71020F3A2D6764FDD8FE64 /* FireflyApp.swift in Sources */,
+				63F4CB9CD8015973BF2A6A87 /* NearbyNodesViewModel.swift in Sources */,
+				736AA63B4C8C5FAD424729FA /* PeripheralDiscovery.swift in Sources */,
+				AC8AFA0CD87BCDBC83DDB4BD /* QRScannerSheet.swift in Sources */,
 				0318ED28B405C25C7661E064 /* RootView.swift in Sources */,
+				6EED1D607A836BC23FCF5D43 /* SettingsScreen.swift in Sources */,
+				59A003F0821E61E9DE8E99F5 /* SettingsViewModel.swift in Sources */,
 				76BA2F3212D5F595105F68D0 /* Theme+SwiftUI.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -332,6 +456,23 @@
 			};
 			name = Release;
 		};
+		6B1584BF62758C1DC9EA8C8E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jakeholland.FireflyAppTests;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
 		AA189CFD48F0B439F0EDD299 /* Release */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */;
@@ -420,6 +561,23 @@
 			};
 			name = Release;
 		};
+		D8F8CAAA3478DE9CFCFAD987 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jakeholland.FireflyAppTests;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
 		E3CA17979C194D5C3479DC4E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */;
@@ -469,6 +627,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		4FE583A5C52549761DA68906 /* Build configuration list for PBXNativeTarget "FireflyAppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D8F8CAAA3478DE9CFCFAD987 /* Debug */,
+				6B1584BF62758C1DC9EA8C8E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		773591CF2C9657F0283AC4F0 /* Build configuration list for PBXNativeTarget "Firefly" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -488,6 +655,14 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		1302957B4A2DCE64A8D5EC14 /* MeshtasticProto */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MeshtasticProto;
+		};
+		1798EBF71029584D9BCBDE5F /* FireflyCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FireflyCore;
+		};
 		4982066A256926406E7325EB /* FireflyModel */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = FireflyModel;
@@ -501,6 +676,14 @@
 			productName = MeshtasticProto;
 		};
 		6D80661B0E11F75CD5DBFD53 /* FireflyMesh */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FireflyMesh;
+		};
+		9011CC84111BB0A130A3D3C7 /* FireflyModel */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FireflyModel;
+		};
+		B4C3D1CEE6287442EA267E68 /* FireflyMesh */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = FireflyMesh;
 		};
