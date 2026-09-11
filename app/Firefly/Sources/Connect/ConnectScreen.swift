@@ -187,7 +187,7 @@ struct ConnectScreen: View {
             Text("FIREFLY")
                 .font(.system(.largeTitle, design: .rounded).weight(.heavy))
                 .foregroundStyle(Color.ffAmber)
-            Text("One crew. One channel. Nothing on this screen is invented.")
+            Text("One crew. One channel. Nothing here is made up.")
                 .font(.caption)
                 .foregroundStyle(Color.ffMuted)
         }
@@ -371,8 +371,7 @@ struct ConnectScreen: View {
     private var nearbySection: some View {
         SectionBlock(title: "NEARBY") {
             if nearby.nodes.isEmpty {
-                Text("Nobody heard yet. This fills in once the client reports mesh traffic — " +
-                     "never before.")
+                Text("Nobody heard yet. This fills in once mesh traffic comes in — never before.")
                     .font(.footnote)
                     .foregroundStyle(Color.ffMuted)
             } else {
@@ -444,7 +443,7 @@ struct ConnectScreen: View {
                             .foregroundStyle(Color.ffLiveGreen)
                     }
                     if result.addMode {
-                        Text("Adds to existing channels (add=true).")
+                        Text("Adds to your existing channels — doesn't replace them.")
                             .font(.caption)
                             .foregroundStyle(Color.ffMuted)
                     }

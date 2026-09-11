@@ -340,7 +340,7 @@ final class SettingsViewModel {
 
     /// Everything the name-change confirmation sheet shows.
     var nameApplySummary: [String] {
-        ["Long name -> \"\(nodeLongName)\"", "Short name -> \"\(nodeShortName)\""]
+        ["Long name \u{2192} \"\(nodeLongName)\"", "Short name \u{2192} \"\(nodeShortName)\""]
     }
 
     /// Behind explicit confirmation only. `nodeLongName`/`nodeShortName`
@@ -365,7 +365,7 @@ final class SettingsViewModel {
 
     /// Everything the region-change confirmation sheet shows.
     var regionApplySummary: [String] {
-        ["Region -> \(String(describing: regionSelection).uppercased())"]
+        ["Region \u{2192} \(String(describing: regionSelection).uppercased())"]
     }
 
     /// Behind explicit confirmation only, and only reachable while

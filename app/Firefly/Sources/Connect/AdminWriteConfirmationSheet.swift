@@ -38,9 +38,9 @@ struct AdminWriteConfirmationSheet: View {
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(Color.ffInk)
                 }
-                Text("The node saves this, then reboots and disconnects. This app reconnects and " +
-                     "reads every changed item back on its own — CONFIRM only reports success once " +
-                     "that read-back matches exactly what was sent.")
+                Text("The node saves this, then reboots and disconnects. The app reconnects and " +
+                     "reads everything back on its own — CONFIRM only succeeds once it matches " +
+                     "exactly what you sent.")
                     .font(.footnote)
                     .foregroundStyle(Color.ffAmber)
                 if let errorMessage {

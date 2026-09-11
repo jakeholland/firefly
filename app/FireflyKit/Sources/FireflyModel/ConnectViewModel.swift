@@ -348,7 +348,7 @@ public final class ConnectViewModel {
         switch link {
         case .disconnected: return "NOT CONNECTED"
         case .connecting: return "CONNECTING"
-        case .handshaking: return "HANDSHAKING"
+        case .handshaking: return "CONNECTING"
         case .ready: return "CONNECTED"
         case .reconnecting(let attempt): return "RECONNECTING (attempt \(attempt))"
         case .failed: return "FAILED"
