@@ -13,6 +13,14 @@ name: app
 # file under app/. That is the whole reason CoreSourceLinkTests exists,
 # and this filter is what makes it run at the right moment.
 #
+# firmware/festpack/** and firmware/third_party/jsmn.h are in the filter
+# for the exact same reason: since the festpack-from-fest-almanac work,
+# FireflyCore's symlink farm pulls those in too (app/tools/
+# link_core_sources.sh) — a festpack-only PR that touched neither of
+# those two path prefixes previously would not trigger this workflow at
+# all, so CoreSourceLinkTests (which does check festpack) never ran for
+# it.
+#
 # Hardware tests that need a REAL Heltec V3 are NOT run here - a hosted
 # runner has no USB device and no Bluetooth range, and they are gated
 # FIREFLY_HARDWARE=1, run manually from a Mac (see app/README.md). The
@@ -42,6 +50,8 @@ on:
       - "app/**"
       - "firmware/core/**"
       - "firmware/platform/**"
+      - "firmware/festpack/**"
+      - "firmware/third_party/jsmn.h"
       - "firmware/app/theme/ff_theme.h"
       - "firmware/meshclient/tools/gen_nanopb.sh"
       - ".github/workflows/app.yml"
@@ -51,6 +61,8 @@ on:
       - "app/**"
       - "firmware/core/**"
       - "firmware/platform/**"
+      - "firmware/festpack/**"
+      - "firmware/third_party/jsmn.h"
       - "firmware/app/theme/ff_theme.h"
       - "firmware/meshclient/tools/gen_nanopb.sh"
       - ".github/workflows/app.yml"
@@ -89,16 +101,23 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for f in firmware/core/src/*.c; do
-            b="$(basename "$f")"
-            if [ ! -L "app/FireflyKit/Sources/FireflyCore/src/$b" ]; then
-              echo "::error file=firmware/core/src/$b::not linked into FireflyCore - run app/tools/link_core_sources.sh"
-              missing=1
-            fi
+          # firmware/festpack/src alongside firmware/core/src: since the
+          # festpack-from-fest-almanac work, FireflyCore's symlink farm
+          # pulls both in (app/tools/link_core_sources.sh's own comment) —
+          # this loop mirrors that script's directory list exactly.
+          for d in firmware/core/src firmware/festpack/src; do
+            for f in "$d"/*.c; do
+              b="$(basename "$f")"
+              if [ ! -L "app/FireflyKit/Sources/FireflyCore/src/$b" ]; then
+                echo "::error file=$d/$b::not linked into FireflyCore - run app/tools/link_core_sources.sh"
+                missing=1
+              fi
+            done
           done
           # Headers too (S8): a copied header passes a src-only check
-          # silently, and this farm also pulls in firmware/platform/include.
-          for d in firmware/core/include firmware/platform/include; do
+          # silently, and this farm also pulls in firmware/platform/include
+          # and firmware/festpack/include.
+          for d in firmware/core/include firmware/platform/include firmware/festpack/include; do
             for f in "$d"/*.h; do
               b="$(basename "$f")"
               if [ ! -L "app/FireflyKit/Sources/FireflyCore/include/$b" ]; then
@@ -107,6 +126,13 @@ jobs:
               fi
             done
           done
+          # jsmn.h (firmware/third_party) — the one vendored header
+          # fp_pack.h #include "jsmn.h"s; link_core_sources.sh's own
+          # comment has the full story.
+          if [ ! -L "app/FireflyKit/Sources/FireflyCore/include/jsmn.h" ]; then
+            echo "::error file=firmware/third_party/jsmn.h::not linked into FireflyCore - run app/tools/link_core_sources.sh"
+            missing=1
+          fi
           exit $missing
 
       - name: swift build

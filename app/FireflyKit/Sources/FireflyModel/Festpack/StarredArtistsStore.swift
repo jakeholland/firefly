@@ -33,7 +33,8 @@ public final class StarredArtistsStore: StarredArtistsStoring, @unchecked Sendab
     }
 
     public func starredArtists() -> Set<String> {
-        Self.decode(store.string(.starredFestivalArtists))
+        lock.lock(); defer { lock.unlock() }
+        return Self.decode(store.string(.starredFestivalArtists))
     }
 
     public func setStarred(_ starred: Bool, artist: String) {

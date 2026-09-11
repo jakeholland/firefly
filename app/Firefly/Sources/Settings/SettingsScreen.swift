@@ -343,6 +343,11 @@ struct SettingsScreen: View {
                     #endif
                     .onSubmit { model.setFestpackSourceURLOverride(festpackURLDraft) }
             }
+            if let error = model.festpackSourceURLError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(Color.ffAlert)
+            }
             HStack {
                 Button("SAVE URL") { model.setFestpackSourceURLOverride(festpackURLDraft) }
                     .buttonStyle(.bordered)

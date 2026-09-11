@@ -743,6 +743,62 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertEqual(location.authorizationReadCount - before, 3,
                        "setShareGPSWithNode must read the injected provider's cached authorization exactly once per call, never a second hidden check")
     }
+
+    // MARK: - Festival data URL override (BLOCKING review finding 1: https-only)
+
+    func testFestpackSourceURLOverrideAcceptsAValidHTTPSURL() {
+        let store = SettingsStore(defaults: defaults)
+        let vm = SettingsViewModel(store: store, channelImport: ChannelImportViewModel())
+
+        vm.setFestpackSourceURLOverride("https://example.com/custom.festpack.json")
+
+        XCTAssertEqual(vm.festpackSourceURLOverride, "https://example.com/custom.festpack.json")
+        XCTAssertNil(vm.festpackSourceURLError)
+    }
+
+    func testFestpackSourceURLOverrideRejectsHTTPAndKeepsThePreviousValue() {
+        let store = SettingsStore(defaults: defaults)
+        let vm = SettingsViewModel(store: store, channelImport: ChannelImportViewModel())
+        vm.setFestpackSourceURLOverride("https://example.com/good.festpack.json")
+
+        vm.setFestpackSourceURLOverride("http://example.com/plaintext.festpack.json")
+
+        XCTAssertEqual(vm.festpackSourceURLOverride, "https://example.com/good.festpack.json",
+                       "a rejected override must never replace the previous value")
+        XCTAssertNotNil(vm.festpackSourceURLError)
+    }
+
+    func testFestpackSourceURLOverrideRejectsFileScheme() {
+        let store = SettingsStore(defaults: defaults)
+        let vm = SettingsViewModel(store: store, channelImport: ChannelImportViewModel())
+
+        vm.setFestpackSourceURLOverride("file:///etc/passwd")
+
+        XCTAssertNil(vm.festpackSourceURLOverride)
+        XCTAssertNotNil(vm.festpackSourceURLError)
+    }
+
+    func testFestpackSourceURLOverrideRejectsGarbage() {
+        let store = SettingsStore(defaults: defaults)
+        let vm = SettingsViewModel(store: store, channelImport: ChannelImportViewModel())
+
+        vm.setFestpackSourceURLOverride("not a url at all")
+
+        XCTAssertNil(vm.festpackSourceURLOverride)
+        XCTAssertNotNil(vm.festpackSourceURLError)
+    }
+
+    func testClearingFestpackSourceURLOverrideClearsAnyPriorError() {
+        let store = SettingsStore(defaults: defaults)
+        let vm = SettingsViewModel(store: store, channelImport: ChannelImportViewModel())
+        vm.setFestpackSourceURLOverride("http://example.com/plaintext.festpack.json")
+        XCTAssertNotNil(vm.festpackSourceURLError)
+
+        vm.setFestpackSourceURLOverride("")
+
+        XCTAssertNil(vm.festpackSourceURLOverride)
+        XCTAssertNil(vm.festpackSourceURLError)
+    }
 }
 
 /// Finding 3's own `SettingsViewModelTests` seam — same shape as

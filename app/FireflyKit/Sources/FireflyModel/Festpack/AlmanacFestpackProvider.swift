@@ -87,9 +87,19 @@ public actor AlmanacFestpackProvider: FestpackProviding {
 
     /// Settings' "Festival data" row override, or the built-in default.
     /// A malformed override string is treated as "not set" — never a
-    /// crash, never silently fetching nothing.
+    /// crash, never silently fetching nothing. https-only: this URL
+    /// feeds the whole cache-then-parse pipeline, so a non-https scheme
+    /// (plaintext `http://`, `file://`, or anything else) is rejected
+    /// exactly the same way an unparseable string already is, even
+    /// though `SettingsViewModel.setFestpackSourceURLOverride` should
+    /// never let one reach the store in the first place — this is the
+    /// last line of defense against a synced/corrupted settings value.
     public func sourceURL() -> URL {
-        settings.string(.festpackSourceURLOverride).flatMap(URL.init(string:)) ?? Self.defaultURL
+        guard let raw = settings.string(.festpackSourceURLOverride),
+              let url = URL(string: raw), url.scheme?.lowercased() == "https" else {
+            return Self.defaultURL
+        }
+        return url
     }
 
     public func current() -> Festpack? { pack }

@@ -185,4 +185,34 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         let url = await provider.sourceURL()
         XCTAssertEqual(url, AlmanacFestpackProvider.defaultURL)
     }
+
+    /// BLOCKING review finding 1: `sourceURL()` is the last line of
+    /// defense against a non-https override reaching the network —
+    /// `SettingsViewModel.setFestpackSourceURLOverride` should already
+    /// reject one before it is ever stored, but a value could reach the
+    /// store some other way (a synced or corrupted default), so this
+    /// provider must never trust it either.
+    func testHTTPSettingsURLFallsBackToDefault() async {
+        let settings = InMemorySettingsStore()
+        settings.setString("http://example.com/custom.festpack.json", .festpackSourceURLOverride)
+        let provider = AlmanacFestpackProvider(settings: settings)
+        let url = await provider.sourceURL()
+        XCTAssertEqual(url, AlmanacFestpackProvider.defaultURL, "a plaintext http:// override must never be fetched")
+    }
+
+    func testFileSchemeSettingsURLFallsBackToDefault() async {
+        let settings = InMemorySettingsStore()
+        settings.setString("file:///etc/passwd", .festpackSourceURLOverride)
+        let provider = AlmanacFestpackProvider(settings: settings)
+        let url = await provider.sourceURL()
+        XCTAssertEqual(url, AlmanacFestpackProvider.defaultURL)
+    }
+
+    func testGarbageSettingsURLFallsBackToDefault() async {
+        let settings = InMemorySettingsStore()
+        settings.setString("not a url at all", .festpackSourceURLOverride)
+        let provider = AlmanacFestpackProvider(settings: settings)
+        let url = await provider.sourceURL()
+        XCTAssertEqual(url, AlmanacFestpackProvider.defaultURL)
+    }
 }
