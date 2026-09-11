@@ -207,9 +207,20 @@ jobs:
       # also why there is no macOS counterpart step here: that leg lives
       # only in the same named plan, run by hand locally after granting
       # Accessibility to Xcode (app/README.md).
+      #
+      # timeout-minutes: 20, not 10 - this is the first step in the job
+      # to target the iOS Simulator SDK/destination rather than macOS, so
+      # it cannot reuse the prior steps' (macOS-slice) DerivedData object
+      # files and pays a near-from-scratch build-for-testing cost on a
+      # cold hosted runner (observed ~9.5 minutes for the build alone
+      # landing PR #275's review-response commit, which left the actual
+      # test run only seconds of its 10-minute budget and got killed by
+      # the step timeout mid-launch - a real CI failure, not a flake).
+      # 20 minutes leaves a comfortable margin over that observed cost
+      # while staying well inside this job's own 40-minute timeout.
       - name: FireflyUITests (iOS Simulator)
         working-directory: app
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: |
           xcodebuild test \
             -project Firefly.xcodeproj \
