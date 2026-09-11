@@ -169,26 +169,41 @@ public final class CrewStore {
     private let context: UnsafeMutablePointer<ff_crew_t>
     private let clock: CoreClock
 
-    /// Every node id this store has ever created a slot for, in
-    /// first-seen order — tracked here in Swift rather than by walking
+    /// Node ids this store currently believes have a live slot in
+    /// `ff_crew_t` — tracked here in Swift rather than by walking
     /// `ff_crew_t.members[]` (a fixed C array imported as an opaque
     /// tuple with no per-index accessor in the public header; `members`
     /// below reads each one back through `ff_crew_find`, the same
     /// public entry point any other caller would use).
     ///
-    /// 2026-09-11 [api] S02 amendment (issue #266): now that core can
-    /// evict an unpaired occupant, an id can vanish from `ff_crew_t`
-    /// while staying in this array (`members(now:)`'s `compactMap`
-    /// already filters it out correctly via `member(nodeID:now:)`
-    /// returning nil for a miss — no incorrect member is ever returned).
-    /// This array itself is never pruned on eviction, so it grows by one
-    /// entry per DISTINCT id ever seen for the life of the store, not
-    /// bounded by `FF_CREW_MAX` — acceptable for a `UInt32` array (a
-    /// festival-length session on a busy public mesh is thousands of
-    /// entries, not millions), flagged here rather than silently ignored
-    /// as a known, deliberately-unaddressed consequence of this PR
-    /// rather than something it introduces as a "fix".
-    private var nodeIDs: [UInt32] = []
+    /// PR #268 review, SHOULD-FIX #2: this used to be an `[UInt32]`
+    /// array, appended to (never pruned) on every `track()` call and
+    /// scanned with O(N) `.contains` to dedupe. 2026-09-11 [api] S02
+    /// amendment (issue #266) made that a real, not just theoretical,
+    /// problem: before it, `nodeIDs` was implicitly bounded to
+    /// `FF_CREW_MAX` (the roster rejected a 9th distinct id outright,
+    /// so `track()` never saw one) — after it, `ff_crew_t` can churn
+    /// through arbitrarily many distinct ids over a session (that's the
+    /// eviction fix's whole point), so the old array grew unboundedly on
+    /// a busy mesh and `members(now:)` — read by the UI, presumably per
+    /// render — became an ever-growing O(N) walk.
+    ///
+    /// Fixed two ways at once: `Set<UInt32>` for O(1) average-case
+    /// membership instead of O(N) `.contains`, AND `track()` now prunes
+    /// every id `ff_crew_find` no longer resolves on every call (an
+    /// eviction elsewhere in the roster silently drops OTHER previously
+    /// tracked ids from `ff_crew_t`, same as before this fix — the old
+    /// array just never noticed). Since `ff_crew_t` itself holds at most
+    /// `FF_CREW_MAX` members at any time, a full prune-then-insert
+    /// leaves this set no larger than the live roster — genuinely
+    /// bounded, not merely "bounded in practice for one festival", even
+    /// across thousands of distinct ids heard over a session.
+    ///
+    /// One observable consequence: `members(now:)` below no longer
+    /// returns members in first-seen order (a `Set`'s iteration order is
+    /// unspecified) — no current caller (`LiveAdapters.swift`,
+    /// `CoreInboxProvider.swift`) depends on the order, only membership.
+    private var nodeIDs: Set<UInt32> = []
 
     public init(now: @escaping () -> UInt32 = FireflyClock.nowMillis) {
         clock = CoreClock(now: now)
@@ -210,10 +225,26 @@ public final class CrewStore {
     /// `FireflyModel` — "C types never leave the bridge."
     var raw: UnsafeMutablePointer<ff_crew_t> { context }
 
+    /// Internal-only, for `BridgeCrewStoreTests`'s boundedness
+    /// regression test (PR #268 review, SHOULD-FIX #2): how many ids
+    /// `nodeIDs` currently holds. Never exposed outside `FireflyModel`
+    /// — this is an implementation detail (the id-tracking set), not
+    /// part of the public bridge surface.
+    var trackedIDCount: Int { nodeIDs.count }
+
     private func track(_ nodeID: UInt32) {
-        if ff_crew_find(context, nodeID) != nil, !nodeIDs.contains(nodeID) {
-            nodeIDs.append(nodeID)
-        }
+        guard ff_crew_find(context, nodeID) != nil else { return }
+        // Prune first: drop any previously tracked id the roster no
+        // longer holds (evicted by this or an earlier call — the
+        // bounded-unpaired-LRU eviction, 2026-09-11 S02 amendment, can
+        // silently reclaim ANY unpaired slot, not just the one for
+        // `nodeID`). `ff_crew_find` is O(FF_CREW_MAX), and this set is
+        // never larger than `FF_CREW_MAX` on entry (same invariant this
+        // loop maintains every call), so the sweep is O(FF_CREW_MAX^2)
+        // worst case — a constant (≤ 64 probes), not O(N) in ids ever
+        // seen.
+        nodeIDs = nodeIDs.filter { ff_crew_find(context, $0) != nil }
+        nodeIDs.insert(nodeID)
     }
 
     /// Find-or-create a slot for `nodeID`. Returns `false` only when the
@@ -348,8 +379,9 @@ public final class CrewStore {
         return CrewMember.decode(ptr.pointee, now: now)
     }
 
-    /// Every member this store has ever created a slot for, in
-    /// first-seen order.
+    /// Every member currently occupying a live slot in the roster.
+    /// Unspecified order (`nodeIDs` is a `Set` — see its doc comment);
+    /// no current caller relies on ordering, only membership.
     public func members(now: UInt32) -> [CrewMember] {
         nodeIDs.compactMap { member(nodeID: $0, now: now) }
     }

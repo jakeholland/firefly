@@ -1199,7 +1199,15 @@ static bool shell_pair(shell_t *sh, uint32_t node_id, bool paired)
         uint8_t const slot = (uint8_t)(m - sh->crew.members);
         m->color_idx = slot;
     }
-    ff_crew_set_paired(&sh->crew, node_id, paired);
+    /* Set directly on `m` rather than calling ff_crew_set_paired(&sh->crew,
+     * node_id, paired) — that would re-run crew_find_or_create's linear
+     * scan for a node_id we already hold a valid pointer to (m came from
+     * ff_crew_upsert above, in the roster for the same node_id, so the
+     * second lookup could only ever re-find it, never evict — the
+     * find-or-create path is only taken on a miss). NIT from the PR #268
+     * review: redundant second roster scan, safe to drop since `m` is
+     * still fresh (no intervening crew-mutating call for another id). */
+    m->paired = paired;
 
     /* S12/S04, format v10 — write the persisted paired list back through
      * the existing settings-save seam on every pair/unpair (see

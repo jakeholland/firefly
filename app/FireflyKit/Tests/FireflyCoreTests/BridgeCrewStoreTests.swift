@@ -220,6 +220,32 @@ final class BridgeCrewStoreTests: XCTestCase {
         XCTAssertEqual(store.count, 8)
     }
 
+    // PR #268 review, SHOULD-FIX #2: `nodeIDs` used to be an
+    // `[UInt32]` array, appended to (never pruned) on every `track()`
+    // call — before the S02 eviction amendment this was implicitly
+    // bounded to FF_CREW_MAX (a 9th distinct id was simply rejected, so
+    // `track()` never saw one), but after it `ff_crew_t` churns through
+    // arbitrarily many distinct ids on a busy mesh, so the array grew
+    // unboundedly. This drives 1000 distinct never-paired ids through
+    // `onHeard` (the same call `shell_ev_rx_meta`'s heard-tracking path
+    // makes per inbound packet) and asserts the store's internal
+    // tracking set never exceeds FF_CREW_MAX — not merely "the roster
+    // itself is bounded" (`ff_crew_t` was always bounded; that was never
+    // the bug) but the Swift-side bookkeeping this PR fixes.
+    func testTrackingStaysBoundedAcrossAThousandDistinctHeardNodes() {
+        let store = CrewStore(now: { 0 })
+        for id in UInt32(1)...UInt32(1000) {
+            store.onHeard(nodeID: id, rxTimeMs: 0, direct: false)
+            XCTAssertLessThanOrEqual(store.trackedIDCount, Int(FF_CREW_MAX),
+                "id-tracking set grew past FF_CREW_MAX at node \(id) - nodeIDs regressed to unbounded growth")
+        }
+        XCTAssertLessThanOrEqual(store.trackedIDCount, Int(FF_CREW_MAX))
+        XCTAssertEqual(store.count, Int(FF_CREW_MAX), "the C roster itself stays bounded too, as always")
+        // And the public surface is unaffected: still only currently-live
+        // members, same as before this fix.
+        XCTAssertEqual(store.members(now: 0).count, Int(FF_CREW_MAX))
+    }
+
     // MARK: - Selection.
 
     func testSelectionSelfHealsToFirstPairedMember() {

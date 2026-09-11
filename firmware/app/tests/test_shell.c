@@ -5666,6 +5666,71 @@ static void S24_inbox_1to1_projects_the_members_own_color(void)
     TEST_ASSERT_EQUAL_UINT8(member(KEV_ID)->color_idx, view_conv(KEV_ID)->color_idx);
 }
 
+/* PR #268 review, SHOULD-FIX #1: shell_pair's color_idx fix
+ * (`m - sh->crew.members`, replacing `sh->crew.count - 1`) had no
+ * regression test for the exact scenario it fixes. Once the roster is
+ * full, `count` is pinned at FF_CREW_MAX forever (eviction reuses a
+ * slot, never increments count), so the OLD formula would evaluate to
+ * FF_CREW_MAX-1 (7) for every eviction-driven addition regardless of
+ * which physical slot it actually landed in — a "confidently-wrong
+ * screen" defect. This fills all FF_CREW_MAX slots, unpairs every one
+ * of them (S16_AC5b's own "known, deliberately not trusted" pattern —
+ * occupying a slot without being paired, i.e. an eviction candidate),
+ * gives them DISTINCT last_heard_ms in scrambled (non-slot-index) order
+ * so the LRU victim is a deliberately non-tail, non-zero slot, then
+ * pairs a brand-new 9th id and asserts the new member's color_idx is
+ * its REAL slot — not 7, and not the eviction victim's old id. */
+static void S02_AC10_shell_pair_assigns_color_idx_to_actual_evicted_slot(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+
+    uint32_t const ids[FF_CREW_MAX] = {
+        0x0000E000u, 0x0000E001u, 0x0000E002u, 0x0000E003u,
+        0x0000E004u, 0x0000E005u, 0x0000E006u, 0x0000E007u,
+    };
+    uint32_t const NEWCOMER = 0x0000E008u;
+
+    /* Fill every slot, in id/slot order (a fresh roster simply appends). */
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, ids[i], true));
+    }
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, ff_shell_crew(&H.shell)->count);
+
+    /* Distinct last_heard_ms in an order that deliberately does NOT
+     * match slot order (test_crew.c's AC10d style) — slot 3 (ids[3])
+     * gets the OLDEST timestamp, so it is the unambiguous LRU victim:
+     * neither slot 0 (a naive "ties go to lowest index" guess) nor slot
+     * 7 (the old buggy formula's answer) would catch a regression back
+     * to `count - 1` here. */
+    static uint8_t const heard_order[FF_CREW_MAX] = {3, 6, 1, 7, 0, 5, 2, 4};
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        advance(1000u);
+        inject_rx_meta(ids[heard_order[i]], MC_RX_PATH_DIRECT, true, -50);
+    }
+
+    /* Unpair all eight: still occupying their slots (0..7, unchanged —
+     * unpairing never moves a member), now eviction candidates. */
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, ids[i], false));
+    }
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, ff_shell_crew(&H.shell)->count);
+
+    /* Pairing a genuinely new 9th id evicts ids[3] (slot 3, oldest
+     * last_heard_ms) to make room. */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, NEWCOMER, true));
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, ff_shell_crew(&H.shell)->count); /* count still pinned */
+    TEST_ASSERT_NULL_MESSAGE(member(ids[3]), "ids[3] (slot 3) should have been evicted, not just unpaired");
+
+    ff_crew_member_t const *nc = member(NEWCOMER);
+    TEST_ASSERT_NOT_NULL(nc);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(3, nc->color_idx,
+        "color_idx must be the NEWCOMER's real slot (3), not count-1 (7) or the evicted "
+        "member's old color_idx");
+    TEST_ASSERT_NOT_EQUAL_INT_MESSAGE(FF_CREW_MAX - 1, nc->color_idx,
+        "color_idx regressed to the old (sh->crew.count - 1) formula");
+}
+
 /* =================================================================== */
 /* S26 slice d — ff_notify + the message banner (docs/specs/            */
 /* S26-device-lifecycle.md, "(d) ff_notify + message banner"). AC3: an  */
@@ -11272,6 +11337,7 @@ int main(void)
     RUN_TEST(S24c_AC8_thread_key_opaque_to_other_conversations_churn);
     RUN_TEST(S24c_AC8_thread_header_presence_keys_rendered_bucket);
     RUN_TEST(S24_inbox_1to1_projects_the_members_own_color);
+    RUN_TEST(S02_AC10_shell_pair_assigns_color_idx_to_actual_evicted_slot);
 
     RUN_TEST(S26c_AC1_keep_awake_false_when_nothing_holds);
     RUN_TEST(S26c_AC1_keep_awake_true_while_flare_takeover_pending);
