@@ -29,6 +29,15 @@ public enum SettingsKey: String, Sendable, CaseIterable {
     // bottom section ("Units preference") for the tri-state that
     // replaces it in practice.
     case unitsPreference
+    // Appended for "app: festpack from fest-almanac + Lineup" — two new
+    // cases, same append-only convention as `unitsPreference` above.
+    /// Settings' "Festival data" row override for the fetch URL
+    /// `AlmanacFestpackProvider` reads from; unset (nil) means "use the
+    /// built-in fest-almanac Lost Lands 2026 URL".
+    case festpackSourceURLOverride
+    /// `StarredArtistsStore`'s persisted set — comma-joined, each artist
+    /// name base64-encoded (that file's own doc comment explains why).
+    case starredFestivalArtists
 }
 
 /// Small and typed rather than a raw `UserDefaults` pass-through, so a

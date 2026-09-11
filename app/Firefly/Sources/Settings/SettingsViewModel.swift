@@ -216,6 +216,21 @@ final class SettingsViewModel {
         store.nodeShortNamePreference = value.isEmpty ? nil : value
     }
 
+    /// "app: festpack from fest-almanac + Lineup" — the Settings
+    /// "Festival data" row's URL override, read/written through the
+    /// SAME `store` `AppGraph` hands `AlmanacFestpackProvider` (never a
+    /// second copy that could disagree about which URL is actually in
+    /// effect). `nil`/empty means "use the built-in fest-almanac URL" —
+    /// see `AlmanacFestpackProvider.sourceURL()`.
+    var festpackSourceURLOverride: String? {
+        store.string(.festpackSourceURLOverride)
+    }
+
+    func setFestpackSourceURLOverride(_ value: String?) {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        store.setString((trimmed?.isEmpty ?? true) ? nil : trimmed, .festpackSourceURLOverride)
+    }
+
     func setShareGPSWithNode(_ value: Bool) {
         shareGPSWithNode = value
         store.setBool(value, .locationSharingEnabled)

@@ -29,6 +29,8 @@ struct FireflyApp: App {
     @State private var connect: ConnectViewModel
     @State private var inbox: InboxViewModel
     @State private var radar: RadarViewModel
+    /// "app: festpack from fest-almanac + Lineup".
+    @State private var lineup: LineupViewModel
     /// Shared between the Connect and Settings destinations (see
     /// `SettingsViewModel`'s own comment) so both read the same imported
     /// channel rather than two disconnected copies.
@@ -131,6 +133,7 @@ struct FireflyApp: App {
         #endif
         let radarVM = graph.makeRadarViewModel(haptics: haptics)
         _radar = State(initialValue: radarVM)
+        _lineup = State(initialValue: graph.makeLineupViewModel())
         // M2: the FLARE takeover's own haptic pulse (S10: "3 long,
         // overrides quiet hours") — late-injected for the same reason
         // `makeRadarViewModel(haptics:)` takes it as a parameter rather
@@ -162,6 +165,7 @@ struct FireflyApp: App {
                 client: graph.dependencies.client,
                 inbox: inbox,
                 radar: radar,
+                lineup: lineup,
                 scanner: graph.dependencies.scanner,
                 demoRunner: demoRunner,
                 initialDemoScreen: DemoLaunch.requestedScreen(),

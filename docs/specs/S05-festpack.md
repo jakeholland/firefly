@@ -229,3 +229,45 @@ already taken for unknown keys.
   grouping case proving Friday's night is all 64 of its sets, in
   ascending start order per stage, with none of Saturday's daytime
   lineup leaking in.
+
+- **2026-09-11, `fp_meta_t` — the pack's own provenance (app: festpack
+  from fest-almanac + Lineup).**
+
+  The phone app's Settings "Festival data" row needs to show "pack
+  updated `<meta.updated>` · from fest-almanac", and the Lineup screen's
+  honest-state story benefits from knowing how complete the schedule
+  grid is. Neither was previously exposed by `fp_parse()` at all — the
+  top-level `"meta"` object (`updated`, `sources`, `complete`) was an
+  unknown key, tolerantly skipped like any other unrecognized field.
+
+  Per this coordinator's own instruction ("if a field the app needs
+  isn't exposed by `fp_*` structs, add it to the C parser with a core
+  test — additive, S05 amendment") rather than parsing `meta` a second
+  time in Swift: `fp_pack_t` gained a `fp_meta_t meta` field (`fp_pack.h`)
+  — `present` (was a `"meta"` object there at all), `updated` (ISO date
+  string, verbatim), up to `FP_MAX_META_SOURCES` (8) citation URLs, and
+  the three `complete.{lineup,set_times,map}` strings (`"full"`/
+  `"partial"`/`"none"`/absent) — plus `fp_parse_meta()` in `fp_pack.c`,
+  called from `fp_parse_inner()` for the top-level `"meta"` key.
+
+  Purely additive and tolerant, matching this parser's own posture
+  everywhere else: a pack with no `"meta"` object parses exactly as
+  before (`fp_meta_t.present` stays `false`, every string reads empty),
+  a malformed sub-field is simply treated as absent, and nothing about
+  this addition can ever fail a parse that used to succeed. Extra
+  sources beyond the cap are silently dropped (this is informational
+  citation data, not one of the counted collections this spec's AC4
+  overflow contract covers) rather than `FP_ERR_TOO_BIG`.
+
+  **Regression coverage.** `test_festpack.c` gained
+  `S05_AC1_lost_lands_meta_updated_sources_and_complete_flags` (the real
+  Lost Lands pack's actual `meta` object: `updated` "2026-09-09", 4
+  sources, `complete.lineup`/`complete.set_times` "full",
+  `complete.map` "none") and `S05_review_absent_meta_reads_as_not_present`
+  (`minimal.festpack.json`, which has no `"meta"` key at all, asserting
+  the honest all-empty zero value). The app-side twin,
+  `FestpackParserTests.testLostLandsMetaUpdatedSourcesAndCompleteFlags`/
+  `testMinimalPackWithNoMetaReadsAsNotPresent` (`app/FireflyKit/Tests/
+  FireflyModelTests/Festpack/`), asserts the identical facts through
+  `FestpackParser.parse` — the Swift `Festpack.meta` value, never a
+  second parser.

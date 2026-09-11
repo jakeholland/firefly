@@ -18,6 +18,10 @@ enum Destination: String, CaseIterable, Identifiable {
     case connect = "Connect"
     case radar = "Radar"
     case inbox = "Inbox"
+    // "app: festpack from fest-almanac + Lineup" — appended per this
+    // file's own convention (each slice changes exactly one `switch`
+    // line, never reorders another's).
+    case lineup = "Lineup"
     case settings = "Settings"
 
     var id: String { rawValue }
@@ -27,6 +31,7 @@ enum Destination: String, CaseIterable, Identifiable {
         case .connect: return "antenna.radiowaves.left.and.right"
         case .radar: return "location.north.line"
         case .inbox: return "tray"
+        case .lineup: return "music.mic"
         case .settings: return "slider.horizontal.3"
         }
     }
@@ -46,6 +51,10 @@ struct RootView: View {
     // which would build a second client the moment the destination was
     // shown (`AppGraph`'s header comment).
     let radar: RadarViewModel
+    /// "app: festpack from fest-almanac + Lineup" — same
+    /// process-lifetime-singleton shape as `radar`/`inbox` just above
+    /// (`AppGraph.makeLineupViewModel()`'s own doc comment).
+    let lineup: LineupViewModel
     /// The BLE node picker's scan seam — nil wherever there is no radio
     /// (the stub stack, the iOS Simulator), which the Connect screen
     /// renders as an honestly empty picker.
@@ -137,7 +146,8 @@ struct RootView: View {
         case .radar: RadarView(model: radar, colorblind: settings.colorblindPalette)
         case .inbox: InboxContainerView(model: inbox, demoInitialThread: demoThreadTarget,
                                          colorblind: settings.colorblindPalette)
-        case .settings: SettingsScreen(model: settings, client: client, pairing: pairing,
+        case .lineup: LineupScreen(model: lineup)
+        case .settings: SettingsScreen(model: settings, client: client, pairing: pairing, lineup: lineup,
                                         autoOpenDiagnostics: initialDemoScreen == "diagnostics")
         }
     }
@@ -203,6 +213,8 @@ struct RootView: View {
             demoRunner.triggerInboundRally()
             try? await Task.sleep(nanoseconds: 400_000_000)
             selection = .inbox
+        case "lineup":
+            selection = .lineup
         case "settings", "diagnostics":
             selection = .settings
         default:
