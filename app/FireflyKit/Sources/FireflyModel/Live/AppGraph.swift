@@ -732,4 +732,21 @@ public final class AppGraph {
         model.observe()
         return model
     }
+
+    /// Map tab slice: crew from `core.crew` (the SAME roster Radar
+    /// reads — never a second `CrewStore`), the phone's own fix/heading
+    /// from `dependencies`, and a `MapFestpackSource`. `DemoMapFestpackSource`
+    /// is a deliberate placeholder here, NOT a demo-mode gate — the
+    /// parallel festpack-foundation slice's real `FestpackProviding`
+    /// adapter is a one-line swap of this one argument once it lands
+    /// (`Festpack.swift`'s own header comment), so every build (demo or
+    /// live) shows Firefly Fields until that lands, same as this app's
+    /// other "known gap, not silently faked" calls elsewhere.
+    public func makeMapViewModel() -> MapViewModel {
+        let model = MapViewModel(crew: core.crew, location: dependencies.location, heading: dependencies.heading,
+                                  festpackSource: DemoMapFestpackSource(), connectivity: NetworkConnectivityMonitor(),
+                                  imperial: { [dependencies] in dependencies.store.resolvedImperial() })
+        model.observe()
+        return model
+    }
 }

@@ -31,6 +31,11 @@ struct FireflyApp: App {
     @State private var radar: RadarViewModel
     /// "app: festpack from fest-almanac + Lineup".
     @State private var lineup: LineupViewModel
+    /// Map tab slice: `AppGraph.makeMapViewModel()`'s one view model —
+    /// built once here, same "one view model per destination, built by
+    /// the graph, never re-created on redraw" rule `radar`/`inbox`
+    /// above already follow.
+    @State private var map: MapViewModel
     /// Shared between the Connect and Settings destinations (see
     /// `SettingsViewModel`'s own comment) so both read the same imported
     /// channel rather than two disconnected copies.
@@ -134,6 +139,7 @@ struct FireflyApp: App {
         let radarVM = graph.makeRadarViewModel(haptics: haptics)
         _radar = State(initialValue: radarVM)
         _lineup = State(initialValue: graph.makeLineupViewModel())
+        _map = State(initialValue: graph.makeMapViewModel())
         // M2: the FLARE takeover's own haptic pulse (S10: "3 long,
         // overrides quiet hours") — late-injected for the same reason
         // `makeRadarViewModel(haptics:)` takes it as a parameter rather
@@ -170,7 +176,16 @@ struct FireflyApp: App {
                 demoRunner: demoRunner,
                 initialDemoScreen: DemoLaunch.requestedScreen(),
                 flareTakeover: graph.flareTakeover,
-                pairing: graph.crewPairing
+                pairing: graph.crewPairing,
+                // Map tab slice's own hunk — one view model, built once
+                // by the graph like every other destination here
+                // (`AppGraph.makeMapViewModel()`'s own doc comment), and
+                // two thin action closures over `graph.core.find`/tab
+                // selection rather than plumbing `graph` itself into
+                // `RootView`.
+                map: map,
+                mapFind: { nodeID in graph.core.find.start(targetNodeID: nodeID, now: FireflyClock.nowMillis()) },
+                mapMessage: { _ in }
             )
             .preferredColorScheme(.dark)
             // M2: `AppGraph.setForegrounded(_:)` is the one thing that
