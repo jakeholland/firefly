@@ -120,7 +120,7 @@ it exists", and last-wins ordering is what lets your local values beat
 the committed defaults. Do not move that include.
 
 With it in place, `xcodebuild ... build` and `⌘R` both produce a signed
-app with no extra flags, and the bundle id is `com.jakeholland.firefly`
+app with no extra flags, and the bundle id is `com.jakeholland.Firefly`
 either way. A signed Mac build also gives the app a STABLE code identity,
 which is what makes macOS's one-time Bluetooth grant survive a rebuild
 instead of re-prompting every time.
@@ -217,7 +217,7 @@ tests skip cleanly — that is what CI exercises (never with a board or
 the env var; see below).
 
 **The one-time Bluetooth Allow.** The first signed run puts up macOS's
-Bluetooth permission dialog for `com.jakeholland.firefly`. Click
+Bluetooth permission dialog for `com.jakeholland.Firefly`. Click
 **Allow**. Until somebody does, the run does not fail — it HANGS, and
 `xcodebuild` eventually reports:
 
@@ -233,10 +233,20 @@ log show --last 5m --predicate 'subsystem == "com.apple.TCC"' \
 ```
 
 A line naming `kTCCServiceBluetoothAlways` and
-`Sub:{com.jakeholland.firefly}` means the dialog is waiting on you.
+`Sub:{com.jakeholland.Firefly}` means the dialog is waiting on you.
 Never reach for `tccutil` — the grant is the user's to give, and a
 signed build (see "Signed local runs") is what makes it stick across
 rebuilds instead of re-prompting.
+
+**This grant is per bundle id.** Because the app's bundle id changed
+from `com.jakeholland.firefly` to `com.jakeholland.Firefly`, macOS sees
+it as a different app for TCC purposes — the first signed run after
+that change puts up the Bluetooth dialog **one more time**, on an
+otherwise-already-granted machine. That is expected, not a regression.
+On an iPhone the effect is more visible: iOS also keys app identity by
+bundle id, so the new build installs **beside** the old one as a
+separate app rather than replacing it. Delete the old `com.jakeholland.firefly`
+copy by hand once the new one is confirmed working.
 
 The app itself does NOT scan on launch, deliberately: building a
 `CBCentralManager` is what triggers that dialog, and showing the Connect

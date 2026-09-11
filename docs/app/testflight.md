@@ -18,10 +18,10 @@ under team **SU4T96VBX6**.
 - Platform: **iOS**
 - Name: whatever you want the TestFlight listing to show
 - Primary language: your choice
-- Bundle ID: **`com.jakeholland.firefly`**
+- Bundle ID: **`com.jakeholland.Firefly`**
   — if it is not offered in the picker, register it first under
   **Certificates, Identifiers & Profiles -> Identifiers -> "+"**
-  (App IDs, explicit, `com.jakeholland.firefly`), then come back.
+  (App IDs, explicit, `com.jakeholland.Firefly`), then come back.
 - SKU: your choice (not user-visible)
 
 ### 2. Create an App Store Connect API key

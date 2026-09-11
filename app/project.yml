@@ -96,7 +96,7 @@ targets:
     settings:
       base:
         PRODUCT_NAME: Firefly
-        PRODUCT_BUNDLE_IDENTIFIER: com.jakeholland.firefly
+        PRODUCT_BUNDLE_IDENTIFIER: com.jakeholland.Firefly
         INFOPLIST_FILE: Firefly/Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Firefly/Resources/Firefly.entitlements
         GENERATE_INFOPLIST_FILE: NO

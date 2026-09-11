@@ -92,7 +92,7 @@ APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$APP_DIR/.." && pwd)"
 
 TEAM_ID="SU4T96VBX6"
-BUNDLE_ID="com.jakeholland.firefly"
+BUNDLE_ID="com.jakeholland.Firefly"
 SCHEME="Firefly"
 PROJECT="$APP_DIR/Firefly.xcodeproj"
 PROJECT_REL="app/Firefly.xcodeproj"

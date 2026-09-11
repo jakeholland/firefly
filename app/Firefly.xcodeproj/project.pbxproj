@@ -705,7 +705,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.jakeholland.firefly;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jakeholland.Firefly;
 				PRODUCT_NAME = Firefly;
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
@@ -808,7 +808,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.jakeholland.firefly;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jakeholland.Firefly;
 				PRODUCT_NAME = Firefly;
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";

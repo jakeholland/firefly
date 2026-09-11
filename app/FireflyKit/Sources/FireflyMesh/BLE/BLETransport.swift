@@ -803,7 +803,7 @@ public actor BLETransport: MeshTransport, NodeScanning {
     /// macOS is the honest "nothing extra requested" default.
     private static var centralManagerOptions: [String: Any] {
         #if os(iOS)
-        [CBCentralManagerOptionRestoreIdentifierKey: "com.jakeholland.firefly.ble-central"]
+        [CBCentralManagerOptionRestoreIdentifierKey: "com.jakeholland.Firefly.ble-central"]
         #else
         [:]
         #endif
