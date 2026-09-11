@@ -753,6 +753,20 @@ public final class RadarViewModel {
 
     // MARK: - Display strings (computed HERE, not in the view — MVVM convention #5)
 
+    /// Turns a puck-formatted age (`CrewStore.formatAge`, which wraps
+    /// the firmware's own `ff_fmt_age` — under a minute reads "now",
+    /// e.g. `ff_crew.c`) into the "X ago" phrase these display strings
+    /// build sentences out of. "now ago" is not English (M1 review
+    /// follow-up, #267: "their puck GPS, now ago" / "heard now ago" in
+    /// the M1 screenshots) — the honest, natural reading of "now" glued
+    /// to "ago" is "just now", so that substitution happens in exactly
+    /// this one place rather than at each of this file's several call
+    /// sites. Every other age ("12 MIN", "2 HR") already reads fine
+    /// suffixed with " ago" and passes through unchanged.
+    static func agoPhrase(for ageText: String) -> String {
+        ageText == "now" ? "just now" : "\(ageText) ago"
+    }
+
     /// The selection's chip text for whichever mode is active. Every
     /// string a UI is allowed to show, in one place, so it is testable.
     public var chipText: String {
@@ -798,14 +812,14 @@ public final class RadarViewModel {
             case .lost, .never: return "Waiting for their first GPS fix"
             }
         case .signal:
-            var line = "heard \(snapshot.signalAgeText) ago"
+            var line = "heard \(Self.agoPhrase(for: snapshot.signalAgeText))"
             if snapshot.arrowValid {
                 // The ghost sub-case (S29): a real, if very old, fix
                 // exists for this member alongside the live signal
                 // reading — "last known" is a DIFFERENT fact from
                 // "heard", and both are shown.
                 let compass = snapshot.bearingValid ? " \(CompassPoint.name(forBearingDegrees: snapshot.bearingDegrees))" : ""
-                line += "\nLAST KNOWN \(snapshot.ageText) ago, \(displayDistanceText)\(compass)"
+                line += "\nLAST KNOWN \(Self.agoPhrase(for: snapshot.ageText)), \(displayDistanceText)\(compass)"
             }
             return line
         default: return nil
@@ -894,23 +908,23 @@ public final class RadarViewModel {
             // what's actually known (S06: RADAR_NOFIX still carries a
             // true age_str for the selection's last fix).
             guard !snapshot.ageText.isEmpty else { return nil }
-            return "\(who)'s last known position: their puck GPS, \(snapshot.ageText) ago "
+            return "\(who)'s last known position: their puck GPS, \(Self.agoPhrase(for: snapshot.ageText)) "
                 + "(your distance unknown — no fix of your own)"
         case .place:
             return "\(who)'s position: fixed position, asserted (no age given)"
         case .noHdg, .live, .stale:
             guard !snapshot.ageText.isEmpty else { return nil }
-            return "\(who)'s position: their puck GPS, \(snapshot.ageText) ago"
+            return "\(who)'s position: their puck GPS, \(Self.agoPhrase(for: snapshot.ageText))"
         case .lost:
             guard !snapshot.ageText.isEmpty else { return nil }
-            return "\(who)'s position: their puck GPS, last seen \(snapshot.ageText) ago"
+            return "\(who)'s position: their puck GPS, last seen \(Self.agoPhrase(for: snapshot.ageText))"
         case .close:
             guard !snapshot.ageText.isEmpty else { return nil }
-            return "\(who)'s position: their puck GPS, \(snapshot.ageText) ago"
+            return "\(who)'s position: their puck GPS, \(Self.agoPhrase(for: snapshot.ageText))"
         case .signal:
             guard snapshot.arrowValid, snapshot.bearingValid else { return nil }
             let compass = CompassPoint.name(forBearingDegrees: snapshot.bearingDegrees)
-            return "\(who)'s last known position: their puck GPS, \(snapshot.ageText) ago, \(compass)"
+            return "\(who)'s last known position: their puck GPS, \(Self.agoPhrase(for: snapshot.ageText)), \(compass)"
         }
     }
 
@@ -921,7 +935,7 @@ public final class RadarViewModel {
         let who = snapshot.name.isEmpty ? "they" : snapshot.name
         let path = snapshot.signalViaRelay ? "via relay" : "direct"
         let tierPart = snapshot.signalTier != .none ? "\(snapshot.signalTier.label.lowercased()) signal, " : ""
-        return "\(who)'s radio: \(tierPart)\(path), heard \(snapshot.signalAgeText) ago"
+        return "\(who)'s radio: \(tierPart)\(path), heard \(Self.agoPhrase(for: snapshot.signalAgeText))"
     }
 
     /// The phone's OWN line: "your position: phone GPS ±4 m; heading:

@@ -83,6 +83,102 @@ public final class EventHub<Element>: @unchecked Sendable {
     }
 }
 
+/// Like `EventHub`, but remembers its most recently published value and
+/// replays it to every NEW subscriber, BEFORE any future values — the
+/// "current value" semantic `MeshtasticClientProtocol.linkState()` needs
+/// (M1 review follow-up, #267): a Thread/Diagnostics screen opened AFTER
+/// the client already reached `.ready` subscribed to a plain `EventHub`
+/// and saw nothing until the NEXT transition, so it sat on its own
+/// `.disconnected` default and rendered a stale "NODE NOT CONNECTED" /
+/// "NOT CONNECTED" banner for a connection that was, in fact, up.
+///
+/// This is a deliberate, separate type — not a change to `EventHub`
+/// itself. `EventHub`'s multicast-only, no-replay contract is pinned by
+/// `EventHubTests.testALateSubscriberMissesEarlierValues` and relied on
+/// by every OTHER hub (`nodeUpdates`, `deliveryUpdates`,
+/// `incomingTexts`...), where replaying an old node/packet to a late
+/// subscriber would be exactly the kind of fabricated freshness this
+/// codebase refuses elsewhere. Link state is different: it has one true
+/// CURRENT value once the client starts connecting, so a late subscriber
+/// asking "is the link up right now" deserves an honest answer
+/// immediately, not silence until the next edge.
+///
+/// There is deliberately no "initial value" constructor parameter: only
+/// a value that was actually `yield`ed is ever replayed. A subscriber
+/// that arrives before the first `yield` (every existing handshake test
+/// subscribes before calling `connect()`) sees exactly what a plain
+/// `EventHub` would show it — nothing until the first real transition —
+/// so this type never invents a starting state the hub was never told
+/// to publish.
+public final class CurrentValueEventHub<Element>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuations: [Int: AsyncStream<Element>.Continuation] = [:]
+    private var nextID = 0
+    private var finished = false
+    private var current: Element?
+
+    public init() {}
+
+    /// A fresh, independent stream for one subscriber — immediately
+    /// replayed the last `yield`ed value, if any, then every value
+    /// published from this point on. Same `.bufferingNewest(4096)`
+    /// back-pressure rule as `EventHub.subscribe()`.
+    public func subscribe() -> AsyncStream<Element> {
+        lock.lock()
+        let id = nextID
+        nextID += 1
+        let alreadyFinished = finished
+        let replay = current
+        lock.unlock()
+
+        return AsyncStream(bufferingPolicy: .bufferingNewest(4096)) { continuation in
+            if let replay {
+                continuation.yield(replay)
+            }
+            if alreadyFinished {
+                continuation.finish()
+                return
+            }
+            lock.lock()
+            continuations[id] = continuation
+            lock.unlock()
+            continuation.onTermination = { [weak self] _ in
+                self?.remove(id)
+            }
+        }
+    }
+
+    /// Publish one element to every subscriber that exists right now,
+    /// AND remember it as the current value future subscribers replay.
+    public func yield(_ element: Element) {
+        lock.lock()
+        current = element
+        let subs = Array(continuations.values)
+        lock.unlock()
+        for continuation in subs { continuation.yield(element) }
+    }
+
+    /// Close every current and future subscriber's stream. Idempotent.
+    /// A subscriber arriving after `finish()` still gets replayed the
+    /// last current value (if any) before its stream closes — "what was
+    /// the link state" stays answerable even once the hub itself is done.
+    public func finish() {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        let subs = Array(continuations.values)
+        continuations.removeAll()
+        lock.unlock()
+        for continuation in subs { continuation.finish() }
+    }
+
+    private func remove(_ id: Int) {
+        lock.lock()
+        continuations.removeValue(forKey: id)
+        lock.unlock()
+    }
+}
+
 /// A one-value, lock-protected box — the smallest thing that lets an
 /// `actor` publish a single piece of its own state to a `nonisolated`
 /// synchronous reader (`MeshtasticClient.connectedNodeNum`). Not a

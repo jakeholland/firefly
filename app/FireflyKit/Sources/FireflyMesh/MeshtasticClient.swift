@@ -49,7 +49,9 @@ public enum MeshtasticClientError: Error, Equatable, Sendable {
 /// `@MainActor` the C core bridge uses.
 public actor MeshtasticClient: MeshtasticClientProtocol {
     private let transport: MeshTransport
-    private let linkHub = EventHub<LinkState>()
+    // `CurrentValueEventHub` (M1 review follow-up, #267) — see
+    // `CurrentValueEventHub`'s own doc comment.
+    private let linkHub = CurrentValueEventHub<LinkState>()
     private let nodeHub = EventHub<MeshNodeSnapshot>()
     private let deliveryHub = EventHub<DeliveryEvent>()
     private let incomingTextHub = EventHub<IncomingText>()

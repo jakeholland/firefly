@@ -41,7 +41,12 @@ public enum DemoAckOutcome: Sendable, Equatable {
 /// `injectIncomingPrivate` — `onSendPrivate` is only the hook that
 /// tells it a PING just went out.
 public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Sendable {
-    private let linkHub = EventHub<LinkState>()
+    // `CurrentValueEventHub` (M1 review follow-up, #267) — see
+    // `MeshtasticClientProtocol.swift`'s `StubMeshtasticClient` and
+    // `CurrentValueEventHub`'s own doc comment. Without this, navigating
+    // to Thread/Diagnostics after demo `connect()` already reached
+    // `.ready` showed a stale "NODE NOT CONNECTED" banner.
+    private let linkHub = CurrentValueEventHub<LinkState>()
     private let nodeHub = EventHub<MeshNodeSnapshot>()
     private let deliveryHub = EventHub<DeliveryEvent>()
     private let incomingTextHub = EventHub<IncomingText>()

@@ -61,3 +61,65 @@ final class EventHubTests: XCTestCase {
         XCTAssertEqual(seen.last, 4100)
     }
 }
+
+/// `CurrentValueEventHub` — `linkState()`'s current-value fix (M1 review
+/// follow-up, #267): unlike plain `EventHub`, a subscriber that arrives
+/// AFTER a value was published still sees it, immediately, as the first
+/// element on its own stream.
+final class CurrentValueEventHubTests: XCTestCase {
+
+    /// The exact scenario the bug report named: something (the real
+    /// client, or the demo client) already reached `.ready` before
+    /// Thread/Diagnostics ever subscribed. The late subscriber's first
+    /// value must be `.ready` — not silence, and not the type's own
+    /// construction-time default.
+    func testLateSubscriberAfterReadySeesReadyFirst() async {
+        let hub = CurrentValueEventHub<LinkState>()
+        hub.yield(.connecting)
+        hub.yield(.handshaking)
+        hub.yield(.ready)
+
+        let late = hub.subscribe()
+        hub.finish()
+
+        var seen: [LinkState] = []
+        for await v in late { seen.append(v) }
+        XCTAssertEqual(seen.first, .ready)
+        XCTAssertEqual(seen, [.ready])
+    }
+
+    /// A subscriber that arrives before anything was ever published sees
+    /// nothing until the first real value — exactly a plain `EventHub`'s
+    /// behavior. This type must never invent a starting value the hub
+    /// was never told to publish (every existing handshake test
+    /// subscribes before calling `connect()` and asserts the exact
+    /// sequence that follows, with no extra leading element).
+    func testSubscriberBeforeAnyYieldSeesNothingUntilFirstValue() async {
+        let hub = CurrentValueEventHub<LinkState>()
+        let early = hub.subscribe()
+        hub.yield(.connecting)
+        hub.finish()
+
+        var seen: [LinkState] = []
+        for await v in early { seen.append(v) }
+        XCTAssertEqual(seen, [.connecting])
+    }
+
+    /// Multicast still holds: an EARLIER subscriber is unaffected by a
+    /// later one arriving and being replayed its own current value.
+    func testEarlierSubscriberUnaffectedByALateReplayedSubscriber() async {
+        let hub = CurrentValueEventHub<LinkState>()
+        let early = hub.subscribe()
+        hub.yield(.ready)
+        let late = hub.subscribe()
+        hub.finish()
+
+        var earlySeen: [LinkState] = []
+        for await v in early { earlySeen.append(v) }
+        var lateSeen: [LinkState] = []
+        for await v in late { lateSeen.append(v) }
+
+        XCTAssertEqual(earlySeen, [.ready])
+        XCTAssertEqual(lateSeen, [.ready])
+    }
+}

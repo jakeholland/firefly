@@ -61,14 +61,18 @@ struct RootView: View {
     @State private var selection: Destination = .connect
 
     var body: some View {
-        content
-            .overlay(alignment: .top) {
-                if demoRunner != nil {
-                    DemoBadge()
-                        .padding(.top, 4)
-                }
+        // A full-width strip stacked ABOVE `content`, not an overlay on
+        // top of it (see `DemoBadge`'s own header comment): reserving
+        // real layout space here pushes every screen's own nav bar down
+        // instead of racing it for the same row, so the badge can never
+        // collide with a title again, on any screen.
+        VStack(spacing: 0) {
+            if demoRunner != nil {
+                DemoBadge()
             }
-            .task { await runInitialDemoScreen() }
+            content
+        }
+        .task { await runInitialDemoScreen() }
     }
 
     @ViewBuilder

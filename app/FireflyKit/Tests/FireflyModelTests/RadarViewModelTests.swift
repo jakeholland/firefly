@@ -131,6 +131,22 @@ final class RadarViewModelTests: XCTestCase {
         XCTAssertEqual(model.snapshot.dots.count, 4)
     }
 
+    /// M1 review follow-up (#267): `ageText`/`signalAgeText` come straight
+    /// off `ff_fmt_age` (`CrewStore.formatAge`), which reads "now" — not
+    /// "0 SEC" — for anything under a minute. Gluing that to this file's
+    /// own " ago" suffix produced "now ago" in the M1 screenshots
+    /// ("their puck GPS, now ago"). "now" must read as "just now" instead,
+    /// everywhere this file builds an age sentence — every other age
+    /// ("8 SEC", "4 MIN") is untouched by the same rule (asserted above
+    /// and elsewhere in this file).
+    func testLiveWithAFreshAgeReadsJustNowNotNowAgo() {
+        let s = snapshot(mode: .live, arrowDegrees: 42, arrowValid: true, name: "DANA",
+                          distanceText: "142 m", ageText: "now")
+        let (model, _, _) = makeModel(snapshot: s)
+        model.observe(); defer { model.stopObserving() }
+        XCTAssertEqual(model.theirPositionLine, "DANA's position: their puck GPS, just now")
+    }
+
     // MARK: - radar_stale.json
 
     func testStaleShowsLastSeenChip() {
@@ -325,6 +341,17 @@ final class RadarViewModelTests: XCTestCase {
         XCTAssertEqual(model.theirPositionLine,
                        "DANA's last known position: their puck GPS, 42 MIN ago, SSW")
         XCTAssertEqual(model.theirSignalLine, "DANA's radio: good signal, direct, heard 3 MIN ago")
+    }
+
+    /// The other half of #267's "now ago" bug: `signalAgeText == "now"`
+    /// on the radio evidence line ("heard now ago" in the M1 screenshots).
+    func testSignalStrongWithAFreshSignalAgeReadsJustNow() {
+        let s = snapshot(mode: .signal, arrowValid: false, name: "Taylor", trend: 0,
+                          signalTier: .strong, signalHeard: true, signalViaRelay: false, signalAgeText: "now")
+        let (model, _, _) = makeModel(snapshot: s)
+        model.observe(); defer { model.stopObserving() }
+        XCTAssertEqual(model.subheadline, "heard just now")
+        XCTAssertEqual(model.theirSignalLine, "Taylor's radio: strong signal, direct, heard just now")
     }
 
     // MARK: - Compass point (wraps ff_geo_compass_point directly — never reimplemented)
