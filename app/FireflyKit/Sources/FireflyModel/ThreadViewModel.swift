@@ -269,7 +269,7 @@ public final class ThreadViewModel {
     public var flareAvailable: Bool { flareSender != nil }
     /// The honest label the view shows next to a disabled FLARE
     /// control (BLOCKING review item 2).
-    public static let flareUnavailableLabel = "Flare needs the mesh client"
+    public static let flareUnavailableLabel = "Flare needs a connected radio"
 
     /// M2: whether RALLY is usable at all — the seam has to exist
     /// (same `flareSender`, S04's whole portnum-269 send path); it does
@@ -278,7 +278,7 @@ public final class ThreadViewModel {
     /// control — the fix can arrive between the button rendering and the
     /// tap landing, and disabling the button would just be stale.
     public var rallyAvailable: Bool { flareSender != nil }
-    public static let rallyUnavailableLabel = "Rally needs the mesh client"
+    public static let rallyUnavailableLabel = "Rally needs a connected radio"
 
     /// Appends `work` to this thread's single send chain and returns
     /// the `Task` representing "my turn, after everyone chained before

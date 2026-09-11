@@ -123,8 +123,8 @@ final class ChannelImportViewModel {
             .filter(\.missingExplicitPositionPrecision)
             .map { settings in
                 let name = settings.name.isEmpty ? "(default)" : settings.name
-                return "\(name): no position-precision limit was in this link — a node that " +
-                       "later sends this channel treats that as FULL precision, exact coordinates."
+                return "\(name): this link sets no position-precision limit — a node using this " +
+                       "channel will share its exact coordinates, full precision."
             }
     }
 
@@ -189,12 +189,12 @@ final class ChannelImportViewModel {
         guard let writeError = error as? AdminWriteError else { return String(describing: error) }
         switch writeError {
         case .notConnected: return "Not connected to a node."
-        case .encodingFailed: return "Could not build the admin message."
+        case .encodingFailed: return "Couldn't prepare that change to send."
         case .timeout: return "The node did not answer in time — it may still be rebooting."
         case .readBackMismatch(let detail): return "The node did not confirm the change: \(detail)"
-        case .regionUnset: return "UNSET is not a region to apply — pick one first."
+        case .regionUnset: return "Pick a region before applying — UNSET can't be sent."
         case .partialApplyFailed(let step, let underlying):
-            return "Failed sending \(step): \(underlying). The node may be partially configured — " +
+            return "Couldn't send \(step): \(underlying). The node may be partially set up — " +
                    "reconnect and check its channels before trying again."
         }
     }
@@ -228,7 +228,7 @@ struct ChannelApplySummary {
                 precision = "precision \(entry.positionPrecisionBits) bits"
             } else {
                 precision = "no precision limit in this link — will write the SAFE default " +
-                            "(\(entry.positionPrecisionBits), don't share)"
+                            "(\(entry.positionPrecisionBits) bits), which won't share an exact location"
             }
             return "\(entry.name) (index \(entry.index), \(role)) — \(precision)"
         }

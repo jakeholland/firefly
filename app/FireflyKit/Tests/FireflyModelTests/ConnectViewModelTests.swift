@@ -47,7 +47,7 @@ final class ConnectViewModelTests: XCTestCase {
     func testHandshakingIsNotReportedAsConnected() {
         let vm = ConnectViewModel(client: StubMeshtasticClient())
         vm.apply(.handshaking)
-        XCTAssertEqual(vm.statusLabel, "HANDSHAKING")
+        XCTAssertEqual(vm.statusLabel, "CONNECTING")
         vm.apply(.ready)
         XCTAssertEqual(vm.statusLabel, "CONNECTED")
     }
@@ -293,7 +293,7 @@ final class ConnectViewModelTests: XCTestCase {
             ({ vm in
                 vm.noteSelectedPeripheral(name: "Meshtastic_e7d4", rssiDbm: nil)
                 vm.apply(.handshaking)
-            }, "HANDSHAKING · Meshtastic_e7d4"),
+            }, "CONNECTING · Meshtastic_e7d4"),
             ({ vm in vm.apply(.reconnecting(attempt: 2)) }, "RECONNECTING (attempt 2)"),
             ({ vm in vm.apply(.failed("timeout")) }, "FAILED"),
         ]

@@ -21,7 +21,7 @@ struct DiagnosticsScreen: View {
                 row(label: "Firmware version", value: model.firmwareVersion, isLive: false)
 
                 Text("Nothing here is inferred. Every value above either came from the node " +
-                     "directly (link state) or is UNKNOWN because the client does not have it yet.")
+                     "directly (link state) or is UNKNOWN because the app doesn't have it yet.")
                     .font(.caption)
                     .foregroundStyle(Color.ffMuted)
                     .padding(.top, 12)
@@ -39,7 +39,7 @@ struct DiagnosticsScreen: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
                     .foregroundStyle(Color.ffMuted)
-                Text(isLive ? "source: connected client" : "source: not available from MeshtasticClientProtocol yet")
+                Text(isLive ? "source: connected radio" : "source: not available yet")
                     .font(.caption2)
                     .foregroundStyle(Color.ffMuted.opacity(0.7))
             }

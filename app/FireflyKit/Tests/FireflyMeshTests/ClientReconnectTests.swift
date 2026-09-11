@@ -31,6 +31,14 @@ import XCTest
 /// itself (`testHandshakeRetryDelayDoublesAndCaps`/
 /// `testHandshakeRetryDelayWorksAtSubSecondPrecision`, below) is
 /// untouched by this and keeps pinning the real durations.
+///
+/// ADDENDUM, 2026-09-11: this clock injection alone did not fully close
+/// the flake — `testHandshakeFailsHonestlyOnceEveryBoundedRetryIsSpent`
+/// still failed twice more on GitHub's macOS runner with the identical
+/// message. The remaining wall-clock dependency was this file's own
+/// `waitForSentCount(_:on:)` helper (see its own doc comment, below) —
+/// a polling wait, not a real product bug. Fixed alongside
+/// `LoopbackTransport.waitForSentCount(_:)`.
 private struct ImmediateHandshakeRetryClock: HandshakeRetryClock {
     func sleep(for duration: Duration) async throws {
         // A real (tiny) suspension, not a busy-loop: lets the actor's
@@ -84,21 +92,85 @@ final class ClientReconnectTests: XCTestCase {
 
     private struct TestTimeout: Error {}
 
-    // 200 * 5ms = 1s worst-case ceiling — the package-wide "no test may
-    // sleep more than ~1s total" rule (see `ImmediateHandshakeRetryClock`'s
-    // own doc comment). Every `MeshtasticClient` this file constructs now
-    // injects that clock, so in a genuinely passing run this loop resolves
-    // in a handful of 5ms polls; this ceiling only bounds the FAILURE
-    // case, and 1s is plenty to catch a real hang without letting a
-    // loaded runner's contention alone stretch it out to CI-timeout-scale
-    // like the un-injected retry backoff used to (CI run 34606690299).
-    private func waitForSentCount(_ n: Int, on transport: LoopbackTransport, file: StaticString = #filePath, line: UInt = #line) async throws {
-        for _ in 0..<200 {
-            if transport.sentMessages.count >= n { return }
-            try await Task.sleep(for: .milliseconds(5))
+    /// Root-caused 2026-09-11 against CI run 34606690299's SECOND
+    /// occurrence (`testHandshakeFailsHonestlyOnceEveryBoundedRetryIsSpent`
+    /// timed out "waiting for 3 sent message(s); saw 2" — the SAME
+    /// symptom the `ImmediateHandshakeRetryClock` fix above was supposed
+    /// to have closed): that fix only injected the RETRY loop's own
+    /// between-attempt backoff. This helper used to notice a new
+    /// `sentMessages` count by re-checking it on a fixed timer (200 *
+    /// 5ms = 1s worst case) — real, if small, wall-clock time between an
+    /// actual send and the test noticing it, that a loaded runner's
+    /// cooperative-thread-pool contention can stretch out well past a
+    /// single poll's own nominal interval. `MeshtasticClient
+    /// .requestConfig(nonce:timeout:)`'s per-phase completion race still
+    /// waits out a REAL `configPhaseTimeout` of its own (by design — it
+    /// stands in for a real node's boot time), so that polling gap ate
+    /// directly into it: `completeHandshake()`'s INITIAL handshake (this
+    /// test's own `configPhaseTimeout` is a deliberately tiny 150ms, to
+    /// keep the deliberate double-timeout under test fast) could time
+    /// out for real before the test ever got a chance to inject its
+    /// reply, well before this file's own retry-loop logic was even
+    /// reached. `LoopbackTransport.waitForSentCount(_:)` (added
+    /// alongside this fix — see its own doc comment) resolves directly
+    /// from the transport the instant the threshold is met, no interval
+    /// to stretch; the `.seconds(10)` watchdog here (same order of
+    /// magnitude as `waitForCollector`'s own, below) only bounds the
+    /// FAILURE case — a genuinely passing run never waits on it.
+    ///
+    /// PR #286 review, BLOCKING 3: this used to race the wait against
+    /// the timeout inside a single `withTaskGroup`, then `cancelAll()`
+    /// the loser — but structured concurrency guarantees `withTaskGroup`
+    /// does not RETURN until every child task has actually finished
+    /// running, and cancelling `transport.waitForSentCount(n)`'s child
+    /// task only flipped `Task.isCancelled`; it never unblocked the
+    /// `CheckedContinuation` that task was suspended on (that transport
+    /// had no cancellation handling of its own). So on the one run this
+    /// watchdog exists to catch — the threshold genuinely never
+    /// arriving — `group.next()` returned the timeout's `false` right on
+    /// schedule, but the *enclosing* `withTaskGroup` call, and therefore
+    /// this whole test, hung forever waiting for the orphaned loser to
+    /// finish, which it structurally never would. Fixed two ways, same
+    /// as this file's own `waitForCollector` below already did it
+    /// correctly: (1) `LoopbackTransport.waitForSentCount(_:)` is now
+    /// cancellation-safe (`withTaskCancellationHandler`, see its own doc
+    /// comment) — cancelling it actually resumes the continuation by
+    /// throwing `CancellationError`, instead of leaving it parked
+    /// forever; (2) the race is now two independent, UNSTRUCTURED
+    /// `Task`s rather than one `withTaskGroup` — awaiting only
+    /// `waiterTask.value` (not "every child") is what lets this actually
+    /// return within `timeout` even in the failure case, since an
+    /// unstructured `Task` this method never awaits (the watchdog) is
+    /// free to keep running, or finish, independently.
+    private func waitForSentCount(
+        _ n: Int, on transport: LoopbackTransport, timeout: Duration = .seconds(10),
+        file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        do {
+            try await raceForSentCount(n, on: transport, timeout: timeout)
+        } catch {
+            XCTFail("timed out waiting for \(n) sent message(s); saw \(transport.sentMessages.count)", file: file, line: line)
+            throw TestTimeout()
         }
-        XCTFail("timed out waiting for \(n) sent message(s); saw \(transport.sentMessages.count)", file: file, line: line)
-        throw TestTimeout()
+    }
+
+    /// The race itself, factored out of `waitForSentCount(_:on:timeout:)`
+    /// above so `testWaitForSentCountFailsFastWhenTheCountNeverArrives`
+    /// (below) can drive and time the FAILURE path directly, without
+    /// that method's own `XCTFail` making a deliberately-induced timeout
+    /// register as a (misleading) failure of the test that induced it.
+    /// Two independent, unstructured `Task`s, not one `withTaskGroup` —
+    /// see `waitForSentCount`'s own doc comment for why that distinction
+    /// is exactly what makes this return within `timeout` even when the
+    /// count never arrives, instead of hanging forever.
+    private func raceForSentCount(_ n: Int, on transport: LoopbackTransport, timeout: Duration) async throws {
+        let waiterTask = Task { try await transport.waitForSentCount(n) }
+        let watchdog = Task {
+            try? await Task.sleep(for: timeout)
+            waiterTask.cancel()
+        }
+        defer { watchdog.cancel() }
+        try await waiterTask.value
     }
 
     /// BLOCKING 2, PR #275 review — root cause: every `stateCollector`/
@@ -609,9 +681,19 @@ final class ClientReconnectTests: XCTestCase {
 
     func testHandshakeFailsHonestlyOnceEveryBoundedRetryIsSpent() async throws {
         let transport = LoopbackTransport()
+        // 150ms, not the ~30ms this used to be: `configPhaseTimeout` is a
+        // REAL wait (by design — `MeshtasticClient.requestConfig`'s
+        // completion race stands in for a real node's boot time, not
+        // something `handshakeRetryClock` covers), and it also gates
+        // `completeHandshake()`'s own INITIAL handshake below, not only
+        // the two deliberate timeouts this test is actually about — see
+        // `waitForSentCount`'s own doc comment for the CI flake this
+        // margin (together with that method's continuation-based fix)
+        // closes. Still bounded and still fast: both deliberate timeouts
+        // together are ~300ms of real sleep, worst case.
         let client = MeshtasticClient(
             transport: transport,
-            configPhaseTimeout: .milliseconds(30),
+            configPhaseTimeout: .milliseconds(150),
             nodeDBPhaseTimeout: .seconds(5),
             handshakeRetryLimit: 2, // one initial attempt + one retry, then give up
             handshakeRetryBaseDelay: .milliseconds(10),
@@ -638,5 +720,47 @@ final class ClientReconnectTests: XCTestCase {
         guard case .failed = seen.last else {
             return XCTFail("expected the bounded retry loop to end in .failed, saw \(seen.last as Any)")
         }
+    }
+
+    // MARK: - `waitForSentCount`'s own watchdog (PR #286 review, BLOCKING 3)
+
+    /// Proves the fix directly, not just by inspection: a sent-count
+    /// threshold that never arrives must make `raceForSentCount` fail
+    /// close to its own `timeout`, not hang. Before this fix, this exact
+    /// scenario — `transport.waitForSentCount(n)` suspended forever on a
+    /// `CheckedContinuation` no `record(_:)` call would ever resolve —
+    /// hung the enclosing `withTaskGroup` indefinitely (confirmed in the
+    /// review: "still hung 80+ seconds later"), because cancelling that
+    /// child task only flipped `Task.isCancelled` and never actually
+    /// unblocked the continuation it was parked on. A regression back to
+    /// that shape (or `LoopbackTransport.waitForSentCount(_:)` losing its
+    /// `withTaskCancellationHandler`) would make this test hang instead
+    /// of failing — which is exactly why this needs a wall-clock timing
+    /// assertion, not just a "did it throw" check: a test that can only
+    /// fail by timing out (never by a clean assertion) hides the
+    /// regression it exists to catch behind the test RUNNER's own
+    /// timeout instead of this test's.
+    ///
+    /// Uses a short 300ms `timeout` (well under the 10s default) so a
+    /// regression shows up as a fast, obvious assertion failure here,
+    /// not as this one test silently eating 10+ seconds of every
+    /// `swift test` run.
+    func testWaitForSentCountFailsFastWhenTheCountNeverArrives() async throws {
+        let transport = LoopbackTransport() // nothing is ever sent on it
+        let clock = ContinuousClock()
+
+        let start = clock.now
+        var threw = false
+        do {
+            try await raceForSentCount(1, on: transport, timeout: .milliseconds(300))
+        } catch {
+            threw = true
+        }
+        let elapsed = clock.now - start
+
+        XCTAssertTrue(threw, "a sent-count that never arrives must fail, not silently succeed")
+        XCTAssertLessThan(
+            elapsed, .seconds(1),
+            "must fail close to its own 300ms timeout, not hang indefinitely — took \(elapsed) to return")
     }
 }

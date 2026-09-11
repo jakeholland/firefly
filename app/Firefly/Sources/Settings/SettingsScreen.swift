@@ -221,7 +221,7 @@ struct SettingsScreen: View {
                 label: "Share phone GPS with node",
                 isOn: Binding(get: { model.shareGPSWithNode }, set: { model.setShareGPSWithNode($0) }))
             if model.shareGPSWithNode {
-                LabeledField(label: "Interval (seconds, floor 5)") {
+                LabeledField(label: "Interval (seconds, minimum 5)") {
                     TextField("30", value: Binding(
                         get: { model.locationIntervalSeconds },
                         set: { model.setLocationIntervalSeconds($0) }), format: .number)
