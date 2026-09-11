@@ -1061,10 +1061,15 @@ drawn as a live fix; the package builds clean under
   links MapKit from an `iOSSupport` path that is wrong for a real macOS
   build, it carries a 130-line junk `contents.xcworkspacedata`, it has no
   local-package reference (which is the *only* structurally new thing
-  this project needs), and its bundle id is `com.jakeholland.Firefly`
-  rather than the specified `com.jakeholland.firefly`. A generated
-  project from a 60-line `project.yml` was faster than that edit list and
-  leaves the project regenerable. **The one thing taken from it: its
+  this project needs), and — at the time of this comparison — its
+  bundle id was `com.jakeholland.Firefly` while the spec above still
+  said lowercase `com.jakeholland.firefly` (see "Decisions from the
+  owner" below: that mismatch is gone now, since the spec was
+  corrected to match the archived project's `com.jakeholland.Firefly`
+  on 2026-09-11; the other reasons above stand on their own regardless).
+  A generated project from a 60-line `project.yml` was faster than that
+  edit list and leaves the project regenerable. **The one thing taken
+  from it: its
   Info.plist key list, plus `INFO_PLIST_GUIDE.md`'s note of the two keys
   the project never actually added** — `NSLocationWhenInUseUsageDescription`
   and `UIBackgroundModes: bluetooth-central`. Both are in ours.
@@ -1300,10 +1305,20 @@ V3.
 All five settled; recorded here so the reasoning is not lost, the same
 way "Decisions already made" is at the top of this spec.
 
-1. **Bundle id case: `com.jakeholland.firefly`, lowercase.** Confirmed
-   as specified, not the archived project's `com.jakeholland.Firefly` —
-   an App Store identity change is a one-way door, so this is settled
-   now rather than revisited after M1 ships.
+1. **Bundle id case: `com.jakeholland.Firefly`, capital F. Reversed
+   2026-09-11.** Originally confirmed as `com.jakeholland.firefly`,
+   lowercase, not the archived project's `com.jakeholland.Firefly` — on
+   the reasoning that an App Store identity change is a one-way door,
+   so it should be settled once rather than revisited after M1 ships.
+   That reasoning was sound but the premise under it was wrong: the App
+   Id already registered on the team's developer portal — from the
+   archived iOS app — is `com.jakeholland.Firefly`, and the App Store
+   Connect record for "Firefly Festival Compass" (Apple ID 6811207165)
+   was created against that same capitalized id. Apple treats bundle
+   ids case-insensitively for uniqueness, so the lowercase spelling
+   could never have been registered as a distinct id in the first
+   place — there was no real choice to lock in, only a typo waiting to
+   be found. Decision to correct it: owner + coordinator, 2026-09-11.
 2. **Signing: git-ignored `app/Config/Local.xcconfig`, committed project
    stays unsigned.** `app/Config/Firefly.xcconfig` (committed, wired into
    the `Firefly` target) `#include?`s a personal, git-ignored
