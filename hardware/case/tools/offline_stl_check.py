@@ -192,7 +192,21 @@ def scan_stl_overhangs(tris, down_z, bed_z, angle_tol_deg=1.0, min_cluster_mm2=3
         down_component = nz * down_z
         avg_z = (v1[2] + v2[2] + v3[2]) / 3.0
         if down_component > cos_limit and abs(avg_z - bed_z) > bed_eps:
-            flagged.append((_tri_area(v1, v2, v3), (v1, v2, v3)))
+            area = _tri_area(v1, v2, v3)
+            # Phase 2c bug fix (live-found): a genuinely zero-area
+            # (degenerate) triangle -- its STORED STL normal can still
+            # read as a valid steep-down-facing vector even though its
+            # own 3 vertices are coincident/collinear (the tessellator's
+            # own artifact at a tight new cut boundary, e.g. the phase 2c
+            # comms-stack-frame wall's best-effort fillet/bridge splice)
+            # -- used to be appended here with area 0.0. A cluster made
+            # up ONLY of such triangles then summed to a total area of
+            # exactly 0.0, and the centroid division below (`s[0] /
+            # s[2]`) raised ZeroDivisionError. A zero-area triangle is not
+            # real overhang surface either way (nothing for a slicer to
+            # support), so it is dropped here rather than counted.
+            if area > 1e-9:
+                flagged.append((area, (v1, v2, v3)))
 
     def vkey(v):
         return (round(v[0], 3), round(v[1], 3), round(v[2], 3))

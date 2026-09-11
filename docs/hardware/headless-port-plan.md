@@ -1,0 +1,438 @@
+# Headless case generator port plan
+
+Tracks the feature-by-feature port of `hardware/case/firefly_case.py`
+(Fusion-via-MCP) to `hardware/case/gen/` (headless
+[build123d](https://github.com/gumyr/build123d)), per
+`docs/hardware/cad-tooling-spike.md`'s recommendation and migration plan.
+Every function in the source generator is listed below with its port
+status so a later phase can pick up exactly where this one left off.
+
+**Source generator note:** this port targets the **case-pass16** branch's
+`firefly_case.py`/`params_current.py`/`params_trim.py` (5588a2b), not
+`origin/main`'s own (pre-pass-16) copy -- the phase-1 brief's own
+architecture (single-pilot corner blocks at A/C/D, D relocated to
+(18, 58), ears/S2-boss deferred to phase 2) is pass-16's "candidate 5"
+display-mount design, which has not merged to `main` yet. `params_
+current.py`/`params_trim.py`/`tools/offline_stl_check.py` were pulled
+forward from `case-pass16` into this branch (pure data + a pure-Python
+tool, no Fusion dependency in either) so `gen/params.py` can import them
+unchanged, per the port brief. `firefly_case.py` itself (the Fusion
+generator) is untouched -- it stays the historical/legacy driver; `gen/`
+is the new, parallel package.
+
+## Status legend
+
+- **ported** -- a build123d equivalent exists in `gen/` and is exercised
+  by `gen/cli.py build`.
+- **deleted-as-quirk** -- a Fusion-API/timeline workaround with no OCC
+  equivalent needed (see `gen/geometry.py`'s own module docstring and
+  the spike's "19.4% pure Fusion-quirk workaround" finding). Not
+  translated, not planned.
+- **deferred** -- a real feature, out of phase-1's scope, tracked for
+  phase 2 (ears, S2 boss, buttons, comms stack/GPS/battery/compass) or
+  phase 3 (wordmark, coupons, packed exports, min-clearance checks that
+  need board occurrences placed).
+- **todo** -- a straightforward gate/helper not yet ported, with no
+  phase-2/3 feature dependency blocking it; a good pickup for whoever
+  continues this work, in no particular priority order beyond what's
+  noted per row.
+
+## Phase 1 (this PR): what actually got built
+
+`gen/shell.py` -- Top/Bottom shell (pill outline, R8 ceiling fillet, 2mm
+wall, both variants), the window bore + pass-15 print-orientation cone
+chamfer + pass-16 glass-seat chamfer, and the pass-16 continuous-taper
+lip/anchor ring (with its own per-boss/lug reliefs). `gen/features/
+corner_blocks.py` -- case screws A/C/D: Bottom boss + counterbore, Top
+single-pilot wall-anchored corner block, the unconditional 45-degree
+root-reinforcement collar (with pass-16's wedge-overlap and trim-then-
+join fixes) on every one of the 6 boss/block roots. `gen/features/
+usb_tunnel.py`, `gen/features/fpc_relief.py`, `gen/features/lug.py` --
+the USB-C tunnel + liner, the FPC relief pocket (skin-safe clip + SPEC
+box, with its own build-time clearance assert), and the lanyard lug
+(with its own best-effort corner/root fillets and hole chamfer).
+`gen/components.py` -- STEP import + empirically-derived placement of
+the display module (see its own module docstring); `gen/gates.py` --
+`verify_post_walls`/`verify_root_fillets`/`verify_corner_blocks`/
+`verify_bottom_openings`/`verify_lip_ring_profile` plus a generic
+all-pairs interference check, all against live OCC solids or the
+exported STL, wired to `tools/offline_stl_check.py` reused unchanged.
+`gen/export.py`/`gen/render.py`/`gen/cli.py` round out the driver. See
+`docs/hardware/headless-port-parity.md` for the regression numbers this
+produced against the pass-16 goldens.
+
+## Phase 2 plan
+
+In roughly the order `firefly_case.py` itself builds them:
+
+1. ~~**Ears + S2 boss**~~ **DONE, this revision** (`features/ears.py`:
+   `add_ear`, `add_s2_boss`, `ear_root_cap_z1`, `_ear_wedge_wall_
+   touch_z1`; `components.py`: `battery_connector_world_bbox`,
+   `secondary_conn_world_bbox`, `ceiling_safe_display_cut`,
+   `apply_known_component_keepouts`; `gates.py`: `verify_seat_heights`,
+   `verify_ear_root_material`, `verify_s2_boss_clearance`,
+   `verify_display_to_stack_clearance`, `check_display_interference_
+   near_ears`) -- the display mount proper, targeting the real measured
+   standoff plane/XY (`components.measure_standoffs`), not the typed
+   `board_standoffs`/`ear_seat_z`. Found and fixed three real bugs (a
+   gate sign error, a genuine Top-vs-Bottom interference at `split_z`,
+   and ~600mm³ of real display interference from two not-yet-ported
+   inline cuts in the source's own `build()`) -- see
+   `docs/hardware/headless-port-parity.md`'s own "Phase 2 update"
+   section for the full account, including the two known, narrow,
+   live-found trade-offs (`corner_block_D_top`, `S3_riser_solid`) still
+   open on `trim`, and `current`'s several additional open findings
+   (not root-caused this pass, `current` is not the printed variant).
+2. ~~**Buttons**~~ **DONE, phase 2b** (`features/buttons.py`:
+   `normalize2`, `ray_box_exit_2d`, `button_geometry`, `add_button`,
+   `add_buttons`, `find_switch_body`, `find_outermost_s`,
+   `find_innermost_s`, plus the ear/S2-boss keep-out guard
+   `_ear_boss_keepout_points`/`_clip_of_ear_boss_keepout`; `gates.py`:
+   `verify_button_insertion`, `verify_button_retention`,
+   `verify_plunger_reach`, `verify_skin_intact`) -- kept the existing
+   params-derived `switch_power_bbox`/`switch_home_bbox` boxes to POSITION
+   the mechanism (as originally planned), but the real switch body IS
+   probed live for `verify_plunger_reach` (via `components.load_display`'s
+   already-imported display STEP -- the TS24CA switches are part of that
+   same compound, found by nearest-bbox-center match, `buttons.
+   find_switch_body`, the same trade-off `components.measure_standoffs`
+   already makes for standoff barrels). Every historical correction the
+   README records carries forward: the finding-10 real-actuator-reach fix,
+   `true_wall_distance_along_ray`-based `s_wall`, the finding-9 rib/collar
+   actuator clearance clamp + tab-relief lane, the pass-16 FIX item-4
+   S2-boss tab-relief LANE EXTENSION (`tab_sweep_body`), the pass-15
+   wall-connector + ceiling-gusset fix, and the pass-16 item-D lead-in
+   fillets. `verify_button_insertion`: 0/125 bad, both buttons, both
+   variants (Jake's own live-print regression target). One live-found,
+   port-specific fix not in `firefly_case.py` by name: the button
+   COLLAR (not gated by the source's own checks, which only cover the
+   cap's cutting tools) can overlap the S2 boss arm's/S1 ear riser's
+   real, already-built material -- fixed by subtracting a snapshot of
+   Top from BEFORE `add_buttons` runs from the collar body directly; see
+   `docs/hardware/headless-port-parity.md`'s "Phase 2b" section for the
+   one remaining, accepted noise-floor residual (Home only, ~0.0009mm³,
+   both variants) a cleaner `bd.offset`-based version could not resolve
+   (degenerated to a 2D shape on this solid). Caps export as their own
+   named STL/3MF parts (`gen/export.py`'s existing per-body loop, no
+   changes needed).
+3. ~~**Comms stack / GPS frame / battery bay**~~ **DONE, phase 2c**
+   (`features/comms_bay.py`: `add_battery_bay`, `build_comms_stack_frame`/
+   `add_comms_stack_frame`, `build_hanging_frame`/`build_gps_frame_body`,
+   `add_comms_bay` driver; `components.py`: `load_comms_stack` places the
+   real XIAO/Wio-SX1262/L76K STEPs, per the source's own `insert_comms_
+   boards`, with a new stray-body filter for the L76K's own GPS-antenna-
+   on-a-cable sub-assembly -- see `docs/hardware/headless-port-parity.md`'s
+   "Phase 2c" section) -- the L76K/XIAO/Wio STEP files staged at
+   `hardware/models/` since phase 1 are now actually imported and placed.
+4. ~~**GPS patch frame + battery bay gates, antenna cable channels**~~
+   **DONE, phase 2c** (`features/comms_bay.py`: `add_antenna_channels` --
+   the LoRa Wio-u.FL-to-dome-wall route (trim only) plus its own
+   live-checked reference corridor, and the L76K-u.FL-to-GPS-frame south-
+   wall notch (both variants); `gates.py`: `verify_stack3_clearance`,
+   `verify_min_clearances`, `verify_antenna_channels`,
+   `verify_stack_frame_boss_clear` (new, no source equivalent by name --
+   the "corner-block-to-stack keep-out" item), `check_board_interference`
+   (the OCC equivalent of `check_interference` against the three real
+   placed boards)). Two real bugs found by the full pytest re-run and
+   fixed, kept fixed by that same re-run -- see `docs/hardware/
+   headless-port-parity.md`'s own "Phase 2c" section for the full
+   account: (1) `tools/offline_stl_check.py`'s own `scan_stl_overhangs`
+   crashed with a `ZeroDivisionError` on a genuinely zero-area flagged
+   triangle (a tessellator artifact, not real overhang surface) --
+   fixed by dropping zero-area triangles before they reach the
+   cluster-centroid division; (2) once that crash no longer hid it, the
+   SAME triangle turned out to sit at a REAL non-manifold defect (both
+   variants, `Top`, ~12-20 non-manifold edges) -- root-caused to
+   `features/comms_bay.py`'s own `_best_effort_channel_fillet`
+   (0.3mm cosmetic fillet on the GPS u.FL notch cutting tool): the
+   filleted tool and `top - <filleted tool>` both reported
+   `Shape.is_valid` True, yet the exported STL still tessellated to a
+   non-manifold mesh at the fillet's own corners -- an OCC MESHER
+   artifact neither B-rep validity check can see. Fixed by dropping the
+   fillet outright (it was already documented as cosmetic only, never
+   load-bearing on a cutting tool).
+5. ~~**Compass module**~~ **DONE, phase 2c** (`features/compass.py`: the
+   full `mag_*` family + `add_mag_module`, modeled as a plain box from
+   params per the port brief -- the `.f3d` reference is still not
+   headlessly importable; `gates.py`: `verify_mag_pocket`, using the REAL
+   imported display STEP's own bbox for the display-back-clearance check
+   rather than the typed `display_bbox`).
+6. Re-run the full parity harness (`docs/hardware/headless-port-parity.md`)
+   after each feature lands, same methodology as phase 1 -- done for
+   phase 2c, see that doc's own "Phase 2c" section.
+
+## Phase 3 plan (after phase 2)
+
+Wordmark/logo deboss (`deboss_loops` and the whole `_wordmark_*`/
+`load_wordmark_loops`/`add_wordmark_logo` family, reading
+`kandiwooks_logo.json` unchanged), button coupons (`build_button_coupon`,
+`export_coupons`, the pass-16 mount coupon), the remaining `todo`-status
+analytic gates below (`verify_m1_probe_table`, `verify_envelope`,
+`verify_export_envelope`, `verify_wall_integrity`, `verify_openings_open`,
+`assert_export_body_size`), packed print files/renders, and the
+switch-over (delete `firefly_case.py`, update the build sheet and
+README) -- see `docs/hardware/headless-port-parity.md`'s "Phase 2c"
+section for why `verify_min_clearances`/`verify_stack3_clearance`/
+`verify_display_to_stack_clearance` no longer belong on this list (all
+three are ported and exercised against real placed board geometry as of
+phase 2c).
+
+## Full function table (case-pass16 `firefly_case.py`, 217 functions)
+
+115 ported, 49 deleted-as-quirk, 34 deferred, 19 todo (running total
+as of phase 2b, before this revision: 81/52/65/19 -- reached from the
+true phase-1 baseline by the two deltas below. Phase 2, ears/S2 boss
+revision: +8 -- `ear_root_cap_z1`,
+`add_ear`, `add_s2_boss`, `battery_connector_world_bbox`,
+`secondary_conn_world_bbox`, `verify_ear_root_material`,
+`verify_s2_boss_clearance`, `verify_display_to_stack_clearance`. Phase
+2b, buttons revision: +12 -- `normalize2`, `ray_box_exit_2d`,
+`button_geometry`, `add_button`, `add_buttons`, `find_switch_body`,
+`find_outermost_s`, `find_innermost_s`, `verify_plunger_reach`,
+`verify_button_insertion`, `verify_button_retention`, `verify_skin_
+intact` (10 were `deferred`, 2 -- `find_outermost_s`/`find_innermost_s`
+-- were `todo`); that revision also reclassified 2 rows found to be
+mislabeled while reading the button source, net zero to `ported` itself:
+`build_wedge_along_x` (was noted as a button helper; it is actually
+phase 2 item 3's GPS-frame ledge helper, `deferred` either way) and
+`_rect_perimeter_points` (confirmed dead code in the source itself,
+`todo` -> `deleted-as-quirk`). **Phase 2c (this revision), comms stack /
+GPS frame / battery bay / compass module: +34 ported** -- 31 moved from
+`deferred` (`add_battery_bay`, `add_battery_reference_box`,
+`build_comms_stack_frame`, `add_comms_stack_frame`, `build_hanging_
+frame`, `build_gps_frame_body`, `add_gps_reference_box`, `add_fpc_
+keepout_marker`, `add_comms_bay`, `_antenna_skin_safe_channel`,
+`_best_effort_fillet`, `add_antenna_channels`, `antenna_channel_
+geometry`, `verify_antenna_channels`, the 13-function `mag_*` family
+plus `add_mag_module`/`verify_mag_pocket`, `insert_comms_boards`,
+`verify_stack3_clearance`, `verify_min_clearances`); 3 moved from
+`deleted-as-quirk` on closer reading while porting this phase
+(`flatten_transform` and `find_pcb_like_body` -- OCP has an exact,
+documented equivalent for each, `gp_Trsf.SetDisplacement`/a plain shape
+scan against the imported STEP, so the earlier "no Fusion-occurrence
+equivalent" reasoning undersold the ALGORITHM itself, not just the
+occurrence-tree walk around it; `insert_and_place`, folded into
+`components.load_comms_stack`). `verify_display_to_stack_clearance` and
+`check_interference` (already `ported`) gain no new row but ARE now
+exercised against real geometry/boards rather than a no-op/absent
+check -- see each row's own updated note.
+
+| firefly_case.py line | function | status | port note |
+|---|---|---|---|
+| 82 | `P` | deleted-as-quirk | Fusion cm<->mm Point3D helper -- build123d takes plain mm tuples |
+| 86 | `V` | deleted-as-quirk | Fusion cm<->mm ValueInput helper -- unneeded, OCP works in mm directly |
+| 90 | `new_sketch` | deleted-as-quirk | Fusion sketch-on-plane boilerplate -- build123d's Line/ThreePointArc take plain 3D points |
+| 94 | `_sk` | deleted-as-quirk | Fusion sketch-point helper, same reason as new_sketch |
+| 101 | `add_line` | deleted-as-quirk | replaced by bd.Line(...) directly |
+| 105 | `add_arc3` | deleted-as-quirk | replaced by bd.ThreePointArc(...) directly |
+| 109 | `extrude_new_body` | deleted-as-quirk | replaced by bd.extrude(...) directly |
+| 118 | `revolve_new_body` | deleted-as-quirk | replaced by bd.revolve(...) directly |
+| 126 | `combine_join` | deleted-as-quirk | replaced by Python's + operator on OCC solids |
+| 130 | `combine_cut` | deleted-as-quirk | replaced by Python's - operator |
+| 134 | `combine_cut_keep` | deleted-as-quirk | no Fusion isKeepToolBodies flag needed -- OCC operators never consume operands |
+| 149 | `combine_intersect` | deleted-as-quirk | replaced by Python's & operator |
+| 153 | `_combine` | deleted-as-quirk | shared Fusion CombineFeatureInput builder -- superseded by +/-/& operators |
+| 165 | `plane_at_z` | deleted-as-quirk | Fusion named-construction-plane helper -- build123d sketches in free 3D space |
+| 172 | `plane_at_x` | deleted-as-quirk | ditto |
+| 179 | `plane_at_y` | deleted-as-quirk | ditto |
+| 186 | `revolve_taper_wedge` | ported | geometry.py |
+| 217 | `extrude_taper_wedge_along_y` | ported | geometry.py |
+| 241 | `extrude_taper_cut_along_y` | ported | geometry.py |
+| 268 | `build_wedge_along_x` | deferred | phase 2 item 3 -- GPS hanging-frame ledge (`build_hanging_frame`, :4742/:4743 -- NOT called by add_button/add_buttons, corrected from an earlier note here) |
+| 294 | `add_stadium_loop` | ported | folded into geometry.py `_stadium_face` |
+| 309 | `stadium_solid` | ported | geometry.py |
+| 317 | `stadium_ring_solid` | ported | geometry.py |
+| 323 | `cylinder_solid` | ported | geometry.py |
+| 333 | `box_solid` | ported | geometry.py |
+| 343 | `vadd` | ported | geometry.py `_vadd` |
+| 348 | `move_body_to_frame` | deleted-as-quirk | Fusion's Matrix3D canonical-build-then-move step -- build123d builds oriented prisms directly in 3D (see geometry.py module docstring) |
+| 378 | `oriented_stadium_loop` | ported | folded into geometry.py `oriented_stadium_prism` |
+| 403 | `_cross` | deleted-as-quirk | only existed to recompute move_body_to_frame’s z-axis |
+| 407 | `_dot` | deleted-as-quirk | ditto, unused once move_body_to_frame is gone |
+| 411 | `oriented_stadium_prism` | ported | geometry.py |
+| 425 | `oriented_box_loop` | ported | folded into geometry.py `oriented_box_prism` |
+| 439 | `oriented_box_prism` | ported | geometry.py |
+| 447 | `bbox_of` | deleted-as-quirk | replaced by build123d's native `.bounding_box()` |
+| 456 | `count_sliver_faces` | todo | diagnostic only, not gating -- low priority |
+| 474 | `_profile_geometry` | ported | geometry.py `profile_geometry` |
+| 503 | `rho_at_z` | ported | geometry.py |
+| 520 | `build_outer_half_profile_points` | ported | folded into geometry.py `_outer_half_points` |
+| 554 | `sketch_half_profile` | deleted-as-quirk | Fusion sketch wrapper -- folded into geometry.py `_outer_half_face` |
+| 568 | `sketch_full_profile` | deleted-as-quirk | folded into geometry.py `_outer_full_face` |
+| 598 | `_inner_profile_geometry` | ported | geometry.py `inner_profile_geometry` |
+| 625 | `build_inner_half_profile_points` | ported | folded into geometry.py `_inner_half_points` |
+| 648 | `sketch_inner_half_profile` | deleted-as-quirk | folded into geometry.py `_inner_half_face` |
+| 660 | `sketch_inner_full_profile` | deleted-as-quirk | folded into geometry.py `_inner_full_face` |
+| 682 | `build_inner_pill_solid` | ported | geometry.py |
+| 707 | `combine_intersect_keep` | deleted-as-quirk | duplicate of combine_intersect_keep at :707 -- see combine_intersect |
+| 719 | `build_inner_cavity_clip_tool` | ported | geometry.py |
+| 734 | `clip_to_inner_cavity` | ported | inlined as `& build_inner_cavity_clip_tool(p)` at each call site (corner_blocks.py) |
+| 747 | `clipped_pillar_with_reach` | ported | kept defensively in corner_blocks.add_case_boss's wide+core pattern -- the Fusion silent-no-op-join this exists for was not reproduced under OCC in phase-1 testing, so the extra core may be redundant here; not re-verified |
+| 794 | `build_thickened_envelope` | ported | geometry.py |
+| 810 | `build_outer_pill_solid` | ported | geometry.py |
+| 851 | `hollow_and_split` | ported | shell.py `build_shells` |
+| 893 | `add_lip_anchor_reliefs` | ported | shell.py |
+| 1122 | `add_window` | ported | shell.py |
+| 1285 | `fpc_relief_footprint` | ported | features/fpc_relief.py |
+| 1301 | `add_fpc_relief` | ported | features/fpc_relief.py |
+| 1451 | `chamfer_stadium_edge_at` | deleted-as-quirk | superseded by shell.py add_lip_anchor_reliefs pass-16 boolean taper -- the pass-16 design no longer calls this for the ring seam |
+| 1515 | `chamfer_edge_at` | ported | inlined as OCC bd.chamfer with geometric edge-selection in features/lug.py's `_best_effort_hole_chamfer` |
+| 1596 | `_log_root_fillet` | deleted-as-quirk | ROOT_FILLET_REPORT bookkeeping only, no geometry |
+| 1604 | `cone_frustum_solid` | ported | geometry.py |
+| 1636 | `add_root_reinforcement` | ported | features/corner_blocks.py |
+| 1776 | `_best_effort_fillet_at_z` | todo | GPS/stack-frame cosmetic fillet helper -- port alongside those frames |
+| 1802 | `dedupe_body` | deleted-as-quirk | Fusion orphaned-duplicate-body workaround -- not observed in OCC (see geometry.py module docstring) |
+| 1968 | `_ear_boss_keepout_points` | deferred | phase 2 -- ears/S2-boss vs. button cut interaction |
+| 2041 | `_clip_of_ear_boss_keepout` | deferred | phase 2 |
+| 2125 | `_ear_wedge_wall_touch_z1` | deferred | phase 2 -- ear-vs-button height cap |
+| 2137 | `_ear_root_z1` | ported | features/corner_blocks.py -- needed by A/C/D’s display keepout, not just ears |
+| 2154 | `ear_root_cap_z1` | ported | features/ears.py -- also relies on the new `add_root_reinforcement(..., z_floor=...)` param (phase 2 fix, no source equivalent needed, see headless-port-parity.md) so the collar it caps can never dip below `split_z` |
+| 2184 | `_wall_outward_axes` | ported | geometry.py `wall_outward_axes` |
+| 2213 | `_nearer_spine_y` | ported | geometry.py |
+| 2232 | `_corner_block_ring_limit_r` | ported | features/corner_blocks.py |
+| 2293 | `add_single_corner_block` | ported | features/corner_blocks.py |
+| 2381 | `add_ear` | ported | features/ears.py -- target xy/seat_z come from `components.measure_standoffs` (measured), not the typed `board_standoffs`/`ear_seat_z`, per the port brief; S3 carries one named exception (`S3_CONNECTOR_CLEARANCE_DX`/`DY`, matching a real component-clearance fix live-verified the same day on Firefly's own `main` branch, bf2703d) |
+| 2536 | `add_s2_boss` | ported | features/ears.py -- same measured-standoff sourcing as add_ear; adds a best-effort underside edge chamfer (no source equivalent, see its own docstring for the honest "still needs support" finding) |
+| 2681 | `_refetch_by_name` | deleted-as-quirk | Fusion stale-reference workaround -- OCC's +/-/& return the real result directly, no name-based re-fetch needed |
+| 2702 | `add_case_boss` | ported | features/corner_blocks.py |
+| 2813 | `add_case_screws` | ported | features/corner_blocks.py |
+| 2849 | `battery_connector_world_bbox` | ported | components.py -- used by add_s2_boss's own hard keep-out |
+| 2873 | `secondary_conn_world_bbox` | ported | components.py -- used by the new `apply_known_component_keepouts` (see headless-port-parity.md) |
+| 2883 | `get_open_doc` | deleted-as-quirk | Fusion multi-document lookup -- no live Fusion session in the headless build |
+| 2890 | `get_reference_transform` | deleted-as-quirk | superseded by components.py's empirically-derived transform (see its module docstring) |
+| 2901 | `insert_referenced_component` | deleted-as-quirk | Fusion occurrence-insert API |
+| 2907 | `insert_display_pcba` | ported | components.py `load_display` -- transform derived empirically, not read live from Fusion (see module docstring) |
+| 2930 | `normalize2` | ported | features/buttons.py |
+| 2935 | `ray_box_exit_2d` | ported | features/buttons.py |
+| 2954 | `button_geometry` | ported | features/buttons.py |
+| 3129 | `add_button` | ported | features/buttons.py |
+| 3639 | `add_buttons` | ported | features/buttons.py |
+| 3717 | `add_usb_tunnel` | ported | features/usb_tunnel.py |
+| 3747 | `lug_ear_geometry` | ported | features/lug.py |
+| 3792 | `add_lug` | ported | features/lug.py |
+| 3970 | `_polyline_loop_lines` | deferred | phase 3 -- wordmark |
+| 3980 | `_loop_bbox_mm` | deferred | phase 3 |
+| 3986 | `_profile_bbox_mm` | deferred | phase 3 |
+| 3991 | `_bbox_matches` | deferred | phase 3 |
+| 3995 | `deboss_loops` | deferred | phase 3 |
+| 4056 | `flare_glyph_loops` | deferred | phase 3 |
+| 4083 | `add_flare_logo` | deferred | phase 3 |
+| 4119 | `_wordmark_word_raw_loops` | deferred | phase 3 |
+| 4131 | `_wordmark_word_loops_by_flag` | deferred | phase 3 |
+| 4150 | `_point_in_poly` | deferred | phase 3 |
+| 4171 | `_poly_area` | deferred | phase 3 |
+| 4181 | `_poly_centroid` | deferred | phase 3 |
+| 4187 | `_wordmark_counter_probes` | deferred | phase 3 |
+| 4223 | `_wordmark_split_sprout` | deferred | phase 3 |
+| 4258 | `_wordmark_local_bbox` | deferred | phase 3 |
+| 4264 | `_wordmark_place_word` | deferred | phase 3 |
+| 4295 | `wordmark_vertical_span` | deferred | phase 3 |
+| 4317 | `wordmark_layout` | deferred | phase 3 |
+| 4426 | `load_wordmark_loops` | deferred | phase 3 |
+| 4445 | `add_wordmark_logo` | deferred | phase 3 |
+| 4462 | `safe_half_width` | deferred | phase 3 |
+| 4486 | `clip_box_x_to_cavity` | deferred | phase 3 |
+| 4497 | `add_battery_bay` | ported | features/comms_bay.py |
+| 4567 | `add_battery_reference_box` | ported | features/comms_bay.py `battery_reference_solid` |
+| 4588 | `build_comms_stack_frame` | ported | features/comms_bay.py |
+| 4638 | `add_comms_stack_frame` | ported | features/comms_bay.py |
+| 4698 | `build_hanging_frame` | ported | features/comms_bay.py -- the plain-ring subset this port needs (no ledges: the pre-pass-7 stack tray that needed them is gone, see `build_wedge_along_x`'s own row); `gap_w`/`gap_side` ported too though no live call site in this port passes them |
+| 4752 | `build_gps_frame_body` | ported | features/comms_bay.py |
+| 4788 | `add_gps_reference_box` | ported | features/comms_bay.py `gps_reference_solid` |
+| 4797 | `add_fpc_keepout_marker` | ported | features/comms_bay.py `fpc_keepout_solid` -- reference-only, matches the source |
+| 4808 | `add_comms_bay` | ported | features/comms_bay.py |
+| 4849 | `_antenna_skin_safe_channel` | ported | features/comms_bay.py |
+| 4869 | `_best_effort_fillet` | ported | features/comms_bay.py `_best_effort_channel_fillet` -- same skip-on-failure idiom as every other best-effort fillet in this port |
+| 4894 | `add_antenna_channels` | ported | features/comms_bay.py -- also returns the LoRa cable corridor reference solid (pass-16 item F) for gates.py to check directly, since this port has no hidden-reference-body convention |
+| 5030 | `antenna_channel_geometry` | ported | features/comms_bay.py |
+| 5062 | `verify_antenna_channels` | ported | gates.py |
+| 5143 | `mag_world_y` | ported | features/compass.py |
+| 5154 | `mag_world_x` | ported | features/compass.py |
+| 5160 | `mag_pcb_bottom_world_z` | ported | features/compass.py |
+| 5171 | `mag_world_z` | ported | features/compass.py |
+| 5180 | `mag_module_clearance` | ported | features/compass.py |
+| 5200 | `mag_module_fits` | ported | features/compass.py |
+| 5210 | `mag_pcb_world_footprint` | ported | features/compass.py |
+| 5227 | `mag_fence_world_footprint` | ported | features/compass.py |
+| 5239 | `mag_window_bore_clearance` | ported | features/compass.py |
+| 5260 | `mag_peg_world_positions` | ported | features/compass.py |
+| 5266 | `mag_pad_world_positions` | ported | features/compass.py |
+| 5287 | `mag_header_notch_center_x` | ported | features/compass.py |
+| 5296 | `add_mag_module` | ported | features/compass.py -- pass-15's single lanyard-side stop (`MAG_STOP_H`, <=2mm), NOT the pre-pass-15 4-wall fence, matches the ONLY version of this function the case-pass16 source itself now ships |
+| 5434 | `verify_mag_pocket` | ported | gates.py -- `display_back_clear` measures the REAL imported display STEP's own bbox directly (this port's own "measured, not typed" convention), not the source's live-Fusion-occurrence probe or the typed `display_bbox` |
+| 5551 | `_collect_occ_bodies` | deleted-as-quirk | Fusion occurrence-tree body walk |
+| 5567 | `_safe_visible` | deleted-as-quirk | Fusion visibility-flag guard for the walk above |
+| 5580 | `_bbox_extents` | deleted-as-quirk | Fusion occurrence bbox helper, superseded by build123d bounding_box() |
+| 5598 | `flatten_transform` | ported | components.py -- OCP's `gp_Trsf.SetDisplacement(from_ax3, to_ax3)` is a documented, exact equivalent of Fusion's `Matrix3D.setToAlignCoordinateSystems`, so this needed no reinterpretation, just a direct API swap (reclassified from an earlier, incorrect "deleted-as-quirk" -- that call was only ever true of the DIFFERENT `move_body_to_frame` helper) |
+| 5636 | `find_pcb_like_body` | ported | components.py -- same shape-search algorithm, run directly against the imported STEP's own solids instead of a live occurrence tree (reclassified from an earlier "deleted-as-quirk" that undersold it -- the ALGORITHM ported fine, only the occurrence-tree WALK around it didn't apply) |
+| 5668 | `insert_and_place` | ported | folded into components.py `load_comms_stack` (XIAO/Wio placement) -- same fold-into-caller convention this plan doc already uses for several Fusion sketch/profile helpers |
+| 5695 | `insert_comms_boards` | ported | components.py `load_comms_stack` -- also ports the source's own live `_hide_leaf_bodies` stray-body filter (`components._filter_l76k_placed`, `L76K_STRAY_BODY_RADIUS_MM`), needed because the L76K STEP's own GPS-antenna-on-a-cable sub-assembly reaches ~49mm from the PCB in its native frame and would otherwise balloon the placed compound's own bbox after the board's own 'y90' rotation lands that native axis on world X (live-found this port, confirmed by importing the real STEP) |
+| 5879 | `build` | todo | the CLI driver (cli.py `build()`) is phase 1's own analog; this row tracks the ORIGINAL Fusion build()'s remaining un-ported feature calls, which land as each feature is ported |
+| 6119 | `remove_stray_generic_bodies` | deleted-as-quirk | Fusion stray-body cleanup after a live rebuild |
+| 6147 | `probe_point_solid` | ported | geometry.py |
+| 6153 | `find_outer_x_at` | todo | verify_m1_probe_table helper |
+| 6170 | `find_first_solid_x` | todo | unused helper in the source itself beyond find_outer_x_at’s neighbor |
+| 6182 | `find_ceiling_z_at` | ported | superseded by components.py's direct solid-shape measurement of the imported STEP (no live downward scan needed -- the geometry is already in memory) |
+| 6199 | `check_interference` | ported | gates.py `check_interference_pairs` (printed bodies) + `check_board_interference` (phase 2c: the three real comms-stack boards vs. Top/Bottom, now that `components.load_comms_stack` places them) -- simplified to body-pairs only, no Fusion occurrence-tree walk |
+| 6297 | `inner_rho_at_z` | ported | geometry.py |
+| 6310 | `verify_m1_cavity_probes` | todo | M1 cavity probe-table gate -- shell already parity-checked against the golden STL in phase 1; porting this analytic gate is straightforward, just not yet wired |
+| 6348 | `envelope_bounds` | todo | verify_envelope helper |
+| 6369 | `verify_envelope` | todo | gross envelope bounds check |
+| 6384 | `verify_no_outer_bumps` | todo | outer-bump regression probe |
+| 6406 | `rho_from_spine` | ported | geometry.py |
+| 6418 | `check_body_envelope_vertices` | todo | export-vertex envelope scan |
+| 6449 | `verify_export_envelope` | todo | driver for check_body_envelope_vertices |
+| 6462 | `verify_m1_probe_table` | todo | SPEC.md profile probe table |
+| 6481 | `true_wall_distance_along_ray` | ported | geometry.py |
+| 6509 | `find_outermost_s` | ported | features/buttons.py |
+| 6522 | `find_innermost_s` | ported | features/buttons.py |
+| 6539 | `find_switch_body` | ported | features/buttons.py -- matches by nearest bbox-center distance within the display's real STEP compound, same no-occurrence-tree trade-off `components.measure_standoffs` already makes |
+| 6560 | `verify_plunger_reach` | ported | gates.py |
+| 6624 | `verify_button_insertion` | ported | gates.py -- 0/125 bad, both buttons, both variants |
+| 6684 | `verify_button_retention` | ported | gates.py |
+| 6758 | `verify_m2` | todo | dimensional gate -- the USB tunnel/lug portions are covered by phase-1's own build-time asserts; the button portion's own numbers (`cap_clearance` 0.25, `plunger_pretravel` 0.3, `nub_pocket` depth 0.8, `tab['gap']` 0.60) are all read directly from PARAMS by `button_geometry`/`add_button` (construction-checked, same argument the source's own docstring makes for why this is "checked by construction"), and `verify_button_retention`'s own `..._tab_gap_0.60` entry restates the tab-gap one live -- a small, standalone `verify_m2` wrapper restating the rest is still not wired as its own function |
+| 6918 | `find_component_occurrence` | deleted-as-quirk | Fusion component-tree walk |
+| 6929 | `organize_components` | deleted-as-quirk | Fusion outline-folder organization, no headless analog needed |
+| 6983 | `verify_structure` | deleted-as-quirk | checks the Fusion outline-folder organization organize_components builds |
+| 7049 | `collect_interference_entities` | deleted-as-quirk | Fusion occurrence-tree walk feeding the live analyzeInterference call |
+| 7107 | `verify_min_clearances` | ported | gates.py -- restricted to the three comms-stack boards (`components.load_comms_stack`); the display's own clearances are covered separately by `check_display_interference_near_ears`/`verify_ear_root_material`, which already check the real display STEP against the ears/S2-boss's own construction rather than a generic distance sweep. No `MIN_CLEARANCE_BODY_CAP` needed -- OCP's `Shape.distance_to` (`BRepExtrema_DistShapeShape`) is run against every solid of these already-small boards directly, not capped |
+| 7135 | `_rect_perimeter_points` | deleted-as-quirk | unused helper in the source itself (confirmed: never called) -- superseded by verify_skin_intact's own pass-12 simplification (inline t_frac/z/depth sampling), not ported |
+| 7150 | `verify_skin_intact` | ported | gates.py |
+| 7246 | `verify_wall_integrity` | todo | general dome-wall probe -- not button-specific, worth porting standalone |
+| 7358 | `verify_posts_and_bosses` | deleted-as-quirk | targets the retired P1-P4 Screen-Plate posts (pass 16 removed them) -- superseded by verify_root_fillets/verify_corner_blocks |
+| 7431 | `verify_post_walls` | ported | gates.py -- targets screws_D12 (D), same as the pass-16 source |
+| 7497 | `verify_root_fillets` | ported | gates.py -- restricted to case-screw bosses A/C/D; ear/S2/mag entries deferred with those features |
+| 7585 | `verify_corner_blocks` | ported | gates.py -- A/C/D only |
+| 7649 | `verify_bottom_openings` | ported | gates.py -- A/C/D + the lug cord hole |
+| 7728 | `probe_bodies_interference_volume` | ported | gates.py `interference_volume` |
+| 7758 | `find_display_occurrence` | deleted-as-quirk | Fusion occurrence lookup -- components.py holds the compound directly |
+| 7778 | `verify_display_insertion_path` | deferred | phase 2/3 -- diagnostic-only in the source too |
+| 7826 | `verify_stack3_clearance` | ported | gates.py -- uses the REAL placed Wio solid's own top Z (`components.load_comms_stack`'s `stack_top_z`), not a nominal guess, same as the source |
+| 7873 | `verify_fpc_relief` | todo | the SPEC-box corner clearance is already a build-time assert in features/fpc_relief.py; the fuller multi-probe gate is not yet a standalone function |
+| 7992 | `verify_wordmark` | deferred | phase 3 |
+| 8068 | `verify_wordmark_counters` | deferred | phase 3 |
+| 8107 | `verify_ear_root_material` | ported | gates.py -- S1/S3 only; one known, live-found, narrow finding (`S3_riser_solid` at 1 of 4 angles), see headless-port-parity.md |
+| 8187 | `verify_s2_boss_clearance` | ported | gates.py -- clean both variants |
+| 8229 | `verify_seat_heights` | ported | gates.py, superseded in method (not just referenced) by components.py's `measure_standoffs` -- re-derives each barrel's OWN measured local top-z (not the shared constant) and checks the seat gap against it directly, rather than only reproducing the documented 18.80/21.80mm plane number |
+| 8300 | `_xy_overlap` | ported | features/corner_blocks.py |
+| 8308 | `verify_display_to_stack_clearance` | ported | gates.py -- purely analytic (bay params only); the `stack3` check was always live (`PARAMS['bay']['stack3']` was never actually `None`), the GPS-patch check likewise -- both were already exercised before phase 2c, which only adds the REAL geometry (`verify_stack_frame_boss_clear`/`verify_stack3_clearance`/`verify_min_clearances`) this analytic check's own numbers assume |
+| 8357 | `window_column_probe_points` | todo | verify_openings_open helper |
+| 8376 | `_in_stadium` | todo | ditto |
+| 8391 | `verify_openings_open` | todo | general opening/closed regression gate |
+| 8648 | `verify` | deleted-as-quirk | Fusion top-level verify driver -- superseded by gates.all_gates |
+| 8955 | `build_button_coupon` | deferred | phase 2/3 -- coupons |
+| 9058 | `assert_export_body_size` | todo | export size sanity guard -- easy, not yet wired into export.py |
+| 9074 | `export_stls` | deleted-as-quirk | Fusion STL-export API call -- superseded by export.py |
+| 9091 | `read_stl_triangles` | ported | reused unchanged via tools/offline_stl_check.py (pure Python, needs no porting) |
+| 9109 | `_tri_area` | ported | ditto |
+| 9116 | `scan_stl_overhangs` | ported | ditto |
+| 9224 | `verify_lip_ring_profile` | ported | gates.py, verbatim algorithm |
+| 9331 | `export_coupons` | deferred | phase 2/3 |
+| 9385 | `build_mount_coupon_point` | deferred | phase 2 -- new, not-yet-built-upstream mount coupon |
+| 9483 | `export_mount_coupon` | deferred | phase 2 |
+| 9521 | `export_native_3mf_case` | deleted-as-quirk | Fusion-specific 3MF packer -- build123d's Mesher does STL+3MF from one call (export.py) |
+| 9557 | `export_native_3mf_coupons` | deferred | phase 2/3 |
+| 9569 | `_set_ortho_camera` | deleted-as-quirk | Fusion camera API -- superseded by render.py's trimesh/matplotlib renderer |
+| 9581 | `take_orthographic_screenshots` | ported | superseded by render.py's headless trimesh/matplotlib renderer |
+| 9606 | `_find_or_create_doc` | deleted-as-quirk | Fusion scratch-document reuse -- no live Fusion session |
+| 9616 | `run` | deleted-as-quirk | Fusion top-level entry point -- superseded by cli.py |
