@@ -66,12 +66,17 @@ struct SettingsScreen: View {
         // moment More is opened again — `crewSettings` is only ever
         // written from a rename/remove tap otherwise.
         .onAppear { crewSettings.refresh() }
-        // M3 — a SEPARATE `.onAppear`/`.onDisappear` pair from the one
-        // above, tracking `model.isConnected` for the two confirm-then-
-        // write buttons below. SwiftUI runs every `.onAppear`/
-        // `.onDisappear` attached to a view, not just the first.
-        .onAppear { model.observe() }
-        .onDisappear { model.stopObserving() }
+        // M3's own `.onAppear`/`.onDisappear` pair that used to live
+        // here — tracking `model.isConnected` for the two confirm-then-
+        // write buttons below — is gone. `model.observe()` now starts in
+        // `SettingsViewModel.makeObserving(store:channelImport:client:)`,
+        // the composition root's own factory (`FireflyApp.init`, since
+        // this type lives in the app target, not `FireflyKit`, so
+        // `AppGraph` itself cannot construct it — `makeConnectViewModel()`
+        // 's own doc comment has the full NavigationSplitView
+        // detail-column remount story this screen is exactly as
+        // vulnerable to as Connect was: it too is one of `RootView`'s own
+        // `detail(for:)` destinations).
         .sheet(isPresented: $isShowingNameConfirmation) {
             AdminWriteConfirmationSheet(
                 title: "APPLY NAME",

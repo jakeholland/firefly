@@ -383,6 +383,17 @@ public final class AppGraph {
         // silent.
         model.imperial = dependencies.store.resolvedImperial()
         radar = model
+        // `makeConnectViewModel()`'s own doc comment below has the full
+        // story (the NavigationSplitView detail-column remount that
+        // orphans a screen-owned `.onAppear`/`.onDisappear` subscription
+        // for the rest of the process). `RadarView`, `InboxContainerView`
+        // and `SettingsScreen` are the same shape as `ConnectScreen` was
+        // — a process-lifetime singleton shown as one of that split
+        // view's `detail(for:)` destinations (`RootView.swift`) — so
+        // they get the identical fix: `observe()` started HERE, once,
+        // rather than left to a screen's own appear/disappear to
+        // establish or tear down.
+        model.observe()
         return model
     }
 
@@ -391,8 +402,19 @@ public final class AppGraph {
     /// the first time — `flareSender` was `nil` in every composition
     /// until a portnum-269 send existed.
     public func makeInboxViewModel() -> InboxViewModel {
-        InboxViewModel(provider: inboxProvider, client: dependencies.client, flareSender: packetSender,
-                        currentFix: { [weak self] in self?.myFix })
+        let model = InboxViewModel(provider: inboxProvider, client: dependencies.client, flareSender: packetSender,
+                                    currentFix: { [weak self] in self?.myFix })
+        // Same fix as `makeRadarViewModel(haptics:)` just above, and for
+        // the identical reason — see `makeConnectViewModel()`'s doc
+        // comment for the full NavigationSplitView remount story this is
+        // immune to by construction now. `ThreadViewModel`, which THIS
+        // view model hands out per `openThread(_:)` call, is unaffected
+        // and correctly stays screen-owned (`ThreadView.swift`'s own
+        // `.onAppear`/`.onDisappear`) — a thread pushed via a nested
+        // `NavigationStack` is genuinely per-navigation state, not a
+        // `detail(for:)` destination subject to this remount at all.
+        model.observe()
+        return model
     }
 
     public func makeConnectViewModel() -> ConnectViewModel {

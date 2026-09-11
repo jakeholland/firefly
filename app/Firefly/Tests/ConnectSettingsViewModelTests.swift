@@ -840,6 +840,37 @@ final class AdminWriteConfirmationStateMachineTests: XCTestCase {
         XCTAssertFalse(vm.isConnected)
         vm.stopObserving()
     }
+
+    /// PR #276 follow-up (app: singleton view models own their
+    /// subscriptions in the composition root) — same test shape as
+    /// `FireflyModelTests/AppGraphTests.swift`'s
+    /// `testConnectViewModelObservesAutomaticallyWithNoCallerEverCallingObserve`,
+    /// now for `SettingsViewModel`. Fails pre-fix: before
+    /// `SettingsViewModel.makeObserving(...)` existed,
+    /// `SettingsViewModel(store:channelImport:client:)` alone started no
+    /// subscription at all — only `SettingsScreen.onAppear` did — so
+    /// `isConnected` never left its `init`-time snapshot for a view
+    /// model no screen had shown yet (or one shown once and then
+    /// remounted away, `ConnectScreen`'s own NavigationSplitView bug).
+    func testSettingsViewModelObservesAutomaticallyWithNoCallerEverCallingObserve() async {
+        let client = RecordingAdminWriteClient()
+        client.connectedNodeNum = nil
+        let vm = SettingsViewModel.makeObserving(store: InMemorySettingsStore(),
+                                                  channelImport: ChannelImportViewModel(client: client),
+                                                  client: client)
+        // Deliberately NOT calling `vm.observe()` here — the whole point
+        // of this test; `.makeObserving(...)` above already did.
+        XCTAssertFalse(vm.isConnected)
+
+        client.yieldLink(.ready)
+        for _ in 0..<200 where !vm.isConnected {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertTrue(vm.isConnected,
+                       "the Settings screen must reflect .ready even if no screen ever called observe() itself — " +
+                       "SettingsViewModel.makeObserving(...) owns starting this subscription, not " +
+                       "SettingsScreen.onAppear")
+    }
 }
 
 // MARK: - Node picker (PeripheralDiscovery)
