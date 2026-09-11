@@ -14,6 +14,33 @@ import FireflyMesh
 import MeshtasticProto
 import XCTest
 
+/// Root-caused against CI run 34606690299 (`testHandshakeFailsHonestlyOnce
+/// EveryBoundedRetryIsSpent` timed out "waiting for 3 sent message(s); saw
+/// 2" after 12.9s): every `MeshtasticClient` this file constructs drives
+/// the real `handleTransportReconnected()` retry loop, and even though
+/// every test here already dials `handshakeRetryBaseDelay`/
+/// `handshakeRetryMaxDelay` down to milliseconds, that loop used to wait
+/// them out with a bare, real `Task.sleep` (`MeshtasticClient
+/// .handshakeRetryClock`'s own doc comment) — real wall-clock time a
+/// loaded CI runner's cooperative-thread-pool contention can inflate well
+/// past even a generous test timeout, no matter how small the nominal
+/// delay is. This resolves near-instantly instead, so every test in this
+/// file exercises the retry LOOP's own logic (attempt counts, the
+/// `.reconnecting`/`.failed` events it publishes) with no real elapsed
+/// time riding on it — the pure `handshakeRetryDelay(forAttempt:)` table
+/// itself (`testHandshakeRetryDelayDoublesAndCaps`/
+/// `testHandshakeRetryDelayWorksAtSubSecondPrecision`, below) is
+/// untouched by this and keeps pinning the real durations.
+private struct ImmediateHandshakeRetryClock: HandshakeRetryClock {
+    func sleep(for duration: Duration) async throws {
+        // A real (tiny) suspension, not a busy-loop: lets the actor's
+        // other queued work (the transport's next injected frame, the
+        // test's own polling) interleave normally, same as a real sleep
+        // would, but with no dependency on `duration` actually elapsing.
+        try await Task.sleep(for: .zero)
+    }
+}
+
 final class ClientReconnectTests: XCTestCase {
 
     // MARK: - FromRadio builders (same shapes as ClientHandshakeTests)
@@ -50,8 +77,16 @@ final class ClientReconnectTests: XCTestCase {
 
     private struct TestTimeout: Error {}
 
+    // 200 * 5ms = 1s worst-case ceiling — the package-wide "no test may
+    // sleep more than ~1s total" rule (see `ImmediateHandshakeRetryClock`'s
+    // own doc comment). Every `MeshtasticClient` this file constructs now
+    // injects that clock, so in a genuinely passing run this loop resolves
+    // in a handful of 5ms polls; this ceiling only bounds the FAILURE
+    // case, and 1s is plenty to catch a real hang without letting a
+    // loaded runner's contention alone stretch it out to CI-timeout-scale
+    // like the un-injected retry backoff used to (CI run 34606690299).
     private func waitForSentCount(_ n: Int, on transport: LoopbackTransport, file: StaticString = #filePath, line: UInt = #line) async throws {
-        for _ in 0..<400 {
+        for _ in 0..<200 {
             if transport.sentMessages.count >= n { return }
             try await Task.sleep(for: .milliseconds(5))
         }
@@ -103,7 +138,7 @@ final class ClientReconnectTests: XCTestCase {
 
     func testConcurrentConnectCallsDoNotDuplicateTheReceiveSubscription() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport)
+        let client = MeshtasticClient(transport: transport, handshakeRetryClock: ImmediateHandshakeRetryClock())
 
         // The FIRST call's reentrancy guard (`isConnectAttemptInFlight`)
         // is set synchronously, before its first suspension point — a
@@ -142,7 +177,7 @@ final class ClientReconnectTests: XCTestCase {
 
     func testReconnectAfterLossRebuildsNodeDBOnceAndRedoesTheHandshakeOnce() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport)
+        let client = MeshtasticClient(transport: transport, handshakeRetryClock: ImmediateHandshakeRetryClock())
 
         let states = client.linkState()
         var readyCount = 0
@@ -190,7 +225,7 @@ final class ClientReconnectTests: XCTestCase {
     /// .consumeTransportEvents`'s own doc comment) is what pins this.
     func testRapidDoubleReadyDoesNotStartConcurrentHandshakeAttempts() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport)
+        let client = MeshtasticClient(transport: transport, handshakeRetryClock: ImmediateHandshakeRetryClock())
 
         let states = client.linkState()
         var readyCount = 0
@@ -257,7 +292,8 @@ final class ClientReconnectTests: XCTestCase {
             nodeDBPhaseTimeout: .seconds(5),
             handshakeRetryLimit: 3,
             handshakeRetryBaseDelay: .milliseconds(30),
-            handshakeRetryMaxDelay: .milliseconds(300))
+            handshakeRetryMaxDelay: .milliseconds(300),
+            handshakeRetryClock: ImmediateHandshakeRetryClock())
 
         let states = client.linkState()
         var readyCount = 0
@@ -317,7 +353,8 @@ final class ClientReconnectTests: XCTestCase {
             nodeDBPhaseTimeout: .seconds(5),
             handshakeRetryLimit: 3,
             handshakeRetryBaseDelay: .milliseconds(30),
-            handshakeRetryMaxDelay: .milliseconds(300))
+            handshakeRetryMaxDelay: .milliseconds(300),
+            handshakeRetryClock: ImmediateHandshakeRetryClock())
 
         let states = client.linkState()
         var seen: [LinkState] = []
@@ -363,7 +400,8 @@ final class ClientReconnectTests: XCTestCase {
             nodeDBPhaseTimeout: .seconds(5),
             handshakeRetryLimit: 2, // one initial attempt + one retry, then give up
             handshakeRetryBaseDelay: .milliseconds(10),
-            handshakeRetryMaxDelay: .milliseconds(50))
+            handshakeRetryMaxDelay: .milliseconds(50),
+            handshakeRetryClock: ImmediateHandshakeRetryClock())
 
         let states = client.linkState()
         var seen: [LinkState] = []

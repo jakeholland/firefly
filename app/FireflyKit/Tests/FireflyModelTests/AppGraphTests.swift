@@ -171,7 +171,15 @@ private final class RecordingHapticSignaling: HapticSignaling, @unchecked Sendab
 @MainActor
 final class AppGraphTests: XCTestCase {
 
-    private func waitUntil(_ condition: @escaping () -> Bool, timeout: Int = 400) async {
+    // 200 * 5ms = 1s worst-case ceiling — matches the package-wide "no
+    // test may sleep more than ~1s total" rule
+    // (`ClientReconnectTests.waitForSentCount`'s own doc comment). Every
+    // client this file drives is `CountingClient`, a plain test double
+    // with no real backoff/timeout of its own — this loop only ever
+    // outlasts its typical handful of 5ms polls when a test is
+    // genuinely broken, so tightening the ceiling only speeds up that
+    // failure, it does not risk a false one.
+    private func waitUntil(_ condition: @escaping () -> Bool, timeout: Int = 200) async {
         for _ in 0..<timeout where !condition() {
             try? await Task.sleep(nanoseconds: 5_000_000)
         }

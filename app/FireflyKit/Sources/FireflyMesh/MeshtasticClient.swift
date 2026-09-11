@@ -48,6 +48,40 @@ public enum MeshtasticClientError: Error, Equatable, Sendable {
     case alreadyConnecting
 }
 
+/// The seam between the handshake-retry loop
+/// (`MeshtasticClient.handleTransportReconnected()`) and however it
+/// actually waits out the delay between attempts. `handshakeRetryDelay(
+/// forAttempt:)` itself stays a PURE function of `Duration` in, `Duration`
+/// out — `testHandshakeRetryDelayDoublesAndCaps`/
+/// `testHandshakeRetryDelayWorksAtSubSecondPrecision` exercise that real
+/// math directly, no clock involved. This protocol is only about what
+/// happens to the `Duration` it returns: production actually waits it
+/// out (`SystemHandshakeRetryClock`); a test that only cares about the
+/// retry LOOP's own behaviour — attempt counts, the `.reconnecting`/
+/// `.failed` events it publishes — can inject something that resolves
+/// near-instantly instead, so that behaviour is exercised deterministically
+/// rather than by dialling `handshakeRetryBaseDelay` down to a handful of
+/// milliseconds and then still waiting out that many milliseconds of REAL
+/// wall-clock time per attempt. That distinction is exactly what CI run
+/// 34606690299 found: `ClientReconnectTests
+/// .testHandshakeFailsHonestlyOnceEveryBoundedRetryIsSpent` drove the
+/// real backoff with real (if small) `Task.sleep`s, and a loaded runner's
+/// cooperative-thread-pool contention inflated those small sleeps (and
+/// the polling loops waiting on their effects) well past the test's own
+/// timeout even though the nominal, uncontended total was under 100ms.
+public protocol HandshakeRetryClock: Sendable {
+    func sleep(for duration: Duration) async throws
+}
+
+/// Production default — an actual wall-clock wait for the actual
+/// computed backoff delay.
+public struct SystemHandshakeRetryClock: HandshakeRetryClock {
+    public init() {}
+    public func sleep(for duration: Duration) async throws {
+        try await Task.sleep(for: duration)
+    }
+}
+
 /// The real Meshtastic client: drives `MeshTransport`, runs the
 /// handshake, maintains `NodeDB`, and turns routing acks into
 /// `DeliveryState` transitions. An actor — CoreBluetooth delegate
@@ -179,6 +213,12 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     private let handshakeRetryLimit: Int
     private let handshakeRetryBaseDelay: Duration
     private let handshakeRetryMaxDelay: Duration
+    /// What actually waits out `handshakeRetryDelay(forAttempt:)` between
+    /// attempts — see `HandshakeRetryClock`'s own doc comment. Defaults to
+    /// a real wall-clock wait; a test exercising the retry LOOP itself
+    /// (as opposed to the pure backoff-table math) injects a near-instant
+    /// one instead.
+    private let handshakeRetryClock: HandshakeRetryClock
 
     public init(
         transport: MeshTransport,
@@ -188,7 +228,8 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         heartbeatGrace: Duration = .seconds(5),
         handshakeRetryLimit: Int = 6,
         handshakeRetryBaseDelay: Duration = .seconds(2),
-        handshakeRetryMaxDelay: Duration = .seconds(60)
+        handshakeRetryMaxDelay: Duration = .seconds(60),
+        handshakeRetryClock: HandshakeRetryClock = SystemHandshakeRetryClock()
     ) {
         self.transport = transport
         self.configPhaseTimeout = configPhaseTimeout
@@ -198,6 +239,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         self.handshakeRetryLimit = handshakeRetryLimit
         self.handshakeRetryBaseDelay = handshakeRetryBaseDelay
         self.handshakeRetryMaxDelay = handshakeRetryMaxDelay
+        self.handshakeRetryClock = handshakeRetryClock
         // Seeded, not started at 1: two client lifetimes that both start
         // packet ids at 1 collide on every id until the higher session's
         // send count is exceeded, against Meshtastic's short per-(from,
@@ -593,7 +635,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
                 }
                 let delay = Self.handshakeRetryDelay(
                     forAttempt: attempt, base: handshakeRetryBaseDelay, cap: handshakeRetryMaxDelay)
-                try? await Task.sleep(for: delay)
+                try? await handshakeRetryClock.sleep(for: delay)
                 if Task.isCancelled { return }
             }
         }
