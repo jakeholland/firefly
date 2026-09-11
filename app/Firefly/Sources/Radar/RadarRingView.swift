@@ -70,7 +70,7 @@ struct RadarRingView: View {
     }
 
     @ViewBuilder
-    private func crewDot(_ dot: RadarDot) -> some View {
+    private func crewDot(_ dot: RadarSnapshotDot) -> some View {
         let color = Color.radarCrew(index: dot.colorIndex, colorblind: colorblind)
         ZStack {
             if dot.place {
@@ -99,7 +99,7 @@ struct RadarRingView: View {
     }
 
     @ViewBuilder
-    private func signalDot(_ dot: RadarSignalDot) -> some View {
+    private func signalDot(_ dot: RadarSnapshotSignalDot) -> some View {
         let color = tierColor(dot.tier)
         Group {
             if dot.viaRelay || dot.tier == .none {

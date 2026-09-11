@@ -55,20 +55,28 @@ final class DeliveryStateTests: XCTestCase {
         // does not replay, so the stream must exist before `connect()`
         // and `sendText()` can yield into it.
         let deliveryStream = client.deliveryUpdates()
-        var seen: [DeliveryState] = []
+        var seen: [DeliveryEvent] = []
         let collector = Task {
-            for await (_, state) in deliveryStream {
-                seen.append(state)
+            for await event in deliveryStream {
+                seen.append(event)
                 if seen.count == 2 { break }
             }
         }
         try await client.connect()
-        let id = try await client.sendText("WHERE", to: meshBroadcastAddress, wantAck: false)
+        let packetID = try await client.sendText("WHERE", to: meshBroadcastAddress, wantAck: false)
         _ = await collector.result
 
-        XCTAssertGreaterThan(id, 0)
-        XCTAssertEqual(seen, [.waiting, .sent])
-        XCTAssertFalse(seen.contains(.delivered))
+        XCTAssertGreaterThan(packetID, 0)
+        guard case .waiting(let outboxID) = seen.first else {
+            return XCTFail("first event must be .waiting, got \(String(describing: seen.first))")
+        }
+        guard case .sent(let sentOutboxID, let sentPacketID, let wantAck) = seen.last else {
+            return XCTFail("second event must be .sent, got \(String(describing: seen.last))")
+        }
+        XCTAssertEqual(sentOutboxID, outboxID, "the SAME outboxID must carry through WAITING -> SENT")
+        XCTAssertEqual(sentPacketID, PacketID(packetID), "the packetID .sent reports must match sendText's return")
+        XCTAssertFalse(wantAck, "a broadcast never requests a routing ack")
+        XCTAssertFalse(seen.contains { if case .delivered = $0 { return true } else { return false } })
         XCTAssertEqual(transport.sentMessages.count, 1)
     }
 }

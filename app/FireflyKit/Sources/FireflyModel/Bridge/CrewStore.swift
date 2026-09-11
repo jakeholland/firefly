@@ -1,0 +1,317 @@
+//
+//  CrewStore.swift — the Swift-safe wrapper over `firmware/core/ff_crew`
+//  (docs/specs/A01-companion-app.md, slice B).
+//
+//  Heap-owns exactly one `ff_crew_t` and the `CoreClock` it borrows
+//  (see CoreClock.swift's top comment for why the two are allocated and
+//  freed together), initialised once by `ff_crew_init` and torn down
+//  once by `deinit`. Every public entry point takes and returns plain
+//  Swift values — no `UnsafeMutablePointer`, no imported C tuple — per
+//  the bridge's "C types never leave the bridge" rule; the raw pointer
+//  exists only as an `internal` seam for other Bridge/* types in this
+//  module (`RadarBridge` needs the whole roster, not a per-member
+//  snapshot, to call `ff_radar_compute`).
+//
+//  Threading: not `@MainActor` itself (the bridge takes plain values,
+//  so it is testable with no actor context at all — see this file's
+//  own tests), but docs/specs/A01-companion-app.md's "Threading model"
+//  requires every caller to confine ONE instance to a single isolation
+//  domain (`CoreStore`'s `@MainActor`, in the app) — the C core has no
+//  locks, by design, and this wrapper adds none either.
+//
+import FireflyCore
+import Foundation
+
+/// `ff_crew_presence_t` (core/ff_crew.h) — "is the radio still hearing
+/// this person", from ANY packet, never gated on a position ever having
+/// arrived. See ff_crew.h's own doc comment for the full
+/// presence-vs-freshness distinction this axis is half of.
+public enum HeardPresence: Sendable, Equatable, CaseIterable {
+    case heard, stale, lost, never
+
+    init(ffPresence: ff_crew_presence_t) {
+        switch ffPresence {
+        case FF_CREW_PRESENCE_HEARD: self = .heard
+        case FF_CREW_PRESENCE_STALE: self = .stale
+        case FF_CREW_PRESENCE_LOST: self = .lost
+        default: self = .never
+        }
+    }
+}
+
+/// `ff_freshness_t` (core/ff_crew.h) — "how much to trust this
+/// member's POSITION", a separate axis from `HeardPresence` above.
+/// `.asserted` is issue #33's whole point: a typed-in (Meshtastic
+/// LOC_MANUAL) position is not a measurement, so elapsed time is a
+/// category error for it — it can never be simultaneously `.asserted`
+/// and `.live`/`.stale`/`.lost`/`.never`.
+public enum FreshnessCategory: Sendable, Equatable, CaseIterable {
+    case live, stale, lost, never, asserted
+
+    init(ffFreshness: ff_freshness_t) {
+        switch ffFreshness {
+        case FF_FRESH_LIVE: self = .live
+        case FF_FRESH_STALE: self = .stale
+        case FF_FRESH_LOST: self = .lost
+        case FF_FRESH_ASSERTED: self = .asserted
+        default: self = .never
+        }
+    }
+}
+
+/// `ff_crew_rssi_trend`'s -1/0/+1, named rather than left as a raw
+/// integer a renderer would have to re-interpret.
+public enum RSSITrend: Sendable, Equatable {
+    case rising, falling, flat
+
+    init(raw: Int8) {
+        if raw > 0 { self = .rising } else if raw < 0 { self = .falling } else { self = .flat }
+    }
+}
+
+/// A read-only snapshot of one `ff_crew_member_t`, decoded into plain
+/// Swift values as of the `now` the caller supplied — ages are computed
+/// at snapshot time, never cached, matching every `ff_crew_*` freshness
+/// function's own "explicit `now_ms` in" convention (ff_crew.h's top
+/// comment).
+public struct CrewMember: Sendable, Equatable, Identifiable {
+    public var id: UInt32 { nodeID }
+    public let nodeID: UInt32
+    public let shortName: String
+    public let longName: String
+    /// `ff_crew_display_name`'s own answer: `longName` when non-empty,
+    /// else `shortName` — computed by calling the core function itself,
+    /// not a reimplementation of its selection rule.
+    public let displayName: String
+    public let initial: Character?
+    public let colorIndex: UInt8
+    public let paired: Bool
+
+    public struct Position: Sendable, Equatable {
+        public let latitude: Double
+        public let longitude: Double
+        /// `now - pos_age_ms` at the moment this snapshot was taken
+        /// (wraparound-safe unsigned subtraction, `ff_clock_t`'s own
+        /// convention).
+        public let ageMs: UInt32
+        /// LOC_MANUAL — typed in, never measured (issue #33). See
+        /// `FreshnessCategory.asserted`.
+        public let asserted: Bool
+        /// nil = the sender didn't state precision — NOT full
+        /// precision (issue #47).
+        public let precisionBits: UInt8?
+    }
+    /// nil = no position has ever arrived for this member
+    /// (`FF_FRESH_NEVER`).
+    public let position: Position?
+
+    /// nil = unknown (`battery_pct == -1`).
+    public let batteryPercent: Int8?
+    public let status: String
+
+    public struct DirectSignal: Sendable, Equatable {
+        public let rssiDbm: Int16
+        public let ageMs: UInt32
+    }
+    /// nil = never had a DIRECT packet (`rssi_dbm == INT16_MIN`). A
+    /// relayed packet's RSSI belongs to the relay, never the sender.
+    public let directSignal: DirectSignal?
+
+    public let freshness: FreshnessCategory
+    public let heardPresence: HeardPresence
+    /// True iff the MOST RECENT sighting (not necessarily the latest
+    /// direct RSSI) arrived direct rather than relayed.
+    public let heardDirect: Bool
+
+    static func decode(_ member: ff_crew_member_t, now: UInt32) -> CrewMember {
+        var m = member
+        let shortName = FixedCString.decode(m.name)
+        let longName = FixedCString.decode(m.long_name)
+        let status = FixedCString.decode(m.status)
+        let (display, freshness, presence) = withUnsafePointer(to: &m) {
+            (ptr: UnsafePointer<ff_crew_member_t>) -> (String, FreshnessCategory, HeardPresence) in
+            let displayName = String(cString: ff_crew_display_name(ptr))
+            let fresh = FreshnessCategory(ffFreshness: ff_crew_freshness(ptr, now))
+            let heard = HeardPresence(ffPresence: ff_crew_presence(ptr, now))
+            return (displayName, fresh, heard)
+        }
+
+        let position: Position? = m.has_pos
+            ? Position(latitude: m.pos.lat, longitude: m.pos.lon, ageMs: now &- m.pos_age_ms,
+                       asserted: m.pos_asserted, precisionBits: m.has_precision_bits ? m.precision_bits : nil)
+            : nil
+        let directSignal: DirectSignal? = m.rssi_dbm == Int16.min
+            ? nil
+            : DirectSignal(rssiDbm: m.rssi_dbm, ageMs: now &- m.rssi_age_ms)
+
+        return CrewMember(
+            nodeID: m.node_id,
+            shortName: shortName,
+            longName: longName,
+            displayName: display,
+            initial: Character(ffInitial: m.initial),
+            colorIndex: m.color_idx,
+            paired: m.paired,
+            position: position,
+            batteryPercent: m.battery_pct == -1 ? nil : m.battery_pct,
+            status: status,
+            directSignal: directSignal,
+            freshness: freshness,
+            heardPresence: presence,
+            heardDirect: m.heard_direct
+        )
+    }
+}
+
+/// Heap-owns one `ff_crew_t` (+ the `CoreClock` it borrows). See this
+/// file's top comment for the ownership/threading rules.
+public final class CrewStore {
+    private let context: UnsafeMutablePointer<ff_crew_t>
+    private let clock: CoreClock
+
+    /// Every node id this store has ever created a slot for, in
+    /// first-seen order — tracked here in Swift rather than by walking
+    /// `ff_crew_t.members[]` (a fixed C array imported as an opaque
+    /// tuple with no per-index accessor in the public header; `members`
+    /// below reads each one back through `ff_crew_find`, the same
+    /// public entry point any other caller would use).
+    private var nodeIDs: [UInt32] = []
+
+    public init(now: @escaping () -> UInt32 = FireflyClock.nowMillis) {
+        clock = CoreClock(now: now)
+        context = UnsafeMutablePointer<ff_crew_t>.allocate(capacity: 1)
+        context.initialize(to: ff_crew_t())
+        ff_crew_init(context, clock.raw)
+    }
+
+    deinit {
+        context.deinitialize(count: 1)
+        context.deallocate()
+        // `clock` is released by ARC right after this deinit body
+        // returns, which is fine: nothing dereferences `clock.raw`
+        // once `context` — the only thing that held it — is gone.
+    }
+
+    /// Internal-only: the live `ff_crew_t` this store owns, for other
+    /// Bridge/* types in this module. Never exposed outside
+    /// `FireflyModel` — "C types never leave the bridge."
+    var raw: UnsafeMutablePointer<ff_crew_t> { context }
+
+    private func track(_ nodeID: UInt32) {
+        if ff_crew_find(context, nodeID) != nil, !nodeIDs.contains(nodeID) {
+            nodeIDs.append(nodeID)
+        }
+    }
+
+    /// Find-or-create a slot for `nodeID`. Returns `false` only when the
+    /// roster is full (`FF_CREW_MAX` = 8) and `nodeID` isn't already one
+    /// of them — no eviction in v1 (ff_crew.h's own documented policy).
+    @discardableResult
+    public func upsert(nodeID: UInt32) -> Bool {
+        let ok = ff_crew_upsert(context, nodeID) != nil
+        if ok { track(nodeID) }
+        return ok
+    }
+
+    public func setPaired(nodeID: UInt32, paired: Bool) {
+        ff_crew_set_paired(context, nodeID, paired)
+        track(nodeID)
+    }
+
+    /// Provenance/precision accompanying one position report — Swift's
+    /// side of `ff_crew_pos_meta_t`. `.none` (not asserted, precision
+    /// unknown) is `FF_CREW_POS_META_NONE`'s own "least-claiming"
+    /// default.
+    public struct PositionMeta: Sendable, Equatable {
+        public var asserted: Bool
+        public var precisionBits: UInt8?
+        public init(asserted: Bool = false, precisionBits: UInt8? = nil) {
+            self.asserted = asserted
+            self.precisionBits = precisionBits
+        }
+        public static let none = PositionMeta()
+
+        var ffValue: ff_crew_pos_meta_t {
+            ff_crew_pos_meta_t(asserted: asserted,
+                                has_precision_bits: precisionBits != nil,
+                                precision_bits: precisionBits ?? 0)
+        }
+    }
+
+    /// Records a position fix. `rxTimeMs` is the caller's own clock
+    /// reading at receipt — use `FireflyClock.millis(since:)` on the
+    /// packet's own timestamp when one exists, never a re-read of "now"
+    /// for a fix that already happened.
+    public func onPosition(nodeID: UInt32, latitude: Double, longitude: Double, rxTimeMs: UInt32,
+                            meta: PositionMeta = .none) {
+        ff_crew_on_position(context, nodeID, ff_latlon_t(lat: latitude, lon: longitude), rxTimeMs, meta.ffValue)
+        track(nodeID)
+    }
+
+    /// Direct-packet RSSI only — never call this for a relayed packet's
+    /// reading (the caller's job to gate, same as core's).
+    public func onRSSI(nodeID: UInt32, rssiDbm: Int16) {
+        ff_crew_on_rssi(context, nodeID, rssiDbm)
+        track(nodeID)
+    }
+
+    /// Records that ANY packet arrived from `nodeID`, direct or relayed.
+    public func onHeard(nodeID: UInt32, rxTimeMs: UInt32, direct: Bool) {
+        ff_crew_on_heard(context, nodeID, rxTimeMs, direct)
+        track(nodeID)
+    }
+
+    public func member(nodeID: UInt32, now: UInt32) -> CrewMember? {
+        guard let ptr = ff_crew_find(context, nodeID) else { return nil }
+        return CrewMember.decode(ptr.pointee, now: now)
+    }
+
+    /// Every member this store has ever created a slot for, in
+    /// first-seen order.
+    public func members(now: UInt32) -> [CrewMember] {
+        nodeIDs.compactMap { member(nodeID: $0, now: now) }
+    }
+
+    public var count: Int { Int(context.pointee.count) }
+
+    public func selected(now: UInt32) -> CrewMember? {
+        guard let ptr = ff_crew_selected(context) else { return nil }
+        return CrewMember.decode(ptr.pointee, now: now)
+    }
+
+    public func selectNext() { ff_crew_select_next(context) }
+
+    public func selectNode(_ nodeID: UInt32) { ff_crew_select_node(context, nodeID) }
+
+    /// `distanceM: nil` means "distance unknown" (the RSSI leg of the
+    /// OR can still fire honestly).
+    public func closeRange(nodeID: UInt32, distanceM: Float?, now: UInt32) -> Bool {
+        guard let ptr = ff_crew_find(context, nodeID) else { return false }
+        return ff_crew_close_range(ptr, distanceM ?? -1, now)
+    }
+
+    public func rssiTrend(nodeID: UInt32, now: UInt32) -> RSSITrend {
+        RSSITrend(raw: ff_crew_rssi_trend(context, nodeID, now))
+    }
+
+    /// `ff_fmt_distance` — metric/imperial formatting is the puck's own
+    /// unit-boundary rules, not reimplemented here.
+    public static func formatDistance(meters: Float, imperial: Bool) -> String {
+        var buf = [CChar](repeating: 0, count: 32)
+        ff_fmt_distance(&buf, buf.count, meters, imperial)
+        return String(cString: buf)
+    }
+
+    /// `ff_fmt_age`.
+    public static func formatAge(ms: UInt32) -> String {
+        var buf = [CChar](repeating: 0, count: 32)
+        ff_fmt_age(&buf, buf.count, ms)
+        return String(cString: buf)
+    }
+
+    /// `ff_crew_pos_precision_grid_m` — the approximate cell edge a
+    /// degraded-precision fix could be anywhere inside (issue #47).
+    public static func positionPrecisionGridMeters(bits: UInt8) -> Float {
+        ff_crew_pos_precision_grid_m(bits)
+    }
+}

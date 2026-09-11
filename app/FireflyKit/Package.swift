@@ -78,7 +78,12 @@ let package = Package(
             path: "Sources/FireflyModel"
         ),
 
-        .testTarget(name: "FireflyCoreTests", dependencies: ["FireflyCore"], path: "Tests/FireflyCoreTests"),
+        // "FireflyModel" appended for slice B: Bridge*.swift tests
+        // exercise the Bridge/* wrapper types, which live in
+        // FireflyModel, not FireflyCore itself (docs/specs/A01-companion-app.md's
+        // shared-file table — a dependency appended to the array, never
+        // reordering another slice's entry).
+        .testTarget(name: "FireflyCoreTests", dependencies: ["FireflyCore", "FireflyModel"], path: "Tests/FireflyCoreTests"),
         .testTarget(name: "MeshtasticProtoTests", dependencies: ["MeshtasticProto"], path: "Tests/MeshtasticProtoTests"),
         .testTarget(name: "FireflyMeshTests", dependencies: ["FireflyMesh"], path: "Tests/FireflyMeshTests"),
         .testTarget(name: "FireflyModelTests", dependencies: ["FireflyModel"], path: "Tests/FireflyModelTests"),

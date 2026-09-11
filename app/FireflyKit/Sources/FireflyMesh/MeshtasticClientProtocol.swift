@@ -87,8 +87,12 @@ public protocol MeshtasticClientProtocol: AnyObject, Sendable {
     /// getting its own copy. Every stream is `.bufferingNewest(4096)`.
     func linkState() -> AsyncStream<LinkState>
     func nodeUpdates() -> AsyncStream<MeshNodeSnapshot>
-    /// (packetID, state) as routing acks and ack timeouts resolve.
-    func deliveryUpdates() -> AsyncStream<(UInt32, DeliveryState)>
+    /// One `DeliveryEvent` per WAITING/SENT/DELIVERED/NO_ACK(NAK)/DROPPED
+    /// transition this client observes. The ack-TIMEOUT half of NO_ACK is
+    /// deliberately not reported here — it has no per-message key to
+    /// give, and is instead `CoreStore.tick(nowMs:)`'s job, mirroring
+    /// `ff_feed_expire_pending_acks` being a tick sweep on the puck too.
+    func deliveryUpdates() -> AsyncStream<DeliveryEvent>
 
     func connect() async throws
     func disconnect() async
@@ -109,11 +113,19 @@ public let meshBroadcastAddress: UInt32 = 0xFFFF_FFFF
 public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Sendable {
     private let linkHub = EventHub<LinkState>()
     private let nodeHub = EventHub<MeshNodeSnapshot>()
-    private let deliveryHub = EventHub<(UInt32, DeliveryState)>()
+    private let deliveryHub = EventHub<DeliveryEvent>()
 
     private let transport: MeshTransport
     private let lock = NSLock()
-    private var nextPacketID: UInt32 = 1
+    // Two INDEPENDENT counters, deliberately never sharing a value space
+    // — a stand-in for `shell_next_outbox_id` (the retry-queue key,
+    // assigned before a send is even attempted) and the radio's own
+    // packet id (known only once the transport accepts the send). Same
+    // two-key split `ff_feed.h`/`ff_shell.c` use; keeping them numerically
+    // distinct here is what makes a test that accidentally aliases them
+    // (PR #261 review, finding 1) impossible to write by coincidence.
+    private var nextOutboxID: UInt32 = 1
+    private var nextPacketID: UInt32 = 1_000_001
     private var sentTexts: [(String, UInt32, Bool)] = []
 
     public init(transport: MeshTransport = LoopbackTransport()) {
@@ -122,7 +134,7 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
 
     public func linkState() -> AsyncStream<LinkState> { linkHub.subscribe() }
     public func nodeUpdates() -> AsyncStream<MeshNodeSnapshot> { nodeHub.subscribe() }
-    public func deliveryUpdates() -> AsyncStream<(UInt32, DeliveryState)> { deliveryHub.subscribe() }
+    public func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
 
     public func connect() async throws {
         linkHub.yield(.connecting)
@@ -138,21 +150,29 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
 
     @discardableResult
     public func sendText(_ text: String, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
-        let id = nextID(text: text, destination: destination, wantAck: wantAck)
-        deliveryHub.yield((id, .waiting))
+        let outboxID = nextOutbox(text: text, destination: destination, wantAck: wantAck)
+        deliveryHub.yield(.waiting(outboxID: OutboxID(outboxID)))
         try await transport.send(Data(text.utf8))
-        deliveryHub.yield((id, .sent))
+        let packetID = nextPacket()
+        deliveryHub.yield(.sent(outboxID: OutboxID(outboxID), packetID: PacketID(packetID), wantAck: wantAck))
         // No DELIVERED is fabricated. A stub has no mesh to ack it, and
         // a broadcast would never be acked even by a real one.
-        return id
+        return packetID
     }
 
     // Non-async on purpose — see LoopbackTransport.record(_:).
-    private func nextID(text: String, destination: UInt32, wantAck: Bool) -> UInt32 {
+    private func nextOutbox(text: String, destination: UInt32, wantAck: Bool) -> UInt32 {
+        lock.lock(); defer { lock.unlock() }
+        let i = nextOutboxID
+        nextOutboxID &+= 1
+        sentTexts.append((text, destination, wantAck))
+        return i
+    }
+
+    private func nextPacket() -> UInt32 {
         lock.lock(); defer { lock.unlock() }
         let i = nextPacketID
         nextPacketID &+= 1
-        sentTexts.append((text, destination, wantAck))
         return i
     }
 

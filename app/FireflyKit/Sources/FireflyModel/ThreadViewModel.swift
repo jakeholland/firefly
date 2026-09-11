@@ -213,10 +213,32 @@ public final class ThreadViewModel {
             }
         }
         deliveryObservation = Task { [weak self] in
-            for await (packetID, state) in deliveries {
+            for await event in deliveries {
                 guard let self else { return }
-                self.provider.setStatus(packetID: packetID, state: state, at: Date())
-                self.refresh()
+                // `.waiting`/`.sent`/`.dropped` carry the CLIENT's own
+                // `OutboxID` (`MeshtasticClientProtocol.deliveryUpdates()`
+                // fires one of these for every `sendText`, not just this
+                // view model's), a different id space from this view
+                // model's locally-generated `outboxID: UInt64`
+                // (`OutboxIDGenerator`) — there is no mapping from one to
+                // the other here, and none is needed: this view model
+                // already marks SENT synchronously off `sendText`'s own
+                // return value (`attemptSend`) and DROPPED synchronously
+                // in its own catch block. Only `.delivered`/`.noAck` key
+                // off `packetID`, which this view model DOES track
+                // (`FeedMessage.packetID`, stamped by that same
+                // `markSent`), so those two are the only cases that ever
+                // reach the provider from this subscription.
+                switch event {
+                case .delivered(let packetID):
+                    self.provider.setStatus(packetID: packetID.rawValue, state: .delivered, at: Date())
+                    self.refresh()
+                case .noAck(let packetID):
+                    self.provider.setStatus(packetID: packetID.rawValue, state: .noAck, at: Date())
+                    self.refresh()
+                case .waiting, .sent, .dropped:
+                    break
+                }
             }
         }
         refresh()

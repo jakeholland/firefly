@@ -32,15 +32,14 @@ import FireflyMesh
 import Foundation
 import Observation
 
-/// Which conversation. CREW is the always-present communal thread
-/// (broadcast traffic); MEMBER is one paired crew member's 1:1 thread.
-/// Mirrors `ff_conv_kind_t` (`ff_inbox.h`) — CREW is the zero/default
-/// case there too, "a zeroed key is the communal thread, never
-/// accidentally a member."
-public enum ConversationKind: Sendable, Hashable {
-    case crew
-    case member(UInt32)
-}
+// `ConversationKind` (CREW vs. one member's 1:1 thread) now comes from
+// slice B's `Bridge/InboxBridge.swift` — B has landed in this tree, so
+// the stand-in declared here (same two cases, `Sendable, Hashable`) is
+// gone; it collided with the bridge's own `ConversationKind` (which
+// additionally carries `ffKind`/`nodeID` for the real C bridging) as a
+// duplicate top-level type in this module. No call site below changes:
+// `.crew`/`.member(_:)` construct and pattern-match identically either
+// way.
 
 /// The Firefly-protocol message kinds a feed item can carry — mirrors
 /// `ff_feed_kind_t` (`firmware/core/include/ff_feed.h`) minus the
@@ -183,7 +182,7 @@ public struct FeedMessage: Sendable, Equatable, Identifiable {
 /// (CREW has no presence; a traffic-less row has no preview) — the same
 /// "not relevant, zeroed" convention the C struct's own doc comment
 /// states.
-public struct InboxConversation: Sendable, Equatable, Identifiable {
+public struct InboxConversationRow: Sendable, Equatable, Identifiable {
     public var id: ConversationKind { kind }
     public let kind: ConversationKind
     public var displayName: String
@@ -246,7 +245,7 @@ public protocol InboxProviding: AnyObject, Sendable {
     /// Mirrors `ff_inbox_build` + reading every `ff_inbox_conv_at` row —
     /// the full ordered conversation list as of `now`. CREW is always
     /// present.
-    func conversations(now: Date) -> [InboxConversation]
+    func conversations(now: Date) -> [InboxConversationRow]
     /// Mirrors `ff_inbox_thread_build` + reading every
     /// `ff_inbox_thread_at` row — one conversation's messages, oldest
     /// first.
@@ -438,14 +437,14 @@ public final class InMemoryInboxStore: InboxProviding, @unchecked Sendable {
         return count
     }
 
-    public func conversations(now: Date) -> [InboxConversation] {
+    public func conversations(now: Date) -> [InboxConversationRow] {
         lock.lock(); defer { lock.unlock() }
-        var rows: [InboxConversation] = [row(for: .crew, now: now)]
+        var rows: [InboxConversationRow] = [row(for: .crew, now: now)]
         for id in members.keys.sorted() { rows.append(row(for: .member(id), now: now)) }
         return Self.order(rows)
     }
 
-    private func row(for kind: ConversationKind, now: Date) -> InboxConversation {
+    private func row(for kind: ConversationKind, now: Date) -> InboxConversationRow {
         let msgs = (messagesByConversation[kind] ?? []).sorted { $0.timestamp < $1.timestamp }
         let newest = msgs.last
         var displayName = "CREW"
@@ -460,7 +459,7 @@ public final class InMemoryInboxStore: InboxProviding, @unchecked Sendable {
             presence = member.presence
             presenceAge = member.presence == .linked ? nil : member.presenceAgeMS.map { TimeInterval($0) / 1000 }
         }
-        return InboxConversation(
+        return InboxConversationRow(
             kind: kind,
             displayName: displayName,
             initial: initial,
@@ -485,17 +484,17 @@ public final class InMemoryInboxStore: InboxProviding, @unchecked Sendable {
     ///    freshness (freshest first, LINKED last), ties by ascending
     ///    node id. Ties on traffic age (groups 1/2) break the same way:
     ///    CREW first, then ascending node id.
-    static func order(_ rows: [InboxConversation]) -> [InboxConversation] {
-        func group(_ r: InboxConversation) -> Int {
+    static func order(_ rows: [InboxConversationRow]) -> [InboxConversationRow] {
+        func group(_ r: InboxConversationRow) -> Int {
             if r.unreadCount > 0 { return 0 }
             if r.itemCount > 0 { return 1 }
             return 2
         }
-        func nodeID(_ r: InboxConversation) -> Int64 {
+        func nodeID(_ r: InboxConversationRow) -> Int64 {
             if case .member(let id) = r.kind { return Int64(id) }
             return -1 // CREW sorts first among ties
         }
-        func presenceRank(_ r: InboxConversation) -> Int {
+        func presenceRank(_ r: InboxConversationRow) -> Int {
             switch r.presence {
             case .heard: return 0
             case .stale: return 1
@@ -551,7 +550,7 @@ public enum InboxText {
 @MainActor
 @Observable
 public final class InboxViewModel {
-    public private(set) var conversations: [InboxConversation] = []
+    public private(set) var conversations: [InboxConversationRow] = []
 
     private let provider: any InboxProviding
     private let client: any MeshtasticClientProtocol
@@ -574,10 +573,25 @@ public final class InboxViewModel {
         guard deliveryObservation == nil else { return }
         let deliveries = client.deliveryUpdates()
         deliveryObservation = Task { [weak self] in
-            for await (packetID, state) in deliveries {
+            for await event in deliveries {
                 guard let self else { return }
-                self.provider.setStatus(packetID: packetID, state: state, at: Date())
-                self.refresh()
+                // Same reasoning as `ThreadViewModel.observe()`: `.waiting`/
+                // `.sent`/`.dropped` key off the CLIENT's own `OutboxID`, an
+                // id space this view model never tracks (sends go through
+                // `ThreadViewModel`, which marks SENT/DROPPED itself); only
+                // `.delivered`/`.noAck` key off `packetID`, which the
+                // provider already indexes (`setStatus(packetID:...)`), so
+                // those are the only two cases forwarded here.
+                switch event {
+                case .delivered(let packetID):
+                    self.provider.setStatus(packetID: packetID.rawValue, state: .delivered, at: Date())
+                    self.refresh()
+                case .noAck(let packetID):
+                    self.provider.setStatus(packetID: packetID.rawValue, state: .noAck, at: Date())
+                    self.refresh()
+                case .waiting, .sent, .dropped:
+                    break
+                }
             }
         }
         refresh()
