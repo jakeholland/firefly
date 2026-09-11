@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C0BFC53778F0EE2BE1DEB738 /* DemoBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21F2C6209770B8646B166BE9 /* DemoBadge.swift */; };
 		0318ED28B405C25C7661E064 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E30FCFD8A9260E48E8617D /* RootView.swift */; };
 		04CD563093000516B80C6D62 /* FireflyMesh in Frameworks */ = {isa = PBXBuildFile; productRef = 6D80661B0E11F75CD5DBFD53 /* FireflyMesh */; };
 		3B69F83116726CF8C396257C /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 9011CC84111BB0A130A3D3C7 /* FireflyModel */; };
@@ -72,6 +73,7 @@
 		918AE027165FB4634094A385 /* InboxListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxListView.swift; sourceTree = "<group>"; };
 		9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEHardwareTests.swift; sourceTree = "<group>"; };
 		A1E30FCFD8A9260E48E8617D /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		21F2C6209770B8646B166BE9 /* DemoBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoBadge.swift; sourceTree = "<group>"; };
 		B41C74CB306C16EC81337A30 /* ThreadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadView.swift; sourceTree = "<group>"; };
 		B5AE4486A9AE4EFDBC5455E6 /* ConnectSettingsViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectSettingsViewModelTests.swift; sourceTree = "<group>"; };
 		B726C9DB8EA6DA10A760203D /* FireflyAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FireflyAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -220,6 +222,7 @@
 				7C40E6DFE5C85637929993F5 /* FireflyApp.swift */,
 				A1E30FCFD8A9260E48E8617D /* RootView.swift */,
 				543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */,
+				21F2C6209770B8646B166BE9 /* DemoBadge.swift */,
 				11421C91FBEAF497D1C0A149 /* Connect */,
 				7E21803D4BAB256C6C194299 /* Inbox */,
 				04298E47A0AEA46AE6AC544E /* Radar */,
@@ -356,6 +359,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B11B507435D69A999AC9DD1E /* ChannelImportViewModel.swift in Sources */,
+				C0BFC53778F0EE2BE1DEB738 /* DemoBadge.swift in Sources */,
 				47E0809C008E900451404953 /* ConnectScreen.swift in Sources */,
 				C669919991622119FE5BA2FA /* DiagnosticsScreen.swift in Sources */,
 				7E079696E764A0A0F9E02426 /* DiagnosticsViewModel.swift in Sources */,

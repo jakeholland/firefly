@@ -14,6 +14,13 @@ import SwiftUI
 /// needing to know it pushes.
 struct InboxContainerView: View {
     let model: InboxViewModel
+    /// Demo-only (`-FireflyDemoScreen thread`, `RootView`'s own
+    /// mapping): pushes straight to this conversation's thread on
+    /// appear, through the SAME `navigationDestination(item:)` a real
+    /// tap uses — never a second, parallel presentation path — so the
+    /// "Thread with the delivery states" screenshot is the real Thread
+    /// screen, not a stand-in. `nil` in every non-demo build.
+    var demoInitialThread: ConversationKind?
     @State private var activeThread: ThreadViewModel?
 
     var body: some View {
@@ -29,6 +36,10 @@ struct InboxContainerView: View {
         }
         .onAppear { model.observe() }
         .onDisappear { model.stopObserving() }
+        .task {
+            guard let demoInitialThread, activeThread == nil else { return }
+            activeThread = model.openThread(demoInitialThread)
+        }
     }
 }
 
@@ -131,7 +142,20 @@ private struct InboxRow: View {
                 Image(systemName: "person.3.fill")
                     .foregroundStyle(color)
             } else {
-                Text(String(conversation.initial ?? Character(String(conversation.displayName.prefix(1)))))
+                // A paired member with no identity known yet is a real,
+                // reachable state (`ff_crew_member_t.initial`'s own
+                // "'\0' until known" rule — a member paired straight
+                // through `ff_crew_set_paired` with no NodeInfo ever
+                // received keeps an empty name), and
+                // `conversation.displayName.prefix(1)` on an empty
+                // string is an empty `String`, not a `Character` —
+                // `Character("")` traps (bug found via demo mode's Mo,
+                // the honest LOST case: paired, never heard, never
+                // named). A blank glyph is the same "never a '?'
+                // placeholder" rule this app follows everywhere else
+                // an initial can be unknown (`RadarSnapshotDot.initial`,
+                // `CoreRadarComputing.snapshot(from:...)`).
+                Text(String(conversation.initial ?? conversation.displayName.first ?? " "))
                     .font(.system(.callout, design: .rounded).weight(.bold))
                     .foregroundStyle(color)
             }
