@@ -138,6 +138,20 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             build
 
+      # The actual regression suite for the app's view models (Connect,
+      # Settings, Diagnostics, channel import, peripheral discovery). Without
+      # this step FireflyAppTests builds but nothing ever runs it, and a
+      # change to any of those view models could break silently with this
+      # job staying green (PR #262 review, BLOCKING).
+      - name: FireflyAppTests
+        working-directory: app
+        run: |
+          xcodebuild test \
+            -project Firefly.xcodeproj \
+            -scheme Firefly \
+            -destination 'platform=macOS' \
+            -only-testing:FireflyAppTests
+
       # NOT `FIREFLY_HARDWARE=1` and no board: this proves the app-hosted
       # BLE hardware suite builds, launches inside Firefly.app, and SKIPS
       # cleanly on a runner with no radio (docs/specs/A01-companion-app.md,

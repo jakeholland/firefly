@@ -104,21 +104,60 @@ targets:
         BUNDLE_LOADER: "$(TEST_HOST)"
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Firefly.app/Contents/MacOS/Firefly"
 
+  # Slice C's addition — a plain logic-test bundle (no TEST_HOST, no
+  # CoreBluetooth involved) for the view models that live in the APP
+  # target rather than FireflyKit (NearbyNodesViewModel,
+  # ChannelImportViewModel, PeripheralDiscovery, SettingsViewModel,
+  # DiagnosticsViewModel — see docs/specs/A01-companion-app.md's Slice C
+  # "Must add": "Add view-model unit tests"). `swift test` cannot reach
+  # these: they are app-target-only Swift, not part of the FireflyKit
+  # SwiftPM package. `sources` lists exactly those five files, not the
+  # whole Connect/Settings directories, so this target never has to
+  # compile the SwiftUI screens themselves (untestable without
+  # ViewInspector, per the spec) or their Theme+SwiftUI dependency —
+  # `xcodebuild build` on the Firefly target is what proves those.
+  FireflyAppTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Firefly/Sources/Connect/NearbyNodesViewModel.swift
+      - path: Firefly/Sources/Connect/ChannelImportViewModel.swift
+      - path: Firefly/Sources/Connect/PeripheralDiscovery.swift
+      - path: Firefly/Sources/Settings/SettingsViewModel.swift
+      - path: Firefly/Sources/Settings/DiagnosticsViewModel.swift
+      - path: Firefly/Tests
+    dependencies:
+      - package: FireflyKit
+        product: FireflyCore
+      - package: FireflyKit
+        product: MeshtasticProto
+      - package: FireflyKit
+        product: FireflyMesh
+      - package: FireflyKit
+        product: FireflyModel
+    settings:
+      base:
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+
 schemes:
   Firefly:
     build:
       targets:
         Firefly: all
         FireflyHardwareTests: [test]
+        FireflyAppTests: [test]
     run:
       config: Debug
     test:
       config: Debug
       # FireflyKit's own (non-hardware) tests run under `swift test`,
-      # which is faster and needs no simulator or app host. Only the
-      # app-hosted BLE hardware suite runs through this scheme.
+      # which is faster and needs no simulator or app host. The
+      # app-hosted BLE hardware suite and slice C's app-target
+      # view-model suite both run through this scheme.
       targets:
         - name: FireflyHardwareTests
           parallelizable: false
+        - name: FireflyAppTests
     archive:
       config: Release

@@ -29,6 +29,20 @@
             buildForAnalyzing = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "61EA809CD815CB1D1128C085"
+               BuildableName = "FireflyAppTests.xctest"
+               BlueprintName = "FireflyAppTests"
+               ReferencedContainer = "container:Firefly.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "2E869653C9A7BA8AA66ED9F5"
                BuildableName = "FireflyHardwareTests.xctest"
                BlueprintName = "FireflyHardwareTests"
@@ -61,6 +75,17 @@
                BlueprintIdentifier = "2E869653C9A7BA8AA66ED9F5"
                BuildableName = "FireflyHardwareTests.xctest"
                BlueprintName = "FireflyHardwareTests"
+               ReferencedContainer = "container:Firefly.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "61EA809CD815CB1D1128C085"
+               BuildableName = "FireflyAppTests.xctest"
+               BlueprintName = "FireflyAppTests"
                ReferencedContainer = "container:Firefly.xcodeproj">
             </BuildableReference>
          </TestableReference>

@@ -68,7 +68,13 @@ let package = Package(
         ),
         .target(
             name: "FireflyModel",
-            dependencies: ["FireflyCore", "FireflyMesh"],
+            // MeshtasticProto is slice C's addition (append-only per
+            // A01's shared-file table): ChannelURL.swift decodes an
+            // imported channel's protobuf bytes and needs the generated
+            // ChannelSettings/ModuleSettings types to do it with the
+            // same wire format the puck's nanopb sources use, rather
+            // than hand-rolling field parsing.
+            dependencies: ["FireflyCore", "FireflyMesh", "MeshtasticProto"],
             path: "Sources/FireflyModel"
         ),
 

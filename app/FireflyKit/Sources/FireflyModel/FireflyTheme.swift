@@ -21,6 +21,14 @@ public enum FireflyTheme {
     public static let dim: UInt32 = 0x5554_5F
     public static let ink: UInt32 = 0xF2EFE6
 
+    /// The app's error/danger token. `ff_theme.h` has no generic error
+    /// colour of its own — `FF_THEME_MAP_MEDICAL` (0xFF6B6B) is a map-only
+    /// one-off red, deliberately not exposed here. `staleAmber` is what the
+    /// puck actually paints for its alert states (NO MESH, low battery), so
+    /// that is what this derives from rather than inventing a new hex the
+    /// puck has never shown (PR #262 review, SHOULD-FIX 3).
+    public static let alert: UInt32 = staleAmber
+
     /// `ff_theme_crew_color`'s palette, in order — `color_idx` from
     /// `ff_crew_member_t` indexes straight into this.
     public static let crew: [UInt32] = [

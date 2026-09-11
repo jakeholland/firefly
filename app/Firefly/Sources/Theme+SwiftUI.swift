@@ -25,4 +25,5 @@ extension Color {
     static let ffLiveGreen = Color(fireflyHex: FireflyTheme.liveGreen)
     static let ffMuted = Color(fireflyHex: FireflyTheme.muted)
     static let ffInk = Color(fireflyHex: FireflyTheme.ink)
+    static let ffAlert = Color(fireflyHex: FireflyTheme.alert)
 }

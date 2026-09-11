@@ -38,6 +38,12 @@
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>Firefly keeps sending your position to your node while the app is in your pocket, so your crew can still find you.</string>
 
+	<!-- Camera. iOS only — the Connect screen's channel-QR scan sheet
+	     (Slice C, QRScannerSheet.swift). macOS never asks: the same
+	     screen's paste field is the whole story there. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Firefly uses the camera to scan a crew's channel QR code.</string>
+
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>
