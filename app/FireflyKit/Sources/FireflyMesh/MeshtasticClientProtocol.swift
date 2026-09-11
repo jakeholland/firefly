@@ -77,6 +77,54 @@ public struct MeshNodeSnapshot: Sendable, Equatable, Identifiable {
     }
 }
 
+/// Finding 2 (first real-radio session): the passive read seam Settings
+/// needs so "Region UNKNOWN" / "Channel UNKNOWN" stop being permanent —
+/// want_config's own `Config`, `Channel` and self `NodeInfo` frames
+/// already carry the node's current owner name, region, modem preset
+/// and primary channel; before this type existed, `MeshtasticClient`
+/// decoded and then DROPPED every one of those (`.config`/`.channel`
+/// were not even matched in `handle(fromRadio:)`'s switch — see the
+/// `default: break` that used to catch `.config` there).
+///
+/// Every field is independently optional — "unset" and "not yet
+/// reported by this handshake" are the same honest nil, never a
+/// placeholder. Nothing here is a second source of truth for a write:
+/// `applyChannelSet`/`setOwner`/`setRegion` still read back and report
+/// their OWN authoritative result (`ChannelWriteReport`/
+/// `OwnerWriteReport`/`RegionWriteReport`); this snapshot is refreshed
+/// FROM that same read-back so a passive reader (Settings) sees the
+/// same values an active writer already confirmed, without a second
+/// round trip.
+public struct NodeConfigSnapshot: Sendable, Equatable {
+    /// `User.long_name` / `User.short_name` for OUR OWN connected node
+    /// (never a remote one) — the exact fields `setOwner` writes.
+    public var ownerLongName: String?
+    public var ownerShortName: String?
+    public var region: Config.LoRaConfig.RegionCode?
+    public var modemPreset: Config.LoRaConfig.ModemPreset?
+    /// The PRIMARY channel's name (`Channel.Role.primary`). Meshtastic
+    /// ships its own stock preset with an EMPTY name (the modem preset
+    /// name, e.g. "LongFast", is implied rather than stored in
+    /// `settings.name`) — so `nil` here means "no primary channel
+    /// reported yet by this handshake" while `""` means "reported, and
+    /// the node genuinely left it blank." A UI wanting a human label for
+    /// the blank case says so itself (e.g. "(default channel)" —
+    /// `SettingsViewModel.currentChannelName`'s own convention); this
+    /// type never guesses one.
+    public var primaryChannelName: String?
+
+    public init(ownerLongName: String? = nil, ownerShortName: String? = nil,
+                region: Config.LoRaConfig.RegionCode? = nil,
+                modemPreset: Config.LoRaConfig.ModemPreset? = nil,
+                primaryChannelName: String? = nil) {
+        self.ownerLongName = ownerLongName
+        self.ownerShortName = ownerShortName
+        self.region = region
+        self.modemPreset = modemPreset
+        self.primaryChannelName = primaryChannelName
+    }
+}
+
 public struct NodePosition: Sendable, Equatable {
     public enum Source: Sendable, Equatable {
         /// The sender said nothing. Never render this as a GPS fix.
@@ -248,6 +296,35 @@ public protocol MeshtasticClientProtocol: AnyObject, Sendable {
     /// computed BEFORE any write, so the confirmation sheet can state
     /// exactly which slots are free.
     func currentChannelTable() async throws -> [Channel]
+
+    /// Finding 2 — the passive read seam: a fresh, independent,
+    /// CURRENT-VALUE stream of the connected node's own config as
+    /// want_config (and every subsequent admin write's read-back) fills
+    /// it in — same multicast + replay contract as `linkState()`
+    /// (`CurrentValueEventHub`, S1 / M1 review follow-up #267): a
+    /// Settings screen opened AFTER the handshake already completed
+    /// sees the real values immediately, not silence until the next
+    /// change.
+    func nodeConfigUpdates() -> AsyncStream<NodeConfigSnapshot>
+    /// Synchronous snapshot read, same convention as `connectedNodeNum`
+    /// (that property's own doc comment) — nil before anything has ever
+    /// been reported.
+    var connectedNodeConfig: NodeConfigSnapshot? { get }
+}
+
+/// Default "reports nothing yet" implementation for finding 2's two new
+/// requirements, so every OTHER existing conformer (test mocks in
+/// `FireflyModelTests`/`FireflyAppTests` that predate this finding, none
+/// of which exercise node-config reads) keeps compiling without change —
+/// an honest empty answer is exactly what those mocks already report for
+/// everything else they don't model. `StubMeshtasticClient`,
+/// `DemoMeshtasticClient` and the real `MeshtasticClient` each override
+/// both with real behaviour.
+extension MeshtasticClientProtocol {
+    public func nodeConfigUpdates() -> AsyncStream<NodeConfigSnapshot> {
+        AsyncStream { $0.finish() }
+    }
+    public var connectedNodeConfig: NodeConfigSnapshot? { nil }
 }
 
 // MARK: - M3: channel/config write-back (admin messages) — shared types
@@ -577,4 +654,24 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
         lock.lock(); defer { lock.unlock() }
         return sentRegionWrites
     }
+
+    // MARK: - Finding 2: node config passive-read seam — stub semantics
+
+    private let nodeConfigHub = CurrentValueEventHub<NodeConfigSnapshot>()
+    private var _nodeConfig: NodeConfigSnapshot?
+
+    /// Test-injected only, same "never invents" rule as `channelTable`
+    /// above — a stub has no want_config to parse this from. Setting it
+    /// publishes to `nodeConfigUpdates()` too, so a test can exercise
+    /// both the synchronous read and the stream from one call.
+    public var nodeConfig: NodeConfigSnapshot? {
+        get { lock.lock(); defer { lock.unlock() }; return _nodeConfig }
+        set {
+            lock.lock(); _nodeConfig = newValue; lock.unlock()
+            if let newValue { nodeConfigHub.yield(newValue) }
+        }
+    }
+
+    public func nodeConfigUpdates() -> AsyncStream<NodeConfigSnapshot> { nodeConfigHub.subscribe() }
+    public var connectedNodeConfig: NodeConfigSnapshot? { nodeConfig }
 }

@@ -69,6 +69,31 @@ final class ClientHandshakeTests: XCTestCase {
         fromRadio { fr in fr.rebooted = true }
     }
 
+    // Finding 2 (first real-radio session) frame builders.
+
+    private func loraConfigFrame(region: Config.LoRaConfig.RegionCode, modemPreset: Config.LoRaConfig.ModemPreset) -> Data {
+        fromRadio { fr in
+            var lora = Config.LoRaConfig()
+            lora.region = region
+            lora.modemPreset = modemPreset
+            var config = Config()
+            config.lora = lora
+            fr.config = config
+        }
+    }
+
+    private func channelFrame(index: Int32, name: String, role: Channel.Role) -> Data {
+        fromRadio { fr in
+            var settings = ChannelSettings()
+            settings.name = name
+            var channel = Channel()
+            channel.index = index
+            channel.role = role
+            channel.settings = settings
+            fr.channel = channel
+        }
+    }
+
     private func routingFrame(requestID: UInt32, ok: Bool) -> Data {
         fromRadio { fr in
             var packet = MeshPacket()
@@ -394,5 +419,141 @@ final class ClientHandshakeTests: XCTestCase {
         XCTAssertEqual(
             MeshtasticClient.renderedDeliveryState(base: .delivered, wantAck: true, isBroadcast: false, sentAt: longAgo, now: Date()),
             .delivered)
+    }
+
+    // MARK: - Finding 2 (first real-radio session): the passive
+    // node-config read seam — region/modem preset/primary channel/owner
+    // name, read straight off want_config, no separate admin round trip.
+
+    /// `.config(.lora)` used to fall through to `default: break` and
+    /// was silently dropped — the exact reason Settings could never show
+    /// anything but "UNKNOWN" for region without a SEPARATE admin write.
+    func testNodeConfigReadsRegionAndModemPresetFromWantConfig() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport)
+
+        let connectTask = Task { try await client.connect() }
+        try await waitForSentCount(2, on: transport)
+        transport.inject(myInfoFrame(num: 1))
+        transport.inject(loraConfigFrame(region: .us, modemPreset: .longFast))
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyConfig))
+        try await waitForSentCount(3, on: transport)
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyNodeDB))
+        try await connectTask.value
+
+        XCTAssertEqual(client.connectedNodeConfig?.region, .us)
+        XCTAssertEqual(client.connectedNodeConfig?.modemPreset, .longFast)
+    }
+
+    /// The PRIMARY channel's name only — a secondary channel in the same
+    /// table must never overwrite it.
+    func testNodeConfigReadsOnlyThePrimaryChannelName() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport)
+
+        let connectTask = Task { try await client.connect() }
+        try await waitForSentCount(2, on: transport)
+        transport.inject(myInfoFrame(num: 1))
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyConfig))
+        try await waitForSentCount(3, on: transport)
+        transport.inject(channelFrame(index: 0, name: "LongFast", role: .primary))
+        transport.inject(channelFrame(index: 1, name: "Ops", role: .secondary))
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyNodeDB))
+        try await connectTask.value
+
+        XCTAssertEqual(client.connectedNodeConfig?.primaryChannelName, "LongFast")
+    }
+
+    /// The common ordering: `.myInfo` names `myNodeNum` BEFORE this
+    /// node's own `.nodeInfo` is replayed.
+    func testNodeConfigReadsOwnerNameFromSelfNodeInfoAfterMyInfo() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport)
+
+        try await completeHandshake(transport: transport, client: client, myNodeNum: 48_621_524)
+        transport.inject(nodeInfoFrame(num: 48_621_524, shortName: "F1", longName: "Firefly 1"))
+        try await Task.sleep(for: .milliseconds(20))
+
+        XCTAssertEqual(client.connectedNodeConfig?.ownerShortName, "F1")
+        XCTAssertEqual(client.connectedNodeConfig?.ownerLongName, "Firefly 1")
+    }
+
+    /// Order-independence (the OTHER valid order): this node's own
+    /// `.nodeInfo` is replayed BEFORE `.myInfo` ever names `myNodeNum` —
+    /// nothing in the want_config spec promises phase-B ordering relative
+    /// to phase A's own `.myInfo`. The `.configCompleteID` catch-up must
+    /// still resolve the owner name once the whole handshake is done.
+    func testNodeConfigReadsOwnerNameEvenWhenSelfNodeInfoArrivesBeforeMyInfo() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport)
+
+        let connectTask = Task { try await client.connect() }
+        try await waitForSentCount(2, on: transport)
+        // `.nodeInfo` for our own eventual num, injected BEFORE `.myInfo`.
+        transport.inject(nodeInfoFrame(num: 48_621_524, shortName: "F1", longName: "Firefly 1"))
+        transport.inject(myInfoFrame(num: 48_621_524))
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyConfig))
+        try await waitForSentCount(3, on: transport)
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyNodeDB))
+        try await connectTask.value
+
+        XCTAssertEqual(client.connectedNodeConfig?.ownerShortName, "F1")
+        XCTAssertEqual(client.connectedNodeConfig?.ownerLongName, "Firefly 1")
+    }
+
+    /// A stale region/owner/channel from whatever node we were last
+    /// connected to is not an honest "current" value for a fresh
+    /// handshake — `.rebooted` must clear it immediately, not leave it
+    /// standing until the new handshake happens to report its own.
+    func testNodeConfigResetsOnRebootedHandshake() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport)
+
+        let connectTask = Task { try await client.connect() }
+        try await waitForSentCount(2, on: transport)
+        transport.inject(myInfoFrame(num: 1))
+        transport.inject(loraConfigFrame(region: .us, modemPreset: .longFast))
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyConfig))
+        try await waitForSentCount(3, on: transport)
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyNodeDB))
+        try await connectTask.value
+        XCTAssertEqual(client.connectedNodeConfig?.region, .us)
+
+        transport.inject(rebootedFrame())
+        try await waitForSentCount(5, on: transport) // heartbeat, want_config(onlyConfig) again
+        XCTAssertNil(client.connectedNodeConfig?.region, "a reboot must clear the stale region immediately")
+
+        // Let the retried handshake finish so the test does not leak a
+        // running task.
+        transport.inject(myInfoFrame(num: 1))
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyConfig))
+        try await waitForSentCount(6, on: transport)
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyNodeDB))
+    }
+
+    /// `nodeConfigUpdates()`'s own `CurrentValueEventHub` replay (same
+    /// contract as `linkState()`, M1 review follow-up #267): a Settings
+    /// screen opened AFTER want_config already finished must see the
+    /// current value immediately, not silence until the next change.
+    func testNodeConfigUpdatesReplaysCurrentValueToALateSubscriber() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport)
+
+        let connectTask = Task { try await client.connect() }
+        try await waitForSentCount(2, on: transport)
+        transport.inject(myInfoFrame(num: 1))
+        transport.inject(loraConfigFrame(region: .us, modemPreset: .longFast))
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyConfig))
+        try await waitForSentCount(3, on: transport)
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyNodeDB))
+        try await connectTask.value
+
+        let stream = client.nodeConfigUpdates()
+        var first: NodeConfigSnapshot?
+        for await snapshot in stream {
+            first = snapshot
+            break
+        }
+        XCTAssertEqual(first?.region, .us, "a late subscriber must see the CURRENT value immediately")
     }
 }

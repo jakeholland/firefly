@@ -119,7 +119,8 @@ struct FireflyApp: App {
         _settings = State(initialValue: SettingsViewModel.makeObserving(store: graph.dependencies.store,
                                                                          channelImport: importVM,
                                                                          client: graph.dependencies.client,
-                                                                         clearHistory: { graph.inboxProvider.clearAll() }))
+                                                                         clearHistory: { graph.inboxProvider.clearAll() },
+                                                                         location: graph.dependencies.location))
         let inboxVM = graph.makeInboxViewModel()
         _inbox = State(initialValue: inboxVM)
         #if os(iOS)

@@ -16,9 +16,10 @@ import XCTest
 @MainActor
 final class NearbyNodesViewModelTests: XCTestCase {
 
-    private func snapshot(num: UInt32, shortName: String? = nil, rssi: Int16? = -60) -> MeshNodeSnapshot {
+    private func snapshot(num: UInt32, shortName: String? = nil, rssi: Int16? = -60,
+                           lastHeard: Date? = nil) -> MeshNodeSnapshot {
         MeshNodeSnapshot(num: num, shortName: shortName, longName: nil, position: nil,
-                          lastHeard: nil, rssiDbm: rssi, snrDb: nil, hopsAway: nil)
+                          lastHeard: lastHeard, rssiDbm: rssi, snrDb: nil, hopsAway: nil)
     }
 
     private func makeController() -> CrewPairingController {
@@ -33,14 +34,27 @@ final class NearbyNodesViewModelTests: XCTestCase {
         XCTAssertTrue(makeVM().nodes.isEmpty)
     }
 
-    /// A node with no RSSI is not "nearby" at all — Nearby is
-    /// specifically about heard signal strength, and a node the client
-    /// only knows a position for (no packet RSSI attributable to it)
-    /// must not show up ranked by a tier it never measured.
-    func testNodesWithoutRSSIAreExcluded() {
+    /// Finding 1 (first real-radio session): a want_config nodeDB replay
+    /// carries `last_heard` for every node but never a direct RSSI, so a
+    /// node with no RSSI must still appear — excluding it is exactly why
+    /// "NEARBY" stayed on its empty state after a completed handshake
+    /// against a real, busy mesh. Its tier reads NONE — honestly absent,
+    /// never invented from a reading that was never made.
+    func testNodesWithoutRSSIStillAppearWithNoSignalTier() {
         let vm = makeVM()
-        vm.apply(snapshot(num: 1, rssi: nil))
-        XCTAssertTrue(vm.nodes.isEmpty)
+        vm.apply(snapshot(num: 1, shortName: "REPLAY", rssi: nil, lastHeard: Date()))
+        XCTAssertEqual(vm.nodes.count, 1)
+        XCTAssertEqual(vm.nodes[0].tier, .none)
+        XCTAssertEqual(vm.nodes[0].heardAgo, "HEARD JUST NOW")
+    }
+
+    /// A node the client has never reported a `lastHeard` for at all
+    /// (not merely absent-RSSI — genuinely never heard) reads NEVER,
+    /// never a fabricated "just now".
+    func testNodeWithNoLastHeardAtAllReadsNever() {
+        let vm = makeVM()
+        vm.apply(snapshot(num: 1, rssi: nil, lastHeard: nil))
+        XCTAssertEqual(vm.nodes[0].heardAgo, "NEVER HEARD")
     }
 
     func testAppliedSnapshotAppearsWithItsTier() {
@@ -61,12 +75,59 @@ final class NearbyNodesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.nodes[0].displayName, "!000000ab")
     }
 
-    func testNodesAreRankedStrongestFirst() {
+    /// Finding 1: strangers rank by last-heard recency, not signal tier —
+    /// most of a want_config replay carries no RSSI at all (tier NONE
+    /// for all of them), so ranking by tier would leave the list in
+    /// arbitrary nodeDB order. Deliberately uses THREE identical, strong
+    /// RSSI readings — if this were still tier-ranked the order would be
+    /// unspecified; recency ranking is the only thing that pins it.
+    func testStrangersRankByLastHeardRecencyNotSignalTier() {
         let vm = makeVM()
-        vm.apply(snapshot(num: 1, shortName: "WEAK", rssi: -96))
-        vm.apply(snapshot(num: 2, shortName: "STRONG", rssi: -55))
-        vm.apply(snapshot(num: 3, shortName: "GOOD", rssi: -80))
-        XCTAssertEqual(vm.nodes.map(\.displayName), ["STRONG", "GOOD", "WEAK"])
+        let now = Date()
+        vm.apply(snapshot(num: 1, shortName: "OLDEST", rssi: -55, lastHeard: now.addingTimeInterval(-300)))
+        vm.apply(snapshot(num: 2, shortName: "NEWEST", rssi: -55, lastHeard: now))
+        vm.apply(snapshot(num: 3, shortName: "MIDDLE", rssi: -55, lastHeard: now.addingTimeInterval(-60)))
+        XCTAssertEqual(vm.nodes.map(\.displayName), ["NEWEST", "MIDDLE", "OLDEST"])
+    }
+
+    /// A node that has never been heard at all sorts last, behind every
+    /// node with a real timestamp — never treated as "just heard".
+    func testNeverHeardStrangerSortsLast() {
+        let vm = makeVM()
+        vm.apply(snapshot(num: 1, shortName: "NEVER", rssi: -55, lastHeard: nil))
+        vm.apply(snapshot(num: 2, shortName: "OLD", rssi: -55, lastHeard: Date().addingTimeInterval(-3600)))
+        XCTAssertEqual(vm.nodes.map(\.displayName), ["OLD", "NEVER"])
+    }
+
+    /// The puck's own roster policy (`ff_heard.h`; core issue #268):
+    /// paired stays pinned, unpaired is a bounded, LRU-evictable list —
+    /// applied here to this screen's own app-side heard dictionary
+    /// (issue #273's "keep the heard list app-side" intent) so a busy
+    /// public mesh's ~200 nodeDB entries cannot grow it without limit.
+    func testUnpairedStrangersAreBoundedWithLRUEviction() {
+        let vm = makeVM()
+        let now = Date()
+        // One more than the bound — the oldest must be evicted, not the
+        // newest.
+        for i in 0..<65 {
+            vm.apply(snapshot(num: UInt32(i), shortName: "N\(i)", rssi: -55,
+                               lastHeard: now.addingTimeInterval(-Double(65 - i))))
+        }
+        XCTAssertEqual(vm.nodes.count, 64, "the bound caps unpaired tracking, never grows without limit")
+        XCTAssertFalse(vm.nodes.contains { $0.id == 0 }, "the least-recently-heard entry is the one evicted")
+        XCTAssertTrue(vm.nodes.contains { $0.id == 64 }, "the most-recently-heard entry survives")
+    }
+
+    /// A paired member is NEVER evicted by the unpaired bound, no matter
+    /// how many strangers arrive after it — "paired pinned" (#268).
+    func testPairedMembersAreNeverEvictedByTheUnpairedBound() {
+        let vm = makeVM()
+        vm.apply(snapshot(num: 999, shortName: "CREW", rssi: -55, lastHeard: Date().addingTimeInterval(-99_999)))
+        vm.addToCrew(999)
+        for i in 0..<80 {
+            vm.apply(snapshot(num: UInt32(i), shortName: "N\(i)", rssi: -55, lastHeard: Date()))
+        }
+        XCTAssertTrue(vm.nodes.contains { $0.id == 999 && $0.isCrew }, "paired members are pinned, not LRU-evicted")
     }
 
     /// A later snapshot for the same node updates it in place rather
@@ -433,20 +494,38 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.locationIntervalSeconds, 5)
     }
 
-    func testRegionIsAlwaysUnknownInM1() {
+    /// UNKNOWN only until want_config has actually reported a region —
+    /// never a permanent placeholder (finding 2, first real-radio
+    /// session).
+    func testRegionIsUnknownUntilTheClientReportsOne() {
         let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel())
         XCTAssertEqual(vm.region, "UNKNOWN")
     }
 
-    func testChannelNameIsUnknownUntilSomethingIsImported() {
+    /// Finding 2: the passive read seam — a region the CLIENT reports
+    /// (want_config, or an admin write's own read-back) shows up here
+    /// with no separate action, and no fabricated placeholder text.
+    func testRegionReadsFromTheClientsNodeConfig() {
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 1
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel(),
+                                    client: client)
+        XCTAssertEqual(vm.region, "US")
+        XCTAssertEqual(vm.nodeConfigSourceLabel, "from node")
+    }
+
+    func testChannelNameIsUnknownUntilSomethingIsImportedOrReportedByTheClient() {
         let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel())
         XCTAssertEqual(vm.currentChannelName, "UNKNOWN")
+        XCTAssertNil(vm.nodeConfigSourceLabel, "no source claimed until the client has actually reported something")
     }
 
     /// The whole point of sharing one `ChannelImportViewModel` instance
     /// between Connect and Settings: an import made through it is
     /// visible here too, without SettingsViewModel inventing its own
-    /// copy.
+    /// copy — still the fallback for a node this client has never
+    /// actually been connected to.
     func testChannelNameReflectsASharedChannelImportViewModel() {
         let channelImport = ChannelImportViewModel()
         let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: channelImport)
@@ -459,6 +538,132 @@ final class SettingsViewModelTests: XCTestCase {
 
         XCTAssertEqual(vm.currentChannelName, "Crew")
     }
+
+    /// Finding 2: the client's own PRIMARY channel name wins over a
+    /// same-session import — it is what the node actually has, not what
+    /// the phone merely staged.
+    func testChannelNameReadsFromTheClientsNodeConfigOverAnImport() {
+        let channelImport = ChannelImportViewModel()
+        var settings = ChannelSettings()
+        settings.name = "Staged"
+        settings.moduleSettings.positionPrecision = 32
+        channelImport.importURL(ChannelURL.encode(ChannelSet(settings: [settings])))
+
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 1
+        client.nodeConfig = NodeConfigSnapshot(primaryChannelName: "LongFast")
+        let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: channelImport, client: client)
+
+        XCTAssertEqual(vm.currentChannelName, "LongFast")
+    }
+
+    /// Finding 2: an empty (but REPORTED) primary channel name reads as
+    /// the same honest "(default channel)" label `currentChannelName`
+    /// already used for an imported default channel — never UNKNOWN,
+    /// which would say the client reported nothing at all.
+    func testEmptyPrimaryChannelNameFromTheClientReadsAsDefaultChannel() {
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 1
+        client.nodeConfig = NodeConfigSnapshot(primaryChannelName: "")
+        let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel(),
+                                    client: client)
+        XCTAssertEqual(vm.currentChannelName, "(default channel)")
+    }
+
+    /// Finding 2: "the name fields pre-fill from the node's owner" —
+    /// only while the user has never typed a local draft of their own.
+    func testNameFieldsPrefillFromTheNodesOwnerWhenNoLocalDraftExists() {
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 1
+        client.nodeConfig = NodeConfigSnapshot(ownerLongName: "Firefly One", ownerShortName: "FF1")
+        let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel(),
+                                    client: client)
+        XCTAssertEqual(vm.nodeLongName, "Firefly One")
+        XCTAssertEqual(vm.nodeShortName, "FF1")
+    }
+
+    /// A LOCAL draft the user already typed is never silently overwritten
+    /// by a later node-config refresh.
+    func testNameFieldsDoNotPrefillOverAnExistingLocalDraft() async {
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 1
+        let store = SettingsStore(defaults: defaults)
+        let vm = SettingsViewModel(store: store, channelImport: ChannelImportViewModel(), client: client)
+        vm.setNodeLongName("My Own Draft")
+
+        vm.observe()
+        client.nodeConfig = NodeConfigSnapshot(ownerLongName: "Node's Name")
+        for _ in 0..<200 where vm.nodeConfig == nil {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(vm.nodeLongName, "My Own Draft", "a typed local draft is never overwritten by node data")
+        vm.stopObserving()
+    }
+
+    // MARK: - Finding 3 (first real-radio session, macOS): location
+    // authorization requested when "Share phone GPS" turns on.
+
+    /// Turning the toggle ON while permission is genuinely undecided
+    /// asks for it — nothing in this app ever did before this finding.
+    func testEnablingShareGPSRequestsLocationAuthorizationWhenNotDetermined() async {
+        let location = ScriptedAuthSettingsLocationProvider(authorization: .notDetermined)
+        let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel(),
+                                    location: location)
+        vm.setShareGPSWithNode(true)
+
+        for _ in 0..<200 where location.whenInUseRequestCount == 0 {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(location.whenInUseRequestCount, 1)
+    }
+
+    /// Turning the toggle OFF never asks — only ON is the honest moment
+    /// to prompt.
+    func testDisablingShareGPSNeverRequestsAuthorization() async {
+        let location = ScriptedAuthSettingsLocationProvider(authorization: .notDetermined)
+        let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel(),
+                                    location: location)
+        vm.setShareGPSWithNode(false)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(location.whenInUseRequestCount, 0)
+    }
+
+    /// A user who already decided (either way) is never re-prompted just
+    /// for flipping the toggle again.
+    func testEnablingShareGPSDoesNotReRequestOnceAlreadyDecided() async {
+        for authorization: LocationAuthorization in [.deniedOrRestricted, .whenInUse, .always, .locationServicesDisabled] {
+            let location = ScriptedAuthSettingsLocationProvider(authorization: authorization)
+            let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel(),
+                                        location: location)
+            vm.setShareGPSWithNode(true)
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            XCTAssertEqual(location.whenInUseRequestCount, 0, "must not re-prompt for \(authorization)")
+        }
+    }
+}
+
+/// Finding 3's own `SettingsViewModelTests` seam — same shape as
+/// `RadarViewModelTests`' private `ScriptedAuthLocationProvider`, kept
+/// separate (this file cannot see that one — different test target/file
+/// visibility) rather than sharing one across targets.
+private final class ScriptedAuthSettingsLocationProvider: LocationProviding, @unchecked Sendable {
+    private let lock = NSLock()
+    private let _authorization: LocationAuthorization
+    private var _whenInUseRequestCount = 0
+
+    init(authorization: LocationAuthorization) { self._authorization = authorization }
+
+    var authorization: LocationAuthorization { _authorization }
+    var whenInUseRequestCount: Int { lock.lock(); defer { lock.unlock() }; return _whenInUseRequestCount }
+
+    // Same `NSLock` noasync convention as `RadarViewModelTests`' own
+    // `ScriptedAuthLocationProvider`.
+    private func recordRequest() {
+        lock.lock(); _whenInUseRequestCount += 1; lock.unlock()
+    }
+    func requestWhenInUseAuthorization() async { recordRequest() }
+    func requestAlwaysAuthorization() async {}
+    func fixes() -> AsyncStream<LocationFix?> { AsyncStream { _ in } }
 }
 
 // MARK: - DiagnosticsViewModel

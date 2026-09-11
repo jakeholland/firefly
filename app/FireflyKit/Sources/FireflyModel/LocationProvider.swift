@@ -50,7 +50,15 @@ public final class LocationProvider: NSObject, LocationProviding, @unchecked Sen
         manager.delegate = self
     }
 
+    /// Finding 3: checks the SYSTEM-WIDE "Location Services" toggle
+    /// first, live, every read — `CLLocationManager.locationServicesEnabled()`
+    /// is the one CoreLocation call that tells the system-wide switch
+    /// apart from a per-app denial (both otherwise report `.denied` at
+    /// the per-app authorization level, which is all `_authorization`
+    /// below ever tracks). Not cached: the user can flip this in System
+    /// Settings while Firefly is running, same as authorization itself.
     public var authorization: LocationAuthorization {
+        guard CLLocationManager.locationServicesEnabled() else { return .locationServicesDisabled }
         lock.lock(); defer { lock.unlock() }
         return _authorization
     }
@@ -127,6 +135,14 @@ extension LocationProvider: CLLocationManagerDelegate {
             hub.yield(nil)
         case .notDetermined:
             break
+        case .locationServicesDisabled:
+            // `map(_:)` (per-app status only) never produces this case
+            // itself — `authorization`'s own getter is what folds in
+            // the system-wide check — so this branch is unreachable in
+            // practice. Handled honestly anyway, matching `.deniedOrRestricted`:
+            // stop and report absence, never leave a stale fix standing.
+            manager.stopUpdatingLocation()
+            hub.yield(nil)
         }
         resumePendingAuthContinuations()
     }
