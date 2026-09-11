@@ -1,5 +1,5 @@
 //
-//  FieldMapProjection.swift — Map tab slice: projects a `Festpack` +
+//  FieldMapProjection.swift — Map tab slice: projects a `MapFestpack` +
 //  crew pins + "you" onto the SCHEMATIC Field map's screen space, using
 //  the puck's own `ff_map`/`ff_geo` object code end to end
 //  (`Bridge/MapBridge.swift`, `Bridge/GeoBridge.swift`) — never a
@@ -9,7 +9,7 @@
 //  scale+offset shared by every drawn thing.
 //
 //  Origin for `ff_geo_project`: the festpack's own venue coordinate
-//  (`Festpack.meta.venue`) — one fixed anchor every point in a build
+//  (`MapFestpack.meta.venue`) — one fixed anchor every point in a build
 //  (features, crew, you) projects against, so nothing can disagree
 //  about where "here" is (same rationale `ff_map_xform_t`'s own doc
 //  comment gives for a single shared scale+offset).
@@ -24,7 +24,7 @@ import Foundation
 /// — circle center = (0, 0), same convention `ff_map_xform_t` uses).
 public struct FieldMapFeature: Sendable, Equatable, Identifiable {
     public let id: String
-    public let kind: FestpackFeatureKind
+    public let kind: MapFestpackFeatureKind
     public let label: String
     public let colorHex: UInt32
     public let renderKind: MapFeatureRenderKind
@@ -81,7 +81,7 @@ public enum FieldMapProjector {
     /// Projects one build. `myPosition`/`headingDegrees` are both
     /// optional — a caller with no fix yet gets `you == nil` (S09 AC5:
     /// "hidden... when no fix"), never a fabricated position.
-    public static func project(festpack: Festpack, crewPins: [CrewMapPin], myPosition: GeoCoordinate?,
+    public static func project(festpack: MapFestpack, crewPins: [CrewMapPin], myPosition: GeoCoordinate?,
                                 headingDegrees: Double?, radiusPx: Float = defaultRadiusPx,
                                 marginPx: Float = defaultMarginPx) -> FieldMapProjection {
         let origin = GeoCoordinate(latitude: festpack.meta.venue.latitude, longitude: festpack.meta.venue.longitude)
@@ -149,7 +149,7 @@ public enum FieldMapProjector {
         return MapEastNorth(eastM: sumE / Float(points.count), northM: sumN / Float(points.count))
     }
 
-    private static func stageColor(for feature: FestpackFeature, in festpack: Festpack) -> UInt32? {
+    private static func stageColor(for feature: MapFestpackFeature, in festpack: MapFestpack) -> UInt32? {
         guard feature.kind == .stage, let stageID = feature.stageID else { return nil }
         return festpack.stages.first { $0.id == stageID }?.colorHex
     }
@@ -158,7 +158,7 @@ public enum FieldMapProjector {
     /// (app/Firefly/Sources/Map) for the SwiftUI `Color` wrapper around
     /// these same hexes, transcribed from `ff_theme.h`'s `FF_THEME_MAP_*`
     /// block.
-    public static func kindColorHex(_ kind: FestpackFeatureKind) -> UInt32 {
+    public static func kindColorHex(_ kind: MapFestpackFeatureKind) -> UInt32 {
         switch kind {
         case .stage: return 0x8B8A97 // FF_THEME_COLOR_MUTED — only used when a stage has no pack color
         case .camping: return 0xC49A6C

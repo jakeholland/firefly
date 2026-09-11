@@ -14,7 +14,7 @@ import FireflyModel
 import SwiftUI
 
 extension Color {
-    static func mapKind(_ kind: FestpackFeatureKind) -> Color {
+    static func mapKind(_ kind: MapFestpackFeatureKind) -> Color {
         Color(fireflyHex: FieldMapProjector.kindColorHex(kind))
     }
 

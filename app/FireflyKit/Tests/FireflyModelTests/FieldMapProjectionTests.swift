@@ -6,7 +6,7 @@
 import XCTest
 
 final class FieldMapProjectionTests: XCTestCase {
-    private var festpack: Festpack { DemoMapFestpackSource.fireflyFields }
+    private var festpack: MapFestpack { DemoMapFestpackSource.fireflyFields }
 
     func testEveryFeatureProjectsWithoutCrashingAndStaysInsideTheCircle() {
         let projection = FieldMapProjector.project(festpack: festpack, crewPins: [], myPosition: nil,
@@ -50,11 +50,11 @@ final class FieldMapProjectionTests: XCTestCase {
         // Synthetic: the real Firefly Fields pack has no 2-point feature,
         // so this proves the LINE branch of the same untraced-feature
         // policy independently of what the demo data happens to contain.
-        let path = FestpackFeature(id: "test-path", kind: .path, label: "Test Path", polygon: [
+        let path = MapFestpackFeature(id: "test-path", kind: .path, label: "Test Path", polygon: [
             FestpackLatLon(latitude: 43.7000, longitude: -121.5000),
             FestpackLatLon(latitude: 43.7002, longitude: -121.4998),
         ])
-        let pack = Festpack(meta: festpack.meta, stages: festpack.stages, features: [path], schedule: [])
+        let pack = MapFestpack(meta: festpack.meta, stages: festpack.stages, features: [path], schedule: [])
         let projection = FieldMapProjector.project(festpack: pack, crewPins: [], myPosition: nil, headingDegrees: nil)
         XCTAssertEqual(projection.features.first?.renderKind, .line)
         XCTAssertEqual(projection.features.first?.points.count, 2)
@@ -96,11 +96,11 @@ final class FieldMapProjectionTests: XCTestCase {
         // `ff_geo_project`'s own meters-per-degree conversion to pin an
         // exact expected value.
         let venue = FestpackLatLon(latitude: 43.7000, longitude: -121.5000)
-        let west = FestpackFeature(id: "west-edge", kind: .poi, label: "West Edge",
+        let west = MapFestpackFeature(id: "west-edge", kind: .poi, label: "West Edge",
                                     polygon: [FestpackLatLon(latitude: 43.7000, longitude: -121.5050)])
-        let east = FestpackFeature(id: "east-edge", kind: .poi, label: "East Edge",
+        let east = MapFestpackFeature(id: "east-edge", kind: .poi, label: "East Edge",
                                     polygon: [FestpackLatLon(latitude: 43.7000, longitude: -121.4950)])
-        let pack = Festpack(meta: FestpackMeta(name: "Boundary Test", venue: venue), stages: [],
+        let pack = MapFestpack(meta: MapFestpackMeta(name: "Boundary Test", venue: venue), stages: [],
                              features: [west, east], schedule: [])
         let marginPx: Float = 16
 

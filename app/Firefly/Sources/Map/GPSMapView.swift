@@ -1,6 +1,6 @@
 //
 //  GPSMapView.swift — Map tab slice: MapKit in Apple's dark style, real
-//  festival geography (as far as the loaded `Festpack` states it —
+//  festival geography (as far as the loaded `MapFestpack` states it —
 //  polygons/points, never invented), crew pins with the SAME
 //  freshness-based `CrewMapPinTreatment` the Field map draws, "you" as
 //  the standard MapKit user-location dot + heading cone, and a selected-
@@ -92,7 +92,7 @@ struct GPSMapView: View {
     }
 
     @MapContentBuilder
-    private func featureContent(_ feature: FestpackFeature, festpack: Festpack) -> some MapContent {
+    private func featureContent(_ feature: MapFestpackFeature, festpack: MapFestpack) -> some MapContent {
         let color = stageColor(feature, festpack) ?? Color.mapKind(feature.kind)
         let coords = feature.polygon.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
         if coords.count >= 3 {
@@ -109,7 +109,7 @@ struct GPSMapView: View {
         }
     }
 
-    private func stageColor(_ feature: FestpackFeature, _ festpack: Festpack) -> Color? {
+    private func stageColor(_ feature: MapFestpackFeature, _ festpack: MapFestpack) -> Color? {
         guard feature.kind == .stage, let stageID = feature.stageID,
               let stage = festpack.stages.first(where: { $0.id == stageID }) else { return nil }
         return Color.mapFeature(hex: stage.colorHex)

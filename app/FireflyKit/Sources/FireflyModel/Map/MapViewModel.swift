@@ -60,7 +60,7 @@ public final class MapViewModel {
 
     public private(set) var myFix: LocationFix?
     public private(set) var headingReading: HeadingReading?
-    public private(set) var festpack: Festpack?
+    public private(set) var festpack: MapFestpack?
     public private(set) var pins: [CrewMapPin] = []
     public private(set) var connectivityState: MapConnectivity = .online
     public var selectedCrewID: UInt32?

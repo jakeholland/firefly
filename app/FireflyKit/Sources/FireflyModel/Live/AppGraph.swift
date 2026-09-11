@@ -735,16 +735,26 @@ public final class AppGraph {
 
     /// Map tab slice: crew from `core.crew` (the SAME roster Radar
     /// reads — never a second `CrewStore`), the phone's own fix/heading
-    /// from `dependencies`, and a `MapFestpackSource`. `DemoMapFestpackSource`
-    /// is a deliberate placeholder here, NOT a demo-mode gate — the
-    /// parallel festpack-foundation slice's real `FestpackProviding`
-    /// adapter is a one-line swap of this one argument once it lands
-    /// (`Festpack.swift`'s own header comment), so every build (demo or
-    /// live) shows Firefly Fields until that lands, same as this app's
-    /// other "known gap, not silently faked" calls elsewhere.
+    /// from `dependencies`, and a `MapFestpackSource`. The parallel
+    /// festpack-foundation slice (PR #285) has now landed `FestpackProviding`
+    /// on `main` — this is the "one-line swap" `MapFestpack.swift`'s own
+    /// header comment anticipated: demo builds still get
+    /// `DemoMapFestpackSource` (Firefly Fields must stay independent of
+    /// network/real-pack availability, same call `festpack` above
+    /// makes for Lineup), and every other build gets
+    /// `FestpackProvidingMapAdapter` wrapping the SAME `festpack`
+    /// instance `makeLineupViewModel()` reads — one provider, one
+    /// composition root, never a second independent fetch. Same
+    /// `dependencies.client is DemoMeshtasticClient` downcast `festpack`
+    /// above and `FireflyApp.init` both already use, so there is
+    /// exactly one place this decision is made, not a second flag that
+    /// could drift from it.
     public func makeMapViewModel() -> MapViewModel {
+        let festpackSource: any MapFestpackSource = dependencies.client is DemoMeshtasticClient
+            ? DemoMapFestpackSource()
+            : FestpackProvidingMapAdapter(provider: festpack)
         let model = MapViewModel(crew: core.crew, location: dependencies.location, heading: dependencies.heading,
-                                  festpackSource: DemoMapFestpackSource(), connectivity: NetworkConnectivityMonitor(),
+                                  festpackSource: festpackSource, connectivity: NetworkConnectivityMonitor(),
                                   imperial: { [dependencies] in dependencies.store.resolvedImperial() })
         // PR #283 review, BLOCKING 3: deliberately NOT `model.observe()`
         // here, unlike `makeRadarViewModel`/`makeInboxViewModel`/

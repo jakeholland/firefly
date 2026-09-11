@@ -72,6 +72,22 @@ public enum MapBridge {
         return MapEastNorth(eastM: east, northM: north)
     }
 
+    /// `ff_geo_unproject` — the exact inverse of `project(_:origin:)`:
+    /// recovers a WGS84 point from meters east/north of `origin`. Same
+    /// festival-scale accuracy caveat as `project`.
+    ///
+    /// `FestpackProvidingMapAdapter` (Map/FestpackProvidingMapAdapter.swift)
+    /// is this function's one caller: the real festpack foundation (S05)
+    /// stores every feature/stage point as projected meters, never WGS84
+    /// — recovering real coordinates for MapKit / the schematic Field
+    /// map has to go back through the SAME C math that produced them,
+    /// never a second, hand-rolled unprojection.
+    public static func unproject(_ point: MapEastNorth, origin: GeoCoordinate) -> GeoCoordinate {
+        var out = ff_latlon_t()
+        ff_geo_unproject(origin.ffValue, point.eastM, point.northM, &out)
+        return GeoCoordinate(latitude: out.lat, longitude: out.lon)
+    }
+
     /// `ff_map_xform_fit` — the S09 "fixed-fit v1" camera: bounding box
     /// of `points` into a circle of `radiusPx` with `marginPx` clearance,
     /// north-up, aspect preserved. Empty `points` falls back to the
