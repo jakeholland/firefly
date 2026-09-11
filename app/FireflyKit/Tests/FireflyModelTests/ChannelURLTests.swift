@@ -3,6 +3,7 @@
 //  position_precision trap (docs/specs/A01-companion-app.md, Slice C
 //  "Must add").
 //
+import FireflyMesh
 import FireflyModel
 import MeshtasticProto
 import XCTest
@@ -165,6 +166,201 @@ final class ChannelURLTests: XCTestCase {
         let result = try ChannelURL.parse(url)
         XCTAssertTrue(result.addMode)
         XCTAssertEqual(result.channelSet.settings.first?.name, "Crew")
+    }
+
+    // MARK: - M3: lora_config (field 2) and the write-request builder
+
+    func testLoraConfigIsAbsentByDefault() {
+        let set = ChannelSet(settings: [ChannelSettings()])
+        XCTAssertFalse(set.hasLoraConfig, "an 'add' import commonly carries no LoRa config — never invent one")
+    }
+
+    func testLoraConfigRoundTripsThroughParseAndEncode() throws {
+        var settings = ChannelSettings()
+        settings.name = "Firefly"
+        settings.moduleSettings.positionPrecision = 32
+        var lora = Config.LoRaConfig()
+        lora.usePreset = true
+        lora.modemPreset = .longFast
+        lora.region = .us
+        let set = ChannelSet(settings: [settings], loraConfig: lora)
+
+        XCTAssertTrue(set.hasLoraConfig)
+        let url = ChannelURL.encode(set)
+        let result = try ChannelURL.parse(url)
+        XCTAssertTrue(result.channelSet.hasLoraConfig)
+        XCTAssertEqual(result.channelSet.loraConfig.region, .us)
+        XCTAssertEqual(result.channelSet.loraConfig.modemPreset, .longFast)
+    }
+
+    // MARK: - makeChannelWritePlan: replace mode (BLOCKING 1 & 2, SHOULD-FIX 4)
+
+    func testMakeChannelWritePlanReplaceModeAssignsIndexAndRole() throws {
+        var primary = ChannelSettings()
+        primary.name = "Firefly"
+        primary.moduleSettings.positionPrecision = 32
+        var secondary = ChannelSettings()
+        secondary.name = "Ops"
+        secondary.moduleSettings.positionPrecision = 24
+
+        let result = ChannelImportResult(channelSet: ChannelSet(settings: [primary, secondary]), addMode: false)
+        let plan = try result.makeChannelWritePlan()
+
+        XCTAssertFalse(plan.addMode)
+        let written = plan.request.channels.filter { $0.role != .disabled }
+        XCTAssertEqual(written.count, 2)
+        XCTAssertEqual(written[0].index, 0)
+        XCTAssertEqual(written[0].role, .primary)
+        XCTAssertEqual(written[0].settings.name, "Firefly")
+        XCTAssertEqual(written[1].index, 1)
+        XCTAssertEqual(written[1].role, .secondary)
+        XCTAssertEqual(written[1].settings.name, "Ops")
+    }
+
+    /// BLOCKING 2 — a replace plan must explicitly DISABLE every slot it
+    /// does not fill, up to `maxChannelSlots`, and disclose that in
+    /// `disabledIndexes` — never leave old channels silently running.
+    func testMakeChannelWritePlanReplaceModeDisablesEveryUnfilledSlot() throws {
+        var settings = ChannelSettings()
+        settings.name = "Firefly"
+        var lora = Config.LoRaConfig()
+        lora.region = .us
+        let result = ChannelImportResult(channelSet: ChannelSet(settings: [settings], loraConfig: lora), addMode: false)
+
+        // Even with a node that currently has channels 2-7 occupied,
+        // replace ignores that entirely — it disables 1...7 regardless
+        // of what is currently there (Meshtastic-Apple's own behaviour).
+        let plan = try result.makeChannelWritePlan(occupiedIndexes: [0, 1, 2, 3, 4, 5, 6, 7])
+
+        XCTAssertEqual(plan.disabledIndexes, Array(Int32(1)..<8))
+        XCTAssertEqual(plan.untouchedIndexes, [], "replace accounts for every slot")
+        XCTAssertEqual(plan.request.channels.count, 8, "1 written + 7 explicit disables")
+        let disabled = plan.request.channels.filter { $0.role == .disabled }
+        XCTAssertEqual(Set(disabled.map(\.index)), Set(Int32(1)..<8))
+        XCTAssertTrue(disabled.allSatisfy { !$0.hasSettings })
+    }
+
+    /// SHOULD-FIX 4 — absent `moduleSettings` on write must default to
+    /// the SAFE value (0), never 32 (full precision).
+    func testMakeChannelWritePlanDefaultsMissingPrecisionToZeroNotThirtyTwo() throws {
+        var settings = ChannelSettings()
+        settings.name = "NoLimit" // no moduleSettings at all
+        let result = ChannelImportResult(channelSet: ChannelSet(settings: [settings]), addMode: false)
+        let plan = try result.makeChannelWritePlan()
+
+        let written = try XCTUnwrap(plan.request.channels.first { $0.role == .primary })
+        XCTAssertTrue(written.settings.hasModuleSettings)
+        XCTAssertEqual(written.settings.moduleSettings.positionPrecision, 0)
+        XCTAssertFalse(plan.writtenChannels[0].precisionWasExplicit)
+        XCTAssertEqual(plan.writtenChannels[0].positionPrecisionBits, 0)
+    }
+
+    /// An explicit precision in the imported link is used verbatim, not
+    /// overridden by the safe default.
+    func testMakeChannelWritePlanUsesExplicitPrecisionVerbatim() throws {
+        var settings = ChannelSettings()
+        settings.name = "Firefly"
+        settings.moduleSettings.positionPrecision = 16
+        let result = ChannelImportResult(channelSet: ChannelSet(settings: [settings]), addMode: false)
+        let plan = try result.makeChannelWritePlan()
+
+        let written = try XCTUnwrap(plan.request.channels.first { $0.role == .primary })
+        XCTAssertEqual(written.settings.moduleSettings.positionPrecision, 16)
+        XCTAssertTrue(plan.writtenChannels[0].precisionWasExplicit)
+    }
+
+    func testMakeChannelWritePlanCarriesTheImportedLoraConfigOnReplaceOnly() throws {
+        var settings = ChannelSettings()
+        settings.name = "Firefly"
+        settings.moduleSettings.positionPrecision = 32
+        var lora = Config.LoRaConfig()
+        lora.region = .us
+        lora.usePreset = true
+        lora.modemPreset = .longFast
+        let result = ChannelImportResult(channelSet: ChannelSet(settings: [settings], loraConfig: lora), addMode: false)
+        let plan = try result.makeChannelWritePlan()
+        XCTAssertEqual(plan.request.loraConfig, lora)
+    }
+
+    /// Replace requires more than 8 channels to be rejected outright —
+    /// the radio's channel table is a fixed array of 8.
+    func testMakeChannelWritePlanRejectsMoreThanEightChannels() {
+        let settings = (0..<9).map { i -> ChannelSettings in
+            var s = ChannelSettings()
+            s.name = "Ch\(i)"
+            return s
+        }
+        let result = ChannelImportResult(channelSet: ChannelSet(settings: settings), addMode: false)
+        XCTAssertThrowsError(try result.makeChannelWritePlan()) { error in
+            guard case .tooManyChannels(9) = error as? ChannelWritePlanError else {
+                return XCTFail("expected .tooManyChannels(9), got \(error)")
+            }
+        }
+    }
+
+    // MARK: - makeChannelWritePlan: add mode (BLOCKING 1)
+
+    /// BLOCKING 1 — an "add" import must place its channel(s) into the
+    /// lowest FREE SECONDARY slot(s) — never index 0, never an occupied
+    /// index — and must not fabricate a LoRa config even if the URL
+    /// (unusually) carried one.
+    func testMakeChannelWritePlanAddModePlacesInLowestFreeSecondarySlots() throws {
+        var settings = ChannelSettings()
+        settings.name = "Ops"
+        var lora = Config.LoRaConfig() // present but must be IGNORED for an add plan
+        lora.region = .us
+        let result = ChannelImportResult(channelSet: ChannelSet(settings: [settings], loraConfig: lora), addMode: true)
+
+        // Index 0 (primary) and 1 are occupied; the plan must skip both.
+        let plan = try result.makeChannelWritePlan(occupiedIndexes: [0, 1])
+
+        XCTAssertTrue(plan.addMode)
+        XCTAssertEqual(plan.request.channels.count, 1)
+        XCTAssertEqual(plan.request.channels[0].index, 2)
+        XCTAssertEqual(plan.request.channels[0].role, .secondary)
+        XCTAssertNil(plan.request.loraConfig, "add must never fabricate/forward a LoRa config")
+        XCTAssertEqual(plan.disabledIndexes, [], "add mode never disables anything")
+        XCTAssertEqual(Set(plan.untouchedIndexes), Set([0, 1, 3, 4, 5, 6, 7]))
+    }
+
+    /// BLOCKING 1 — an "add" import must NEVER be assigned index 0
+    /// even when index 0 is reported free (an empty/partial local read,
+    /// never a license to hand it the primary slot — Meshtastic-Apple's
+    /// own reasoning, cross-checked).
+    func testMakeChannelWritePlanAddModeNeverTargetsIndexZeroEvenWhenFree() throws {
+        var settings = ChannelSettings()
+        settings.name = "Ops"
+        let result = ChannelImportResult(channelSet: ChannelSet(settings: [settings]), addMode: true)
+
+        let plan = try result.makeChannelWritePlan(occupiedIndexes: [])
+        XCTAssertEqual(plan.request.channels[0].index, 1, "the lowest candidate is 1, never 0")
+        XCTAssertTrue(plan.untouchedIndexes.contains(0), "index 0 must be reported untouched")
+    }
+
+    /// BLOCKING 1 — no free secondary slot at all must error, never
+    /// silently overwrite index 0 or any existing PSK.
+    func testMakeChannelWritePlanAddModeWithNoFreeSlotsThrows() {
+        var settings = ChannelSettings()
+        settings.name = "Ops"
+        let result = ChannelImportResult(channelSet: ChannelSet(settings: [settings]), addMode: true)
+        let allOccupied = Set(Int32(0)..<8)
+        XCTAssertThrowsError(try result.makeChannelWritePlan(occupiedIndexes: allOccupied)) { error in
+            XCTAssertEqual(error as? ChannelWritePlanError, .noFreeChannelSlots)
+        }
+    }
+
+    /// BLOCKING 1 — fewer free slots than the import needs must error
+    /// with the exact counts, never silently truncate the import.
+    func testMakeChannelWritePlanAddModeWithNotEnoughFreeSlotsThrows() {
+        var a = ChannelSettings(); a.name = "A"
+        var b = ChannelSettings(); b.name = "B"
+        var c = ChannelSettings(); c.name = "C"
+        let result = ChannelImportResult(channelSet: ChannelSet(settings: [a, b, c]), addMode: true)
+        // Only index 1 is free (2...7 occupied) — needs 3, has 1.
+        let occupied: Set<Int32> = [0, 2, 3, 4, 5, 6, 7]
+        XCTAssertThrowsError(try result.makeChannelWritePlan(occupiedIndexes: occupied)) { error in
+            XCTAssertEqual(error as? ChannelWritePlanError, .notEnoughFreeChannelSlots(needed: 3, available: 1))
+        }
     }
 }
 

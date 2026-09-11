@@ -35,6 +35,11 @@ struct ConnectScreen: View {
     @State private var selectedPeripheralID: String?
     @State private var channelURLText = ""
     @State private var isShowingScanner = false
+    /// M3 — "Apply to node" confirmation sheet for the imported channel
+    /// (docs/specs/A01-companion-app.md M3). Separate from
+    /// `isShowingScanner`'s `.sheet` — SwiftUI supports more than one
+    /// `.sheet(isPresented:)` on the same view, each on its own Bool.
+    @State private var isShowingApplyConfirmation = false
     /// `SettingsViewModel.colorblindPalette`, read fresh from `RootView`
     /// on every redraw (M2) — the SAME flag Radar's ring and the Inbox
     /// read, so a paired member's swatch here never disagrees with
@@ -97,6 +102,33 @@ struct ConnectScreen: View {
             }
         }
         #endif
+        // M3 — "Apply to node" behind an explicit confirmation sheet
+        // (docs/specs/A01-companion-app.md M3). A SEPARATE `.sheet`
+        // modifier from the scanner's above, on its own `@State` Bool —
+        // SwiftUI allows more than one on the same view.
+        .sheet(isPresented: $isShowingApplyConfirmation) {
+            if let summary = channelImport.applySummary {
+                AdminWriteConfirmationSheet(
+                    title: "APPLY CHANNEL",
+                    // BLOCKING 2 (PR #274 review): every slot's fate, not
+                    // just the ones being written — WRITTEN, then
+                    // DISABLED (replace only), then untouched (add
+                    // only), then the region/preset line if this import
+                    // carried a LoRa config.
+                    changes: summary.channelLines + summary.disabledLines + summary.untouchedLines +
+                             (summary.regionLine.map { [$0] } ?? []),
+                    isBusy: channelImport.isApplying,
+                    errorMessage: channelImport.applyErrorMessage,
+                    onConfirm: {
+                        Task {
+                            if await channelImport.confirmApply() {
+                                isShowingApplyConfirmation = false
+                            }
+                        }
+                    },
+                    onCancel: { isShowingApplyConfirmation = false })
+            }
+        }
     }
 
     // MARK: - Header
@@ -323,10 +355,34 @@ struct ConnectScreen: View {
                             .font(.caption)
                             .foregroundStyle(Color.ffAmber)
                     }
-                    Text("Shown only — not sent to the node. Writing a channel is admin-message " +
-                         "territory, out of scope until M3.")
+                    if let planError = channelImport.planErrorMessage {
+                        Text(planError)
+                            .font(.footnote)
+                            .foregroundStyle(Color.ffAlert)
+                    }
+                    Text("Shown only — not sent to the node until you confirm exactly which " +
+                         "slots will be written, disabled, or left untouched.")
                         .font(.caption2)
                         .foregroundStyle(Color.ffMuted)
+                    // M3 — the write path has landed. BLOCKING 1 & 2 (PR
+                    // #274 review): tapping this first reads the node's
+                    // CURRENT channel table and builds the exact write
+                    // plan (`preparePlan()`) — the confirmation sheet
+                    // only opens once that plan exists, so it can never
+                    // show a placeholder for a write that might not be
+                    // possible (e.g. an "add" import with no free slot).
+                    Button(channelImport.isPreparingPlan ? "CHECKING NODE…" : "APPLY TO NODE") {
+                        Task {
+                            if await channelImport.preparePlan() {
+                                isShowingApplyConfirmation = true
+                            }
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.ffAmber)
+                    .foregroundStyle(Color.ffBackground)
+                    .disabled(connect.link != .ready || channelImport.isPreparingPlan)
+                    .frame(minHeight: 44)
                 }
             }
         }

@@ -86,6 +86,9 @@ public final class LoopbackTransport: MeshTransport, @unchecked Sendable {
     }
 
     public func send(_ data: Data) async throws {
+        if let error = takeFailureForNextAttempt() {
+            throw error
+        }
         record(data)
     }
 
@@ -120,6 +123,30 @@ public final class LoopbackTransport: MeshTransport, @unchecked Sendable {
     /// via `simulateReconnect()`.
     public func simulateDisconnect(reason: String? = nil) {
         hub.yield(.disconnected(reason: reason))
+    }
+
+    // MARK: - M3 admin-write test support (PR #274 review, SHOULD-FIX 7)
+
+    /// Schedules `send(_:)`'s Nth call EVER (1-based, counting every
+    /// attempt including ones scheduled to fail) to throw `error` instead
+    /// of recording. Keyed by an absolute attempt count rather than "the
+    /// next call" so arming it has no race against the client's own
+    /// concurrent sends — call this any time before the write starts, not
+    /// only right before the targeted send. Used to simulate a lost/
+    /// failed packet partway through a multi-item admin write — proving
+    /// `applyChannelSet` names which step failed and warns the node may
+    /// be partially configured, without a real dropped BLE/serial write.
+    private var scheduledSendFailures: [Int: Error] = [:]
+    private var sendAttemptCount = 0
+
+    public func failSend(atAttempt attempt: Int, with error: Error) {
+        lock.lock(); scheduledSendFailures[attempt] = error; lock.unlock()
+    }
+
+    private func takeFailureForNextAttempt() -> Error? {
+        lock.lock(); defer { lock.unlock() }
+        sendAttemptCount += 1
+        return scheduledSendFailures[sendAttemptCount]
     }
 
     /// The transport-level half of "reconnects on its own" — see

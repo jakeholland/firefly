@@ -8,6 +8,7 @@ import FireflyCore
 import FireflyMesh
 import FireflyModel
 import Foundation
+import MeshtasticProto
 import XCTest
 
 /// `StubMeshtasticClient` deliberately never yields an `IncomingText`
@@ -40,6 +41,19 @@ private final class TextInjectingClient: MeshtasticClientProtocol, @unchecked Se
     func sendPosition(_ fix: ExternalPositionFix, to destination: UInt32) async throws -> UInt32 { 0 }
     @discardableResult
     func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32 { 0 }
+    @discardableResult
+    func applyChannelSet(_ request: ChannelWriteRequest) async throws -> ChannelWriteReport {
+        ChannelWriteReport(channels: request.channels, loraConfig: request.loraConfig)
+    }
+    @discardableResult
+    func setOwner(longName: String, shortName: String) async throws -> OwnerWriteReport {
+        OwnerWriteReport(longName: longName, shortName: shortName)
+    }
+    @discardableResult
+    func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
+        RegionWriteReport(region: region)
+    }
+    func currentChannelTable() async throws -> [Channel] { [] }
 
     func yieldText(_ text: IncomingText) { textHub.yield(text) }
 }

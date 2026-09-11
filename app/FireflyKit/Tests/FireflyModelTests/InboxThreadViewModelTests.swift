@@ -6,6 +6,7 @@
 //
 import FireflyMesh
 import FireflyModel
+import MeshtasticProto
 import XCTest
 
 /// A mock `FireflyPacketSending` conformance — the only place slice E
@@ -87,6 +88,20 @@ private final class OrderingMockClient: MeshtasticClientProtocol, @unchecked Sen
     func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
         record("private")
     }
+
+    @discardableResult
+    func applyChannelSet(_ request: ChannelWriteRequest) async throws -> ChannelWriteReport {
+        ChannelWriteReport(channels: request.channels, loraConfig: request.loraConfig)
+    }
+    @discardableResult
+    func setOwner(longName: String, shortName: String) async throws -> OwnerWriteReport {
+        OwnerWriteReport(longName: longName, shortName: shortName)
+    }
+    @discardableResult
+    func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
+        RegionWriteReport(region: region)
+    }
+    func currentChannelTable() async throws -> [Channel] { [] }
 
     // Non-async on purpose — NSLock may not be held across a suspension
     // point (the same `LoopbackTransport.record(_:)` convention).

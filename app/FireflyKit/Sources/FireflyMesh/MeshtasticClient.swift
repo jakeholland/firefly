@@ -159,6 +159,29 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// cannot recur.
     private let configCompleteHub = EventHub<UInt32>()
 
+    /// M3 — one `AdminMessage` response per inbound `ADMIN_APP` packet,
+    /// paired with the `Data.request_id` it answers (the same
+    /// request/response correlation `routingApp` already uses —
+    /// `handle(routingAck:requestID:)`'s own doc comment). Subscribed
+    /// BEFORE the request that asks for it goes out, same S1 ordering
+    /// rule `configCompleteHub` follows.
+    private let adminResponseHub = EventHub<(requestID: UInt32, message: AdminMessage)>()
+    /// How long a single admin read (a `get_*_request`, including the
+    /// read-back after a write) waits for its response, and how long
+    /// `applyChannelSet`/`setOwner`/`setRegion` wait for the link to
+    /// reach `.ready` again after a `commit_edit_settings` — real
+    /// firmware disables Bluetooth and reboots at commit (Meshtastic-
+    /// Apple's own `commitEditSettings` doc comment), so the read-back
+    /// routinely has to outlive a real disconnect/reboot/reconnect
+    /// cycle. Injectable, same convention as `configPhaseTimeout`.
+    private let adminResponseTimeout: Duration
+    /// NIT 10 (PR #274 review) — the pause between `beginEditSettings`'s
+    /// two copies. Injectable so a test can drive the whole
+    /// begin/set/commit sequence in milliseconds rather than waiting out
+    /// the production default, same convention every other timing knob
+    /// on this type follows.
+    private let beginEditSettingsRetryDelay: Duration
+
     private struct PendingSend {
         let isBroadcast: Bool
         let wantAck: Bool
@@ -229,7 +252,9 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         handshakeRetryLimit: Int = 6,
         handshakeRetryBaseDelay: Duration = .seconds(2),
         handshakeRetryMaxDelay: Duration = .seconds(60),
-        handshakeRetryClock: HandshakeRetryClock = SystemHandshakeRetryClock()
+        handshakeRetryClock: HandshakeRetryClock = SystemHandshakeRetryClock(),
+        adminResponseTimeout: Duration = .seconds(30),
+        beginEditSettingsRetryDelay: Duration = .milliseconds(150)
     ) {
         self.transport = transport
         self.configPhaseTimeout = configPhaseTimeout
@@ -240,6 +265,8 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         self.handshakeRetryBaseDelay = handshakeRetryBaseDelay
         self.handshakeRetryMaxDelay = handshakeRetryMaxDelay
         self.handshakeRetryClock = handshakeRetryClock
+        self.adminResponseTimeout = adminResponseTimeout
+        self.beginEditSettingsRetryDelay = beginEditSettingsRetryDelay
         // Seeded, not started at 1: two client lifetimes that both start
         // packet ids at 1 collide on every id until the higher session's
         // send count is exceeded, against Meshtastic's short per-(from,
@@ -472,6 +499,417 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         }
         try await writeToRadio(bytes)
         return id
+    }
+
+    // MARK: - M3: channel/config write-back (admin messages)
+    //
+    // Every write below follows the same shape: begin_edit_settings,
+    // the write(s), commit_edit_settings (best-effort — see its own doc
+    // comment), wait for the link to be `.ready` again (a commit reboots
+    // the node and drops the link — Meshtastic-Apple's own
+    // `commitEditSettings` doc comment, cross-checked against
+    // `AdminModule.cpp`), then a read-back compared against what was
+    // sent. "Honest success" is exactly that comparison; anything else
+    // — including a node that never comes back — throws `AdminWriteError`
+    // rather than assuming the write took.
+    //
+    // Every admin message here addresses OUR OWN connected node
+    // (`to == from == myNodeNum`) — never a remote one, matching
+    // Meshtastic-Apple's own local-admin convention
+    // (`AccessoryManager+ToRadio.swift`'s `saveChannelSet`/`saveUser`:
+    // `meshPacket.to = deviceNum; meshPacket.from = deviceNum`, no
+    // `sessionPasskey` — that field is only for a REMOTE node's admin
+    // channel).
+
+    @discardableResult
+    public func applyChannelSet(_ request: ChannelWriteRequest) async throws -> ChannelWriteReport {
+        let me = try requireConnectedNode()
+
+        try await beginEditSettings(to: me)
+        do {
+            for channel in request.channels {
+                var admin = AdminMessage()
+                admin.setChannel = channel
+                do {
+                    try await sendAdminWrite(admin, to: me)
+                } catch {
+                    // SHOULD-FIX 7 (PR #274 review): name exactly which item failed to send —
+                    // every channel before this one in `request.channels` may already be
+                    // committed to the node, so the caller must be told this write is not a
+                    // clean all-or-nothing failure.
+                    let name = channel.settings.name.isEmpty ? "(default)" : channel.settings.name
+                    throw AdminWriteError.partialApplyFailed(
+                        step: "channel \(channel.index) (\(name))", underlying: String(describing: error))
+                }
+            }
+            if let lora = request.loraConfig {
+                var admin = AdminMessage()
+                var config = Config()
+                config.lora = lora
+                admin.setConfig = config
+                do {
+                    try await sendAdminWrite(admin, to: me)
+                } catch {
+                    throw AdminWriteError.partialApplyFailed(step: "LoRa config", underlying: String(describing: error))
+                }
+            }
+        } catch {
+            await commitEditSettingsBestEffort(to: me)
+            throw error
+        }
+        await commitEditSettingsBestEffort(to: me)
+        try await waitForReadyAfterCommit()
+
+        // SHOULD-FIX 7 (PR #274 review): every item is read back and
+        // compared — never bail at the first mismatch — so a partial
+        // apply is reported per item rather than hiding whichever items
+        // came after the first failure.
+        var readChannels: [Channel] = []
+        var mismatches: [String] = []
+        for channel in request.channels {
+            let got = try await requestChannel(index: channel.index, from: me)
+            if got == channel {
+                readChannels.append(got)
+            } else {
+                let name = channel.settings.name.isEmpty ? "(default)" : channel.settings.name
+                mismatches.append("channel \(channel.index) (\(name))")
+            }
+        }
+        var readLora: Config.LoRaConfig?
+        if let lora = request.loraConfig {
+            let got = try await requestLoRaConfig(from: me)
+            if got == lora {
+                readLora = got
+            } else {
+                mismatches.append("LoRa config")
+            }
+        }
+        guard mismatches.isEmpty else {
+            let totalItems = request.channels.count + (request.loraConfig != nil ? 1 : 0)
+            let matchedCount = totalItems - mismatches.count
+            let partialNote = totalItems > 1
+                ? " (\(matchedCount) of \(totalItems) item(s) matched — the node may be partially configured)"
+                : ""
+            throw AdminWriteError.readBackMismatch(
+                "did not read back as written: \(mismatches.joined(separator: ", "))\(partialNote)")
+        }
+        return ChannelWriteReport(channels: readChannels, loraConfig: readLora)
+    }
+
+    @discardableResult
+    public func setOwner(longName: String, shortName: String) async throws -> OwnerWriteReport {
+        let me = try requireConnectedNode()
+
+        var owner = User()
+        owner.longName = longName
+        owner.shortName = shortName
+        var admin = AdminMessage()
+        admin.setOwner = owner
+
+        try await beginEditSettings(to: me)
+        do {
+            try await sendAdminWrite(admin, to: me)
+        } catch {
+            await commitEditSettingsBestEffort(to: me)
+            throw error
+        }
+        await commitEditSettingsBestEffort(to: me)
+        try await waitForReadyAfterCommit()
+
+        let got = try await requestOwner(from: me)
+        guard got.longName == longName, got.shortName == shortName else {
+            throw AdminWriteError.readBackMismatch("owner name did not read back as written")
+        }
+        return OwnerWriteReport(longName: got.longName, shortName: got.shortName)
+    }
+
+    @discardableResult
+    public func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
+        // SHOULD-FIX 5 (PR #274 review): defense-in-depth. `.unset` is
+        // Meshtastic's own "radio disabled" sentinel; before this the only
+        // guard was the Settings screen disabling its APPLY button, so any
+        // other caller (or a future UI bug) could still reach the radio
+        // with it. Checked before anything else, including the connection
+        // check below — this is an invalid CALL regardless of link state.
+        guard region != .unset else { throw AdminWriteError.regionUnset }
+        let me = try requireConnectedNode()
+
+        // Read the CURRENT LoRa config first: `set_config.lora` replaces
+        // the whole submessage on the wire, not just `region` — sending
+        // a bare `Config.LoRaConfig()` with only `region` set would
+        // silently reset bandwidth/spread-factor/tx-power/etc to their
+        // zero defaults. This is the one write in this file that reads
+        // before it writes for exactly that reason.
+        let current = try await requestLoRaConfig(from: me)
+        var lora = current
+        lora.region = region
+
+        var admin = AdminMessage()
+        var config = Config()
+        config.lora = lora
+        admin.setConfig = config
+
+        try await beginEditSettings(to: me)
+        do {
+            try await sendAdminWrite(admin, to: me)
+        } catch {
+            await commitEditSettingsBestEffort(to: me)
+            throw error
+        }
+        await commitEditSettingsBestEffort(to: me)
+        try await waitForReadyAfterCommit()
+
+        let got = try await requestLoRaConfig(from: me)
+        guard got.region == region else {
+            throw AdminWriteError.readBackMismatch("region did not read back as written")
+        }
+        return RegionWriteReport(region: got.region)
+    }
+
+    // MARK: - M3: admin write/read plumbing
+
+    private func requireConnectedNode() throws -> UInt32 {
+        guard let me = myNodeNum else { throw AdminWriteError.notConnected }
+        return me
+    }
+
+    /// NIT 10 (PR #274 review): sent TWICE on purpose, matching
+    /// Meshtastic-Apple's `DeviceProfileImporter.run()`
+    /// (`Meshtastic/Import/DeviceProfileImporter.swift:127-138`):
+    /// `begin_edit_settings` is idempotent server-side
+    /// (`AdminModule.cpp` only sets `hasOpenEditTransaction = true`) and
+    /// the firmware never acks it, so a single dropped copy is
+    /// undetectable from here and silently downgrades the whole write to
+    /// untransacted — every subsequent `set_*` then saves to flash and
+    /// reboots on its own instead of batching under one commit. A second
+    /// copy costs one packet and removes that single point of failure;
+    /// Meshtastic-Apple's own comment cites this as an observed-on-
+    /// hardware failure mode, not a theoretical one.
+    private func beginEditSettings(to dest: UInt32) async throws {
+        var admin = AdminMessage()
+        admin.beginEditSettings = true
+        try await sendAdminWrite(admin, to: dest)
+        try? await Task.sleep(for: beginEditSettingsRetryDelay)
+        try await sendAdminWrite(admin, to: dest)
+    }
+
+    /// Best-effort on purpose: a real `commit_edit_settings` disables
+    /// Bluetooth as the first step of the commit and reboots the node
+    /// (Meshtastic-Apple's own `commitEditSettings` doc comment), so the
+    /// write that carries it can throw (transport gone mid-write) even
+    /// though the node accepted the commit. Swallowed here — the
+    /// read-back after `waitForReadyAfterCommit()` is what actually
+    /// decides success or failure for the caller, never this write's own
+    /// local error. Still called on every path (including the error path
+    /// of the writes above): an edit transaction left open defers every
+    /// subsequent write from ANY client until something commits it
+    /// (`beginEditSettings`'s own citation of `AdminModule.cpp`), so an
+    /// abandoned transaction must never be left behind.
+    private func commitEditSettingsBestEffort(to dest: UInt32) async {
+        var admin = AdminMessage()
+        admin.commitEditSettings = true
+        _ = try? await sendAdminWrite(admin, to: dest)
+    }
+
+    /// Fire-and-forget admin write: `want_ack` true (mirrors Meshtastic-
+    /// Apple's own admin sends — `MeshPacket.Priority.reliable`), no
+    /// `want_response` (this is a WRITE, not a `get_*_request` question —
+    /// `mc_client.c`'s own `mc_send_data_packet_ex` doc comment: only a
+    /// `get_*_request` sets that bit).
+    @discardableResult
+    private func sendAdminWrite(_ admin: AdminMessage, to dest: UInt32) async throws -> UInt32 {
+        guard let payload = try? admin.serializedData() else {
+            throw AdminWriteError.encodingFailed
+        }
+        var data = DataMessage()
+        data.portnum = .adminApp
+        data.payload = payload
+
+        let id = nextPacketID()
+        var packet = MeshPacket()
+        packet.id = id
+        packet.to = dest
+        packet.from = dest
+        packet.wantAck = true
+        packet.priority = .reliable
+        packet.decoded = data
+
+        var toRadio = ToRadio()
+        toRadio.packet = packet
+        guard let bytes = try? toRadio.serializedData() else {
+            throw AdminWriteError.encodingFailed
+        }
+        try await writeToRadio(bytes)
+        return id
+    }
+
+    private func requestChannel(index: Int32, from dest: UInt32) async throws -> Channel {
+        var admin = AdminMessage()
+        admin.getChannelRequest = UInt32(index)
+        let response = try await sendAdminRequest(admin, to: dest)
+        guard case .getChannelResponse(let channel) = response.payloadVariant else {
+            throw AdminWriteError.readBackMismatch("no channel response for index \(index)")
+        }
+        return channel
+    }
+
+    private func requestLoRaConfig(from dest: UInt32) async throws -> Config.LoRaConfig {
+        var admin = AdminMessage()
+        admin.getConfigRequest = .loraConfig
+        let response = try await sendAdminRequest(admin, to: dest)
+        guard case .getConfigResponse(let config) = response.payloadVariant,
+              case .lora(let lora)? = config.payloadVariant else {
+            throw AdminWriteError.readBackMismatch("no LoRa config response")
+        }
+        return lora
+    }
+
+    private func requestOwner(from dest: UInt32) async throws -> User {
+        var admin = AdminMessage()
+        admin.getOwnerRequest = true
+        let response = try await sendAdminRequest(admin, to: dest)
+        guard case .getOwnerResponse(let user) = response.payloadVariant else {
+            throw AdminWriteError.readBackMismatch("no owner response")
+        }
+        return user
+    }
+
+    /// The one place a `get_*_request` actually goes out and its
+    /// response is awaited. `Data.want_response = true` is REQUIRED for
+    /// a real `AdminModule` to answer AT ALL —
+    /// `firmware/meshclient/src/mc_client.c`'s own citation of
+    /// `AdminModule::handleGetOwner` (`v2.7.26.54e0d8d0`,
+    /// `src/modules/AdminModule.cpp`): "AdminModule only builds and
+    /// sends a get_owner_response when the INCOMING request's
+    /// Data.want_response bit is set" — a bench finding (2026-09-06)
+    /// against a real puck, not a guess, and the same mechanism a real
+    /// AdminModule uses for every `get_*_request`, not just
+    /// `get_owner_request`.
+    ///
+    /// NIT 9 (PR #274 review): `want_ack = true` and `priority =
+    /// .reliable`, matching Meshtastic-Apple's own admin READS, not just
+    /// its writes — `AccessoryManager+ToRadio.swift`'s
+    /// `requestLoRaConfig` sets both on a `get_config_request` the same
+    /// way `saveLoRaConfig` does on the write. Without this a lost read
+    /// REQUEST (as opposed to a lost response) had no mesh-level retry,
+    /// only this method's own 30s timeout-then-fail.
+    private func sendAdminRequest(_ admin: AdminMessage, to dest: UInt32) async throws -> AdminMessage {
+        guard let payload = try? admin.serializedData() else {
+            throw AdminWriteError.encodingFailed
+        }
+        var data = DataMessage()
+        data.portnum = .adminApp
+        data.payload = payload
+        data.wantResponse = true
+
+        let id = nextPacketID()
+        var packet = MeshPacket()
+        packet.id = id
+        packet.to = dest
+        packet.from = dest
+        packet.wantAck = true
+        packet.priority = .reliable
+        packet.decoded = data
+
+        var toRadio = ToRadio()
+        toRadio.packet = packet
+
+        // Subscribe BEFORE writing — the same S1 ordering rule
+        // `requestConfig` follows for `configCompleteHub`.
+        let responses = adminResponseHub.subscribe()
+        guard let bytes = try? toRadio.serializedData() else {
+            throw AdminWriteError.encodingFailed
+        }
+        try await writeToRadio(bytes)
+
+        let timeout = adminResponseTimeout
+        return try await withThrowingTaskGroup(of: AdminMessage.self) { group in
+            group.addTask {
+                for await (requestID, message) in responses where requestID == id {
+                    return message
+                }
+                throw AdminWriteError.timeout
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw AdminWriteError.timeout
+            }
+            guard let result = try await group.next() else {
+                throw AdminWriteError.timeout
+            }
+            group.cancelAll()
+            return result
+        }
+    }
+
+    /// A `commit_edit_settings` reboots the node and drops the link
+    /// (this section's own header comment). If the link is ALREADY
+    /// `.ready` — nothing actually disconnected (a loopback transport in
+    /// a test, or 2.8's live-apply path for some config types) —
+    /// `linkHub`'s current-value replay resolves this immediately.
+    /// Otherwise this waits out the disconnect/reconnect M2's own
+    /// background-BLE retry loop already drives, up to `timeout`. A
+    /// terminal `.failed` is treated the same as a timeout: the node did
+    /// not come back, so there is nothing honest left to read back from.
+    private func waitForReadyAfterCommit() async throws {
+        let states = linkHub.subscribe()
+        let timeout = adminResponseTimeout
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for await state in states {
+                    switch state {
+                    case .ready: return
+                    case .failed: throw AdminWriteError.timeout
+                    default: continue
+                    }
+                }
+                throw AdminWriteError.timeout
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw AdminWriteError.timeout
+            }
+            try await group.next()
+            group.cancelAll()
+        }
+    }
+
+    // MARK: - M3: read-only admin queries (concrete-type only — used by
+    // `HardwareTests`' gated write-back suite to read the CURRENT state
+    // before writing it back unchanged, and available to a future
+    // Diagnostics screen). These call the SAME `request*` helpers
+    // `applyChannelSet`/`setOwner`/`setRegion` use for their own
+    // read-back — never a second, possibly-divergent implementation.
+
+    public func currentChannel(index: Int32) async throws -> Channel {
+        try await requestChannel(index: index, from: try requireConnectedNode())
+    }
+
+    public func currentLoRaConfig() async throws -> Config.LoRaConfig {
+        try await requestLoRaConfig(from: try requireConnectedNode())
+    }
+
+    public func currentOwner() async throws -> User {
+        try await requestOwner(from: try requireConnectedNode())
+    }
+
+    /// M3 (PR #274 review, BLOCKING 1 & 2) — the connected node's current
+    /// channel table, read LIVE index by index (`0..<maxChannelSlots`)
+    /// with the SAME `requestChannel` helper `applyChannelSet`'s own
+    /// read-back uses, never a second implementation. An index the node
+    /// reports `.disabled` for is simply omitted — "occupied" means
+    /// "role is primary or secondary right now," matching
+    /// `ChannelWritePlan`'s own vocabulary.
+    public func currentChannelTable() async throws -> [Channel] {
+        let me = try requireConnectedNode()
+        var table: [Channel] = []
+        for index in Int32(0)..<maxChannelSlots {
+            let channel = try await requestChannel(index: index, from: me)
+            if channel.role != .disabled {
+                table.append(channel)
+            }
+        }
+        return table
     }
 
     // MARK: - Extra, non-protocol accessors (concrete-type only)
@@ -839,6 +1277,17 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         case .routingApp:
             guard let routing = try? Routing(serializedBytes: data.payload) else { return }
             handle(routingAck: routing, requestID: data.requestID)
+
+        case .adminApp:
+            // M3 — the only AdminMessage traffic this client decodes is a
+            // response to a `get_*_request` THIS client sent (`data.
+            // requestID` is proto3's `Data.request_id`, the field
+            // AdminModule echoes the request's packet id into — the
+            // exact correlation `handle(routingAck:requestID:)` already
+            // uses for `routingApp`). A malformed payload is dropped
+            // silently, same discipline as every other decode here.
+            guard let admin = try? AdminMessage(serializedBytes: data.payload) else { return }
+            adminResponseHub.yield((requestID: data.requestID, message: admin))
 
         case .textMessageApp:
             // PR #264 review, BLOCKING item 2: this was `default: break`
