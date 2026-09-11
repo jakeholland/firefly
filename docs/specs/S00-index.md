@@ -31,6 +31,17 @@ Specs are contracts. Acceptance criteria (AC) become test names (`S01_AC3_...`).
 | S26 | device lifecycle — power/idle/notify/home/boot | S25 | YES | ✅ a–g merged (PR #133 docs; #134 a, #135 b, #136+#138 c, #137+#138 d, #142+#144+#145 e, #140+#150 f, #139+#141+#146 g) |
 | S27 | sounds — event vocabulary, tone patterns, quiet-hours policy, Sounds toggle | S11,S16,S26 | stretch (device HAL is a separate PR) | ◐ core+shell+settings+sim merged; DEVICE HAL (tone generator) pending |
 
+## A-series — things that are not the puck
+
+| # | Spec | Depends on | Lost Lands MVP? | Status |
+|---|---|---|---|---|
+| A01 | companion app — native Swift/SwiftUI Meshtastic client (iOS 17+/macOS 14+), links `firmware/core` in as a C target | S02,S03,S04,S06,S24,S29 | YES (both puck screens are broken; the app + 2x Heltec V3 is the working mesh) | ◐ spec + buildable skeleton |
+
+The A-series exists because S-numbers are the puck's contracts and the
+app is a different product built on the same core. Same rules apply:
+acceptance criteria become test names, unknowns are represented, cuts
+are flagged.
+
 **Wave plan:** Wave 0 = S13+S14 (the loop itself). Wave 1 = S01,S03,S05,S11 (parallel, no deps). Wave 2 = S02,S04,S07. Wave 3 = S06,S08,S10. Wave 4 = S16, then S09,S12,S15.
 
 S16 was not in the original wave plan — the specs covered every core module, every face and both build targets, but nothing owned *the running application*. The gap only became visible once every face had landed and their controls had nowhere to call into (#23). It precedes S15 deliberately: bring-up should plug a display driver into a loop that already works, not invent the loop on unfamiliar hardware.

@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+
+	<!-- Bluetooth. The app is a Meshtastic CLIENT: it connects to a node
+	     the user owns and does not advertise anything. -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Firefly talks to your Meshtastic node over Bluetooth to see your crew and send messages.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>Firefly talks to your Meshtastic node over Bluetooth to see your crew and send messages.</string>
+
+	<!-- Location. The phone's own GPS is pushed to the node as an
+	     external fix, because the Heltec V3 bench boards have no GNSS at
+	     all (docs/hardware/heltec-v3.md). "Always" is requested only
+	     because a festival's whole point is that the phone is in a
+	     pocket while the mesh keeps working. -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Firefly sends your phone's position to your Meshtastic node so your crew can find you.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Firefly keeps sending your position to your node while the app is in your pocket, so your crew can still find you.</string>
+
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+		<string>location</string>
+	</array>
+
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UIUserInterfaceStyle</key>
+	<string>Dark</string>
+</dict>
+</plist>

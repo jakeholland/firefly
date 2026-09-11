@@ -1,0 +1,15 @@
+//
+// Local.xcconfig.example — copy this file to Local.xcconfig (same
+// directory) to wire your own signing team in for on-device runs.
+// Local.xcconfig is git-ignored: your team id never reaches this repo's
+// history, and the committed project (Firefly.xcconfig) stays unsigned
+// for everyone else's clean checkout.
+//
+// Usage:
+//   cp app/Config/Local.xcconfig.example app/Config/Local.xcconfig
+//   # edit the line below with your own team id, then in Xcode:
+//   #   Signing & Capabilities -> Team, and set CODE_SIGNING_ALLOWED=YES
+//   #   (or just let Xcode's "Automatically manage signing" do it once
+//   #   DEVELOPMENT_TEAM is set here).
+//
+DEVELOPMENT_TEAM = YOUR_TEAM_ID

@@ -138,6 +138,60 @@ because this part of Meshtastic is genuinely moving: `ROUTER_CLIENT` was removed
 in 2.3.15, `REPEATER` is deprecated as of 2.7.11, and `ROUTER_LATE` is now the
 middle ground. Reserve router roles for genuinely elevated, well-sited nodes.
 
+## Bench boards for the phone app (2026-09-10) — REVERT BEFORE THE FESTIVAL
+
+Both Waveshare puck screens are broken, so the mesh is being exercised
+with these two V3s plus the Swift companion app
+([docs/specs/A01-companion-app.md](../specs/A01-companion-app.md))
+instead of with pucks. That needs several deliberate, temporary
+configuration changes, written down here because a bench setting that
+survives to the festival is exactly the kind of thing nobody remembers
+changing.
+
+Both boards: stock Meshtastic **2.7.26**, region **US**, primary channel
+**"Firefly"** with `position_precision: 32` (step 6 above — non-negotiable,
+it is what keeps distances honest). No GNSS, no magnetometer, as always
+for this board.
+
+| Board | Change | Why | Status |
+|---|---|---|---|
+| **Firefly 2** | `bluetooth.mode NO_PIN` | The app connects over BLE from a Mac and an iPhone many times an hour during development. A six-digit PIN sheet on every bond is a bench tax, and the boards sit on a desk, not in a crowd. | **Done 2026-09-10** |
+| **Firefly 2** | fixed position **removed** (`--remove-position`) | This board is now a mobile end node in app testing, not a landmark. Leaving a stale fixed position on it would broadcast an *asserted* point that nobody chose — the precise trap Use 2 above warns about. | **Done 2026-09-10** |
+| **Firefly 1** | `bluetooth.mode NO_PIN` | Same reason; either board must be connectable from the app. | **Done 2026-09-10** |
+| **Firefly 1** | an **asserted bench position** set explicitly with `--setlat`/`--setlon`/`--setalt`: `47.708135, -122.2820993`, alt 40 | The app's Radar needs at least one node that reports a position, so that the "position + age + source" rendering can be exercised at all. Setting it explicitly (never relying on the fixed-position flag alone) keeps it honestly ASSERTED rather than a stale measurement. | **Done 2026-09-10** |
+| **Firefly 1** | role **`CLIENT`** (deliberately NOT `CLIENT_MUTE`) | A01's bench pair is exercising a real mesh with the phone app, not standing in for a landmark — `CLIENT` acks and relays like a real friend node would, which is the more useful stand-in for that purpose. Settles spec open question 3 (`docs/specs/A01-companion-app.md`). | **Done 2026-09-10** |
+
+```
+# Firefly 2 — what was run (serial, 2026-09-10)
+meshtastic --set bluetooth.mode NO_PIN
+meshtastic --remove-position
+
+# Firefly 1 — what was run (serial, 2026-09-10)
+meshtastic --set bluetooth.mode NO_PIN
+meshtastic --setlat 47.708135 --setlon -122.2820993 --setalt 40   # explicit, always
+meshtastic --set device.role CLIENT
+```
+
+⚠️ **Both boards must be reverted before Lost Lands.**
+
+- `bluetooth.mode` back to a PIN mode (`RANDOM_PIN`, or `FIXED_PIN` if
+  you want a known one). `NO_PIN` means anyone within Bluetooth range at
+  a festival can pair with the node and read and send messages on the
+  Firefly channel. On a desk that is convenience; in a crowd it is an
+  open door.
+- Firefly 1's bench position cleared with `--remove-position` unless it
+  is genuinely being deployed as a landmark at the site, in which case it
+  gets the site's real coordinates — set explicitly, same rule.
+- Firefly 1's role reconsidered against whatever it actually does at the
+  festival: `CLIENT` is right for "acts like a real friend node on the
+  bench," wrong for a landmark sitting at chest height in a crowd (Use 2
+  above still recommends `CLIENT_MUTE` for that case) — decide based on
+  the deployment, don't carry the bench value forward by default.
+
+Record the revert here when it happens, with the date, the same way the
+rest of this file records what was actually run rather than what was
+intended.
+
 ## Use 3 — the range numbers we don't have
 
 Every range figure in the plan comes from datasheets and other people's

@@ -1,0 +1,16 @@
+//
+// Firefly.xcconfig — committed. Nothing in here signs anything on its
+// own; CODE_SIGNING_ALLOWED = NO in project.yml still wins for the
+// committed project, so a clean checkout keeps building with no team
+// and no certificate (A01_AC1).
+//
+// The #include? below is OPTIONAL (the "?" — .xcconfig's own syntax for
+// "include this file if it exists, say nothing if it doesn't"). It pulls
+// in Local.xcconfig, a git-ignored, per-developer file that is not
+// committed and cannot be, because it holds a personal DEVELOPMENT_TEAM.
+// Copy Local.xcconfig.example to Local.xcconfig, fill in your team id,
+// and flip CODE_SIGNING_ALLOWED back to YES yourself to run on a device
+// (see app/README.md, "Run on the iPhone"). Nobody's team id ever
+// reaches this repo's history.
+//
+#include? "Local.xcconfig"
