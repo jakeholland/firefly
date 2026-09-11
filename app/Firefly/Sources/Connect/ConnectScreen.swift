@@ -3,11 +3,21 @@
 //  A01-companion-app.md, M1: "node picker (BLE on both platforms),
 //  connection state including a distinct HANDSHAKING, channel import").
 //
-//  Sections, top to bottom: connection state + connect/disconnect,
-//  the BLE node picker (honestly empty until slice A's scanner exists
-//  — see PeripheralDiscovery.swift), Nearby heard nodes ranked by
-//  signal tier with Add to Crew, and channel import (paste everywhere,
-//  scan on iOS).
+//  Sections, top to bottom: connection state (naming WHICH radio, not
+//  just whether one is up), the NEARBY RADIOS picker with a per-row
+//  CONNECT/DISCONNECT/FORGET, Nearby heard nodes ranked by signal tier
+//  with Add to Crew, and channel import (paste everywhere, scan on
+//  iOS).
+//
+//  Redesigned on owner feedback from the first real-radio run on the
+//  iPhone (verbatim): "iPhone shows 'connected' but I'm not sure to
+//  which radio, the UX is confusing, the connect button needs to be on
+//  the line item or something, screen needs a little work." Two
+//  changes answer that: `ConnectViewModel.headerStatusText` names the
+//  radio (BLE name · node long name · node id · RSSI) instead of a bare
+//  CONNECTED, and every NEARBY RADIOS row (`RadioListBuilder`,
+//  `NearbyNodesViewModel.swift`) carries its own CONNECT/DISCONNECT
+//  rather than three top-level buttons nobody could tie to a row.
 //
 import FireflyMesh
 import FireflyModel
@@ -32,9 +42,18 @@ struct ConnectScreen: View {
     /// scan result.
     @State private var discovery: any PeripheralDiscovering
     @State private var peripherals: [DiscoveredPeripheral] = []
-    @State private var selectedPeripheralID: String?
     @State private var channelURLText = ""
     @State private var isShowingScanner = false
+    /// NEARBY RADIOS empty/scanning copy (owner feedback item 3):
+    /// "Scanning…" with a spinner while a scan is running and nothing
+    /// has turned up yet, "No Meshtastic radios found…" once it has run
+    /// long enough that the honest answer is "nothing's here", and a
+    /// plain "tap RESCAN" prompt before the user has ever asked at all
+    /// — RESCAN stays the trigger (`onAppear`'s own comment, below),
+    /// this only changes what the empty state SAYS while waiting.
+    @State private var isScanning = false
+    @State private var scanDidTimeOut = false
+    @State private var scanTimeoutTask: Task<Void, Never>?
     /// M3 — "Apply to node" confirmation sheet for the imported channel
     /// (docs/specs/A01-companion-app.md M3). Separate from
     /// `isShowingScanner`'s `.sheet` — SwiftUI supports more than one
@@ -46,6 +65,12 @@ struct ConnectScreen: View {
     /// theirs. Never stored: this only selects WHICH palette a
     /// `colorIndex` resolves against at render time.
     let colorblind: Bool
+
+    /// How long a RESCAN is given before an empty NEARBY RADIOS list
+    /// switches from "Scanning…" to the honest "nothing found" copy.
+    /// Not a protocol timeout of any kind — purely how long this screen
+    /// waits before saying so.
+    static let scanEmptyTimeout: Duration = .seconds(8)
 
     init(connect: ConnectViewModel, client: any MeshtasticClientProtocol,
          channelImport: ChannelImportViewModel, scanner: (any NodeScanning)?,
@@ -105,6 +130,7 @@ struct ConnectScreen: View {
             // is unaffected by this and still stops here as before.
             nearby.stopObserving()
             discovery.stopScanning()
+            scanTimeoutTask?.cancel()
         }
         .task {
             for await found in discovery.peripherals() {
@@ -163,16 +189,25 @@ struct ConnectScreen: View {
     }
 
     // MARK: - Connection state
+    //
+    // Owner feedback item 1: the state line now NAMES the radio —
+    // `connect.headerStatusText` (built in the view model, MVVM
+    // convention 5) rather than a bare CONNECTED this view would have
+    // to re-derive. No CONNECT/DISCONNECT/FORGET here any more — those
+    // moved onto their radio's own row in NEARBY RADIOS, below, per
+    // item 2 ("the connect button needs to be on the line item").
 
     private var connectionSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
                 Circle()
                     .fill(statusColor)
                     .frame(width: 10, height: 10)
-                Text(connect.statusLabel)
+                    .padding(.top, 5)
+                Text(connect.headerStatusText)
                     .font(.system(.headline, design: .monospaced))
                     .foregroundStyle(statusColor)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let lastConnected = connect.lastConnectedLabel {
@@ -186,44 +221,6 @@ struct ConnectScreen: View {
                     .font(.footnote)
                     .foregroundStyle(Color.ffMuted)
             }
-
-            HStack(spacing: 12) {
-                // NIT (PR #272 review): `connect.connectButtonLabel` reads
-                // "RETRY" once the bounded handshake-retry loop has given
-                // up (`.failed`) — a visible terminal-state action,
-                // rather than a silent re-enable of a button still
-                // labeled for a first-time connect.
-                Button(connect.connectButtonLabel) { Task { await connect.connect() } }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.ffAmber)
-                    .foregroundStyle(Color.ffBackground)
-                    .disabled(connect.isBusyOrConnected)
-
-                // SHOULD-FIX 3 (PR #272 review): gated on
-                // `ConnectViewModel.isDisconnectable`, not `link == .ready`
-                // — see that property's own doc comment for why a
-                // `.connecting`/`.handshaking`/`.reconnecting` link must
-                // stay abortable.
-                Button("DISCONNECT") { Task { await connect.disconnect() } }
-                    .buttonStyle(.bordered)
-                    .tint(.ffMuted)
-                    .disabled(!connect.isDisconnectable)
-
-                Button("FORGET") { Task { await connect.forgetNode() } }
-                    .buttonStyle(.bordered)
-                    .tint(.ffAlert)
-                    .disabled(!connect.canForgetNode)
-            }
-            .frame(minHeight: 44)
-
-            // SHOULD-FIX 5 (PR #272 review): plain DISCONNECT deliberately
-            // never clears the remembered node — matches Meshtastic-Apple's
-            // own `AccessoryManager.disconnect()`, which also never
-            // touches `UserDefaults.preferredPeripheralId`. FORGET, above,
-            // is the only action that does.
-            Text("DISCONNECT keeps this radio remembered for next launch. FORGET clears it.")
-                .font(.caption2)
-                .foregroundStyle(Color.ffMuted)
         }
     }
 
@@ -237,74 +234,128 @@ struct ConnectScreen: View {
     }
 
     // MARK: - Node picker (BLE peripherals)
+    //
+    // Owner feedback item 2: every row carries its own primary action —
+    // CONNECT on a row that isn't the active radio, DISCONNECT on the
+    // one that is — built by `RadioListBuilder.rows(discovered:connect:)`
+    // (`NearbyNodesViewModel.swift`) so the gating itself lives in a
+    // view model, not here. Only RESCAN stays a top-level button.
 
     private var nodePickerSection: some View {
         SectionBlock(title: "NEARBY RADIOS") {
-            if peripherals.isEmpty {
-                Text("No Meshtastic radios found yet. This build has no BLE scanner wired in " +
-                     "(that lands with the real transport) — an empty list here is the honest " +
-                     "answer, not a stalled scan.")
-                    .font(.footnote)
-                    .foregroundStyle(Color.ffMuted)
+            let rows = RadioListBuilder.rows(discovered: peripherals, connect: connect)
+            if rows.isEmpty {
+                radioListEmptyState
             } else {
-                ForEach(peripherals) { peripheral in
-                    Button {
-                        // Tapping a row does ONE thing: tell the
-                        // transport which peripheral a subsequent
-                        // CONNECT should prefer. It deliberately does
-                        // not connect — connecting is the CONNECT
-                        // button's job, and a picker that silently
-                        // starts a connection is a picker that can
-                        // start one you did not mean.
-                        discovery.select(peripheral.id)
-                        selectedPeripheralID = peripheral.id
-                    } label: {
-                        HStack {
-                            Text(peripheral.name ?? peripheral.id)
-                                .foregroundStyle(Color.ffInk)
-                            if peripheral.id == selectedPeripheralID {
-                                Text("SELECTED")
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .foregroundStyle(Color.ffAmber)
-                            }
-                            Spacer()
-                            Text("\(peripheral.rssiDbm) dBm")
-                                .font(.system(.footnote, design: .monospaced))
-                                .foregroundStyle(Color.ffMuted)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .frame(minHeight: 44)
+                ForEach(rows) { row in
+                    RadioRow(row: row, primaryLabel: primaryLabel(for: row),
+                             onPrimary: { performPrimaryAction(for: row) },
+                             onForget: { Task { await connect.forgetNode() } })
                 }
             }
 
-            Button("RESCAN") { discovery.startScanning() }
+            Button("RESCAN") { startScan() }
                 .buttonStyle(.bordered)
                 .tint(.ffMuted)
                 .frame(minHeight: 44)
+
+            Text("DISCONNECT keeps a radio remembered for next launch. FORGET clears it.")
+                .font(.caption2)
+                .foregroundStyle(Color.ffMuted)
+        }
+    }
+
+    @ViewBuilder
+    private var radioListEmptyState: some View {
+        if isScanning && !scanDidTimeOut {
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Scanning…")
+                    .font(.footnote)
+                    .foregroundStyle(Color.ffMuted)
+            }
+            .frame(minHeight: 44, alignment: .leading)
+        } else if scanDidTimeOut {
+            Text("No Meshtastic radios found — is the node powered on and within range?")
+                .font(.footnote)
+                .foregroundStyle(Color.ffMuted)
+        } else {
+            Text("Tap RESCAN to look for nearby Meshtastic radios.")
+                .font(.footnote)
+                .foregroundStyle(Color.ffMuted)
+        }
+    }
+
+    private func startScan() {
+        isScanning = true
+        scanDidTimeOut = false
+        discovery.startScanning()
+        scanTimeoutTask?.cancel()
+        scanTimeoutTask = Task {
+            try? await Task.sleep(for: Self.scanEmptyTimeout)
+            guard !Task.isCancelled else { return }
+            scanDidTimeOut = true
+        }
+    }
+
+    /// RETRY only on the radio that just failed — every other row with
+    /// a `.connect` action (a stranger in the scan, or the active row
+    /// before any attempt at all) reads plain CONNECT.
+    /// `ConnectViewModel.connectButtonLabel`'s own RETRY rule, applied
+    /// per row instead of to one shared button.
+    private func primaryLabel(for row: RadioListRow) -> String {
+        switch row.action {
+        case .connect:
+            if row.isRemembered, connect.connectButtonLabel == "RETRY" { return "RETRY" }
+            return "CONNECT"
+        case .disconnect: return "DISCONNECT"
+        case .unavailable: return "CONNECT"
+        }
+    }
+
+    private func performPrimaryAction(for row: RadioListRow) {
+        switch row.action {
+        case .connect:
+            // `discovery.select` points the transport at this specific
+            // peripheral BEFORE `connect()` — the whole reason the
+            // picker exists (`discovery.select`'s own doc comment): a
+            // bare `connect()` takes whatever the transport's internal
+            // scan sees first. `noteSelectedPeripheral` tells the view
+            // model the BLE name/RSSI this row already knows, so the
+            // header can name the radio through CONNECTING/HANDSHAKING
+            // rather than only once `.ready` (owner feedback item 1).
+            let match = peripherals.first(where: { $0.id == row.id })
+            discovery.select(row.id)
+            connect.noteSelectedPeripheral(name: match?.name, rssiDbm: match?.rssiDbm)
+            Task { await connect.connect() }
+        case .disconnect:
+            Task { await connect.disconnect() }
+        case .unavailable:
+            break // dead chrome on purpose — see `ConnectViewModel.rowAction`'s doc comment
         }
     }
 
     /// `-FireflyAutoConnect <name>` (`FireflyAutoConnectLaunch`'s own doc
     /// comment) — performs EXACTLY the manual UI path a person taking
     /// this screen would: RESCAN, wait for a peripheral whose advertised
-    /// name matches, tap it (`discovery.select(_:)`), tap CONNECT
-    /// (`connect.connect()`). Never touches `MeshtasticClient`/
-    /// `BLETransport` directly — the whole point is to reproduce the
-    /// live graph path a real tap takes, not a shortcut around it. A
-    /// no-op on every ordinary launch (`requestedPeripheralName()`
-    /// reads nil) and on any build with no scanner (`discovery` is
-    /// `StubPeripheralDiscovery`, which discovers nothing — this loop
-    /// then simply waits forever off its own `.task`, harmlessly, same
-    /// as an ungranted permission would).
+    /// name matches, tap it (`discovery.select(_:)` +
+    /// `connect.noteSelectedPeripheral(name:rssiDbm:)` — the same pair
+    /// a row's own CONNECT action performs, `performPrimaryAction(for:)`
+    /// above), tap CONNECT (`connect.connect()`). Never touches
+    /// `MeshtasticClient`/`BLETransport` directly — the whole point is
+    /// to reproduce the live graph path a real tap takes, not a
+    /// shortcut around it. A no-op on every ordinary launch
+    /// (`requestedPeripheralName()` reads nil) and on any build with no
+    /// scanner (`discovery` is `StubPeripheralDiscovery`, which
+    /// discovers nothing — this loop then simply waits forever off its
+    /// own `.task`, harmlessly, same as an ungranted permission would).
     private func runAutoConnectIfRequested() async {
         guard let targetName = FireflyAutoConnectLaunch.requestedPeripheralName() else { return }
         discovery.startScanning()
         for await found in discovery.peripherals() {
             guard let match = found.first(where: { $0.name == targetName }) else { continue }
             discovery.select(match.id)
-            selectedPeripheralID = match.id
+            connect.noteSelectedPeripheral(name: match.name, rssiDbm: match.rssiDbm)
             await connect.connect()
             return
         }
@@ -455,6 +506,116 @@ private struct SectionBlock<Content: View>: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.ffSurface, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+/// One NEARBY RADIOS row — `RadioListRow`'s (`NearbyNodesViewModel.swift`)
+/// display state rendered verbatim, with its own CONNECT/DISCONNECT and,
+/// for the remembered radio, FORGET (owner feedback item 2: "the connect
+/// button needs to be on the line item"). The connected row is visually
+/// distinct — a theme-amber border plus a CONNECTED chip — so "which
+/// radio am I on" reads at a glance, matching the design canvas's node
+/// cards (docs/specs/A01-companion-app.md, design language).
+private struct RadioRow: View {
+    let row: RadioListRow
+    let primaryLabel: String
+    let onPrimary: () -> Void
+    let onForget: () -> Void
+
+    // A two-line card, not one crowded HStack: title/chip/RSSI on top,
+    // actions on their own row underneath. A single row ran out of
+    // width on a phone the moment a chip AND a 44pt DISCONNECT (and,
+    // for the remembered radio, FORGET too) all needed to fit beside
+    // the name — SwiftUI's answer to that was wrapping the chip's own
+    // text mid-word ("CONNECT-ED", caught in the demo-mode screenshot).
+    // Giving actions their own row is honest about how much a phone
+    // screen actually has, not a squeeze that only ever looked right on
+    // a Mac.
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(row.title)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(Color.ffInk)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                if let chipText = row.status.chipText {
+                    RadioChip(text: chipText, color: row.status == .connected ? .ffAmber : .ffMuted)
+                        .fixedSize()
+                }
+                Spacer(minLength: 4)
+                if let rssi = row.rssiDbm {
+                    Text("\(rssi) dBm")
+                        .font(.system(.footnote, design: .monospaced))
+                        .foregroundStyle(Color.ffMuted)
+                }
+            }
+            if let subtitle = row.subtitle {
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(Color.ffMuted)
+                    .lineLimit(1)
+            }
+            HStack(spacing: 12) {
+                Spacer(minLength: 0)
+                if row.isRemembered {
+                    Button("FORGET", action: onForget)
+                        .buttonStyle(.bordered)
+                        .tint(.ffAlert)
+                        .font(.caption)
+                        .frame(minHeight: 44)
+                }
+                primaryButton
+            }
+        }
+        .padding(row.status.isHighlighted ? 10 : 0)
+        .background {
+            if row.status.isHighlighted {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.ffAmber, lineWidth: 2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var primaryButton: some View {
+        switch row.action {
+        case .connect:
+            Button(primaryLabel, action: onPrimary)
+                .buttonStyle(.borderedProminent)
+                .tint(.ffAmber)
+                .foregroundStyle(Color.ffBackground)
+                .frame(minHeight: 44)
+        case .disconnect:
+            Button(primaryLabel, action: onPrimary)
+                .buttonStyle(.bordered)
+                .tint(.ffMuted)
+                .frame(minHeight: 44)
+        case .unavailable:
+            Button(primaryLabel) {}
+                .buttonStyle(.bordered)
+                .tint(.ffMuted)
+                .disabled(true)
+                .frame(minHeight: 44)
+        }
+    }
+}
+
+/// A small pill label — CONNECTED/REMEMBERED — matching `DemoBadge`'s
+/// own monospaced-caption2-bold vocabulary rather than a platform
+/// default badge.
+private struct RadioChip: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        Text(text)
+            .font(.system(.caption2, design: .monospaced).weight(.bold))
+            .tracking(0.5)
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(color, lineWidth: 1))
     }
 }
 
