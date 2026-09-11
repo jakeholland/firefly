@@ -218,6 +218,14 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertTrue(vm.colorblindPalette)
     }
 
+    /// M2: a fresh store (nothing ever written) must read `.system`,
+    /// never a guessed metric/imperial default — the exact bug PR #265's
+    /// review flagged against the old bool key.
+    func testInitDefaultsUnitsPreferenceToSystem() {
+        let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel())
+        XCTAssertEqual(vm.unitsPreference, .system)
+    }
+
     func testSettersPersistThroughToAFreshViewModelOverTheSameStore() {
         let store = SettingsStore(defaults: defaults)
         let vm = SettingsViewModel(store: store, channelImport: ChannelImportViewModel())
@@ -228,6 +236,7 @@ final class SettingsViewModelTests: XCTestCase {
         vm.setLocationIntervalSeconds(45)
         vm.setStayConnectedInBackground(true)
         vm.setColorblindPalette(true)
+        vm.setUnitsPreference(.imperial)
 
         let reopened = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel())
         XCTAssertEqual(reopened.nodeLongName, "Firefly One")
@@ -236,6 +245,7 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertEqual(reopened.locationIntervalSeconds, 45)
         XCTAssertTrue(reopened.stayConnectedInBackground)
         XCTAssertTrue(reopened.colorblindPalette)
+        XCTAssertEqual(reopened.unitsPreference, .imperial)
     }
 
     /// The spec's floor: "default 30 s, floor 5 s" for the GPS-push

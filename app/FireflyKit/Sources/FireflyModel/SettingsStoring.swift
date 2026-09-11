@@ -18,6 +18,17 @@ public enum SettingsKey: String, Sendable, CaseIterable {
     case locationSharingEnabled
     case locationSharingIntervalSeconds
     case transportKind
+    // Appended for M2 (PR #265's own review flagged this): a NEW case
+    // rather than reusing `unitsMetric`, whose stored TYPE (bool) is
+    // exactly the bug — `SettingsStoring.bool` cannot tell "chose
+    // imperial" from "never written", so a fresh install would have to
+    // guess metric-or-imperial from an unset default. `unitsMetric`
+    // itself is left in place, untouched, rather than removed: this
+    // file is shared infra several other M2 slices also touch this
+    // sprint, and removing a case is not an append. See this file's
+    // bottom section ("Units preference") for the tri-state that
+    // replaces it in practice.
+    case unitsPreference
 }
 
 /// Small and typed rather than a raw `UserDefaults` pass-through, so a
@@ -123,5 +134,82 @@ public final class InMemorySettingsStore: FireflyExtraSettingsStoring, @unchecke
     private func setExtraString(_ value: String?, _ key: String) {
         lock.lock(); defer { lock.unlock() }
         extraStrings[key] = value
+    }
+}
+
+// MARK: - Units preference (tri-state; M2)
+//
+// Appended as one contiguous hunk rather than folded into the sections
+// above — `SettingsStoring` is shared infra several other M2 slices
+// also touch this sprint, so a diff confined to the end of the file is
+// the one least likely to collide with theirs.
+//
+// The bug this replaces (PR #265's own review, and `AppGraph
+// .makeRadarViewModel`'s doc comment before this PR): `SettingsKey
+// .unitsMetric` is a BOOL, and `SettingsStoring.bool` has no way to
+// distinguish "the user picked imperial" from "nobody has ever written
+// this key" — both read `false`. A bool default of `false` therefore
+// made every fresh install METRIC, silently, regardless of where the
+// phone actually is, and nothing ever wrote the key besides tests. A
+// tri-state fixes this at the type level: `.system` (the real default)
+// is not itself a unit, so a fresh install renders the Radar's very
+// first frame in whatever unit its OWN locale implies, never a guess
+// baked into this file.
+
+/// A user's distance-unit choice. `.metric`/`.imperial` are explicit
+/// overrides; `.system` — the default for a fresh install, and the only
+/// value ever read before something writes this key — defers to the
+/// phone's own region rather than asserting a unit on its own
+/// (`resolvedImperial(locale:)`).
+public enum UnitsPreference: String, Sendable, CaseIterable {
+    case system
+    case metric
+    case imperial
+
+    /// Resolves this preference to an actual metric(`false`)/
+    /// imperial(`true`) choice. `.metric`/`.imperial` pass straight
+    /// through; `.system` follows `locale.measurementSystem` — `.us`
+    /// AND `.uk` read imperial (the UK's own road distances are miles
+    /// despite the UK being otherwise metric; `Locale.MeasurementSystem`
+    /// carries `.uk` as its own case for exactly this reason), every
+    /// other region metric.
+    public func resolvedImperial(locale: Locale = .current) -> Bool {
+        switch self {
+        case .metric: return false
+        case .imperial: return true
+        case .system:
+            switch locale.measurementSystem {
+            case .us, .uk: return true
+            default: return false
+            }
+        }
+    }
+}
+
+extension SettingsStoring {
+    /// The stored tri-state preference — `.system` when nothing has
+    /// been written yet (a fresh install) or when a stored value this
+    /// build no longer recognizes, never a silently-wrong guess at a
+    /// physical unit. Built on `string(_:)`, one of the six methods
+    /// every `SettingsStoring` conformer already implements, so this is
+    /// a pure protocol-extension default — no conformer (`SettingsStore`,
+    /// `InMemorySettingsStore`, any test double) needs a single line
+    /// changed to pick it up.
+    public func unitsPreference() -> UnitsPreference {
+        string(.unitsPreference).flatMap(UnitsPreference.init(rawValue:)) ?? .system
+    }
+
+    public func setUnitsPreference(_ value: UnitsPreference) {
+        setString(value.rawValue, .unitsPreference)
+    }
+
+    /// Convenience: `unitsPreference().resolvedImperial(locale:)`. The
+    /// one call every distance-rendering seam in the app (Radar today;
+    /// Inbox/Thread RALLY and Diagnostics once they render a distance)
+    /// makes to decide metric vs. imperial — so there is exactly one
+    /// place that resolution logic lives, never re-derived per call
+    /// site.
+    public func resolvedImperial(locale: Locale = .current) -> Bool {
+        unitsPreference().resolvedImperial(locale: locale)
     }
 }
