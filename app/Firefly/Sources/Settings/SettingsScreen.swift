@@ -10,6 +10,13 @@ import SwiftUI
 struct SettingsScreen: View {
     @Bindable var model: SettingsViewModel
     let client: any MeshtasticClientProtocol
+    /// "app: festpack from fest-almanac + Lineup" — shared with the
+    /// Lineup destination (`RootView`'s own `lineup` property), same
+    /// "one instance, two screens" pattern `channelImport` already uses
+    /// between Connect and Settings, so the "Festival data" row and the
+    /// Lineup tab can never show two different sourceState/URL answers.
+    @Bindable var lineup: LineupViewModel
+    @State private var festpackURLDraft: String = ""
     /// M2's own state: the Crew section's rows (rename/remove), backed
     /// by the SAME `CrewPairingController` Connect's Nearby section
     /// writes through.
@@ -30,11 +37,13 @@ struct SettingsScreen: View {
     @State private var isShowingClearHistoryConfirmation = false
 
     init(model: SettingsViewModel, client: any MeshtasticClientProtocol, pairing: CrewPairingController,
-         autoOpenDiagnostics: Bool = false) {
+         lineup: LineupViewModel, autoOpenDiagnostics: Bool = false) {
         self.model = model
         self.client = client
+        self.lineup = lineup
         self.autoOpenDiagnostics = autoOpenDiagnostics
         _crewSettings = State(initialValue: CrewSettingsViewModel(pairing: pairing))
+        _festpackURLDraft = State(initialValue: model.festpackSourceURLOverride ?? "")
     }
 
     var body: some View {
@@ -46,6 +55,7 @@ struct SettingsScreen: View {
                 unitsSection
                 crewSection
                 appearanceSection
+                festivalDataSection
                 historySection
                 Button("DIAGNOSTICS") { showDiagnostics = true }
                     .buttonStyle(.bordered)
@@ -308,6 +318,59 @@ struct SettingsScreen: View {
                 .tint(.ffAlert)
                 .frame(minHeight: 44)
         }
+    }
+
+    // MARK: - Festival data ("app: festpack from fest-almanac + Lineup")
+
+    /// "pack updated `<meta.updated>` · from fest-almanac", honestly
+    /// reflecting whichever of no pack / bundled / cached (age) / fresh
+    /// `lineup.sourceState` actually is — never a claim this screen
+    /// cannot back up. Shares `lineup` with the Lineup tab (this file's
+    /// own `lineup` doc comment), so "refresh" here and the Lineup
+    /// screen's pull-to-refresh can never disagree about what pack is
+    /// loaded.
+    private var festivalDataSection: some View {
+        SettingsBlock(title: "FESTIVAL DATA") {
+            Text(festivalDataStatusText)
+                .font(.footnote)
+                .foregroundStyle(Color.ffMuted)
+            LabeledField(label: "Pack URL (blank = fest-almanac default)") {
+                TextField(AlmanacFestpackProvider.defaultURL.absoluteString, text: $festpackURLDraft)
+                    .textFieldStyle(.roundedBorder)
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    #endif
+                    .onSubmit { model.setFestpackSourceURLOverride(festpackURLDraft) }
+            }
+            if let error = model.festpackSourceURLError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(Color.ffAlert)
+            }
+            HStack {
+                Button("SAVE URL") { model.setFestpackSourceURLOverride(festpackURLDraft) }
+                    .buttonStyle(.bordered)
+                Button("REFRESH") { Task { await lineup.refresh() } }
+                    .buttonStyle(.bordered)
+                    .tint(.ffAmber)
+                    .disabled(lineup.isRefreshing)
+            }
+        }
+    }
+
+    private var festivalDataStatusText: String {
+        let sourceText: String
+        switch lineup.sourceState {
+        case .none: sourceText = "no pack loaded"
+        case .bundled: sourceText = "bundled copy"
+        case .fresh: sourceText = "fresh"
+        case .cached(let age):
+            let minutes = max(0, Int(age / 60))
+            sourceText = minutes < 1 ? "cached (just now)" : "cached (\(minutes) min ago)"
+        }
+        guard let updated = lineup.festpack?.meta.updated else { return sourceText }
+        return "pack updated \(updated) · from fest-almanac · \(sourceText)"
     }
 
     // MARK: - Crew (M2)

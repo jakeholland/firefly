@@ -216,6 +216,41 @@ final class SettingsViewModel {
         store.nodeShortNamePreference = value.isEmpty ? nil : value
     }
 
+    /// "app: festpack from fest-almanac + Lineup" — the Settings
+    /// "Festival data" row's URL override, read/written through the
+    /// SAME `store` `AppGraph` hands `AlmanacFestpackProvider` (never a
+    /// second copy that could disagree about which URL is actually in
+    /// effect). `nil`/empty means "use the built-in fest-almanac URL" —
+    /// see `AlmanacFestpackProvider.sourceURL()`.
+    var festpackSourceURLOverride: String? {
+        store.string(.festpackSourceURLOverride)
+    }
+
+    /// BLOCKING review finding 1: https-only. This URL feeds
+    /// `AlmanacFestpackProvider`'s whole cache-then-parse pipeline, so a
+    /// `http://`/`file://`/garbage override must never reach the store —
+    /// reject it, leave the PREVIOUS value in place exactly like clearing
+    /// the field does, and say why honestly rather than silently
+    /// swallowing the edit. `AlmanacFestpackProvider.sourceURL()` re-checks
+    /// the same scheme on read, as a last line of defense for a value that
+    /// reached the store some other way (e.g. a synced/corrupted default).
+    private(set) var festpackSourceURLError: String?
+
+    func setFestpackSourceURLOverride(_ value: String?) {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmed, !trimmed.isEmpty else {
+            festpackSourceURLError = nil
+            store.setString(nil, .festpackSourceURLOverride)
+            return
+        }
+        guard let url = URL(string: trimmed), url.scheme?.lowercased() == "https" else {
+            festpackSourceURLError = "Festival data URL must start with https:// — keeping the previous value."
+            return
+        }
+        festpackSourceURLError = nil
+        store.setString(trimmed, .festpackSourceURLOverride)
+    }
+
     func setShareGPSWithNode(_ value: Bool) {
         shareGPSWithNode = value
         store.setBool(value, .locationSharingEnabled)

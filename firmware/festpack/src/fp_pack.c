@@ -775,6 +775,44 @@ static fp_result_t fp_parse_landmarks(fp_ctx_t const *c, int arr_i, ff_latlon_t 
     return FP_OK;
 }
 
+/* 2026-09-11 S05 amendment — see fp_meta_t's own doc comment (fp_pack.h).
+ * Purely additive and tolerant: every sub-field defaults to empty/zero
+ * (already true from fp_parse()'s memset) and is only ever overwritten
+ * on a successfully-typed match, exactly like every other optional field
+ * in this file. Never returns an error — a malformed "meta" object is
+ * simply an absent one for whichever of its sub-fields didn't parse. */
+static void fp_parse_meta(fp_ctx_t const *c, int meta_i, fp_pack_t *out)
+{
+    out->meta.present = true;
+    int t;
+    if (fp_obj_get(c, meta_i, "updated", &t) && !fp_is_null(c, t)) {
+        fp_copy_str(c, t, out->meta.updated, sizeof(out->meta.updated));
+    }
+    int arr_i;
+    if (fp_obj_get(c, meta_i, "sources", &arr_i) && !fp_is_null(c, arr_i)) {
+        jsmntok_t const *at = &c->toks[arr_i];
+        if (at->type == JSMN_ARRAY) {
+            int idx = arr_i + 1;
+            for (int i = 0; i < at->size; i++) {
+                if (out->meta.n_sources < FP_MAX_META_SOURCES) {
+                    fp_copy_str(c, idx, out->meta.sources[out->meta.n_sources], FP_META_SOURCE_LEN);
+                    out->meta.n_sources++;
+                }
+                idx = fp_skip(c, idx);
+            }
+        }
+    }
+    int complete_i;
+    if (fp_obj_get(c, meta_i, "complete", &complete_i) && !fp_is_null(c, complete_i)) {
+        if (fp_obj_get(c, complete_i, "lineup", &t))
+            fp_copy_str(c, t, out->meta.complete_lineup, sizeof(out->meta.complete_lineup));
+        if (fp_obj_get(c, complete_i, "set_times", &t))
+            fp_copy_str(c, t, out->meta.complete_set_times, sizeof(out->meta.complete_set_times));
+        if (fp_obj_get(c, complete_i, "map", &t))
+            fp_copy_str(c, t, out->meta.complete_map, sizeof(out->meta.complete_map));
+    }
+}
+
 static fp_result_t fp_parse_map(fp_ctx_t const *c, int map_i, ff_latlon_t origin, fp_pack_t *out)
 {
     int arr_i;
@@ -860,6 +898,13 @@ static fp_result_t fp_parse_inner(fp_ctx_t const *c, fp_pack_t *out)
     if (map_i >= 0 && !fp_is_null(c, map_i)) {
         fp_result_t r = fp_parse_map(c, map_i, origin, out);
         if (r != FP_OK) return r;
+    }
+
+    /* 2026-09-11 amendment — additive, never fails the parse. */
+    int meta_i = -1;
+    fp_obj_get(c, 0, "meta", &meta_i);
+    if (meta_i >= 0 && !fp_is_null(c, meta_i)) {
+        fp_parse_meta(c, meta_i, out);
     }
 
     return FP_OK;

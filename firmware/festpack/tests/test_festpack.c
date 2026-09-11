@@ -303,6 +303,44 @@ static void S05_AC1_lost_lands_festival_meta_and_utc_offset_default(void)
     }
 }
 
+/* 2026-09-11 amendment (app: festpack from fest-almanac + Lineup) — the
+ * top-level "meta" object (fp_meta_t): updated date, citation sources,
+ * per-section completeness flags. Purely additive to fp_pack_t; see that
+ * struct's own doc comment. */
+static void S05_AC1_lost_lands_meta_updated_sources_and_complete_flags(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("lost-lands-2026.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+
+    TEST_ASSERT_TRUE(pack.meta.present);
+    TEST_ASSERT_EQUAL_STRING("2026-09-09", pack.meta.updated);
+    TEST_ASSERT_EQUAL_UINT8(4, pack.meta.n_sources);
+    TEST_ASSERT_EQUAL_STRING("https://www.lostlandsfestival.com/", pack.meta.sources[0]);
+    TEST_ASSERT_EQUAL_STRING("full", pack.meta.complete_lineup);
+    TEST_ASSERT_EQUAL_STRING("full", pack.meta.complete_set_times);
+    TEST_ASSERT_EQUAL_STRING("none", pack.meta.complete_map);
+}
+
+/* The other half of "additive": a pack with no "meta" object at all
+ * (minimal.festpack.json) must parse exactly as it always has — meta
+ * reads as the honest zero value, never a fabricated "full"/"partial". */
+static void S05_review_absent_meta_reads_as_not_present(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("minimal.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+
+    TEST_ASSERT_FALSE(pack.meta.present);
+    TEST_ASSERT_EQUAL_STRING("", pack.meta.updated);
+    TEST_ASSERT_EQUAL_UINT8(0, pack.meta.n_sources);
+    TEST_ASSERT_EQUAL_STRING("", pack.meta.complete_lineup);
+}
+
 /* ======================================================================
  * AC2 — null handling + absent optional sections.
  * ==================================================================== */
@@ -924,6 +962,8 @@ int main(void)
     RUN_TEST(S05_AC1_night_fold_fallback_when_night_absent);
     RUN_TEST(S05_AC1_explicit_night_overrides_fallback);
     RUN_TEST(S05_AC1_lost_lands_festival_meta_and_utc_offset_default);
+    RUN_TEST(S05_AC1_lost_lands_meta_updated_sources_and_complete_flags);
+    RUN_TEST(S05_review_absent_meta_reads_as_not_present);
 
     RUN_TEST(S05_AC2_nulls_in_every_nullable_slot_parse);
     RUN_TEST(S05_AC2_absent_optional_sections_parse);

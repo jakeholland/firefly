@@ -63,6 +63,18 @@ public final class AppGraph {
     /// section in More can never drift from each other or from what
     /// Radar/Inbox render. See `CrewPairingStore.swift`.
     public let crewPairing: CrewPairingController
+    /// "app: festpack from fest-almanac + Lineup" — the Lineup screen's
+    /// data source. Demo mode (`dependencies.client is DemoMeshtasticClient`
+    /// — the same downcast `FireflyApp.init` uses to recover its own
+    /// `DemoRunner`, so there is exactly ONE place that decision is made
+    /// twice over rather than a second, independent flag that could
+    /// drift from it) gets `DemoFestpackProvider` (Firefly Fields,
+    /// bundle-only, per the owner's decision); every other composition
+    /// — `.stub()` included, since network access has nothing to do
+    /// with whether there is a radio to talk to — gets the real
+    /// `AlmanacFestpackProvider`.
+    public let festpack: any FestpackProviding
+    public let starredArtists: any StarredArtistsStoring
     private let uplink: PhoneGPSUplink
 
     private var privateObservation: Task<Void, Never>?
@@ -185,6 +197,10 @@ public final class AppGraph {
         self.packetSender = MeshFireflyPacketSender(client: dependencies.client)
         self.flareTakeover = FlareTakeoverViewModel(crew: self.core.crew)
         self.crewPairing = CrewPairingController(crew: core.crew, store: dependencies.crewPairingStore)
+        self.festpack = dependencies.client is DemoMeshtasticClient
+            ? DemoFestpackProvider()
+            : AlmanacFestpackProvider(settings: dependencies.store)
+        self.starredArtists = StarredArtistsStore(store: dependencies.store)
         let client = dependencies.client
         self.uplink = PhoneGPSUplink(
             location: dependencies.location,
@@ -648,6 +664,17 @@ public final class AppGraph {
         // `.onAppear`/`.onDisappear`) — a thread pushed via a nested
         // `NavigationStack` is genuinely per-navigation state, not a
         // `detail(for:)` destination subject to this remount at all.
+        model.observe()
+        return model
+    }
+
+    /// "app: festpack from fest-almanac + Lineup" — same `observe()`-once
+    /// construction convention as every other screen (`makeInboxViewModel()`
+    /// just above, `makeRadarViewModel(haptics:)`), so the Lineup tab's
+    /// own `festpackUpdates()` subscription lives with the graph, not
+    /// with whichever `detail(for:)` remount happens to show it next.
+    public func makeLineupViewModel() -> LineupViewModel {
+        let model = LineupViewModel(festpackProvider: festpack, starredStore: starredArtists)
         model.observe()
         return model
     }

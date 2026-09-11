@@ -139,6 +139,33 @@ typedef struct {
     float east_m, north_m; /* valid only if has_pos */
 } fp_landmark_t;
 
+/* 2026-09-11 S05 amendment (app: festpack from fest-almanac + Lineup) —
+ * additive: the phone app's Settings "Festival data" row needs to show
+ * "pack updated <date> · from fest-almanac", and the Lineup screen's
+ * honest-state story benefits from knowing how complete the schedule
+ * grid is. Neither was previously exposed by fp_parse() at all — the
+ * top-level "meta" object was an unknown key, tolerantly skipped like
+ * any other. This is a pure addition: a pack with no "meta" object still
+ * parses exactly as before (fp_meta_t.present stays false, every string
+ * stays empty), so every existing fixture/caller is unaffected. */
+#define FP_MAX_META_SOURCES 8
+#define FP_META_STR_LEN 24      /* fits "YYYY-MM-DD" and "full"/"partial"/"none" */
+#define FP_META_SOURCE_LEN 128  /* a real citation URL */
+
+typedef struct {
+    bool present;    /* true iff a top-level "meta" object existed at all */
+    char updated[FP_META_STR_LEN]; /* meta.updated, ISO date; "" if absent/wrong-typed */
+    char sources[FP_MAX_META_SOURCES][FP_META_SOURCE_LEN];
+    uint8_t n_sources; /* extra sources beyond FP_MAX_META_SOURCES are silently
+                           dropped, not FP_ERR_TOO_BIG — this is informational
+                           citation data, not one of the counted collections
+                           S05's overflow contract covers (stages/sets/
+                           features/landmarks/polygon points). */
+    char complete_lineup[FP_META_STR_LEN];    /* meta.complete.lineup: "full"/"partial"/"none"/"" */
+    char complete_set_times[FP_META_STR_LEN]; /* meta.complete.set_times */
+    char complete_map[FP_META_STR_LEN];       /* meta.complete.map */
+} fp_meta_t;
+
 typedef struct {
     char name[32];
     uint16_t year;
@@ -179,6 +206,8 @@ typedef struct {
 
     fp_landmark_t landmarks[FP_MAX_LANDMARKS];
     uint8_t n_landmarks;
+
+    fp_meta_t meta; /* 2026-09-11 amendment — see fp_meta_t's own doc comment */
 } fp_pack_t;
 
 /* Must live comfortably in ESP32-S3 PSRAM (S05 AC6). */
