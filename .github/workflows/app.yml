@@ -1,0 +1,114 @@
+name: app
+
+# A01 — the Swift companion app (docs/specs/A01-companion-app.md).
+#
+# Separate from ci.yml because it needs a macOS runner (Xcode, the iOS
+# SDK, CoreBluetooth) and macOS minutes are billed at 10x Linux. It is
+# path-filtered accordingly: the app job runs only when the app itself or
+# the C core it compiles in place changes.
+#
+# firmware/core/** is in the filter deliberately. FireflyCore is not a
+# copy of the core, it is the core, symlinked in — so a change under
+# firmware/core/src can break the app's build without touching a single
+# file under app/. That is the whole reason CoreSourceLinkTests exists,
+# and this filter is what makes it run at the right moment.
+#
+# HARDWARE tests are NOT here. They need a Heltec V3 on USB or in
+# Bluetooth range, and a hosted runner has neither; they are tagged
+# FIREFLY_HARDWARE and run manually from a Mac (see app/README.md).
+
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - "firmware/core/**"
+      - "firmware/platform/**"
+      - "firmware/app/theme/ff_theme.h"
+      - "firmware/meshclient/tools/gen_nanopb.sh"
+      - ".github/workflows/app.yml"
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "firmware/core/**"
+      - "firmware/platform/**"
+      - "firmware/app/theme/ff_theme.h"
+      - "firmware/meshclient/tools/gen_nanopb.sh"
+      - ".github/workflows/app.yml"
+
+concurrency:
+  group: app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: FireflyKit (swift build + test)
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # Deliberately NOT pinned to an Xcode_<version>.app path: the
+      # runner image rotates those, and a stale pin fails as "no such
+      # directory" rather than as anything informative. The image's
+      # default Xcode is recorded in the log instead, so a build that
+      # breaks on a toolchain bump can be read back to the bump.
+      - name: Versions
+        run: swift --version && xcodebuild -version
+
+      # The symlink farm is committed, but a checkout on a filesystem
+      # that mangles symlinks (or a stale farm) must fail LOUDLY here
+      # rather than as a confusing compile error 200 lines down.
+      - name: Core source links are intact
+        run: |
+          set -euo pipefail
+          missing=0
+          for f in firmware/core/src/*.c; do
+            b="$(basename "$f")"
+            if [ ! -L "app/FireflyKit/Sources/FireflyCore/src/$b" ]; then
+              echo "::error file=firmware/core/src/$b::not linked into FireflyCore - run app/tools/link_core_sources.sh"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: swift build
+        working-directory: app/FireflyKit
+        run: swift build
+
+      - name: swift test
+        working-directory: app/FireflyKit
+        run: swift test
+
+  xcode:
+    name: Firefly.app (macOS + iOS Simulator)
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versions
+        run: xcodebuild -version
+
+      # Code signing is off in project.yml (CODE_SIGNING_ALLOWED=NO), so
+      # neither leg needs a certificate or a provisioning profile.
+      - name: Build for macOS
+        working-directory: app
+        run: |
+          xcodebuild \
+            -project Firefly.xcodeproj \
+            -scheme Firefly \
+            -destination 'platform=macOS' \
+            build
+
+      # `generic/platform=iOS Simulator` compiles for the simulator SDK
+      # without booting a device - faster, and it does not depend on
+      # which iPhone models the runner image happens to ship.
+      - name: Build for iOS Simulator
+        working-directory: app
+        run: |
+          xcodebuild \
+            -project Firefly.xcodeproj \
+            -scheme Firefly \
+            -destination 'generic/platform=iOS Simulator' \
+            build

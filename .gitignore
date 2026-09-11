@@ -40,3 +40,16 @@ firefly-design/
 # recreated by every build() run — see hardware/case/README.md's pass-13
 # section).
 hardware/case/_root_fillet_log.jsonl
+
+# --- app/ (A01 companion app) ---
+# Xcode build output and per-user state. DerivedData is normally under
+# ~/Library, but Xcode can be pointed at a project-relative one.
+DerivedData/
+*.xcuserdatad/
+xcuserdata/
+*.xcuserstate
+# SwiftPM build tree and per-user scratch. app/FireflyKit/Package.resolved
+# IS committed: FireflyKit is an application package, so an exact
+# dependency pin is what makes a CI build reproducible.
+app/FireflyKit/.build/
+app/FireflyKit/.swiftpm/

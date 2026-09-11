@@ -1,0 +1,394 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0318ED28B405C25C7661E064 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E30FCFD8A9260E48E8617D /* RootView.swift */; };
+		04CD563093000516B80C6D62 /* FireflyMesh in Frameworks */ = {isa = PBXBuildFile; productRef = 6D80661B0E11F75CD5DBFD53 /* FireflyMesh */; };
+		71D8EF04CB8A979CD7738201 /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 4982066A256926406E7325EB /* FireflyModel */; };
+		76BA2F3212D5F595105F68D0 /* Theme+SwiftUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */; };
+		7BA796CE1A065E6D5A96DCDB /* MeshtasticProto in Frameworks */ = {isa = PBXBuildFile; productRef = 6C4B001C31CDD7B9E82BE94A /* MeshtasticProto */; };
+		D7A6BDAFEAE4556C2D49508D /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 52CE41AF9EE8F2A1C1595D75 /* FireflyCore */; };
+		FB71020F3A2D6764FDD8FE64 /* FireflyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C40E6DFE5C85637929993F5 /* FireflyApp.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		05D20D18F962B7E51C03A90B /* FireflyKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FireflyKit; path = FireflyKit; sourceTree = SOURCE_ROOT; };
+		543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Theme+SwiftUI.swift"; sourceTree = "<group>"; };
+		668B4901B03CB440509CA401 /* Firefly.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Firefly.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7C40E6DFE5C85637929993F5 /* FireflyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyApp.swift; sourceTree = "<group>"; };
+		A1E30FCFD8A9260E48E8617D /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		CA3A2D75976D151ED86A005C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D7A6BDAFEAE4556C2D49508D /* FireflyCore in Frameworks */,
+				7BA796CE1A065E6D5A96DCDB /* MeshtasticProto in Frameworks */,
+				04CD563093000516B80C6D62 /* FireflyMesh in Frameworks */,
+				71D8EF04CB8A979CD7738201 /* FireflyModel in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		09E7A41B35847DF880B89F6C = {
+			isa = PBXGroup;
+			children = (
+				95A1A3DC3288FC10DBD418FD /* Firefly */,
+				2F20B465437E7EE376895CE7 /* Packages */,
+				1B43B2AE74C8064189181E87 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		1B43B2AE74C8064189181E87 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				668B4901B03CB440509CA401 /* Firefly.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		2F20B465437E7EE376895CE7 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				05D20D18F962B7E51C03A90B /* FireflyKit */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		95A1A3DC3288FC10DBD418FD /* Firefly */ = {
+			isa = PBXGroup;
+			children = (
+				D89F0E02F6B60E29752F8E37 /* Sources */,
+			);
+			path = Firefly;
+			sourceTree = "<group>";
+		};
+		D89F0E02F6B60E29752F8E37 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				7C40E6DFE5C85637929993F5 /* FireflyApp.swift */,
+				A1E30FCFD8A9260E48E8617D /* RootView.swift */,
+				543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		C71E9AFEE04A0936A7C43A16 /* Firefly */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 773591CF2C9657F0283AC4F0 /* Build configuration list for PBXNativeTarget "Firefly" */;
+			buildPhases = (
+				BBBA8791B6AEDDD2FBC4F69A /* Sources */,
+				CA3A2D75976D151ED86A005C /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Firefly;
+			packageProductDependencies = (
+				52CE41AF9EE8F2A1C1595D75 /* FireflyCore */,
+				6C4B001C31CDD7B9E82BE94A /* MeshtasticProto */,
+				6D80661B0E11F75CD5DBFD53 /* FireflyMesh */,
+				4982066A256926406E7325EB /* FireflyModel */,
+			);
+			productName = Firefly;
+			productReference = 668B4901B03CB440509CA401 /* Firefly.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		4026AF10827D497B0169E9AB /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					C71E9AFEE04A0936A7C43A16 = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 04A33972A78898AF92EDB211 /* Build configuration list for PBXProject "Firefly" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 09E7A41B35847DF880B89F6C;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				15FD0D890FACBF26732B1DA6 /* XCLocalSwiftPackageReference "FireflyKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 1B43B2AE74C8064189181E87 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				C71E9AFEE04A0936A7C43A16 /* Firefly */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		BBBA8791B6AEDDD2FBC4F69A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FB71020F3A2D6764FDD8FE64 /* FireflyApp.swift in Sources */,
+				0318ED28B405C25C7661E064 /* RootView.swift in Sources */,
+				76BA2F3212D5F595105F68D0 /* Theme+SwiftUI.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		063F743E88C06D9BFBCE05B7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		AA189CFD48F0B439F0EDD299 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_ENTITLEMENTS = Firefly/Resources/Firefly.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Firefly/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jakeholland.firefly;
+				PRODUCT_NAME = Firefly;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		BD2F0EA8CA7A0968A0B3FC48 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		E3CA17979C194D5C3479DC4E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_ENTITLEMENTS = Firefly/Resources/Firefly.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Firefly/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jakeholland.firefly;
+				PRODUCT_NAME = Firefly;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		04A33972A78898AF92EDB211 /* Build configuration list for PBXProject "Firefly" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				063F743E88C06D9BFBCE05B7 /* Debug */,
+				BD2F0EA8CA7A0968A0B3FC48 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		773591CF2C9657F0283AC4F0 /* Build configuration list for PBXNativeTarget "Firefly" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E3CA17979C194D5C3479DC4E /* Debug */,
+				AA189CFD48F0B439F0EDD299 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		15FD0D890FACBF26732B1DA6 /* XCLocalSwiftPackageReference "FireflyKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = FireflyKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4982066A256926406E7325EB /* FireflyModel */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FireflyModel;
+		};
+		52CE41AF9EE8F2A1C1595D75 /* FireflyCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FireflyCore;
+		};
+		6C4B001C31CDD7B9E82BE94A /* MeshtasticProto */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MeshtasticProto;
+		};
+		6D80661B0E11F75CD5DBFD53 /* FireflyMesh */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FireflyMesh;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 4026AF10827D497B0169E9AB /* Project object */;
+}
