@@ -222,6 +222,147 @@ final class ChannelImportViewModelTests: XCTestCase {
         XCTAssertEqual(vm.precisionWarnings.count, 1)
         XCTAssertTrue(vm.precisionWarnings[0].contains("NoLimit"))
     }
+
+    // MARK: - M3 (PR #274 review, BLOCKING 1 & 2): preparePlan() + applySummary
+
+    /// BLOCKING 1: an "add" import must land in a free SECONDARY slot,
+    /// never index 0/primary — proven here against a client whose
+    /// scripted `currentChannelTable()` reports index 0 (primary) and 1
+    /// (secondary) already occupied, so the free slot must be 2.
+    func testPreparePlanAddModePlacesInTheLowestFreeSecondarySlot() async throws {
+        let client = RecordingAdminWriteClient()
+        var occupied0 = Channel(); occupied0.index = 0; occupied0.role = .primary
+        var occupied1 = Channel(); occupied1.index = 1; occupied1.role = .secondary
+        client.channelTable = [occupied0, occupied1]
+        let vm = ChannelImportViewModel(client: client)
+
+        var settings = ChannelSettings()
+        settings.name = "Ops"
+        vm.importURL(ChannelURL.encode(ChannelSet(settings: [settings]), addMode: true))
+
+        let ok = await vm.preparePlan()
+        XCTAssertTrue(ok)
+        let plan = try XCTUnwrap(vm.applyPlan)
+        XCTAssertTrue(plan.addMode)
+        XCTAssertEqual(plan.request.channels.count, 1)
+        XCTAssertEqual(plan.request.channels[0].index, 2)
+        XCTAssertEqual(plan.request.channels[0].role, .secondary)
+        XCTAssertNil(plan.request.loraConfig, "an add import must never carry a LoRa config")
+        XCTAssertEqual(plan.disabledIndexes, [], "add mode never disables anything")
+        XCTAssertFalse(plan.untouchedIndexes.contains(2), "the slot just written is not untouched")
+        XCTAssertTrue(plan.untouchedIndexes.contains(0), "the primary must be reported untouched, not written")
+    }
+
+    /// BLOCKING 1: no free slot at all — must error rather than ever
+    /// touching index 0 or an existing PSK.
+    func testPreparePlanAddModeWithNoFreeSlotsSetsAnHonestPlanError() async throws {
+        let client = RecordingAdminWriteClient()
+        client.channelTable = (0..<8).map { i -> Channel in
+            var c = Channel(); c.index = Int32(i); c.role = i == 0 ? .primary : .secondary
+            return c
+        }
+        let vm = ChannelImportViewModel(client: client)
+        vm.importURL(ChannelURL.encode(ChannelSet(settings: [ChannelSettings()]), addMode: true))
+
+        let ok = await vm.preparePlan()
+        XCTAssertFalse(ok)
+        XCTAssertNil(vm.applyPlan)
+        XCTAssertNotNil(vm.planErrorMessage)
+        XCTAssertTrue(client.channelWrites.isEmpty, "a plan that fails to build must never reach a write")
+    }
+
+    /// BLOCKING 2: a "replace" import must disable every slot it does
+    /// not fill, up to the node's max channel count — and disclose that
+    /// in the plan, not just do it silently.
+    func testPreparePlanReplaceModeDisablesEveryUnfilledSlot() async throws {
+        let client = RecordingAdminWriteClient()
+        let vm = ChannelImportViewModel(client: client)
+
+        var primary = ChannelSettings()
+        primary.name = "Firefly"
+        var lora = Config.LoRaConfig()
+        lora.region = .us
+        vm.importURL(ChannelURL.encode(ChannelSet(settings: [primary], loraConfig: lora), addMode: false))
+
+        let ok = await vm.preparePlan()
+        XCTAssertTrue(ok)
+        let plan = try XCTUnwrap(vm.applyPlan)
+        XCTAssertFalse(plan.addMode)
+        // 1 written (index 0) + 7 disabled (index 1...7) = 8 channel entries on the wire.
+        XCTAssertEqual(plan.request.channels.count, 8)
+        XCTAssertEqual(plan.disabledIndexes, Array(Int32(1)..<8))
+        XCTAssertEqual(plan.untouchedIndexes, [], "replace accounts for every slot — nothing is untouched")
+        XCTAssertNotNil(plan.request.loraConfig)
+        let disabledEntries = plan.request.channels.filter { $0.role == .disabled }
+        XCTAssertEqual(disabledEntries.count, 7)
+        XCTAssertTrue(disabledEntries.allSatisfy { !$0.hasSettings || $0.settings == ChannelSettings() })
+    }
+
+    /// SHOULD-FIX 4: absent `moduleSettings` must write the SAFE default
+    /// (0), never 32, and the summary must say so honestly.
+    func testPreparePlanDefaultsMissingPrecisionToTheSafeValueNotFull() async throws {
+        let client = RecordingAdminWriteClient()
+        let vm = ChannelImportViewModel(client: client)
+
+        // `ChannelURL.encode` deliberately always fixes the missing-
+        // moduleSettings gap (its own doc comment), so building the
+        // fixture through it would prove nothing here — this constructs
+        // the base64url payload directly, the same way `ChannelURLTests
+        // .testPrecisionWarningNamesTheChannel` does, so the import
+        // genuinely carries no moduleSettings at all.
+        var settings = ChannelSettings()
+        settings.name = "NoLimit" // no moduleSettings at all
+        var lora = Config.LoRaConfig()
+        lora.region = .us
+        let set = ChannelSet(settings: [settings], loraConfig: lora)
+        let data = try set.serializedData()
+        let payload = data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "="))
+        vm.importURL("https://meshtastic.org/e/#\(payload)")
+
+        _ = await vm.preparePlan()
+        let plan = try XCTUnwrap(vm.applyPlan)
+        XCTAssertEqual(plan.request.channels[0].settings.moduleSettings.positionPrecision, 0)
+        XCTAssertFalse(plan.writtenChannels[0].precisionWasExplicit)
+
+        let summary = try XCTUnwrap(vm.applySummary)
+        XCTAssertTrue(summary.channelLines[0].contains("SAFE default"), "expected an honest disclosure, got: \(summary.channelLines[0])")
+        XCTAssertFalse(summary.channelLines[0].contains("32"), "must never mention writing full precision by default")
+    }
+
+    /// An explicit precision in the imported link must be used verbatim.
+    func testPreparePlanUsesTheImportedPrecisionVerbatimWhenPresent() async throws {
+        let client = RecordingAdminWriteClient()
+        let vm = ChannelImportViewModel(client: client)
+
+        var settings = ChannelSettings()
+        settings.name = "Firefly"
+        settings.moduleSettings.positionPrecision = 16
+        var lora = Config.LoRaConfig()
+        lora.region = .us
+        vm.importURL(ChannelURL.encode(ChannelSet(settings: [settings], loraConfig: lora)))
+
+        _ = await vm.preparePlan()
+        let plan = try XCTUnwrap(vm.applyPlan)
+        XCTAssertEqual(plan.request.channels[0].settings.moduleSettings.positionPrecision, 16)
+        XCTAssertTrue(plan.writtenChannels[0].precisionWasExplicit)
+    }
+
+    /// `preparePlan()` must surface a failed occupancy read honestly
+    /// rather than guessing an empty table.
+    func testPreparePlanSurfacesAFailedOccupancyReadHonestly() async {
+        let client = RecordingAdminWriteClient()
+        client.channelTableError = AdminWriteError.timeout
+        let vm = ChannelImportViewModel(client: client)
+        vm.importURL(ChannelURL.encode(ChannelSet(settings: [ChannelSettings()]), addMode: true))
+
+        let ok = await vm.preparePlan()
+        XCTAssertFalse(ok)
+        XCTAssertNil(vm.applyPlan)
+        XCTAssertNotNil(vm.planErrorMessage)
+    }
 }
 
 // MARK: - SettingsViewModel
@@ -459,6 +600,7 @@ private final class ScriptedLinkClient: MeshtasticClientProtocol, @unchecked Sen
     func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
         RegionWriteReport(region: region)
     }
+    func currentChannelTable() async throws -> [Channel] { [] }
 
     func push(_ state: LinkState) { linkHub.yield(state) }
 }
@@ -481,6 +623,13 @@ private final class RecordingAdminWriteClient: MeshtasticClientProtocol, @unchec
     private var _ownerWrites: [(String, String)] = []
     private var _regionWrites: [Config.LoRaConfig.RegionCode] = []
     var shouldThrow: AdminWriteError?
+    /// M3 (PR #274 review, BLOCKING 1 & 2) — what `currentChannelTable()`
+    /// reports, scripted per test; `channelTableError`, when set, makes
+    /// that call fail instead (independent of `shouldThrow`, which only
+    /// governs the write calls) — for a test proving `preparePlan()`
+    /// surfaces a failed occupancy read honestly.
+    var channelTable: [Channel] = []
+    var channelTableError: Error?
 
     var channelWrites: [ChannelWriteRequest] { lock.lock(); defer { lock.unlock() }; return _channelWrites }
     var ownerWrites: [(String, String)] { lock.lock(); defer { lock.unlock() }; return _ownerWrites }
@@ -521,6 +670,10 @@ private final class RecordingAdminWriteClient: MeshtasticClientProtocol, @unchec
         lock.lock(); _regionWrites.append(region); lock.unlock()
         return RegionWriteReport(region: region)
     }
+    func currentChannelTable() async throws -> [Channel] {
+        if let channelTableError { throw channelTableError }
+        return channelTable
+    }
 }
 
 // MARK: - M3: never-writes-without-confirmation state machine
@@ -551,16 +704,38 @@ final class AdminWriteConfirmationStateMachineTests: XCTestCase {
         var settings = ChannelSettings()
         settings.name = "Firefly"
         settings.moduleSettings.positionPrecision = 32
-        let url = ChannelURL.encode(ChannelSet(settings: [settings]))
+        // A "replace" import (addMode false) carries LoRa config so
+        // makeChannelWritePlan can build a plan without a client round
+        // trip mattering to the result.
+        var lora = Config.LoRaConfig()
+        lora.region = .us
+        let url = ChannelURL.encode(ChannelSet(settings: [settings], loraConfig: lora))
         vm.importURL(url)
         XCTAssertTrue(client.channelWrites.isEmpty)
 
+        let planned = await vm.preparePlan()
+        XCTAssertTrue(planned, "preparePlan must succeed for a plain replace import")
         let ok = await vm.confirmApply()
 
         XCTAssertTrue(ok)
         XCTAssertEqual(client.channelWrites.count, 1, "confirmApply must write EXACTLY once")
         XCTAssertNotNil(vm.lastAppliedReport)
         XCTAssertNil(vm.applyErrorMessage)
+    }
+
+    /// PR #274 review, BLOCKING 1 & 2 — `confirmApply()` must refuse to
+    /// write at all until `preparePlan()` has produced a plan; no result
+    /// alone is ever enough (the old, pre-review behaviour).
+    func testConfirmApplyWithNoPreparedPlanWritesNothingEvenWithAnImportedResult() async {
+        let client = RecordingAdminWriteClient()
+        let vm = ChannelImportViewModel(client: client)
+        vm.importURL(ChannelURL.encode(ChannelSet(settings: [ChannelSettings()])))
+        XCTAssertNotNil(vm.result)
+
+        let ok = await vm.confirmApply()
+
+        XCTAssertFalse(ok, "confirmApply must refuse without a plan from preparePlan()")
+        XCTAssertTrue(client.channelWrites.isEmpty)
     }
 
     func testConfirmApplyWithNoImportedResultWritesNothing() async {
@@ -579,8 +754,11 @@ final class AdminWriteConfirmationStateMachineTests: XCTestCase {
         var settings = ChannelSettings()
         settings.name = "Firefly"
         settings.moduleSettings.positionPrecision = 32
-        vm.importURL(ChannelURL.encode(ChannelSet(settings: [settings])))
+        var lora = Config.LoRaConfig()
+        lora.region = .us
+        vm.importURL(ChannelURL.encode(ChannelSet(settings: [settings], loraConfig: lora)))
 
+        _ = await vm.preparePlan()
         let ok = await vm.confirmApply()
         XCTAssertFalse(ok)
         XCTAssertNotNil(vm.applyErrorMessage)

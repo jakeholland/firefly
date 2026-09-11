@@ -101,6 +101,7 @@ private final class OrderingMockClient: MeshtasticClientProtocol, @unchecked Sen
     func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
         RegionWriteReport(region: region)
     }
+    func currentChannelTable() async throws -> [Channel] { [] }
 
     // Non-async on purpose — NSLock may not be held across a suspension
     // point (the same `LoopbackTransport.record(_:)` convention).

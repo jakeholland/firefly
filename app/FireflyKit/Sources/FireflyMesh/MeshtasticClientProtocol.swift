@@ -213,12 +213,33 @@ public protocol MeshtasticClientProtocol: AnyObject, Sendable {
     /// besides `region` changes — `set_config.lora` replaces the whole
     /// submessage on the wire, not just the field named), writes it back
     /// with only `region` changed, and reads it back the same way as
-    /// `applyChannelSet`.
+    /// `applyChannelSet`. `.unset` is Meshtastic's own "radio disabled"
+    /// sentinel; this throws `AdminWriteError.regionUnset` rather than
+    /// writing it — defense-in-depth inside the client itself, not only
+    /// the Settings screen's disabled APPLY button (PR #274 review,
+    /// SHOULD-FIX 5).
     @discardableResult
     func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport
+
+    /// M3 (PR #274 review, BLOCKING 1 & 2): the connected node's current
+    /// channel table, read LIVE off the radio (never a cache) — one
+    /// `Channel` per index `0..<maxChannelSlots` the node reports as
+    /// occupied (role `.primary`/`.secondary`; an index the radio reports
+    /// `.disabled` for is simply absent here). This is what an "add"
+    /// import's free-slot placement, and a "replace" import's untouched-
+    /// index disclosure, are planned against
+    /// (`ChannelImportResult.makeChannelWritePlan(occupiedIndexes:)`) —
+    /// computed BEFORE any write, so the confirmation sheet can state
+    /// exactly which slots are free.
+    func currentChannelTable() async throws -> [Channel]
 }
 
 // MARK: - M3: channel/config write-back (admin messages) — shared types
+
+/// Slots the radio keeps. A fixed array with a role per slot, not a list
+/// that grows — Meshtastic-Apple's own `Channels.swift:59` constant,
+/// cross-checked rather than assumed (PR #274 review, BLOCKING 1 & 2).
+public let maxChannelSlots: Int32 = 8
 
 /// One admin write's worth of channels, plus the LoRa config the write
 /// must carry with it when the imported URL was a full "replace" (it is
@@ -244,8 +265,24 @@ public enum AdminWriteError: Error, Equatable, Sendable {
     case timeout
     /// The write reached the node, but the read-back that followed does
     /// not match what was sent — a clear, honest failure rather than an
-    /// assumed success. The associated string names what differed.
+    /// assumed success. For `applyChannelSet`'s multi-item read-back the
+    /// associated string is a per-item report (which matched, which
+    /// didn't — PR #274 review, SHOULD-FIX 7), not just the first
+    /// mismatch found; it names when more than one item was involved and
+    /// therefore the node may now hold a mix of old and new state.
     case readBackMismatch(String)
+    /// `setRegion(.unset)` was called. `.unset` is Meshtastic's own
+    /// "radio disabled" sentinel, never something to write on purpose —
+    /// PR #274 review, SHOULD-FIX 5.
+    case regionUnset
+    /// `applyChannelSet`'s SEND phase (before any read-back) failed
+    /// partway through a multi-item write — `step` names exactly which
+    /// item failed to send (e.g. "channel 1 (Ops)" or "LoRa config");
+    /// `underlying` is what actually went wrong. Every item sent before
+    /// `step` may already be committed to the node, so the node may be
+    /// left holding a mix of old and new state — PR #274 review,
+    /// SHOULD-FIX 7.
+    case partialApplyFailed(step: String, underlying: String)
 }
 
 public struct ChannelWriteReport: Sendable, Equatable {
@@ -473,9 +510,24 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
 
     @discardableResult
     public func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
+        guard region != .unset else { throw AdminWriteError.regionUnset }
         guard connectedNodeNum != nil else { throw AdminWriteError.notConnected }
         recordRegionWrite(region)
         return RegionWriteReport(region: region)
+    }
+
+    /// Test-injected only — a stub has no radio to read a channel table
+    /// off. Empty (nothing occupied) unless a test sets `channelTable`,
+    /// same "never invents" rule every other field here follows.
+    private var _channelTable: [Channel] = []
+    public var channelTable: [Channel] {
+        get { lock.lock(); defer { lock.unlock() }; return _channelTable }
+        set { lock.lock(); defer { lock.unlock() }; _channelTable = newValue }
+    }
+
+    public func currentChannelTable() async throws -> [Channel] {
+        guard connectedNodeNum != nil else { throw AdminWriteError.notConnected }
+        return channelTable
     }
 
     // Non-async on purpose — same NSLock-across-a-suspension-point

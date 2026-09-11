@@ -8,10 +8,14 @@
 //
 //  Shows EXACTLY what is about to change (the caller's `changes` lines,
 //  computed up front by the view model — never re-derived after a
-//  write) plus the one warning every admin write here shares: the node
-//  reboots and disconnects at commit. CONFIRM is disabled while a write
-//  is already in flight, so a second tap cannot start a second
-//  concurrent one.
+//  write) plus what every admin write here actually does: the node
+//  saves, reboots, and disconnects at commit, and THIS APP — not the
+//  user — reconnects and reads every changed item back automatically,
+//  only reporting success once that read-back matches what was sent
+//  (PR #274 review, SHOULD-FIX 6: the old copy asked the user to
+//  manually do something `applyChannelSet`/`setOwner`/`setRegion`
+//  already do). CONFIRM is disabled while a write is already in
+//  flight, so a second tap cannot start a second concurrent one.
 //
 import SwiftUI
 
@@ -34,8 +38,9 @@ struct AdminWriteConfirmationSheet: View {
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(Color.ffInk)
                 }
-                Text("The node saves this, then reboots and disconnects. Reconnect afterward " +
-                     "to confirm it took.")
+                Text("The node saves this, then reboots and disconnects. This app reconnects and " +
+                     "reads every changed item back on its own — CONFIRM only reports success once " +
+                     "that read-back matches exactly what was sent.")
                     .font(.footnote)
                     .foregroundStyle(Color.ffAmber)
                 if let errorMessage {

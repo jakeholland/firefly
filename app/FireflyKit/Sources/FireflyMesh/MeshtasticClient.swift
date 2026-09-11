@@ -175,6 +175,12 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// routinely has to outlive a real disconnect/reboot/reconnect
     /// cycle. Injectable, same convention as `configPhaseTimeout`.
     private let adminResponseTimeout: Duration
+    /// NIT 10 (PR #274 review) — the pause between `beginEditSettings`'s
+    /// two copies. Injectable so a test can drive the whole
+    /// begin/set/commit sequence in milliseconds rather than waiting out
+    /// the production default, same convention every other timing knob
+    /// on this type follows.
+    private let beginEditSettingsRetryDelay: Duration
 
     private struct PendingSend {
         let isBroadcast: Bool
@@ -247,7 +253,8 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         handshakeRetryBaseDelay: Duration = .seconds(2),
         handshakeRetryMaxDelay: Duration = .seconds(60),
         handshakeRetryClock: HandshakeRetryClock = SystemHandshakeRetryClock(),
-        adminResponseTimeout: Duration = .seconds(30)
+        adminResponseTimeout: Duration = .seconds(30),
+        beginEditSettingsRetryDelay: Duration = .milliseconds(150)
     ) {
         self.transport = transport
         self.configPhaseTimeout = configPhaseTimeout
@@ -259,6 +266,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         self.handshakeRetryMaxDelay = handshakeRetryMaxDelay
         self.handshakeRetryClock = handshakeRetryClock
         self.adminResponseTimeout = adminResponseTimeout
+        self.beginEditSettingsRetryDelay = beginEditSettingsRetryDelay
         // Seeded, not started at 1: two client lifetimes that both start
         // packet ids at 1 collide on every id until the higher session's
         // send count is exceeded, against Meshtastic's short per-(from,
@@ -522,14 +530,28 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             for channel in request.channels {
                 var admin = AdminMessage()
                 admin.setChannel = channel
-                try await sendAdminWrite(admin, to: me)
+                do {
+                    try await sendAdminWrite(admin, to: me)
+                } catch {
+                    // SHOULD-FIX 7 (PR #274 review): name exactly which item failed to send —
+                    // every channel before this one in `request.channels` may already be
+                    // committed to the node, so the caller must be told this write is not a
+                    // clean all-or-nothing failure.
+                    let name = channel.settings.name.isEmpty ? "(default)" : channel.settings.name
+                    throw AdminWriteError.partialApplyFailed(
+                        step: "channel \(channel.index) (\(name))", underlying: String(describing: error))
+                }
             }
             if let lora = request.loraConfig {
                 var admin = AdminMessage()
                 var config = Config()
                 config.lora = lora
                 admin.setConfig = config
-                try await sendAdminWrite(admin, to: me)
+                do {
+                    try await sendAdminWrite(admin, to: me)
+                } catch {
+                    throw AdminWriteError.partialApplyFailed(step: "LoRa config", underlying: String(describing: error))
+                }
             }
         } catch {
             await commitEditSettingsBestEffort(to: me)
@@ -538,22 +560,38 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         await commitEditSettingsBestEffort(to: me)
         try await waitForReadyAfterCommit()
 
+        // SHOULD-FIX 7 (PR #274 review): every item is read back and
+        // compared — never bail at the first mismatch — so a partial
+        // apply is reported per item rather than hiding whichever items
+        // came after the first failure.
         var readChannels: [Channel] = []
+        var mismatches: [String] = []
         for channel in request.channels {
             let got = try await requestChannel(index: channel.index, from: me)
-            guard got == channel else {
+            if got == channel {
+                readChannels.append(got)
+            } else {
                 let name = channel.settings.name.isEmpty ? "(default)" : channel.settings.name
-                throw AdminWriteError.readBackMismatch("channel \(channel.index) (\(name)) did not read back as written")
+                mismatches.append("channel \(channel.index) (\(name))")
             }
-            readChannels.append(got)
         }
         var readLora: Config.LoRaConfig?
         if let lora = request.loraConfig {
             let got = try await requestLoRaConfig(from: me)
-            guard got == lora else {
-                throw AdminWriteError.readBackMismatch("LoRa config did not read back as written")
+            if got == lora {
+                readLora = got
+            } else {
+                mismatches.append("LoRa config")
             }
-            readLora = got
+        }
+        guard mismatches.isEmpty else {
+            let totalItems = request.channels.count + (request.loraConfig != nil ? 1 : 0)
+            let matchedCount = totalItems - mismatches.count
+            let partialNote = totalItems > 1
+                ? " (\(matchedCount) of \(totalItems) item(s) matched — the node may be partially configured)"
+                : ""
+            throw AdminWriteError.readBackMismatch(
+                "did not read back as written: \(mismatches.joined(separator: ", "))\(partialNote)")
         }
         return ChannelWriteReport(channels: readChannels, loraConfig: readLora)
     }
@@ -587,6 +625,13 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
 
     @discardableResult
     public func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
+        // SHOULD-FIX 5 (PR #274 review): defense-in-depth. `.unset` is
+        // Meshtastic's own "radio disabled" sentinel; before this the only
+        // guard was the Settings screen disabling its APPLY button, so any
+        // other caller (or a future UI bug) could still reach the radio
+        // with it. Checked before anything else, including the connection
+        // check below — this is an invalid CALL regardless of link state.
+        guard region != .unset else { throw AdminWriteError.regionUnset }
         let me = try requireConnectedNode()
 
         // Read the CURRENT LoRa config first: `set_config.lora` replaces
@@ -628,9 +673,23 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         return me
     }
 
+    /// NIT 10 (PR #274 review): sent TWICE on purpose, matching
+    /// Meshtastic-Apple's `DeviceProfileImporter.run()`
+    /// (`Meshtastic/Import/DeviceProfileImporter.swift:127-138`):
+    /// `begin_edit_settings` is idempotent server-side
+    /// (`AdminModule.cpp` only sets `hasOpenEditTransaction = true`) and
+    /// the firmware never acks it, so a single dropped copy is
+    /// undetectable from here and silently downgrades the whole write to
+    /// untransacted — every subsequent `set_*` then saves to flash and
+    /// reboots on its own instead of batching under one commit. A second
+    /// copy costs one packet and removes that single point of failure;
+    /// Meshtastic-Apple's own comment cites this as an observed-on-
+    /// hardware failure mode, not a theoretical one.
     private func beginEditSettings(to dest: UInt32) async throws {
         var admin = AdminMessage()
         admin.beginEditSettings = true
+        try await sendAdminWrite(admin, to: dest)
+        try? await Task.sleep(for: beginEditSettingsRetryDelay)
         try await sendAdminWrite(admin, to: dest)
     }
 
@@ -725,10 +784,15 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// Data.want_response bit is set" — a bench finding (2026-09-06)
     /// against a real puck, not a guess, and the same mechanism a real
     /// AdminModule uses for every `get_*_request`, not just
-    /// `get_owner_request`. `want_ack` stays false: nothing here is
-    /// asking the mesh to re-deliver a lost QUESTION, only to answer the
-    /// one that arrived — same reasoning `mc_send_get_owner_request`'s
-    /// own doc comment gives.
+    /// `get_owner_request`.
+    ///
+    /// NIT 9 (PR #274 review): `want_ack = true` and `priority =
+    /// .reliable`, matching Meshtastic-Apple's own admin READS, not just
+    /// its writes — `AccessoryManager+ToRadio.swift`'s
+    /// `requestLoRaConfig` sets both on a `get_config_request` the same
+    /// way `saveLoRaConfig` does on the write. Without this a lost read
+    /// REQUEST (as opposed to a lost response) had no mesh-level retry,
+    /// only this method's own 30s timeout-then-fail.
     private func sendAdminRequest(_ admin: AdminMessage, to dest: UInt32) async throws -> AdminMessage {
         guard let payload = try? admin.serializedData() else {
             throw AdminWriteError.encodingFailed
@@ -743,7 +807,8 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         packet.id = id
         packet.to = dest
         packet.from = dest
-        packet.wantAck = false
+        packet.wantAck = true
+        packet.priority = .reliable
         packet.decoded = data
 
         var toRadio = ToRadio()
@@ -826,6 +891,25 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
 
     public func currentOwner() async throws -> User {
         try await requestOwner(from: try requireConnectedNode())
+    }
+
+    /// M3 (PR #274 review, BLOCKING 1 & 2) — the connected node's current
+    /// channel table, read LIVE index by index (`0..<maxChannelSlots`)
+    /// with the SAME `requestChannel` helper `applyChannelSet`'s own
+    /// read-back uses, never a second implementation. An index the node
+    /// reports `.disabled` for is simply omitted — "occupied" means
+    /// "role is primary or secondary right now," matching
+    /// `ChannelWritePlan`'s own vocabulary.
+    public func currentChannelTable() async throws -> [Channel] {
+        let me = try requireConnectedNode()
+        var table: [Channel] = []
+        for index in Int32(0)..<maxChannelSlots {
+            let channel = try await requestChannel(index: index, from: me)
+            if channel.role != .disabled {
+                table.append(channel)
+            }
+        }
+        return table
     }
 
     // MARK: - Extra, non-protocol accessors (concrete-type only)

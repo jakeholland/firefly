@@ -207,9 +207,24 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
 
     @discardableResult
     public func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
+        guard region != .unset else { throw AdminWriteError.regionUnset }
         guard connectedNodeNum != nil else { throw AdminWriteError.notConnected }
         recordRegionWrite(region)
         return RegionWriteReport(region: region)
+    }
+
+    /// Scriptable, same "only THIS type is allowed to be fictional" rule
+    /// as the rest of the file — empty (nothing occupied) unless
+    /// `DemoRunner` scripts one, never invented.
+    private var _channelTable: [Channel] = []
+    public var channelTable: [Channel] {
+        get { lock.lock(); defer { lock.unlock() }; return _channelTable }
+        set { lock.lock(); defer { lock.unlock() }; _channelTable = newValue }
+    }
+
+    public func currentChannelTable() async throws -> [Channel] {
+        guard connectedNodeNum != nil else { throw AdminWriteError.notConnected }
+        return channelTable
     }
 
     // Non-async on purpose — same NSLock-across-a-suspension-point

@@ -125,6 +125,7 @@ private final class CountingClient: MeshtasticClientProtocol, @unchecked Sendabl
     func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
         RegionWriteReport(region: region)
     }
+    func currentChannelTable() async throws -> [Channel] { [] }
 }
 
 /// A location provider a test drives by hand — it yields exactly the

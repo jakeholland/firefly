@@ -53,6 +53,7 @@ private final class TextInjectingClient: MeshtasticClientProtocol, @unchecked Se
     func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
         RegionWriteReport(region: region)
     }
+    func currentChannelTable() async throws -> [Channel] { [] }
 
     func yieldText(_ text: IncomingText) { textHub.yield(text) }
 }

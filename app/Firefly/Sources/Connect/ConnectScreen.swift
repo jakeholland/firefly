@@ -110,7 +110,13 @@ struct ConnectScreen: View {
             if let summary = channelImport.applySummary {
                 AdminWriteConfirmationSheet(
                     title: "APPLY CHANNEL",
-                    changes: summary.regionLine.map { summary.channelLines + [$0] } ?? summary.channelLines,
+                    // BLOCKING 2 (PR #274 review): every slot's fate, not
+                    // just the ones being written — WRITTEN, then
+                    // DISABLED (replace only), then untouched (add
+                    // only), then the region/preset line if this import
+                    // carried a LoRa config.
+                    changes: summary.channelLines + summary.disabledLines + summary.untouchedLines +
+                             (summary.regionLine.map { [$0] } ?? []),
                     isBusy: channelImport.isApplying,
                     errorMessage: channelImport.applyErrorMessage,
                     onConfirm: {
@@ -349,20 +355,34 @@ struct ConnectScreen: View {
                             .font(.caption)
                             .foregroundStyle(Color.ffAmber)
                     }
-                    Text("Shown only — not sent to the node. Writing a channel is admin-message " +
-                         "territory, out of scope until M3.")
+                    if let planError = channelImport.planErrorMessage {
+                        Text(planError)
+                            .font(.footnote)
+                            .foregroundStyle(Color.ffAlert)
+                    }
+                    Text("Shown only — not sent to the node until you confirm exactly which " +
+                         "slots will be written, disabled, or left untouched.")
                         .font(.caption2)
                         .foregroundStyle(Color.ffMuted)
-                    // M3 — the write path has landed; "APPLY TO NODE"
-                    // reaches it behind the confirmation sheet above,
-                    // and is disabled whenever there is no node to
-                    // write to.
-                    Button("APPLY TO NODE") { isShowingApplyConfirmation = true }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.ffAmber)
-                        .foregroundStyle(Color.ffBackground)
-                        .disabled(connect.link != .ready)
-                        .frame(minHeight: 44)
+                    // M3 — the write path has landed. BLOCKING 1 & 2 (PR
+                    // #274 review): tapping this first reads the node's
+                    // CURRENT channel table and builds the exact write
+                    // plan (`preparePlan()`) — the confirmation sheet
+                    // only opens once that plan exists, so it can never
+                    // show a placeholder for a write that might not be
+                    // possible (e.g. an "add" import with no free slot).
+                    Button(channelImport.isPreparingPlan ? "CHECKING NODE…" : "APPLY TO NODE") {
+                        Task {
+                            if await channelImport.preparePlan() {
+                                isShowingApplyConfirmation = true
+                            }
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.ffAmber)
+                    .foregroundStyle(Color.ffBackground)
+                    .disabled(connect.link != .ready || channelImport.isPreparingPlan)
+                    .frame(minHeight: 44)
                 }
             }
         }

@@ -14,7 +14,10 @@
 //  "never writes without a connected node" (the client-level half of
 //  the confirm-then-write state machine — the UI-level half, "never
 //  writes before the user taps CONFIRM", is
-//  `ChannelApplyStateMachineTests.swift` in the app target), and the
+//  `AdminWriteConfirmationStateMachineTests` inside
+//  `ConnectSettingsViewModelTests.swift` in the app target — NIT 8, PR
+//  #274 review, fixing this comment's stale reference to a
+//  `ChannelApplyStateMachineTests.swift` that does not exist), and the
 //  vendored `Config.LoRaConfig.RegionCode` raw values against
 //  Meshtastic's own proto numbering.
 //
@@ -118,6 +121,12 @@ final class AdminWriteTests: XCTestCase {
     /// OTHER field (`to`, `from`, `wantAck`/`wantResponse`, `priority`,
     /// `channel`, and the admin oneof payload itself) is compared
     /// byte-for-byte against a frame this test constructs independently.
+    /// NIT 9 (PR #274 review): both writes AND admin reads now carry
+    /// `want_ack = true` / `priority = .reliable` — Meshtastic-Apple's
+    /// own `requestLoRaConfig` sets both on a `get_config_request` the
+    /// same way its writes do (`AccessoryManager+ToRadio.swift`), so
+    /// there is no longer a wantResponse-conditioned difference to
+    /// assert here.
     private func assertAdminFrame(
         _ transport: LoopbackTransport, at index: Int, wantResponse: Bool = false,
         buildAdmin: (inout AdminMessage) -> Void,
@@ -140,8 +149,8 @@ final class AdminWriteTests: XCTestCase {
         expectedPacket.id = sentPacket.id // read back — see this method's own doc comment
         expectedPacket.to = sentPacket.to
         expectedPacket.from = sentPacket.to // local admin: from == to == our own node
-        expectedPacket.wantAck = !wantResponse // writes want_ack; reads do not (mc_client.c's own rule)
-        if !wantResponse { expectedPacket.priority = .reliable }
+        expectedPacket.wantAck = true
+        expectedPacket.priority = .reliable
         expectedPacket.decoded = expectedData
 
         var expectedToRadio = ToRadio()
@@ -179,7 +188,7 @@ final class AdminWriteTests: XCTestCase {
     /// read-back requests with matching content.
     func testApplyChannelSetSendsExactAdminFramesAndReadsBackSuccessfully() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport)
+        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 48_621_524)
 
         let channel = sampleChannel()
@@ -188,25 +197,28 @@ final class AdminWriteTests: XCTestCase {
 
         let applyTask = Task { try await client.applyChannelSet(request) }
 
-        // 1. begin_edit_settings
+        // 1 & 2. begin_edit_settings, sent TWICE (NIT 10, PR #274 review)
+        // — both copies byte-identical.
         try await waitForSentCount(4, on: transport)
         try assertAdminFrame(transport, at: 3) { $0.beginEditSettings = true }
-
-        // 2. set_channel
         try await waitForSentCount(5, on: transport)
-        try assertAdminFrame(transport, at: 4) { $0.setChannel = channel }
+        try assertAdminFrame(transport, at: 4) { $0.beginEditSettings = true }
 
-        // 3. set_config (lora)
+        // 3. set_channel
         try await waitForSentCount(6, on: transport)
-        try assertAdminFrame(transport, at: 5) { admin in
+        try assertAdminFrame(transport, at: 5) { $0.setChannel = channel }
+
+        // 4. set_config (lora)
+        try await waitForSentCount(7, on: transport)
+        try assertAdminFrame(transport, at: 6) { admin in
             var config = Config()
             config.lora = lora
             admin.setConfig = config
         }
 
-        // 4. commit_edit_settings
-        try await waitForSentCount(7, on: transport)
-        try assertAdminFrame(transport, at: 6) { $0.commitEditSettings = true }
+        // 5. commit_edit_settings
+        try await waitForSentCount(8, on: transport)
+        try assertAdminFrame(transport, at: 7) { $0.commitEditSettings = true }
 
         // The link never actually dropped (LoopbackTransport doesn't
         // simulate the commit's reboot on its own) — waitForReadyAfterCommit
@@ -215,16 +227,16 @@ final class AdminWriteTests: XCTestCase {
         // immediately, same as a real 2.8 live-apply commit that never
         // disconnects.
 
-        // 5. get_channel_request(index: 0)
-        try await waitForSentCount(8, on: transport)
-        try assertAdminFrame(transport, at: 7, wantResponse: true) { $0.getChannelRequest = 0 }
-        let (channelReqPacket, _) = try decodeAdminSend(transport, at: 7)
+        // 6. get_channel_request(index: 0)
+        try await waitForSentCount(9, on: transport)
+        try assertAdminFrame(transport, at: 8, wantResponse: true) { $0.getChannelRequest = 0 }
+        let (channelReqPacket, _) = try decodeAdminSend(transport, at: 8)
         transport.inject(adminResponseFrame(requestID: channelReqPacket.id) { $0.getChannelResponse = channel })
 
-        // 6. get_config_request(loraConfig)
-        try await waitForSentCount(9, on: transport)
-        try assertAdminFrame(transport, at: 8, wantResponse: true) { $0.getConfigRequest = .loraConfig }
-        let (loraReqPacket, _) = try decodeAdminSend(transport, at: 8)
+        // 7. get_config_request(loraConfig)
+        try await waitForSentCount(10, on: transport)
+        try assertAdminFrame(transport, at: 9, wantResponse: true) { $0.getConfigRequest = .loraConfig }
+        let (loraReqPacket, _) = try decodeAdminSend(transport, at: 9)
         transport.inject(adminResponseFrame(requestID: loraReqPacket.id) { admin in
             var config = Config()
             config.lora = lora
@@ -241,15 +253,15 @@ final class AdminWriteTests: XCTestCase {
     /// success = read-back matches; otherwise a clear error").
     func testChannelReadBackMismatchThrowsReadBackMismatch() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport)
+        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
 
         let channel = sampleChannel()
         let request = ChannelWriteRequest(channels: [channel], loraConfig: nil)
         let applyTask = Task { try await client.applyChannelSet(request) }
 
-        try await waitForSentCount(7, on: transport) // begin, set_channel, commit, get_channel_request
-        let (channelReqPacket, _) = try decodeAdminSend(transport, at: 6)
+        try await waitForSentCount(8, on: transport) // begin x2, set_channel, commit, get_channel_request
+        let (channelReqPacket, _) = try decodeAdminSend(transport, at: 7)
 
         // The node reports a DIFFERENT name than what was written —
         // e.g. a concurrent write from another client, or firmware that
@@ -274,7 +286,7 @@ final class AdminWriteTests: XCTestCase {
     /// than hang or silently report success.
     func testReadBackNeverArrivingTimesOut() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport, adminResponseTimeout: .milliseconds(80))
+        let client = MeshtasticClient(transport: transport, adminResponseTimeout: .milliseconds(80), beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
 
         let request = ChannelWriteRequest(channels: [sampleChannel()], loraConfig: nil)
@@ -290,28 +302,30 @@ final class AdminWriteTests: XCTestCase {
 
     func testSetOwnerWritesAndReadsBack() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport)
+        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
 
         let applyTask = Task { try await client.setOwner(longName: "Firefly One", shortName: "FF1") }
 
-        try await waitForSentCount(4, on: transport) // begin
+        try await waitForSentCount(4, on: transport) // begin (1st copy)
         try assertAdminFrame(transport, at: 3) { $0.beginEditSettings = true }
+        try await waitForSentCount(5, on: transport) // begin (2nd copy, NIT 10)
+        try assertAdminFrame(transport, at: 4) { $0.beginEditSettings = true }
 
-        try await waitForSentCount(5, on: transport) // set_owner
-        try assertAdminFrame(transport, at: 4) { admin in
+        try await waitForSentCount(6, on: transport) // set_owner
+        try assertAdminFrame(transport, at: 5) { admin in
             var owner = User()
             owner.longName = "Firefly One"
             owner.shortName = "FF1"
             admin.setOwner = owner
         }
 
-        try await waitForSentCount(6, on: transport) // commit
-        try assertAdminFrame(transport, at: 5) { $0.commitEditSettings = true }
+        try await waitForSentCount(7, on: transport) // commit
+        try assertAdminFrame(transport, at: 6) { $0.commitEditSettings = true }
 
-        try await waitForSentCount(7, on: transport) // get_owner_request
-        try assertAdminFrame(transport, at: 6, wantResponse: true) { $0.getOwnerRequest = true }
-        let (ownerReqPacket, _) = try decodeAdminSend(transport, at: 6)
+        try await waitForSentCount(8, on: transport) // get_owner_request
+        try assertAdminFrame(transport, at: 7, wantResponse: true) { $0.getOwnerRequest = true }
+        let (ownerReqPacket, _) = try decodeAdminSend(transport, at: 7)
         transport.inject(adminResponseFrame(requestID: ownerReqPacket.id) { admin in
             var owner = User()
             owner.longName = "Firefly One"
@@ -332,7 +346,7 @@ final class AdminWriteTests: XCTestCase {
     /// factor/tx power/etc to their zero defaults.
     func testSetRegionReadsCurrentConfigFirstAndPreservesEveryOtherField() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport)
+        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
 
         var currentLora = Config.LoRaConfig()
@@ -358,21 +372,23 @@ final class AdminWriteTests: XCTestCase {
         var expectedWrite = currentLora
         expectedWrite.region = .us
 
-        try await waitForSentCount(5, on: transport) // begin
+        try await waitForSentCount(5, on: transport) // begin (1st copy)
         try assertAdminFrame(transport, at: 4) { $0.beginEditSettings = true }
+        try await waitForSentCount(6, on: transport) // begin (2nd copy, NIT 10)
+        try assertAdminFrame(transport, at: 5) { $0.beginEditSettings = true }
 
-        try await waitForSentCount(6, on: transport) // set_config
-        try assertAdminFrame(transport, at: 5) { admin in
+        try await waitForSentCount(7, on: transport) // set_config
+        try assertAdminFrame(transport, at: 6) { admin in
             var config = Config()
             config.lora = expectedWrite
             admin.setConfig = config
         }
 
-        try await waitForSentCount(7, on: transport) // commit
-        try assertAdminFrame(transport, at: 6) { $0.commitEditSettings = true }
+        try await waitForSentCount(8, on: transport) // commit
+        try assertAdminFrame(transport, at: 7) { $0.commitEditSettings = true }
 
-        try await waitForSentCount(8, on: transport) // get_config_request (read-back)
-        let (readBackPacket, _) = try decodeAdminSend(transport, at: 7)
+        try await waitForSentCount(9, on: transport) // get_config_request (read-back)
+        let (readBackPacket, _) = try decodeAdminSend(transport, at: 8)
         transport.inject(adminResponseFrame(requestID: readBackPacket.id) { admin in
             var config = Config()
             config.lora = expectedWrite
@@ -395,7 +411,7 @@ final class AdminWriteTests: XCTestCase {
     /// anything if it were somehow called anyway.
     func testNeverWritesWithoutAConnectedNode() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport) // never connected
+        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1)) // never connected
 
         do {
             _ = try await client.applyChannelSet(ChannelWriteRequest(channels: [sampleChannel()]))
@@ -446,7 +462,7 @@ final class AdminWriteTests: XCTestCase {
     /// bug would not hide behind coincidence.
     func testSetRegionWireEncodesTheExactRegionRequested() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport)
+        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
 
         let applyTask = Task { try await client.setRegion(.jp) }
@@ -459,16 +475,16 @@ final class AdminWriteTests: XCTestCase {
             admin.getConfigResponse = config
         })
 
-        try await waitForSentCount(6, on: transport) // begin, set_config
-        let (_, setAdmin) = try decodeAdminSend(transport, at: 5)
+        try await waitForSentCount(7, on: transport) // begin x2, set_config
+        let (_, setAdmin) = try decodeAdminSend(transport, at: 6)
         guard case .setConfig(let sentConfig) = setAdmin.payloadVariant, case .lora(let sentLora)? = sentConfig.payloadVariant else {
             return XCTFail("expected a set_config.lora write")
         }
         XCTAssertEqual(sentLora.region, .jp)
 
-        try await waitForSentCount(7, on: transport) // commit
-        try await waitForSentCount(8, on: transport) // read-back request
-        let (readBackPacket, _) = try decodeAdminSend(transport, at: 7)
+        try await waitForSentCount(8, on: transport) // commit
+        try await waitForSentCount(9, on: transport) // read-back request
+        let (readBackPacket, _) = try decodeAdminSend(transport, at: 8)
         transport.inject(adminResponseFrame(requestID: readBackPacket.id) { admin in
             var config = Config()
             var lora = Config.LoRaConfig()
@@ -479,5 +495,150 @@ final class AdminWriteTests: XCTestCase {
 
         let report = try await applyTask.value
         XCTAssertEqual(report.region, .jp)
+    }
+
+    // MARK: - M3 (PR #274 review): currentChannelTable()
+
+    /// BLOCKING 1 & 2 — `currentChannelTable()` reads every index
+    /// `0..<maxChannelSlots` live and reports only the OCCUPIED ones
+    /// (role primary/secondary); a `.disabled` index is simply omitted.
+    func testCurrentChannelTableReadsEveryIndexAndOmitsDisabledOnes() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
+        try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
+
+        let tableTask = Task { try await client.currentChannelTable() }
+
+        var primary = Channel(); primary.index = 0; primary.role = .primary
+        primary.settings.name = "Firefly"
+        var secondary = Channel(); secondary.index = 2; secondary.role = .secondary
+        secondary.settings.name = "Ops"
+
+        for index in Int32(0)..<maxChannelSlots {
+            try await waitForSentCount(4 + Int(index), on: transport)
+            try assertAdminFrame(transport, at: 3 + Int(index), wantResponse: true) { $0.getChannelRequest = UInt32(index) }
+            let (reqPacket, _) = try decodeAdminSend(transport, at: 3 + Int(index))
+            let response: Channel
+            switch index {
+            case 0: response = primary
+            case 2: response = secondary
+            default:
+                var disabled = Channel(); disabled.index = index; disabled.role = .disabled
+                response = disabled
+            }
+            transport.inject(adminResponseFrame(requestID: reqPacket.id) { $0.getChannelResponse = response })
+        }
+
+        let table = try await tableTask.value
+        XCTAssertEqual(table.count, 2, "only the two occupied indices should be reported")
+        XCTAssertEqual(Set(table.map(\.index)), [0, 2])
+        XCTAssertTrue(table.contains(primary))
+        XCTAssertTrue(table.contains(secondary))
+    }
+
+    // MARK: - M3 (PR #274 review, SHOULD-FIX 5): setRegion(.unset)
+
+    /// `.unset` must be rejected inside the CLIENT, before anything
+    /// touches the radio — not just the UI disabling the APPLY button.
+    func testSetRegionUnsetThrowsWithoutSendingAnything() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
+        try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
+
+        let before = transport.sentMessages.count
+        do {
+            _ = try await client.setRegion(.unset)
+            XCTFail("expected .regionUnset")
+        } catch let error as AdminWriteError {
+            XCTAssertEqual(error, .regionUnset)
+        }
+        XCTAssertEqual(transport.sentMessages.count, before,
+                        "setRegion(.unset) must not send anything, not even the pre-write config read")
+    }
+
+    // MARK: - M3 (PR #274 review, SHOULD-FIX 7): partial-apply honesty
+
+    /// A SEND-phase failure partway through a multi-channel write must
+    /// name exactly which item failed — never just rethrow the raw
+    /// transport error — and the channel(s) sent before it must already
+    /// be on the wire.
+    func testApplyChannelSetSendFailureNamesTheFailingStep() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
+        try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
+
+        var first = sampleChannel()
+        first.index = 0
+        var second = sampleChannel()
+        second.index = 1
+        second.settings.name = "Ops"
+        let request = ChannelWriteRequest(channels: [first, second], loraConfig: nil)
+
+        // Attempt 7 is set_channel(second): handshake is attempts 1-3,
+        // begin_edit_settings (sent twice, NIT 10) is 4-5, set_channel
+        // (first) is 6, set_channel(second) is 7. Armed by absolute
+        // attempt count, not "the next send", so there is no race against
+        // the client's own concurrent sends (see `failSend`'s own doc
+        // comment).
+        transport.failSend(atAttempt: 7, with: TransportError.writeFailed("simulated dropped packet"))
+
+        let applyTask = Task { try await client.applyChannelSet(request) }
+
+        do {
+            _ = try await applyTask.value
+            XCTFail("expected .partialApplyFailed")
+        } catch let error as AdminWriteError {
+            guard case .partialApplyFailed(let step, _) = error else {
+                return XCTFail("expected .partialApplyFailed, got \(error)")
+            }
+            XCTAssertTrue(step.contains("1"), "expected the failing step to name index 1, got: \(step)")
+            XCTAssertTrue(step.contains("Ops"), "expected the failing step to name the channel, got: \(step)")
+        }
+        // The first channel's write must already have reached the wire — it is NOT rolled back.
+        XCTAssertEqual(try decodeAdminSend(transport, at: 5).admin.setChannel, first)
+    }
+
+    /// A read-back mismatch on ONE item of a multi-item write must
+    /// report per item — the matching item named as fine, the
+    /// mismatching one named as the problem — and note the node may be
+    /// partially configured, rather than bailing at the first mismatch
+    /// with no context.
+    func testApplyChannelSetReadBackReportsPerItemMismatch() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
+        try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
+
+        var chan0 = sampleChannel()
+        chan0.index = 0
+        var chan1 = sampleChannel()
+        chan1.index = 1
+        chan1.settings.name = "Ops"
+        let request = ChannelWriteRequest(channels: [chan0, chan1], loraConfig: nil)
+        let applyTask = Task { try await client.applyChannelSet(request) }
+
+        // handshake(3) + begin x2(2) + set_channel x2(2) + commit(1) = 8 sent before read-back starts.
+        try await waitForSentCount(8, on: transport)
+
+        try await waitForSentCount(9, on: transport)
+        let (req0, _) = try decodeAdminSend(transport, at: 8)
+        transport.inject(adminResponseFrame(requestID: req0.id) { $0.getChannelResponse = chan0 })
+
+        try await waitForSentCount(10, on: transport)
+        let (req1, _) = try decodeAdminSend(transport, at: 9)
+        var wrong = chan1
+        wrong.settings.name = "NotOps"
+        transport.inject(adminResponseFrame(requestID: req1.id) { $0.getChannelResponse = wrong })
+
+        do {
+            _ = try await applyTask.value
+            XCTFail("expected a readBackMismatch")
+        } catch let error as AdminWriteError {
+            guard case .readBackMismatch(let detail) = error else {
+                return XCTFail("expected .readBackMismatch, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("channel 1"), "expected the mismatching channel named: \(detail)")
+            XCTAssertFalse(detail.contains("channel 0 "), "channel 0 matched — it must not be reported as a problem: \(detail)")
+            XCTAssertTrue(detail.lowercased().contains("partial"), "expected an explicit partial-configuration note: \(detail)")
+        }
     }
 }

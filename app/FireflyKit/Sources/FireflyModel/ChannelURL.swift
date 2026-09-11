@@ -257,27 +257,193 @@ public enum ChannelURL {
 
 // MARK: - M3: channel write-back
 
+/// Thrown building a write plan for an "add" import that cannot honestly
+/// be placed — PR #274 review, BLOCKING 1: "an 'add' import writes its
+/// channels only into free non-zero slots (error if none free...)".
+/// Mirrors Meshtastic-Apple's own two distinct refusals
+/// (`AccessoryManager+ToRadio.swift`'s `saveChannelSet`): "No free
+/// channel slots available" when NONE of 1...7 are free, "Not enough
+/// free channel slots" when some are free but fewer than the import
+/// needs. Neither ever touches index 0 or an existing PSK — the plan is
+/// simply never built.
+public enum ChannelWritePlanError: Error, Equatable, Sendable {
+    case noFreeChannelSlots
+    case notEnoughFreeChannelSlots(needed: Int, available: Int)
+    /// Meshtastic-Apple's own "A Meshtastic radio supports up to 8
+    /// channels" guard, cross-checked rather than assumed
+    /// (`AccessoryManager+ToRadio.swift`'s `saveChannelSet`).
+    case tooManyChannels(Int)
+}
+
+/// One channel this write plan actually writes — index, display name,
+/// and whether it is the primary — used by the confirmation sheet to
+/// state exactly what changes (PR #274 review, BLOCKING 2).
+public struct ChannelPlanEntry: Sendable, Equatable {
+    public let index: Int32
+    public let name: String
+    public let isPrimary: Bool
+    /// The `position_precision` this entry actually writes — the
+    /// imported URL's own value when it stated one, else the SAFE
+    /// default 0 (PR #274 review, SHOULD-FIX 4).
+    public let positionPrecisionBits: UInt32
+    /// `false` when the imported URL never stated a precision for this
+    /// channel — the confirmation sheet uses this to say so explicitly
+    /// rather than rendering `positionPrecisionBits` as if the link had
+    /// asked for it.
+    public let precisionWasExplicit: Bool
+
+    public init(index: Int32, name: String, isPrimary: Bool, positionPrecisionBits: UInt32, precisionWasExplicit: Bool) {
+        self.index = index
+        self.name = name
+        self.isPrimary = isPrimary
+        self.positionPrecisionBits = positionPrecisionBits
+        self.precisionWasExplicit = precisionWasExplicit
+    }
+}
+
+/// What `ChannelImportResult.makeChannelWritePlan(occupiedIndexes:)`
+/// decides, and exactly what `applyChannelSet`'s `request` will do to
+/// EVERY slot on the node — never just the ones it fills. PR #274
+/// review, BLOCKING 1 & 2: an "add" import places its channels in free
+/// SECONDARY slots only (never index 0, never an existing PSK) and
+/// leaves everything else untouched; a "replace" import writes the set
+/// from index 0 and explicitly disables every remaining slot up to
+/// `maxChannelSlots`, so nothing from before the import can silently
+/// keep running — and both are disclosed here, not just written.
+public struct ChannelWritePlan: Sendable, Equatable {
+    /// What `MeshtasticClientProtocol.applyChannelSet(_:)` actually
+    /// sends: `writtenChannels`' entries (role primary/secondary) plus,
+    /// for a "replace" plan only, one explicit `.disabled` `Channel`
+    /// entry per index in `disabledIndexes`.
+    public let request: ChannelWriteRequest
+    public let writtenChannels: [ChannelPlanEntry]
+    /// Every index this plan explicitly disables. Always empty for an
+    /// "add" plan (BLOCKING 1: add never disables anything).
+    public let disabledIndexes: [Int32]
+    /// Every index `0..<maxChannelSlots` this plan neither writes nor
+    /// disables. Always empty for a "replace" plan (BLOCKING 2: replace
+    /// accounts for every slot); for an "add" plan this is index 0 plus
+    /// whatever secondary slots were not chosen.
+    public let untouchedIndexes: [Int32]
+    public let addMode: Bool
+
+    public init(request: ChannelWriteRequest, writtenChannels: [ChannelPlanEntry],
+                disabledIndexes: [Int32], untouchedIndexes: [Int32], addMode: Bool) {
+        self.request = request
+        self.writtenChannels = writtenChannels
+        self.disabledIndexes = disabledIndexes
+        self.untouchedIndexes = untouchedIndexes
+        self.addMode = addMode
+    }
+}
+
 extension ChannelImportResult {
-    /// Builds what `MeshtasticClientProtocol.applyChannelSet(_:)` actually
-    /// sends: index/role-assigned `Channel` messages — index 0 is the
-    /// primary, every following slot is a secondary, Meshtastic-Apple's
-    /// own `makeChannel` convention (`AccessoryManager+ToRadio.swift`),
-    /// cross-checked rather than assumed — with `position_precision`
-    /// forced explicit exactly like `ChannelURL.encode` already does for
-    /// the same reason (never write the "absent means full precision"
-    /// trap), plus the LoRa config this import carried, IF it carried
-    /// one: an "add" import never fabricates a region/modem preset
-    /// nobody stated.
-    public func makeChannelWriteRequest() -> ChannelWriteRequest {
-        let channels: [Channel] = channelSet.settings.enumerated().map { offset, settings in
-            var channel = Channel()
-            channel.index = Int32(offset)
-            channel.role = offset == 0 ? .primary : .secondary
-            channel.settings = ChannelURL.withExplicitPositionPrecision(settings)
-            return channel
+    /// Builds the plan `applyChannelSet(_:)` sends AND the confirmation
+    /// sheet renders — the SAME plan, so what the user is shown is
+    /// exactly what gets written (PR #274 review, BLOCKING 1 & 2).
+    ///
+    /// `occupiedIndexes` is the node's CURRENT channel table (every index
+    /// whose role is not `.disabled`), read live off the radio just
+    /// before this is called (`MeshtasticClientProtocol
+    /// .currentChannelTable()`) — never a stale cache. It matters only
+    /// for an "add" plan; a "replace" plan's targets/disables are fixed
+    /// (0..<count written, the rest disabled) regardless of what is
+    /// currently there, matching Meshtastic-Apple's own `saveChannelSet`.
+    ///
+    /// "Add": every imported channel becomes a SECONDARY in the lowest
+    /// free indices of 1..<maxChannelSlots (index 0 / the primary is
+    /// NEVER a candidate — Meshtastic-Apple's own comment: "An
+    /// unoccupied index 0 here means the local cache is empty or
+    /// partial — never a license to hand an imported channel the
+    /// primary slot"). Throws `ChannelWritePlanError.noFreeChannelSlots`
+    /// / `.notEnoughFreeChannelSlots` rather than ever touching index 0
+    /// or an existing PSK. Never carries a LoRa config, even if the
+    /// import carried one — Meshtastic-Apple's own `saveChannelSet` only
+    /// ever sends `loraConfig` on the non-add path.
+    ///
+    /// "Replace": every imported channel is written starting at index 0
+    /// (index 0 is the primary), and every slot from `settings.count` up
+    /// to `maxChannelSlots` is explicitly DISABLED — an old channel this
+    /// import does not mention is authoritatively turned off, not left
+    /// running (Meshtastic-Apple's own `saveChannelSet`: "A replace has
+    /// to say something about every slot, not just the ones it fills").
+    ///
+    /// Every written channel's `position_precision` uses the imported
+    /// URL's value verbatim when present, else the SAFE default 0 ("do
+    /// not share") — never 32 (full precision), the trap Meshtastic-Apple
+    /// itself closes the same way in `makeChannel(_:at:)` (PR #274
+    /// review, SHOULD-FIX 4).
+    public func makeChannelWritePlan(occupiedIndexes: Set<Int32> = []) throws -> ChannelWritePlan {
+        guard channelSet.settings.count <= Int(maxChannelSlots) else {
+            throw ChannelWritePlanError.tooManyChannels(channelSet.settings.count)
         }
-        return ChannelWriteRequest(
-            channels: channels,
-            loraConfig: channelSet.hasLoraConfig ? channelSet.loraConfig : nil)
+        let safeSettings = channelSet.settings.map { ChannelURL.withExplicitPositionPrecision($0, default: 0) }
+
+        func planEntry(original: ChannelSettings, safe: ChannelSettings, index: Int32, isPrimary: Bool) -> ChannelPlanEntry {
+            ChannelPlanEntry(
+                index: index,
+                name: safe.name.isEmpty ? "(default channel)" : safe.name,
+                isPrimary: isPrimary,
+                positionPrecisionBits: safe.moduleSettings.positionPrecision,
+                precisionWasExplicit: original.hasModuleSettings)
+        }
+
+        if addMode {
+            let free = (Int32(1)..<maxChannelSlots).filter { !occupiedIndexes.contains($0) }
+            guard !free.isEmpty else { throw ChannelWritePlanError.noFreeChannelSlots }
+            guard safeSettings.count <= free.count else {
+                throw ChannelWritePlanError.notEnoughFreeChannelSlots(needed: safeSettings.count, available: free.count)
+            }
+            let targetIndexes = Array(free.prefix(safeSettings.count))
+
+            let channels: [Channel] = zip(safeSettings, targetIndexes).map { settings, index in
+                var channel = Channel()
+                channel.index = index
+                channel.role = .secondary // add mode NEVER assigns .primary — index 0 is never a target.
+                channel.settings = settings
+                return channel
+            }
+            let writtenChannels = zip(zip(channelSet.settings, safeSettings), targetIndexes).map { pair, index in
+                planEntry(original: pair.0, safe: pair.1, index: index, isPrimary: false)
+            }
+            let writtenSet = Set(targetIndexes)
+            let untouched = (Int32(0)..<maxChannelSlots).filter { !writtenSet.contains($0) }
+
+            return ChannelWritePlan(
+                request: ChannelWriteRequest(channels: channels, loraConfig: nil),
+                writtenChannels: writtenChannels,
+                disabledIndexes: [],
+                untouchedIndexes: untouched,
+                addMode: true)
+        } else {
+            let targetIndexes = safeSettings.indices.map { Int32($0) }
+            let filled = Set(targetIndexes)
+
+            var channels: [Channel] = zip(safeSettings, targetIndexes).map { settings, index in
+                var channel = Channel()
+                channel.index = index
+                channel.role = index == 0 ? .primary : .secondary
+                channel.settings = settings
+                return channel
+            }
+            var disabledIndexes: [Int32] = []
+            for index in Int32(0)..<maxChannelSlots where !filled.contains(index) {
+                var disabled = Channel()
+                disabled.index = index
+                disabled.role = .disabled
+                channels.append(disabled)
+                disabledIndexes.append(index)
+            }
+            let writtenChannels = zip(zip(channelSet.settings, safeSettings), targetIndexes).map { pair, index in
+                planEntry(original: pair.0, safe: pair.1, index: index, isPrimary: index == 0)
+            }
+
+            return ChannelWritePlan(
+                request: ChannelWriteRequest(channels: channels, loraConfig: channelSet.hasLoraConfig ? channelSet.loraConfig : nil),
+                writtenChannels: writtenChannels,
+                disabledIndexes: disabledIndexes,
+                untouchedIndexes: [],
+                addMode: false)
+        }
     }
 }

@@ -26,7 +26,14 @@
 //  that reason.
 //
 //  BOARD SAFETY: this suite is SAFE BY CONSTRUCTION even though it
-//  writes. It reads channel 0 off the connected node with
+//  writes. BLOCKING 3 (PR #274 review) added a code-level check, not
+//  just this comment: it asserts `currentMyNodeNum == 48_621_524`
+//  (Firefly 2) right after `connect()` and BEFORE the write below, the
+//  same pattern `BLEHardwareTests.testConnectsAndCompletesHandshake
+//  AgainstFirefly2` already uses — a bench mix-up pointing
+//  FIREFLY_SERIAL_PORT at the wrong board now fails the test instead of
+//  rebooting Firefly 1. It also reads channel 0 off the connected node
+//  with
 //  `MeshtasticClient.currentChannel(index:)`, then writes that EXACT
 //  `Channel` — byte for byte what the node just reported, nothing
 //  invented or guessed — back with `applyChannelSet`, and verifies the
@@ -45,6 +52,18 @@ import MeshtasticProto
 import XCTest
 
 final class AdminWriteHardwareTests: XCTestCase {
+
+    /// Firefly 2's own node num (`docs/hardware/heltec-v3.md`'s bench
+    /// table; also `BLEHardwareTests.expectedMyNodeNum`, the pattern this
+    /// mirrors). BLOCKING 3 (PR #274 review): this file's header already
+    /// TELLS a human to point `FIREFLY_SERIAL_PORT` at Firefly 2 and
+    /// never Firefly 1 — that was a comment, not a check. Asserted after
+    /// `want_config` completes and BEFORE `applyChannelSet` sends
+    /// anything, exactly where `BLEHardwareTests
+    /// .testConnectsAndCompletesHandshakeAgainstFirefly2` asserts it for
+    /// the BLE suite, so a bench mix-up pointing the serial port at the
+    /// wrong board fails loudly here instead of writing to Firefly 1.
+    private static let expectedMyNodeNum: UInt32 = 48_621_524
 
     private func requireHardwareWriteConsent() throws -> String {
         guard ProcessInfo.processInfo.environment["FIREFLY_HARDWARE"] == "1" else {
@@ -74,8 +93,14 @@ final class AdminWriteHardwareTests: XCTestCase {
         try await client.connect()
         defer { Task { await client.disconnect() } }
 
-        guard await client.currentMyNodeNum != nil else {
-            return XCTFail("handshake completed but connectedNodeNum is nil")
+        // BLOCKING 3 (PR #274 review): a real node identity check, not
+        // just "something answered" — must run BEFORE any write below.
+        let myNodeNum = await client.currentMyNodeNum
+        XCTAssertEqual(myNodeNum, Self.expectedMyNodeNum,
+                        "connected to the wrong board — this suite must only ever write to Firefly 2; " +
+                        "check FIREFLY_SERIAL_PORT, never point it at Firefly 1")
+        guard myNodeNum == Self.expectedMyNodeNum else {
+            return // XCTAssertEqual above already recorded the failure — do not proceed to a write.
         }
 
         // Read channel 0 — whatever it actually is right now. Never
