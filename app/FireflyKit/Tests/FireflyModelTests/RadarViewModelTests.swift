@@ -87,13 +87,22 @@ final class RadarViewModelTests: XCTestCase {
     func testNohdgShowsBearingHintNoArrowNoLastSeenChip() {
         let s = snapshot(mode: .nohdg, arrowValid: false, name: "Taylor", distanceText: "492 ft",
                           ageText: "8 SEC", bearingDegrees: 180, bearingValid: true, place: false, stale: false)
-        let (model, _, _) = makeModel(snapshot: s)
+        let (model, radar, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
         XCTAssertEqual(model.chipText, "NO COMPASS")
         XCTAssertFalse(model.snapshot.arrowValid, "macOS (no magnetometer) must never show a stuck/fabricated arrow")
         XCTAssertEqual(model.bearingHintText, "BEARING 180\u{00B0} \u{00B7} S")
         XCTAssertEqual(model.primaryReadoutText, "492 ft")
         XCTAssertNil(model.subheadline, "NOHDG never grows a second chip beyond NO COMPASS + the bearing hint")
+        // A01's Slice D acceptance list: "a test that macOS (no
+        // magnetometer) renders NOHDG rather than a stuck arrow." Pin
+        // that NoHeadingProvider's nil actually reaches
+        // RadarComputing.compute(headingDegrees:) as nil, not just that
+        // the mode resolves to NOHDG incidentally.
+        guard let heading = radar.lastHeadingDegrees else {
+            return XCTFail("compute(headingDegrees:) was never called")
+        }
+        XCTAssertNil(heading, "NoHeadingProvider must feed a nil heading into RadarComputing, never a stuck angle")
     }
 
     func testNohdgStaleDoesNotGrowASecondChip() {
@@ -215,6 +224,20 @@ final class RadarViewModelTests: XCTestCase {
         XCTAssertEqual(model.theirPositionLine, "CAMP BASE's position: fixed position, asserted (no age given)")
     }
 
+    /// S06 issue #47's amendment names the suffix explicitly on all of
+    /// LIVE/STALE/PLACE/LOST. A landmark can be asserted at
+    /// degraded precision same as a measured fix (`has_precision_bits`
+    /// applies to any position), so PLACE must caveat exactly like the
+    /// other three modes rather than silently reading as a confident
+    /// point next to a multi-kilometer area estimate.
+    func testPlaceWithImprecisePositionAppendsTheAreaSuffixToTheChip() {
+        let s = snapshot(mode: .place, arrowDegrees: 118, arrowValid: true, name: "CAMP BASE",
+                          distanceText: "~5.8 km", distanceImprecise: true, ageText: "")
+        let (model, _, _) = makeModel(snapshot: s)
+        model.observe(); defer { model.stopObserving() }
+        XCTAssertEqual(model.chipText, "FIXED POSITION - AREA")
+    }
+
     // MARK: - radar_imprecise.json (issue #47 — honesty rule: imprecise never renders a point distance)
 
     func testImpreciseLiveShowsAreaSuffixAndDimmedApproximateDistance() {
@@ -244,8 +267,7 @@ final class RadarViewModelTests: XCTestCase {
             let readout = model.primaryReadoutText
             XCTAssertTrue(readout.hasPrefix("~"), "\(mode): \(readout)")
             let chip = model.chipText
-            XCTAssertTrue(chip.contains("AREA") || mode == .place,
-                          "\(mode) chip should caveat imprecision: \(chip)")
+            XCTAssertTrue(chip.contains("AREA"), "\(mode) chip should caveat imprecision: \(chip)")
         }
         let closeSnapshot = snapshot(mode: .close, name: "Dana", distanceText: "~5.8 km",
                                       distanceImprecise: true, ageText: "3 SEC")

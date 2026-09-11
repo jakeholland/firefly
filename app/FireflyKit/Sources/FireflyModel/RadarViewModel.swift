@@ -735,7 +735,7 @@ public final class RadarViewModel {
             case .heard, .stale: return "NEAR, NO FIX"
             case .lost, .never: return "NO FIX YET"
             }
-        case .place: return "FIXED POSITION"
+        case .place: return distanceAreaSuffix.isEmpty ? "FIXED POSITION" : "FIXED POSITION\(distanceAreaSuffix)"
         case .close: return "CLOSE RANGE"
         case .signal:
             if snapshot.signalTier != .none { return "\(snapshot.signalTier.label) SIGNAL" }

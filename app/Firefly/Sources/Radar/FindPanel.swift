@@ -52,6 +52,8 @@ struct FindPanel: View {
                 Button("STOP") { model.stopFind() }
                     .buttonStyle(.bordered)
                     .tint(.radarStaleAmber)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             } else {
                 Text("Pings the selected friend every \(Int(FindSessionConstants.pingIntervalSeconds)) s "
                      + "and shows how THEY hear US — up to \(FindSessionConstants.maxPings) pings or "
@@ -64,6 +66,8 @@ struct FindPanel: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.ffAmber)
                     .foregroundStyle(Color.ffBackground)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
                     .disabled(model.findTargetNodeID == nil)
 
                 if model.findTargetNodeID == nil {
