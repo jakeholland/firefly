@@ -1363,6 +1363,30 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
                 heartbeatTask?.cancel(); heartbeatTask = nil
                 reconnectTask?.cancel(); reconnectTask = nil
                 publish(.disconnected)
+                // ROOT CAUSE FIX (2026-09-11, real power-cycle on the
+                // bench — see `LinkState.reconnecting`'s own doc
+                // comment): `hasCompletedInitialConnect` is exactly "this
+                // is an UNEXPECTED loss after a session that already
+                // reached `.ready` once" — the same gate the `.ready`
+                // case above already uses to tell a background reconnect
+                // apart from the very first connect. Publish an honest
+                // `.reconnecting(attempt: 1)` the INSTANT that loss is
+                // detected, not only once the transport has already
+                // fought its way back to `.ready` and a handshake retry
+                // that follows happens to fail once first — before this
+                // fix, a node that stayed gone for the better part of
+                // three minutes (a real power cycle, not a brief pocket
+                // loss) published NOTHING after `.disconnected` for the
+                // entire time `BLETransport`'s own reconnect-on-loss was
+                // silently working, which is indistinguishable from
+                // having given up. A user-initiated `disconnect()` never
+                // reaches this case at all (it calls `transport
+                // .disconnect()`, which `hub.finish()`es the stream), so
+                // this can never fire for a disconnect nobody asked to
+                // recover from.
+                if hasCompletedInitialConnect {
+                    publish(.reconnecting(attempt: 1))
+                }
             }
         }
         Self.log("consumeTransportEvents: transport event stream ended")

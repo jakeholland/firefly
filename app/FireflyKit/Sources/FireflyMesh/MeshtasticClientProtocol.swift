@@ -16,16 +16,32 @@ public enum LinkState: Equatable, Sendable {
     case handshaking
     /// `config_complete_id` matched. Only now is the nodeDB meaningful.
     case ready
-    /// M2 — background BLE: the transport reconnected on its own (a
-    /// pocket-loss reconnect or a node power-cycle) and the client is
+    /// M2 — background BLE: an unexpected loss after a session that had
+    /// already reached `.ready` once, and the client is trying to get
+    /// back — either still waiting on the TRANSPORT to come back up (a
+    /// pocket-loss reconnect or a node power-cycle: `BLETransport`'s own
+    /// reconnect-on-loss, silently re-arming a pending `central.connect()`
+    /// and, past `BLETransport.reconnectFallbackDelay`, falling back to a
+    /// scan — see that type's own doc comment), or already back up and
     /// re-running the `want_config` handshake with bounded exponential
     /// backoff (`MeshtasticClient.handshakeRetryDelay(forAttempt:)`).
-    /// `attempt` is 1-based — the Nth handshake attempt currently in
-    /// flight or about to sleep before retrying. Distinct from the
-    /// plain `.handshaking` case (which is the FIRST, never-yet-failed
-    /// attempt right after an explicit `connect()`): a UI that only
-    /// ever says "HANDSHAKING" during a silent multi-minute retry loop
-    /// is not telling the truth about what is actually happening.
+    /// `attempt` is 1-based: `1` is published the INSTANT the loss is
+    /// detected (`consumeTransportEvents`'s `.disconnected` case) — before
+    /// the transport has necessarily come back at all — and again for the
+    /// first genuinely-repeated attempt if a handshake attempt afterward
+    /// itself times out; each is distinct from the plain `.handshaking`
+    /// case (the FIRST, never-yet-failed handshake attempt right after an
+    /// explicit `connect()`, or the first attempt right after the
+    /// transport comes back from a loss). Root-caused 2026-09-11 against
+    /// a real power-cycle on the bench
+    /// (`FireflyHardwareTests.testReconnectsOnItsOwnAfterFirefly2IsPowerCycled`):
+    /// before this, NOTHING was published between `.disconnected` and the
+    /// transport eventually reaching `.ready` again — a UI (and this very
+    /// test) reading total silence for up to 180s, indistinguishable from
+    /// having given up, while `BLETransport` was in fact still honestly
+    /// trying. A UI that only ever says "DISCONNECTED" (or silently sits
+    /// on a stale `.handshaking`) during a multi-minute reconnect is not
+    /// telling the truth about what is actually happening.
     case reconnecting(attempt: Int)
     case failed(String)
 }
