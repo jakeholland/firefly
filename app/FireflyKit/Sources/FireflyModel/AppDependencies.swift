@@ -108,7 +108,7 @@ public struct AppDependencies: Sendable {
     /// turned into a fictional festival by a stray launch argument, so
     /// this is the one call site that makes "live mode never constructs
     /// the demo client" true by construction, not by convention —
-    /// `AppDependenciesTests.testLiveNeverConstructsTheDemoClient`
+    /// `DemoRunnerTests.testLiveDependenciesNeverConstructTheDemoClient`
     /// pins it.
     public static func current() -> AppDependencies {
         #if targetEnvironment(simulator)

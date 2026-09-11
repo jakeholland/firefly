@@ -142,20 +142,15 @@ private struct InboxRow: View {
                 Image(systemName: "person.3.fill")
                     .foregroundStyle(color)
             } else {
-                // A paired member with no identity known yet is a real,
-                // reachable state (`ff_crew_member_t.initial`'s own
-                // "'\0' until known" rule — a member paired straight
-                // through `ff_crew_set_paired` with no NodeInfo ever
-                // received keeps an empty name), and
-                // `conversation.displayName.prefix(1)` on an empty
-                // string is an empty `String`, not a `Character` —
-                // `Character("")` traps (bug found via demo mode's Mo,
-                // the honest LOST case: paired, never heard, never
-                // named). A blank glyph is the same "never a '?'
-                // placeholder" rule this app follows everywhere else
-                // an initial can be unknown (`RadarSnapshotDot.initial`,
-                // `CoreRadarComputing.snapshot(from:...)`).
-                Text(String(conversation.initial ?? conversation.displayName.first ?? " "))
+                // The "no `Character("")` trap" fix — see
+                // `InboxAvatar.avatarGlyph(for:)`'s own doc comment
+                // (FireflyModel) for why an empty `displayName` is a
+                // real, reachable state and why a blank glyph, not a
+                // crash or a "?" placeholder, is correct here. Pulled
+                // into that pure helper so the fix is unit-testable
+                // (`InboxAvatarTests`, FireflyAppTests) rather than only
+                // eyeballed in this view.
+                Text(InboxAvatar.avatarGlyph(for: conversation))
                     .font(.system(.callout, design: .rounded).weight(.bold))
                     .foregroundStyle(color)
             }

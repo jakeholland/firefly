@@ -354,6 +354,40 @@ final class RadarViewModelTests: XCTestCase {
         XCTAssertEqual(model.theirSignalLine, "Taylor's radio: strong signal, direct, heard just now")
     }
 
+    /// PR #267 review, NIT item 3: `testLiveWithAFreshAgeReadsJustNowNotNowAgo`
+    /// and this file's own `testSignalStrongWithAFreshSignalAgeReadsJustNow`
+    /// only covered LIVE's `theirPositionLine` and SIGNAL's non-ghost
+    /// `subheadline`/`theirSignalLine` for the "now" -> "just now"
+    /// substitution. `agoPhrase` is one static one-liner shared by every
+    /// call site, so this is low-risk — still, closing the gap cheaply:
+    /// NOFIX/LOST/CLOSE's `theirPositionLine`, and the SIGNAL ghost
+    /// sub-case's `subheadline` LAST KNOWN clause + `theirPositionLine`.
+    func testRemainingAgoPhraseCallSitesReadJustNow() {
+        let noFix = snapshot(mode: .noFix, name: "DANA", ageText: "now")
+        let (noFixModel, _, _) = makeModel(snapshot: noFix)
+        noFixModel.observe(); defer { noFixModel.stopObserving() }
+        XCTAssertEqual(noFixModel.theirPositionLine,
+                       "DANA's last known position: their puck GPS, just now (your distance unknown — no fix of your own)")
+
+        let lost = snapshot(mode: .lost, name: "DANA", distanceText: "1.1 km", ageText: "now")
+        let (lostModel, _, _) = makeModel(snapshot: lost)
+        lostModel.observe(); defer { lostModel.stopObserving() }
+        XCTAssertEqual(lostModel.theirPositionLine, "DANA's position: their puck GPS, last seen just now")
+
+        let close = snapshot(mode: .close, name: "Dana", distanceText: "15 m", ageText: "now")
+        let (closeModel, _, _) = makeModel(snapshot: close)
+        closeModel.observe(); defer { closeModel.stopObserving() }
+        XCTAssertEqual(closeModel.theirPositionLine, "Dana's position: their puck GPS, just now")
+
+        let ghost = snapshot(mode: .signal, arrowDegrees: 205, arrowValid: true, name: "DANA",
+                              distanceText: "1.1 km", ageText: "now", bearingDegrees: 205, bearingValid: true,
+                              signalTier: .good, signalHeard: true, signalViaRelay: false, signalAgeText: "now")
+        let (ghostModel, _, _) = makeModel(snapshot: ghost)
+        ghostModel.observe(); defer { ghostModel.stopObserving() }
+        XCTAssertEqual(ghostModel.subheadline, "heard just now\nLAST KNOWN just now, ~1.1 km SSW")
+        XCTAssertEqual(ghostModel.theirPositionLine, "DANA's last known position: their puck GPS, just now, SSW")
+    }
+
     // MARK: - Compass point (wraps ff_geo_compass_point directly — never reimplemented)
 
     func testCompassPointMatchesTheCoresOwnSixteenPointNaming() {
