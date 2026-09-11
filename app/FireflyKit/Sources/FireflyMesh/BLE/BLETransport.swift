@@ -253,7 +253,93 @@ public actor BLETransport: MeshTransport, NodeScanning {
             return
         }
         pendingConnectPeripheralID = target.identifier
+        // ROOT CAUSE (2026-09-11 bench power-cycle failure) — this line
+        // itself was never the bug, but it was NEVER LOGGED: every other
+        // native CoreBluetooth call this file makes has a `BLETransport
+        // .log(...)` line right next to it (this file's own "lightweight,
+        // unconditional diagnostics" comment), except this one — the ONE
+        // place `central.connect()` is issued for a reconnect-on-loss or
+        // restored-session re-arm (`performConnectSequence()`'s own
+        // explicit-connect path logs separately, "calling
+        // central.connect(...)"). That silence is exactly why a real
+        // bench failure ("no central.connect ... for 180s") could not be
+        // told apart from "this genuinely never ran" from the log alone —
+        // fixed here, unconditionally, not only on the guard's failure
+        // branch above.
+        BLETransport.log("issueConnect: calling central.connect(\(target.identifier))")
         central?.connect(target, options: nil)
+    }
+
+    /// M2 follow-up (2026-09-11 bench power-cycle failure) — a bounded
+    /// backstop for `handleDisconnected`'s reconnect-on-loss re-arm
+    /// above. `central.connect()` on the SAME `CBPeripheral` is the
+    /// battery-conscious, no-polling mechanism the M2 task calls for, and
+    /// Apple's own contract for it is exactly "completes when the
+    /// peripheral is next seen" — but that contract is observed
+    /// behaviour for a peripheral that merely went briefly out of range,
+    /// not a hard guarantee for one that was fully powered off: a Heltec
+    /// re-advertising after a cold boot can present a BLE identity
+    /// CoreBluetooth does not reliably reassociate with the OLD
+    /// `CBPeripheral` object's still-pending connect (observed on the
+    /// bench: `didDisconnectPeripheral` with `CBError.connectionTimeout`,
+    /// then total silence — no `central.connect` completion, no scan, no
+    /// `.reconnecting` — for the full 180s the acceptance test bounds
+    /// itself to). A plain `scanForPeripherals` — the SAME mechanism
+    /// `performConnectSequence()`'s own `discoverTarget(central:)` already
+    /// uses for a cold, never-yet-known peripheral — reliably rediscovers
+    /// it either way, so this arms exactly ONE such scan,
+    /// `reconnectFallbackDelay` after the pending connect was issued,
+    /// purely as a backstop: if the pending connect above already
+    /// completed by then (`completeConnect(throwing:)` cancels this task
+    /// unconditionally, success or failure), this never fires at all.
+    private let reconnectFallbackDelay: Duration
+    private var reconnectFallbackTask: Task<Void, Never>?
+    /// True only while a fallback scan armed by `armReconnectFallback
+    /// (for:)` is actually running — lets `handleDiscovered` tell "this
+    /// sighting is the fallback scan's own target reappearing" apart from
+    /// the unrelated ordinary node-picker `scan()` (`NodeScanning`) also
+    /// running concurrently, which must never have its sightings treated
+    /// as a reconnect.
+    private var isFallbackScanning = false
+
+    private func armReconnectFallback(for target: UUID) {
+        reconnectFallbackTask?.cancel()
+        reconnectFallbackTask = Task { [weak self, reconnectFallbackDelay] in
+            try? await Task.sleep(for: reconnectFallbackDelay)
+            guard !Task.isCancelled else { return }
+            await self?.runReconnectFallbackScan(for: target)
+        }
+    }
+
+    /// Pure and testable with no `CBCentralManager`, same reasoning as
+    /// `shouldIssueConnect(for:pendingConnectPeripheralID:)` above: split
+    /// out so the DECISION (is a fallback scan for this target still
+    /// actually warranted, this long after it was armed?) is pinned by a
+    /// test with no radio at all. `false` — the fallback must NOT scan —
+    /// covers both "we already reconnected" (`completeConnect(throwing:)`
+    /// clears `pendingConnectPeripheralID` unconditionally, so a stale
+    /// timer firing late after a fast reconnect is a no-op here) and "the
+    /// disconnect that armed this was superseded by a newer one for a
+    /// DIFFERENT peripheral" (`pendingConnectPeripheralID` would name the
+    /// new target, not this timer's own).
+    public static func shouldRunReconnectFallbackScan(
+        for target: UUID, pendingConnectPeripheralID: UUID?, shouldAutoReconnect: Bool
+    ) -> Bool {
+        shouldAutoReconnect && pendingConnectPeripheralID == target
+    }
+
+    private func runReconnectFallbackScan(for target: UUID) async {
+        guard Self.shouldRunReconnectFallbackScan(
+            for: target, pendingConnectPeripheralID: pendingConnectPeripheralID, shouldAutoReconnect: shouldAutoReconnect
+        ) else {
+            BLETransport.log("reconnect fallback: \(target) already resolved or superseded — not scanning")
+            return
+        }
+        guard let central else { return }
+        BLETransport.log("reconnect fallback: central.connect(\(target)) has not completed after " +
+                          "\(reconnectFallbackDelay) — scanning for it by identity")
+        isFallbackScanning = true
+        central.scanForPeripherals(withServices: [Self.serviceUUID], options: nil)
     }
 
     /// Fired from `setPreferredPeripheral(_:)` — the composition root's
@@ -303,6 +389,14 @@ public actor BLETransport: MeshTransport, NodeScanning {
         connectRetryLimit: Int = 2,
         firstBondConnectTimeout: Duration = .seconds(90),
         knownBondConnectTimeout: Duration = .seconds(5),
+        // 20s: the M2 task's own "15-30s to re-advertise after a power
+        // cycle" — a Heltec's own boot time, not a tuned magic number
+        // (`armReconnectFallback(for:)`'s own doc comment). An instance
+        // property, not `static let`, for the same reason
+        // `firstBondConnectTimeout`/`knownBondConnectTimeout` already are:
+        // a caller (a hardware test wanting a fast fallback) can override
+        // it.
+        reconnectFallbackDelay: Duration = .seconds(20),
         onPreferredPeripheralChanged: (@Sendable (UUID) -> Void)? = nil,
         onBonded: (@Sendable (UUID) -> Void)? = nil
     ) {
@@ -311,6 +405,7 @@ public actor BLETransport: MeshTransport, NodeScanning {
         self.connectRetryLimit = connectRetryLimit
         self.firstBondConnectTimeout = firstBondConnectTimeout
         self.knownBondConnectTimeout = knownBondConnectTimeout
+        self.reconnectFallbackDelay = reconnectFallbackDelay
         self.onPreferredPeripheralChanged = onPreferredPeripheralChanged
         self.onBonded = onBonded
     }
@@ -487,6 +582,14 @@ public actor BLETransport: MeshTransport, NodeScanning {
         // pending connect on it, undoing the very disconnect the caller
         // asked for.
         shouldAutoReconnect = false
+        // Same reasoning, for the reconnect fallback
+        // (`armReconnectFallback(for:)`'s own doc comment): a user who
+        // asked to disconnect must never have a scan silently start back
+        // up N seconds later looking for the peripheral they just walked
+        // away from.
+        reconnectFallbackTask?.cancel()
+        reconnectFallbackTask = nil
+        isFallbackScanning = false
         central?.stopScan()
         if let peripheral {
             central?.cancelPeripheralConnection(peripheral)
@@ -800,6 +903,29 @@ public actor BLETransport: MeshTransport, NodeScanning {
         BLETransport.log("didDiscover \(peripheral.identifier) name=\(name ?? "nil") rssi=\(rssi)")
         discoveryHub.yield(BLEDiscoveredPeripheral(id: peripheral.identifier, name: name, rssi: rssi))
 
+        // M2 follow-up (`armReconnectFallback(for:)`'s own doc comment):
+        // the fallback scan's own sighting of the SAME peripheral it was
+        // armed for — checked and consumed BEFORE the ordinary
+        // `discoveredPeripheralContinuation` path below, which exists for
+        // a completely different caller (`discoverTarget(central:)`,
+        // inside an explicit `connect()`'s own `performConnectSequence()`)
+        // and must not be cross-wired with this one.
+        if isFallbackScanning, peripheral.identifier == pendingConnectPeripheralID {
+            isFallbackScanning = false
+            central?.stopScan()
+            BLETransport.log("reconnect fallback: rediscovered \(peripheral.identifier) — reissuing central.connect")
+            self.peripheral = peripheral
+            peripheral.delegate = bridge
+            // Clear the pending id first: `issueConnect(_:)`'s own guard
+            // (SHOULD-FIX 4) would otherwise see THIS identifier already
+            // "pending" (from the original `handleDisconnected` re-arm
+            // that never completed) and silently no-op the very
+            // reconnect this fallback exists to force.
+            pendingConnectPeripheralID = nil
+            issueConnect(peripheral)
+            return
+        }
+
         guard let discoveredPeripheralContinuation else { return }
         let matchesPreferred = preferredPeripheralID.map { $0 == peripheral.identifier } ?? true
         guard matchesPreferred else { return }
@@ -845,11 +971,20 @@ public actor BLETransport: MeshTransport, NodeScanning {
             // it open — even backgrounded, given `bluetooth-central` in
             // `UIBackgroundModes` — until the peripheral is back in range
             // or powered back on, and resumes exactly where
-            // `handleConnected` picks up. No scanning, no timer — the
-            // battery-conscious mechanism the M2 task calls out ("use
-            // that rather than polling scans"). `issueConnect(_:)`, not
-            // a bare `central?.connect(...)` — SHOULD-FIX 4.
+            // `handleConnected` picks up. No scanning, no timer for the
+            // ORDINARY case — the battery-conscious mechanism the M2 task
+            // calls out ("use that rather than polling scans").
+            // `issueConnect(_:)`, not a bare `central?.connect(...)` —
+            // SHOULD-FIX 4.
             issueConnect(peripheral)
+            // Bounded backstop for the case that pending connect never
+            // completes on its own (`armReconnectFallback(for:)`'s own
+            // doc comment — a real Heltec power-cycle, bench-reproduced
+            // 2026-09-11) — a SINGLE scan, `reconnectFallbackDelay` from
+            // now, not a poll: `completeConnect(throwing:)` cancels this
+            // unconditionally the moment the pending connect above (or
+            // this fallback's own rediscovery) actually lands.
+            armReconnectFallback(for: peripheral.identifier)
         } else {
             self.peripheral = nil
             shouldAutoReconnect = false
@@ -987,6 +1122,17 @@ public actor BLETransport: MeshTransport, NodeScanning {
         // connect attempt for this (or any) peripheral is never silently
         // suppressed by a stale value.
         pendingConnectPeripheralID = nil
+        // M2 follow-up: same "success or failure, unconditionally"
+        // reasoning extends to the reconnect-on-loss fallback
+        // (`armReconnectFallback(for:)`'s own doc comment) — this IS the
+        // connect chain finishing, by whichever of the two paths that
+        // fallback itself can now complete through (the original pending
+        // `central.connect()`, or its own rediscovery scan reissuing
+        // one), so any timer still outstanding for it is stale the
+        // instant this runs.
+        reconnectFallbackTask?.cancel()
+        reconnectFallbackTask = nil
+        isFallbackScanning = false
         if let error {
             guard let cont = connectContinuation else { return }
             connectContinuation = nil
@@ -1080,5 +1226,25 @@ public actor BLETransport: MeshTransport, NodeScanning {
             // reciprocal direction.
             issueConnect(restored)
         }
+    }
+
+    // MARK: - Test-only hook (`FireflyHardwareTests`, via `@testable
+    // import` — `BLEReconnectHardwareTests`)
+
+    /// Simulates an UNEXPECTED BLE-level loss for a hardware test that
+    /// cannot power-cycle a real board on its own (that needs a human at
+    /// the bench — see app/README.md, "Manual test procedure"): a local
+    /// `cancelPeripheralConnection`, which fires `didDisconnectPeripheral`
+    /// the SAME WAY a real out-of-range or powered-off node would,
+    /// WITHOUT going through the public `disconnect()` API (which
+    /// intentionally clears `shouldAutoReconnect` — never true of a
+    /// genuine, unexpected loss; see that method's own doc comment).
+    /// `internal`, not `public`: this is a test seam, not an app-facing
+    /// operation — the 2026-09-11 bench power-cycle investigation's own
+    /// hardware-verification test reaches it via `@testable import`.
+    func simulateUnexpectedDisconnectForTesting() {
+        guard let central, let peripheral else { return }
+        BLETransport.log("simulateUnexpectedDisconnectForTesting: cancelPeripheralConnection(\(peripheral.identifier))")
+        central.cancelPeripheralConnection(peripheral)
     }
 }

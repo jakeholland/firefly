@@ -105,6 +105,41 @@ final class BLEContractTests: XCTestCase {
                        "a pending connect for a DIFFERENT identifier must never suppress a fresh one")
     }
 
+    // MARK: - Reconnect-fallback scan (2026-09-11 bench power-cycle
+    // failure): the pure decision `armReconnectFallback(for:)`'s own
+    // timer callback is built on, tested with no `CBCentralManager` at
+    // all for the same reason `shouldIssueConnect` above is.
+
+    func testShouldRunReconnectFallbackScanWhenStillPendingForTheSameTarget() {
+        let target = UUID()
+        XCTAssertTrue(BLETransport.shouldRunReconnectFallbackScan(
+            for: target, pendingConnectPeripheralID: target, shouldAutoReconnect: true))
+    }
+
+    func testShouldNotRunReconnectFallbackScanOnceAlreadyReconnected() {
+        let target = UUID()
+        XCTAssertFalse(BLETransport.shouldRunReconnectFallbackScan(
+            for: target, pendingConnectPeripheralID: nil, shouldAutoReconnect: true),
+            "completeConnect(throwing:) clears pendingConnectPeripheralID unconditionally on success — " +
+            "a fallback timer firing late after a fast reconnect must be a no-op")
+    }
+
+    func testShouldNotRunReconnectFallbackScanWhenSupersededByANewerDisconnect() {
+        let staleTarget = UUID()
+        let newTarget = UUID()
+        XCTAssertFalse(BLETransport.shouldRunReconnectFallbackScan(
+            for: staleTarget, pendingConnectPeripheralID: newTarget, shouldAutoReconnect: true),
+            "a fallback armed for an OLDER disconnect must never scan for a target a newer one already replaced")
+    }
+
+    func testShouldNotRunReconnectFallbackScanAfterAnExplicitDisconnect() {
+        let target = UUID()
+        XCTAssertFalse(BLETransport.shouldRunReconnectFallbackScan(
+            for: target, pendingConnectPeripheralID: target, shouldAutoReconnect: false),
+            "disconnect() clears shouldAutoReconnect — a fallback timer outliving it must never start a scan " +
+            "for a peripheral the user asked to leave")
+    }
+
     func testMarkBondedFiresThePersistenceClosureAndRecordsTheID() async {
         let id = UUID()
         let bonded = Locked<[UUID]>([])

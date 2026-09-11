@@ -14,10 +14,10 @@
 		3B69F83116726CF8C396257C /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 9011CC84111BB0A130A3D3C7 /* FireflyModel */; };
 		452890E34DD01B6CD4D436CA /* ThreadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B41C74CB306C16EC81337A30 /* ThreadView.swift */; };
 		47E0809C008E900451404953 /* ConnectScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */; };
-		1A2C3FA7F689E8B3EC758FA1 /* FireflyAutoConnectLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0A84CBAE95A81B699A26E02 /* FireflyAutoConnectLaunch.swift */; };
 		59A003F0821E61E9DE8E99F5 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */; };
 		63F4CB9CD8015973BF2A6A87 /* NearbyNodesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */; };
 		6640FC7A5590E35700C97181 /* DiagnosticsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */; };
+		6A9AD720CC190DB306F0F9DA /* BLEReconnectHardwareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05F189342B5B984F2BBDAB8A /* BLEReconnectHardwareTests.swift */; };
 		6EED1D607A836BC23FCF5D43 /* SettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45BBB6E81333013CC2CE55F2 /* SettingsScreen.swift */; };
 		6F6C3DEEBFEC351E8F1EA93B /* CrewSettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E1D66A6EFF83C09A11DB7FB /* CrewSettingsViewModel.swift */; };
 		71D8EF04CB8A979CD7738201 /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 4982066A256926406E7325EB /* FireflyModel */; };
@@ -41,6 +41,7 @@
 		D7A2904C961D1D75584D0142 /* AdminWriteConfirmationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */; };
 		D7A6BDAFEAE4556C2D49508D /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 52CE41AF9EE8F2A1C1595D75 /* FireflyCore */; };
 		E3CC4E9340C161539EDE9E85 /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1798EBF71029584D9BCBDE5F /* FireflyCore */; };
+		E466917345D124C8F9F6B557 /* FireflyAutoConnectLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */; };
 		E6551196CD37E34092E3B5D8 /* DemoBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657F1057B225B7D58F60D158 /* DemoBadge.swift */; };
 		EBE7033561E014B40A656D0B /* InboxListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 918AE027165FB4634094A385 /* InboxListView.swift */; };
 		F06690C87C2BC2F7A3802A3C /* InboxAvatarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E76A5B24A4204914C9C30817 /* InboxAvatarTests.swift */; };
@@ -62,11 +63,11 @@
 
 /* Begin PBXFileReference section */
 		05D20D18F962B7E51C03A90B /* FireflyKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FireflyKit; path = FireflyKit; sourceTree = SOURCE_ROOT; };
+		05F189342B5B984F2BBDAB8A /* BLEReconnectHardwareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEReconnectHardwareTests.swift; sourceTree = "<group>"; };
 		154087BCAC0E87D7868BF253 /* RadarRingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadarRingView.swift; sourceTree = "<group>"; };
 		19687863E32B4CA54C5752D8 /* DiagnosticsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsScreen.swift; sourceTree = "<group>"; };
 		2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyNodesViewModel.swift; sourceTree = "<group>"; };
 		336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectScreen.swift; sourceTree = "<group>"; };
-		A0A84CBAE95A81B699A26E02 /* FireflyAutoConnectLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyAutoConnectLaunch.swift; sourceTree = "<group>"; };
 		36054428E7138397E791F1DD /* ChannelImportViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelImportViewModel.swift; sourceTree = "<group>"; };
 		378BC076CD59300BFAE0D0AD /* RadarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadarView.swift; sourceTree = "<group>"; };
 		3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdminWriteConfirmationSheet.swift; sourceTree = "<group>"; };
@@ -79,6 +80,7 @@
 		668B4901B03CB440509CA401 /* Firefly.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Firefly.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
 		7C40E6DFE5C85637929993F5 /* FireflyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyApp.swift; sourceTree = "<group>"; };
+		829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyAutoConnectLaunch.swift; sourceTree = "<group>"; };
 		899B46141ED5400385D53007 /* PeripheralDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeripheralDiscovery.swift; sourceTree = "<group>"; };
 		918AE027165FB4634094A385 /* InboxListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxListView.swift; sourceTree = "<group>"; };
 		9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEHardwareTests.swift; sourceTree = "<group>"; };
@@ -151,7 +153,7 @@
 				3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */,
 				36054428E7138397E791F1DD /* ChannelImportViewModel.swift */,
 				336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */,
-				A0A84CBAE95A81B699A26E02 /* FireflyAutoConnectLaunch.swift */,
+				829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */,
 				2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */,
 				899B46141ED5400385D53007 /* PeripheralDiscovery.swift */,
 				3FF340B133498D33D74D3976 /* QRScannerSheet.swift */,
@@ -228,6 +230,7 @@
 			isa = PBXGroup;
 			children = (
 				9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */,
+				05F189342B5B984F2BBDAB8A /* BLEReconnectHardwareTests.swift */,
 			);
 			path = FireflyHardwareTests;
 			sourceTree = "<group>";
@@ -385,7 +388,7 @@
 				7E079696E764A0A0F9E02426 /* DiagnosticsViewModel.swift in Sources */,
 				AFD1E54EF5873B6717B88291 /* FindPanel.swift in Sources */,
 				FB71020F3A2D6764FDD8FE64 /* FireflyApp.swift in Sources */,
-				1A2C3FA7F689E8B3EC758FA1 /* FireflyAutoConnectLaunch.swift in Sources */,
+				E466917345D124C8F9F6B557 /* FireflyAutoConnectLaunch.swift in Sources */,
 				124E5B4431C5B0C9509B4C85 /* FlareTakeoverView.swift in Sources */,
 				7FA385525E20C469998B9B83 /* HapticSignaling+UIKit.swift in Sources */,
 				EBE7033561E014B40A656D0B /* InboxListView.swift in Sources */,
@@ -408,6 +411,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				C03641377EDB721D4C81DE9D /* BLEHardwareTests.swift in Sources */,
+				6A9AD720CC190DB306F0F9DA /* BLEReconnectHardwareTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

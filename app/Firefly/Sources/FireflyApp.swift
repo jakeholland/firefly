@@ -56,7 +56,17 @@ struct FireflyApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
-        let graph = AppGraph()
+        // `skipLaunchAutoConnectUnderXCTest: true` — this IS the live
+        // process (`AppGraph()`'s own default `dependencies: .current()`,
+        // the real composition root), the one `AppGraph.init`'s own doc
+        // comment says only `FireflyApp.init()` should opt into: under
+        // `xcodebuild test -only-testing:FireflyHardwareTests`/
+        // `FireflyAppTests`, THIS process is `Firefly.app` itself,
+        // launched as the test's host application, and its own launch
+        // auto-connect must not run a second, independent `BLETransport`
+        // racing whatever the test itself is doing over BLE (2026-09-11
+        // bench investigation).
+        let graph = AppGraph(skipLaunchAutoConnectUnderXCTest: true)
         _graph = State(initialValue: graph)
         let connectVM = graph.makeConnectViewModel()
         _connect = State(initialValue: connectVM)
