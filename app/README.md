@@ -30,7 +30,9 @@ app/
   Config/                Firefly.xcconfig (committed) + git-ignored Local.xcconfig
   Firefly.xcodeproj      committed; regenerate from project.yml
   project.yml            xcodegen input — the source of truth for the project
-  tools/                 link_core_sources.sh, gen_swift_protos.sh
+  ExportOptions.plist    TestFlight export options (app/tools/testflight.sh)
+  tools/                 link_core_sources.sh, gen_swift_protos.sh,
+                         testflight.sh
 ```
 
 ## Build and test the package
@@ -486,13 +488,35 @@ wiring. Edit `project.yml`, never the pbxproj:
 
 ```sh
 brew install xcodegen
-cd app && xcodegen generate
+cd app && FIREFLY_BUILD_NUMBER=1 xcodegen generate
 ```
 
-Commit both `project.yml` and the regenerated `Firefly.xcodeproj`.
+`FIREFLY_BUILD_NUMBER` must be set (`project.yml`'s `CURRENT_PROJECT_VERSION`
+comment explains why — TestFlight build numbering, below); a bare
+`xcodegen generate` with it unset leaves that one setting as a literal,
+unresolved placeholder instead of a number. Commit both `project.yml`
+and the regenerated `Firefly.xcodeproj`.
 
 **The test plans** (`Firefly.xctestplan`, `FireflyUITests.xctestplan`) —
 xcodegen only wires the *reference* to these from `project.yml`'s scheme
 `test.testPlans`; their content is hand-edited JSON, not generated. Edit
 them directly, then `xcodegen generate` to pick up any reference change
 (which plan is default, which plans are attached) and commit both.
+
+## Shipping a TestFlight build
+
+```sh
+app/tools/testflight.sh                 # archive, export, upload
+app/tools/testflight.sh --archive-only  # archive only — no export/upload,
+                                         # no App Store Connect credentials needed
+```
+
+Release is signed automatically for team `SU4T96VBX6` (the same
+`Config/Local.xcconfig` mechanism as "Signed local runs" above — the
+script wires it up on first use), and `CURRENT_PROJECT_VERSION` is set
+to `git rev-list --count HEAD` on every archive so no upload ever
+repeats a build number. See
+[`docs/app/testflight.md`](../docs/app/testflight.md) for the one-time
+App Store Connect setup (app record, API key, adding a tester) and the
+full walkthrough, and `app/tools/testflight.sh`'s own header comment
+for exactly what each step does.

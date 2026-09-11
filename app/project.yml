@@ -4,10 +4,16 @@
 # Xcode. This file exists so the project can be REGENERATED rather than
 # hand-edited into an unreviewable 3000-line pbxproj diff:
 #
-#     brew install xcodegen && (cd app && xcodegen generate)
+#     brew install xcodegen
+#     cd app && FIREFLY_BUILD_NUMBER=1 xcodegen generate
 #
 # Regenerate and commit both whenever you change targets, settings or
-# Info.plist wiring. See app/README.md.
+# Info.plist wiring. See app/README.md. FIREFLY_BUILD_NUMBER must be set
+# — see this file's own CURRENT_PROJECT_VERSION comment below — plain
+# `xcodegen generate` with it unset leaves that setting as a literal,
+# unresolved placeholder rather than a number. app/tools/testflight.sh
+# always sets it (to the real git commit count) before it regenerates
+# and archives a Release build.
 name: Firefly
 options:
   bundleIdPrefix: com.jakeholland
@@ -30,8 +36,21 @@ settings:
     # same language mode FireflyKit's own Package.swift now sets via
     # `swiftLanguageModes: [.v6]`.
     SWIFT_VERSION: "6.0"
+    # A01/TestFlight: MARKETING_VERSION is the human-facing version
+    # (bump by hand for real releases); CURRENT_PROJECT_VERSION is the
+    # build number TestFlight requires to be unique on every upload.
+    # xcodegen substitutes ${FIREFLY_BUILD_NUMBER} from the environment
+    # AT GENERATE TIME — app/tools/testflight.sh sets it to
+    # `git rev-list --count HEAD` and regenerates right before
+    # archiving, so a routine `cd app && xcodegen generate` with the
+    # var unset does NOT silently corrupt this: it leaves this literal
+    # placeholder in place (xcodegen's own behavior for an unset
+    # substitution) rather than writing a bad value, and the checked-in
+    # project below was itself generated the same way testflight.sh
+    # does it — see that script and app/README.md, "Shipping a
+    # TestFlight build" for the one call that regenerates it correctly.
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    CURRENT_PROJECT_VERSION: "${FIREFLY_BUILD_NUMBER}"
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     SWIFT_STRICT_CONCURRENCY: complete

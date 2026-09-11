@@ -21,6 +21,15 @@
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 
+	<!-- Export compliance (App Store Connect asks this on every
+	     TestFlight/App Store submission otherwise). Firefly's only
+	     network use is the phone <-> node BLE link and whatever HTTPS
+	     the OS itself makes on the app's behalf — both standard,
+	     exempt encryption — so this answers the question once, here,
+	     rather than by hand in App Store Connect's UI each build. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+
 	<!-- Bluetooth. The app is a Meshtastic CLIENT: it connects to a node
 	     the user owns and does not advertise anything. -->
 	<key>NSBluetoothAlwaysUsageDescription</key>
