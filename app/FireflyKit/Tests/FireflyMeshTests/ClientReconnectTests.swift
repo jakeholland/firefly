@@ -31,6 +31,14 @@ import XCTest
 /// itself (`testHandshakeRetryDelayDoublesAndCaps`/
 /// `testHandshakeRetryDelayWorksAtSubSecondPrecision`, below) is
 /// untouched by this and keeps pinning the real durations.
+///
+/// ADDENDUM, 2026-09-11: this clock injection alone did not fully close
+/// the flake — `testHandshakeFailsHonestlyOnceEveryBoundedRetryIsSpent`
+/// still failed twice more on GitHub's macOS runner with the identical
+/// message. The remaining wall-clock dependency was this file's own
+/// `waitForSentCount(_:on:)` helper (see its own doc comment, below) —
+/// a polling wait, not a real product bug. Fixed alongside
+/// `LoopbackTransport.waitForSentCount(_:)`.
 private struct ImmediateHandshakeRetryClock: HandshakeRetryClock {
     func sleep(for duration: Duration) async throws {
         // A real (tiny) suspension, not a busy-loop: lets the actor's
@@ -84,21 +92,49 @@ final class ClientReconnectTests: XCTestCase {
 
     private struct TestTimeout: Error {}
 
-    // 200 * 5ms = 1s worst-case ceiling — the package-wide "no test may
-    // sleep more than ~1s total" rule (see `ImmediateHandshakeRetryClock`'s
-    // own doc comment). Every `MeshtasticClient` this file constructs now
-    // injects that clock, so in a genuinely passing run this loop resolves
-    // in a handful of 5ms polls; this ceiling only bounds the FAILURE
-    // case, and 1s is plenty to catch a real hang without letting a
-    // loaded runner's contention alone stretch it out to CI-timeout-scale
-    // like the un-injected retry backoff used to (CI run 34606690299).
+    /// Root-caused 2026-09-11 against CI run 34606690299's SECOND
+    /// occurrence (`testHandshakeFailsHonestlyOnceEveryBoundedRetryIsSpent`
+    /// timed out "waiting for 3 sent message(s); saw 2" — the SAME
+    /// symptom the `ImmediateHandshakeRetryClock` fix above was supposed
+    /// to have closed): that fix only injected the RETRY loop's own
+    /// between-attempt backoff. This helper used to notice a new
+    /// `sentMessages` count by re-checking it on a fixed timer (200 *
+    /// 5ms = 1s worst case) — real, if small, wall-clock time between an
+    /// actual send and the test noticing it, that a loaded runner's
+    /// cooperative-thread-pool contention can stretch out well past a
+    /// single poll's own nominal interval. `MeshtasticClient
+    /// .requestConfig(nonce:timeout:)`'s per-phase completion race still
+    /// waits out a REAL `configPhaseTimeout` of its own (by design — it
+    /// stands in for a real node's boot time), so that polling gap ate
+    /// directly into it: `completeHandshake()`'s INITIAL handshake (this
+    /// test's own `configPhaseTimeout` is a deliberately tiny 150ms, to
+    /// keep the deliberate double-timeout under test fast) could time
+    /// out for real before the test ever got a chance to inject its
+    /// reply, well before this file's own retry-loop logic was even
+    /// reached. `LoopbackTransport.waitForSentCount(_:)` (added
+    /// alongside this fix — see its own doc comment) resolves directly
+    /// from the transport the instant the threshold is met, no interval
+    /// to stretch; the `.seconds(10)` watchdog here (same order of
+    /// magnitude as `waitForCollector`'s own, below) only bounds the
+    /// FAILURE case — a genuinely passing run never waits on it.
     private func waitForSentCount(_ n: Int, on transport: LoopbackTransport, file: StaticString = #filePath, line: UInt = #line) async throws {
-        for _ in 0..<200 {
-            if transport.sentMessages.count >= n { return }
-            try await Task.sleep(for: .milliseconds(5))
+        let didComplete = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                await transport.waitForSentCount(n)
+                return true
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(10))
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
         }
-        XCTFail("timed out waiting for \(n) sent message(s); saw \(transport.sentMessages.count)", file: file, line: line)
-        throw TestTimeout()
+        guard didComplete else {
+            XCTFail("timed out waiting for \(n) sent message(s); saw \(transport.sentMessages.count)", file: file, line: line)
+            throw TestTimeout()
+        }
     }
 
     /// BLOCKING 2, PR #275 review — root cause: every `stateCollector`/
@@ -609,9 +645,19 @@ final class ClientReconnectTests: XCTestCase {
 
     func testHandshakeFailsHonestlyOnceEveryBoundedRetryIsSpent() async throws {
         let transport = LoopbackTransport()
+        // 150ms, not the ~30ms this used to be: `configPhaseTimeout` is a
+        // REAL wait (by design — `MeshtasticClient.requestConfig`'s
+        // completion race stands in for a real node's boot time, not
+        // something `handshakeRetryClock` covers), and it also gates
+        // `completeHandshake()`'s own INITIAL handshake below, not only
+        // the two deliberate timeouts this test is actually about — see
+        // `waitForSentCount`'s own doc comment for the CI flake this
+        // margin (together with that method's continuation-based fix)
+        // closes. Still bounded and still fast: both deliberate timeouts
+        // together are ~300ms of real sleep, worst case.
         let client = MeshtasticClient(
             transport: transport,
-            configPhaseTimeout: .milliseconds(30),
+            configPhaseTimeout: .milliseconds(150),
             nodeDBPhaseTimeout: .seconds(5),
             handshakeRetryLimit: 2, // one initial attempt + one retry, then give up
             handshakeRetryBaseDelay: .milliseconds(10),

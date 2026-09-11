@@ -98,15 +98,75 @@ public final class LoopbackTransport: MeshTransport, @unchecked Sendable {
 
     // Deliberately non-async: NSLock may not be held across a suspension
     // point, so the critical section is its own synchronous function.
+    // Resolves any `waitForSentCount(_:)` waiter whose threshold is now
+    // met — see that method's own doc comment for why this replaced a
+    // polling wait.
     private func record(_ data: Data) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         sent.append(data)
+        let count = sent.count
+        var readyWaiters: [CheckedContinuation<Void, Never>] = []
+        sentCountWaiters.removeAll { waiter in
+            guard waiter.threshold <= count else { return false }
+            readyWaiters.append(waiter.continuation)
+            return true
+        }
+        lock.unlock()
+        for continuation in readyWaiters { continuation.resume() }
     }
 
     /// Everything written to this transport so far, in order.
     public var sentMessages: [Data] {
         lock.lock(); defer { lock.unlock() }
         return sent
+    }
+
+    /// Root-caused 2026-09-11 against
+    /// `ClientReconnectTests.testHandshakeFailsHonestlyOnceEveryBounded
+    /// RetryIsSpent` flaking on GitHub's macOS runner ("timed out
+    /// waiting for 3 sent message(s); saw 2") even after that file's
+    /// `handshakeRetryClock` injection made the RETRY backoff
+    /// deterministic: every caller used to notice a new `sentMessages`
+    /// count by re-checking it on a fixed timer (a bare
+    /// `Task.sleep(for: .milliseconds(5))` loop) — real, if small, wall-
+    /// clock time between an actual send and the test noticing it, that
+    /// a loaded CI runner's cooperative-thread-pool contention can
+    /// stretch out well past a single poll's own nominal interval.
+    /// `MeshtasticClient.requestConfig(nonce:timeout:)`'s per-phase
+    /// completion race still waits out a REAL (if deliberately tiny, for
+    /// that one test) `configPhaseTimeout` via a bare `Task.sleep` of
+    /// its own — by design; that phase timeout stands in for a real
+    /// node's boot time — so any test-side delay noticing a send and
+    /// injecting the matching reply eats directly into that real budget.
+    /// This closes that gap: resolved directly from `record(_:)` the
+    /// instant the threshold is met, no interval to stretch.
+    private var sentCountWaiters: [(threshold: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    /// Suspends until at least `n` messages have been sent so far, or
+    /// returns immediately if that is already true — see
+    /// `sentCountWaiters`'s own doc comment for why this replaced a
+    /// polling wait.
+    public func waitForSentCount(_ n: Int) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            registerSentCountWaiter(threshold: n, continuation: continuation)
+        }
+    }
+
+    // Deliberately non-async, same reason as `record(_:)` above: NSLock
+    // may not be held across a suspension point. Checking-and-registering
+    // in one locked critical section (rather than `waitForSentCount`
+    // checking `sentMessages` first and registering separately) closes
+    // the TOCTOU race a send arriving between those two steps would
+    // otherwise open.
+    private func registerSentCountWaiter(threshold: Int, continuation: CheckedContinuation<Void, Never>) {
+        lock.lock()
+        if sent.count >= threshold {
+            lock.unlock()
+            continuation.resume()
+            return
+        }
+        sentCountWaiters.append((threshold: threshold, continuation: continuation))
+        lock.unlock()
     }
 
     /// Deliver bytes as if the radio had sent them.
