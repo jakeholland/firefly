@@ -160,6 +160,48 @@ final class LocationProviderTests: XCTestCase {
         XCTAssertFalse(should)
     }
 
+    /// NIT from the slice F review: the movement trigger's own tests
+    /// (~100m well above, ~1m well below) never exercise the 25m
+    /// boundary itself — `moved >= minimumMovementMeters` is a one-line
+    /// comparison, but the `>=` (inclusive at exactly the threshold)
+    /// deserves the same close-boundary coverage the time-floor test
+    /// already gets (3s vs 5.5s around a 5s floor). Both deltas here
+    /// are pure-north (`dLon == 0`), so `approximateDistanceMeters`
+    /// reduces to `dLat * metersPerDegreeLat` and the inverse is exact
+    /// enough to land on either side of 25.0m without relying on
+    /// `shouldPush`'s own rounding.
+    func testMovementBoundaryJustUnderVersusAtTheThreshold() {
+        let policy = PhoneGPSUplinkPolicy(minimumMovementMeters: 25)
+        let start = Date()
+        let baseLat = 47.708135
+        let baseLon = -122.2820993
+        let previous = (fix: fix(lat: baseLat, lon: baseLon), pushedAt: start)
+        let metersPerDegreeLat = 111_320.0
+
+        // 24.9m north: below the 25.0m threshold, must not trigger.
+        let justUnder = fix(lat: baseLat + 24.9 / metersPerDegreeLat, lon: baseLon)
+        let underDistance = PhoneGPSUplinkPolicy.approximateDistanceMeters(
+            (justUnder.latitude, justUnder.longitude), (baseLat, baseLon))
+        XCTAssertEqual(underDistance, 24.9, accuracy: 0.01)
+        let shouldNotPush = policy.shouldPush(
+            enabled: true, previous: previous, candidate: justUnder,
+            now: start.addingTimeInterval(1), intervalSeconds: 30)
+        XCTAssertFalse(shouldNotPush, "24.9m is below the 25m threshold and must not trigger a push")
+
+        // Effectively exactly 25.0m north (a 1e-6m nudge over, so
+        // floating-point rounding in the dLat/cos chain cannot land it
+        // a hair under 25.0 and flip the assertion for the wrong
+        // reason): at the threshold — `>=` means this DOES trigger.
+        let atThreshold = fix(lat: baseLat + (25.0 + 0.000_001) / metersPerDegreeLat, lon: baseLon)
+        let atDistance = PhoneGPSUplinkPolicy.approximateDistanceMeters(
+            (atThreshold.latitude, atThreshold.longitude), (baseLat, baseLon))
+        XCTAssertEqual(atDistance, 25.0, accuracy: 0.01)
+        let shouldPush = policy.shouldPush(
+            enabled: true, previous: previous, candidate: atThreshold,
+            now: start.addingTimeInterval(1), intervalSeconds: 30)
+        XCTAssertTrue(shouldPush, "25.0m meets the inclusive >= threshold and must trigger a push")
+    }
+
     // MARK: - PhoneGPSUplink: end to end with fakes, no radio
 
     private final class RecordingSink: PositionPushSending, @unchecked Sendable {

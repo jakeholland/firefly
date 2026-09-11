@@ -33,6 +33,25 @@ public struct SerialPortInfo: Sendable, Equatable {
     /// neither is a Meshtastic node, and offering them in a picker is
     /// how someone ends up trying to `want_config` the debug console.
     public let usbSerialNumber: String?
+
+    /// Public so callers — including tests, from a different module —
+    /// can construct synthetic values to exercise `isUSBSerialAdapter`
+    /// and `availablePorts()`'s exclusion without needing real IOKit
+    /// enumeration to produce a Bluetooth-shaped one.
+    public init(path: String, usbSerialNumber: String?) {
+        self.path = path
+        self.usbSerialNumber = usbSerialNumber
+    }
+
+    /// True for a real USB-serial adapter's port; false for a
+    /// Bluetooth-only or other non-USB `/dev/cu.*` node (no USB serial
+    /// number at all — e.g. `/dev/cu.Bluetooth-Incoming-Port` or
+    /// `/dev/cu.debug-console`). `availablePorts()` applies this
+    /// exclusion itself (see below) rather than leaving it purely to
+    /// callers.
+    public var isUSBSerialAdapter: Bool {
+        usbSerialNumber != nil
+    }
 }
 
 enum SerialPortError: Error, Equatable, Sendable {
@@ -180,11 +199,13 @@ final class SerialPort: @unchecked Sendable {
 // MARK: - Port enumeration
 
 extension SerialPort {
-    /// Every `/dev/cu.*` IOKit knows about, each tagged with its USB
-    /// serial number when it has one. A caller that wants "just the
-    /// real USB-serial adapters" (a node picker, `bench_friend.sh`'s
-    /// default-port guess) filters on `usbSerialNumber != nil` — see
-    /// the spec: "keep only those with a USB serial number."
+    /// Every `/dev/cu.*` IOKit knows about that is a real USB-serial
+    /// adapter — `/dev/cu.debug-console`, `/dev/cu.Bluetooth-Incoming-Port`,
+    /// and any other non-USB node are excluded HERE (via
+    /// `SerialPortInfo.isUSBSerialAdapter`), not left for every future
+    /// caller (a node picker, `bench_friend.sh`'s default-port guess)
+    /// to remember to filter on `usbSerialNumber != nil` themselves —
+    /// see the spec: "keep only those with a USB serial number."
     public static func availablePorts() -> [SerialPortInfo] {
         var out: [SerialPortInfo] = []
         let matching = IOServiceMatching(kIOSerialBSDServiceValue)
@@ -200,7 +221,10 @@ extension SerialPort {
                 service, kIOCalloutDeviceKey as CFString, kCFAllocatorDefault, 0
             ) else { continue }
             guard let path = calloutProp.takeRetainedValue() as? String else { continue }
-            out.append(SerialPortInfo(path: path, usbSerialNumber: usbSerialNumber(walkingUpFrom: service)))
+            let info = SerialPortInfo(path: path, usbSerialNumber: usbSerialNumber(walkingUpFrom: service))
+            if info.isUSBSerialAdapter {
+                out.append(info)
+            }
         }
         return out
     }

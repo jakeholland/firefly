@@ -33,7 +33,17 @@ final class TCPTransportTests: XCTestCase {
         private var received = Data()
         private var acceptThread: Thread?
 
-        init() throws {
+        /// - Parameter deferListen: when `true`, `bind()` happens in
+        ///   `init` (so `port` is known and reserved up front) but
+        ///   `listen()` does not — the fd sits bound-but-not-listening
+        ///   until `beginListening()` is called. A client connecting to
+        ///   a bound-but-not-listening port sees the same refusal
+        ///   behaviour as connecting to a port nothing has touched at
+        ///   all, which is what makes this a faithful stand-in for "the
+        ///   server process hasn't started listening yet" without
+        ///   racing to learn a port number only after that process
+        ///   starts.
+        init(deferListen: Bool = false) throws {
             let fd = socket(AF_INET, SOCK_STREAM, 0)
             guard fd >= 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
             var reuse: Int32 = 1
@@ -52,10 +62,6 @@ final class TCPTransportTests: XCTestCase {
                 Darwin.close(fd)
                 throw POSIXError(.init(rawValue: errno) ?? .EIO)
             }
-            guard Darwin.listen(fd, 1) == 0 else {
-                Darwin.close(fd)
-                throw POSIXError(.init(rawValue: errno) ?? .EIO)
-            }
 
             var bound = sockaddr_in()
             var len = socklen_t(MemoryLayout<sockaddr_in>.size)
@@ -67,6 +73,23 @@ final class TCPTransportTests: XCTestCase {
 
             self.listenFD = fd
             self.port = UInt16(bigEndian: bound.sin_port)
+
+            if !deferListen {
+                guard Darwin.listen(fd, 1) == 0 else {
+                    Darwin.close(fd)
+                    throw POSIXError(.init(rawValue: errno) ?? .EIO)
+                }
+            }
+        }
+
+        /// Transitions a `deferListen: true` server from
+        /// bound-but-not-listening to actually listening (and starts
+        /// accepting) — simulating a peer process that finishes
+        /// starting up some time after the client's first connection
+        /// attempt.
+        func beginListening() {
+            guard Darwin.listen(listenFD, 1) == 0 else { return }
+            acceptOneClient()
         }
 
         /// Blocks (on a background thread) until one client connects.
@@ -194,26 +217,54 @@ final class TCPTransportTests: XCTestCase {
         await transport.disconnect()
     }
 
-    func testConnectFailsFastWhenNothingIsListening() async throws {
+    func testConnectFailsWithinTheGraceWindowWhenNothingIsListening() async throws {
         // Port 1 on loopback: reserved, nothing binds it in a sandboxed
-        // test run, so the OS refuses the connection quickly rather
-        // than timing out — proving `connect()` surfaces a failure
-        // instead of hanging when there is no `meshtasticd` (or, on the
-        // serial side, no board) actually there. (This is also a
-        // regression guard: `NWConnection`'s own default policy treats
-        // ECONNREFUSED as `.waiting`, not `.failed`, and retries
-        // forever unless the transport explicitly treats a `.waiting`
-        // during the FIRST connection attempt as terminal — see
-        // `TCPTransport.connect()`'s `.waiting` case.)
+        // test run, so `NWConnection` sits in `.waiting(ECONNREFUSED)`
+        // the whole time (verified: it never transitions to `.failed`
+        // on its own) — proving `connect()` still surfaces a failure,
+        // bounded by `TCPTransport`'s ~3s grace window, instead of
+        // hanging forever when there is no `meshtasticd` (or, on the
+        // serial side, no board) actually there.
         let transport = TCPTransport(host: "127.0.0.1", port: 1)
+        let start = Date()
         do {
             try await withThrowingTimeout(seconds: 10) { try await transport.connect() }
             XCTFail("connecting to a closed port should throw")
         } catch is TimeoutError {
-            XCTFail("connect() hung instead of failing fast")
+            XCTFail("connect() hung well past its own bounded grace window")
         } catch {
-            // expected: TransportError
+            // expected: TransportError, once the grace window elapses.
         }
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertGreaterThan(elapsed, 1.0, "a genuine refusal should not fail before the grace window has had a chance to run")
+        XCTAssertLessThan(elapsed, 8.0, "connect() should fail at (or shortly after) the ~3s grace window, not hang")
+    }
+
+    func testConnectSucceedsWhenListenerStartsAfterOneSecondDelay() async throws {
+        // The server is bound (so its port is reserved and known) but
+        // deliberately NOT listening yet — a stand-in for "meshtasticd
+        // hasn't finished starting up." The very first `.waiting`
+        // TCPTransport.connect() sees here is therefore
+        // indistinguishable, in the moment, from the closed-port case
+        // above; it is only the bounded grace window that lets this
+        // one still succeed once the listener appears a moment later.
+        let server = try LoopbackServer(deferListen: true)
+        defer { server.stop() }
+        guard server.port != 0 else { throw XCTSkip("loopback listener did not bind a port") }
+
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) {
+            server.beginListening()
+        }
+
+        let transport = TCPTransport(host: "127.0.0.1", port: server.port)
+        let start = Date()
+        try await withThrowingTimeout(seconds: 8) { try await transport.connect() }
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertGreaterThanOrEqual(elapsed, 0.9, "connect() should not have succeeded before the listener existed")
+        XCTAssertLessThan(elapsed, 3.0, "connect() should succeed once the listener appears, well inside the ~3s grace window")
+
+        XCTAssertTrue(server.waitForClient(timeout: 5), "server never observed an accepted connection")
+        await transport.disconnect()
     }
 
     private struct TimeoutError: Error {}

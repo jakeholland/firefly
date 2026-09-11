@@ -159,6 +159,67 @@ final class SerialTransportTests: XCTestCase {
         await transport.disconnect()
     }
 
+    /// Garbage bytes, then a header whose declared length is nowhere
+    /// close to what actually follows it (an oversize/"truncated"
+    /// header — it promises 0xFFFF payload bytes but the very next
+    /// bytes on the wire are a completely different, valid frame, not
+    /// 65535 bytes of continued payload), then a real valid frame — all
+    /// injected across separate real `write(2)` calls on the pty's
+    /// master side so `DispatchSourceRead` actually fires more than
+    /// once at OS-chosen granularity, exactly like a live serial link
+    /// dropping mid-frame and recovering. Only the valid frame must
+    /// come out the other end: this is `StreamFramerTests`'s
+    /// `testGarbagePrefixResyncs` / `testOversizeStatedLengthIsDroppedAndStreamRecovers`
+    /// (in-memory) proven again across the real fd -> DispatchSourceRead
+    /// -> EventHub pipeline this file exists to test.
+    func testGarbageAndTruncatedHeaderThenValidFrameResyncThroughRealPTY() async throws {
+        let (master, path) = try openPTYPair()
+        defer { close(master) }
+
+        let transport = SerialTransport(path: path)
+        _ = try await drainEventsWhileConnecting(transport, expected: 2)
+
+        let payload = Data([0x08, 0x2A, 0x10, 0x01])
+        let framed = try XCTUnwrap(StreamFramer.frame(payload))
+
+        var framer = StreamFramer()
+        var decoded: [Data] = []
+        let stream = transport.events()
+        let collector = Task {
+            for await event in stream {
+                if case .received(let raw) = event {
+                    decoded.append(contentsOf: framer.feed(raw))
+                    if !decoded.isEmpty { break }
+                }
+            }
+        }
+
+        func writeChunk(_ bytes: [UInt8]) {
+            bytes.withUnsafeBufferPointer { buf in
+                _ = write(master, buf.baseAddress, buf.count)
+            }
+        }
+
+        // 1. Plain garbage — never matches the magic sequence, discarded
+        //    one byte at a time while hunting for 0x94 0xC3.
+        writeChunk([0x00, 0xFF, 0x11, 0x22])
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        // 2. A "truncated" header: magic + a declared length (0xFFFF)
+        //    that the bytes actually following it do not — and never
+        //    will — satisfy. Must resync rather than wait forever (or
+        //    misinterpret the valid frame below as its payload).
+        writeChunk([0x94, 0xC3, 0xFF, 0xFF])
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        // 3. A real, complete, correctly-framed message.
+        writeChunk(Array(framed))
+
+        _ = await withTimeout(seconds: 5) { await collector.value }
+        XCTAssertEqual(decoded, [payload], "resync must recover exactly the one valid frame, nothing from the garbage or the truncated header")
+        await transport.disconnect()
+    }
+
     func testDisconnectClosesThePortAndSendFailsAfter() async throws {
         let (master, path) = try openPTYPair()
         defer { close(master) }
