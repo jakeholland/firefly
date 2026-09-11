@@ -215,6 +215,32 @@ public final class DemoRunner {
         graph.core.crew.selectNode(nodeID)
     }
 
+    /// `-FireflyDemoScreen flare`'s own request: a real inbound FLARE
+    /// from Dana (paired, already LIVE in this world), decoded and
+    /// handled through the exact same path a real puck's FLARE would
+    /// take (`AppGraph.handle(private:)` -> `handleInboundFlare`) — so
+    /// the takeover screenshot shows a real bearing/distance, not a
+    /// scripted string.
+    public func triggerInboundFlare() {
+        guard let payload = FireflyPacket.flare(durationS: 300).encode() else { return }
+        client.injectIncomingPrivate(IncomingPrivate(
+            from: DemoCrew.dana, to: meshBroadcastAddress, channel: 0, packetID: 900_601,
+            payload: payload, rxTime: Date(), rssiDbm: -58, snrDb: 6.0, direct: true))
+    }
+
+    /// `-FireflyDemoScreen rally`'s own request: a real inbound RALLY
+    /// from Sam, broadcast to CREW — lands in the CREW thread with a
+    /// real, honestly-computed distance/bearing from the phone's own
+    /// demo fix (`AppGraph.formatRallyText(...)`).
+    public func triggerInboundRally() {
+        guard let payload = FireflyPacket.rally(
+            latitude: DemoWorld.rallyLatitude, longitude: DemoWorld.rallyLongitude, name: DemoWorld.rallyName
+        ).encode() else { return }
+        client.injectIncomingPrivate(IncomingPrivate(
+            from: DemoCrew.sam, to: meshBroadcastAddress, channel: 0, packetID: 900_602,
+            payload: payload, rxTime: Date(), rssiDbm: -70, snrDb: 2.0, direct: false))
+    }
+
     /// See `isStarted`'s own doc comment: awaited by `RootView` before
     /// it calls anything else on this type.
     public func waitUntilStarted() async {

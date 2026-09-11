@@ -602,6 +602,11 @@ public final class InboxViewModel {
     /// renders disabled everywhere (`ThreadViewModel.flareAvailable`);
     /// see `ThreadViewModel.swift`'s `FireflyPacketSending` doc comment.
     private let flareSender: (any FireflyPacketSending)?
+    /// M2: handed straight through to every `ThreadViewModel` this view
+    /// model opens, same reasoning as `flareSender` above — RALLY needs
+    /// a current fix source and this is the one composition point every
+    /// thread is built from.
+    private let currentFix: (() -> LocationFix?)?
     private var deliveryObservation: Task<Void, Never>?
     /// PR #264 review, BLOCKING item 2's cross-slice wiring: the one
     /// place a decoded `IncomingText` (`MeshtasticClientProtocol`,
@@ -615,10 +620,11 @@ public final class InboxViewModel {
     private var incomingTextObservation: Task<Void, Never>?
 
     public init(provider: any InboxProviding, client: any MeshtasticClientProtocol,
-                flareSender: (any FireflyPacketSending)? = nil) {
+                flareSender: (any FireflyPacketSending)? = nil, currentFix: (() -> LocationFix?)? = nil) {
         self.provider = provider
         self.client = client
         self.flareSender = flareSender
+        self.currentFix = currentFix
     }
 
     /// Idempotent, like every other view model's `observe()`.
@@ -701,6 +707,7 @@ public final class InboxViewModel {
     public func openThread(_ conversation: ConversationKind) -> ThreadViewModel {
         provider.markRead(conversation)
         refresh()
-        return ThreadViewModel(conversation: conversation, provider: provider, client: client, flareSender: flareSender)
+        return ThreadViewModel(conversation: conversation, provider: provider, client: client,
+                                flareSender: flareSender, currentFix: currentFix)
     }
 }

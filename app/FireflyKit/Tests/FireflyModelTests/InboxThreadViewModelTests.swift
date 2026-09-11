@@ -14,6 +14,9 @@ import XCTest
 private final class MockFlareSender: FireflyPacketSending, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var calls: [(to: NodeID?, durationSeconds: UInt16)] = []
+    /// M2: RALLY calls through this same double, recorded separately
+    /// from FLARE's own `calls` above.
+    private(set) var rallyCalls: [(to: NodeID?, latitude: Double, longitude: Double, name: String)] = []
     var shouldThrow = false
 
     func sendFlare(to: NodeID?, durationSeconds: UInt16) async throws {
@@ -21,11 +24,21 @@ private final class MockFlareSender: FireflyPacketSending, @unchecked Sendable {
         if shouldThrow { throw TransportError.writeFailed("mock flare failure") }
     }
 
+    func sendRally(to: NodeID?, latitude: Double, longitude: Double, name: String) async throws {
+        recordRally(to: to, latitude: latitude, longitude: longitude, name: name)
+        if shouldThrow { throw TransportError.writeFailed("mock rally failure") }
+    }
+
     // Non-async on purpose — same NSLock-across-a-suspension-point
     // convention as `LoopbackTransport.record(_:)`.
     private func record(to: NodeID?, durationSeconds: UInt16) {
         lock.lock(); defer { lock.unlock() }
         calls.append((to, durationSeconds))
+    }
+
+    private func recordRally(to: NodeID?, latitude: Double, longitude: Double, name: String) {
+        lock.lock(); defer { lock.unlock() }
+        rallyCalls.append((to, latitude, longitude, name))
     }
 }
 
@@ -566,5 +579,152 @@ final class InboxThreadViewModelTests: XCTestCase {
         XCTAssertEqual(thread[0].kind, .flare)
         XCTAssertEqual(thread[0].flareDurationSeconds, 300)
         XCTAssertEqual(thread[0].senderName, "Sam")
+    }
+
+    // MARK: - M2: RALLY
+
+    private func fix(latitude: Double = 43.7, longitude: Double = -121.5) -> LocationFix {
+        LocationFix(latitude: latitude, longitude: longitude, altitude: nil, time: Date(),
+                    horizontalAccuracyMeters: nil, groundSpeedMetersPerSecond: nil, groundTrackDegrees: nil)
+    }
+
+    func testRallySendCarriesOurCurrentFixAndTypedName() async {
+        let store = InMemoryInboxStore()
+        let client = StubMeshtasticClient()
+        let flareSender = MockFlareSender()
+        let vm = ThreadViewModel(conversation: .crew, provider: store, client: client, flareSender: flareSender,
+                                  currentFix: { self.fix(latitude: 47.5, longitude: -122.3) })
+        vm.observe()
+        try? await client.connect()
+        await waitUntil { vm.isLinkReady }
+
+        vm.composeText = "the tower"
+        await vm.sendRally()
+
+        XCTAssertEqual(flareSender.rallyCalls.count, 1)
+        let call = flareSender.rallyCalls[0]
+        XCTAssertNil(call.to, "CREW rally broadcasts — nil, same crew-filtered-receiver-side rule as FLARE")
+        XCTAssertEqual(call.latitude, 47.5, accuracy: 1e-9)
+        XCTAssertEqual(call.longitude, -122.3, accuracy: 1e-9)
+        // The model preserves exactly what was typed (uppercasing, if
+        // any, is a VIEW-layer choice — `ThreadView.swift`'s own bubble
+        // rendering — not something `sendRally` itself does).
+        XCTAssertEqual(call.name, "the tower")
+
+        XCTAssertEqual(vm.messages.last?.kind, .rally)
+        XCTAssertEqual(vm.messages.last?.direction, .out)
+        XCTAssertEqual(vm.composeText, "", "the typed name is consumed, like the FLARE/quick-reply compose flow")
+        vm.stopObserving()
+    }
+
+    /// No typed name at all — the honest fallback matches the puck's own
+    /// `FF_RALLY_DEFAULT_NAME`.
+    func testRallyWithNoTypedNameFallsBackToMySpot() async {
+        let store = InMemoryInboxStore()
+        let client = StubMeshtasticClient()
+        let flareSender = MockFlareSender()
+        let vm = ThreadViewModel(conversation: .crew, provider: store, client: client, flareSender: flareSender,
+                                  currentFix: { self.fix() })
+        vm.observe()
+        try? await client.connect()
+        await waitUntil { vm.isLinkReady }
+
+        await vm.sendRally()
+
+        XCTAssertEqual(flareSender.rallyCalls.first?.name, "MY SPOT")
+        vm.stopObserving()
+    }
+
+    /// A0: RALLY's wire body always carries a real lat/lon (S04) — with
+    /// no fix of our own there is nothing honest to encode, so the send
+    /// is refused, visibly, never with a fabricated coordinate.
+    func testRallyWithNoFixOfOurOwnFailsVisiblyAndSendsNothing() async {
+        let store = InMemoryInboxStore()
+        let client = StubMeshtasticClient()
+        let flareSender = MockFlareSender()
+        let vm = ThreadViewModel(conversation: .crew, provider: store, client: client, flareSender: flareSender)
+        // No `currentFix` injected — the honest "I don't know" default.
+        vm.observe()
+        try? await client.connect()
+        await waitUntil { vm.isLinkReady }
+
+        await vm.sendRally()
+
+        XCTAssertEqual(vm.immediateSendFailure, .rallyNoFix)
+        XCTAssertTrue(flareSender.rallyCalls.isEmpty, "must not even attempt the seam call with no fix")
+        XCTAssertTrue(vm.messages.isEmpty)
+        vm.stopObserving()
+    }
+
+    func testRallyIsDisabledWithoutASeam() async {
+        let store = InMemoryInboxStore()
+        let client = StubMeshtasticClient()
+        let vm = ThreadViewModel(conversation: .crew, provider: store, client: client, currentFix: { self.fix() })
+        vm.observe()
+        try? await client.connect()
+        await waitUntil { vm.isLinkReady }
+
+        XCTAssertFalse(vm.rallyAvailable)
+        await vm.sendRally()
+        XCTAssertEqual(vm.immediateSendFailure, .flareUnavailable)
+        XCTAssertTrue(vm.messages.isEmpty)
+        vm.stopObserving()
+    }
+
+    func testRallyFailsVisiblyWhenDisconnectedAndIsNotQueued() async {
+        let store = InMemoryInboxStore()
+        let client = StubMeshtasticClient()
+        let flareSender = MockFlareSender()
+        let vm = ThreadViewModel(conversation: .crew, provider: store, client: client, flareSender: flareSender,
+                                  currentFix: { self.fix() })
+        vm.observe() // never connects
+
+        await vm.sendRally(name: "spot")
+
+        XCTAssertEqual(vm.immediateSendFailure, .linkDown)
+        XCTAssertTrue(flareSender.rallyCalls.isEmpty)
+        XCTAssertTrue(vm.messages.isEmpty)
+        vm.stopObserving()
+    }
+
+    /// A RESEND of a RALLY replays the LABEL but re-reads the position
+    /// fresh from `currentFix` — never the original send's now-possibly
+    /// -stale coordinate.
+    func testResendOfARallyGoesThroughTheSeamWithAFreshFix() async {
+        let store = InMemoryInboxStore()
+        let client = StubMeshtasticClient()
+        let flareSender = MockFlareSender()
+        var currentLatitude = 10.0
+        let vm = ThreadViewModel(conversation: .crew, provider: store, client: client, flareSender: flareSender,
+                                  currentFix: { self.fix(latitude: currentLatitude) })
+        vm.observe()
+        try? await client.connect()
+        await waitUntil { vm.isLinkReady }
+
+        await vm.sendRally(name: "first spot")
+        currentLatitude = 20.0 // the fix moves between the original send and the resend
+        let original = vm.messages[0]
+        await vm.resend(original)
+
+        XCTAssertEqual(flareSender.rallyCalls.count, 2)
+        XCTAssertEqual(flareSender.rallyCalls[0].latitude, 10.0, accuracy: 1e-9)
+        XCTAssertEqual(flareSender.rallyCalls[1].latitude, 20.0, accuracy: 1e-9,
+                        "the resend must use a FRESH fix, not the original send's now-stale one")
+        XCTAssertEqual(flareSender.rallyCalls[1].name, "first spot", "the place label is what a resend replays")
+        vm.stopObserving()
+    }
+
+    /// M2's own rendering requirement: an inbound RALLY with a
+    /// distance/bearing baked into its text renders as a distinct RALLY
+    /// row, not indistinguishable from plain text.
+    func testInboundRallyRendersDistinctlyFromText() {
+        let store = InMemoryInboxStore()
+        store.push(FeedMessage(id: 1, kind: .rally, direction: .broadcast, senderID: 4, senderName: "Sam",
+                                text: "THE TOWER — 210 m NE of you", timestamp: Date()), into: .crew)
+        let thread = store.thread(for: .crew, now: Date())
+        XCTAssertEqual(thread.count, 1)
+        XCTAssertEqual(thread[0].kind, .rally)
+        XCTAssertTrue(thread[0].text.contains("THE TOWER"))
+        XCTAssertTrue(thread[0].text.contains("of you"))
     }
 }

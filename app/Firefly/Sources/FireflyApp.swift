@@ -44,6 +44,10 @@ struct FireflyApp: App {
     /// is running the demo world at all — this is only ever the
     /// SECOND thing to notice that decision, never the first.
     @State private var demoRunner: DemoRunner?
+    /// M2: tracks foreground/background so an inbound FLARE takes over
+    /// the screen only while the app is actually in front — see
+    /// `AppGraph.setForegrounded(_:)`'s own doc comment.
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         let graph = AppGraph()
@@ -72,6 +76,12 @@ struct FireflyApp: App {
         #endif
         let radarVM = graph.makeRadarViewModel(haptics: haptics)
         _radar = State(initialValue: radarVM)
+        // M2: the FLARE takeover's own haptic pulse (S10: "3 long,
+        // overrides quiet hours") — late-injected for the same reason
+        // `makeRadarViewModel(haptics:)` takes it as a parameter rather
+        // than `AppGraph` picking a platform default itself (`AppGraph`
+        // has no UIKit dependency to pick `UIKitHapticSignaling` with).
+        graph.flareTakeover.setHaptics(haptics)
 
         if let demoClient = graph.dependencies.client as? DemoMeshtasticClient,
            let demoLocation = graph.dependencies.location as? DemoLocationProvider,
@@ -99,9 +109,21 @@ struct FireflyApp: App {
                 radar: radar,
                 scanner: graph.dependencies.scanner,
                 demoRunner: demoRunner,
-                initialDemoScreen: DemoLaunch.requestedScreen()
+                initialDemoScreen: DemoLaunch.requestedScreen(),
+                flareTakeover: graph.flareTakeover
             )
             .preferredColorScheme(.dark)
+            // M2: `AppGraph.setForegrounded(_:)` is the one thing that
+            // decides "takeover, or a local notification instead"
+            // (`handleInboundFlare`'s own doc comment) — `.active` is the
+            // only phase that means "the user can actually see the
+            // screen right now"; `.inactive` (a transient state, e.g. an
+            // incoming call or the app switcher) is treated the same as
+            // `.background` rather than as foregrounded, since neither
+            // one means the screen is what the user is looking at.
+            .onChange(of: scenePhase) { _, newPhase in
+                graph.setForegrounded(newPhase == .active)
+            }
             // The graph's own subscriptions (CoreStore over the client's
             // streams, the portnum-269 reader, the phone-GPS uplink and
             // the ack-timeout tick) start with the window and live as

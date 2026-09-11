@@ -46,6 +46,15 @@ public struct DemoWorld: Sendable {
     public static let campLatitude = 43.699506
     public static let campLongitude = -121.500000
 
+    /// M2's inbound-RALLY screenshot (`-FireflyDemoScreen rally`): a
+    /// fictional meeting spot near The Beacon, close enough to the
+    /// phone's own demo fix (`phoneFix`, below) that the rendered
+    /// distance/bearing reads as a plausible short walk rather than a
+    /// cross-venue trek.
+    public static let rallyLatitude = 43.700450
+    public static let rallyLongitude = -121.499600
+    public static let rallyName = "THE TOWER"
+
     public let myNodeNum: UInt32
     /// The scripted `nodeDB` dump `DemoMeshtasticClient.connect()`
     /// plays — Taylor, Dana, Sam, and the heard-only stranger. Mo and
