@@ -90,6 +90,39 @@ public struct SystemHandshakeRetryClock: HandshakeRetryClock {
 /// and funnel into this single isolation domain rather than the
 /// `@MainActor` the C core bridge uses.
 public actor MeshtasticClient: MeshtasticClientProtocol {
+    /// Diagnostics for the client-level connect/handshake path — added
+    /// to close exactly the visibility gap that let "the live macOS app
+    /// stays NOT CONNECTED forever with no client-level log at all"
+    /// (docs/specs/A01-companion-app.md; the app: fix live connect path
+    /// investigation) go undiagnosed: `BLETransport` already logs every
+    /// CoreBluetooth delegate step unconditionally
+    /// (`BLETransport.log(_:)`'s own doc comment — "cheap enough to
+    /// leave in permanently"), but this actor — everything ABOVE the
+    /// transport seam: `connect()`'s own two awaits, the want_config
+    /// handshake, every `FromRadio` this client decodes, and every
+    /// `LinkState` this client ever published — had none at all. Same
+    /// discipline as `BLETransport.log(_:)`: a raw
+    /// `FileHandle.standardError.write`, not `print()`, so a line is
+    /// never lost to stdout's full block-buffering once
+    /// `xcodebuild test`/`open --stderr <file>` turns it into a pipe.
+    /// On by default (`FIREFLY_VERBOSE_LOG`/`-FireflyVerboseLog` gate
+    /// the FromRadio-per-message line specifically, the one line noisy
+    /// enough during a node-dump to be worth silencing in an ordinary
+    /// run) — every other line here is exactly as cheap as `connect()`
+    /// itself, at most a handful of calls per connection attempt.
+    static func verboseLoggingEnabled(arguments: [String] = CommandLine.arguments,
+                                       environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        arguments.contains("-FireflyVerboseLog") || environment["FIREFLY_VERBOSE_LOG"] == "1"
+    }
+    private static func log(_ message: String) {
+        let line = "[MeshtasticClient] \(message)\n"
+        FileHandle.standardError.write(Data(line.utf8))
+    }
+    private static func verboseLog(_ message: @autoclosure () -> String) {
+        guard verboseLoggingEnabled() else { return }
+        log(message())
+    }
+
     private let transport: MeshTransport
     // `CurrentValueEventHub` (M1 review follow-up, #267) — see
     // `CurrentValueEventHub`'s own doc comment.
@@ -297,12 +330,26 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// immutable `let` of a lock-protected class.
     public nonisolated var connectedNodeNum: UInt32? { nodeNumBox.value }
 
+    /// The ONE place `linkHub.yield(_:)` is called from here on — every
+    /// transition this client ever publishes is worth a log line, and
+    /// routing them all through one method is what makes that true by
+    /// construction rather than by remembering to add a line at every
+    /// call site (the exact gap that made the live graph's `.ready`
+    /// silently going missing indistinguishable from a hang: nothing
+    /// said which transitions, if any, actually fired).
+    private func publish(_ state: LinkState) {
+        Self.log("linkState -> \(state)")
+        linkHub.yield(state)
+    }
+
     public func connect() async throws {
+        Self.log("connect() called (isConnectAttemptInFlight=\(isConnectAttemptInFlight))")
         // Reentrancy guard — see `MeshtasticClientError.alreadyConnecting`'s
         // own doc comment. Checked and set BEFORE `resetSessionState()`
         // touches anything, so a caller that loses the race never tears
         // down the FIRST call's in-flight `receiveTask`/transport session.
         guard !isConnectAttemptInFlight else {
+            Self.log("connect() throwing .alreadyConnecting — a connect attempt is already in flight")
             throw MeshtasticClientError.alreadyConnecting
         }
         isConnectAttemptInFlight = true
@@ -319,32 +366,40 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             await self?.consumeTransportEvents(events)
         }
 
-        linkHub.yield(.connecting)
+        publish(.connecting)
         do {
             // For BLE this does not return until the FROMNUM
             // subscription is ACKed (MeshtasticBLE.swift,
             // FromRadioDrainPolicy) — only then is it safe to send
             // want_config.
+            Self.log("connect(): awaiting transport.connect()")
             try await transport.connect()
+            Self.log("connect(): transport.connect() returned successfully")
         } catch {
-            linkHub.yield(.failed(String(describing: error)))
+            Self.log("connect(): transport.connect() threw \(error)")
+            publish(.failed(String(describing: error)))
             throw error
         }
 
-        linkHub.yield(.handshaking)
+        publish(.handshaking)
         do {
+            Self.log("connect(): awaiting performHandshake()")
             try await performHandshake()
+            Self.log("connect(): performHandshake() returned successfully")
         } catch {
-            linkHub.yield(.failed(String(describing: error)))
+            Self.log("connect(): performHandshake() threw \(error)")
+            publish(.failed(String(describing: error)))
             throw error
         }
 
         hasCompletedInitialConnect = true
         startHeartbeatLoopIfNeeded()
-        linkHub.yield(.ready)
+        publish(.ready)
+        Self.log("connect() completed — link is .ready")
     }
 
     public func disconnect() async {
+        Self.log("disconnect() called")
         heartbeatTask?.cancel(); heartbeatTask = nil
         reconnectTask?.cancel(); reconnectTask = nil
         receiveTask?.cancel(); receiveTask = nil
@@ -361,7 +416,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         // real, not theoretical.
         myNodeNum = nil
         await transport.disconnect()
-        linkHub.yield(.disconnected)
+        publish(.disconnected)
     }
 
     @discardableResult
@@ -938,6 +993,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     // MARK: - Handshake
 
     private func performHandshake() async throws {
+        Self.log("performHandshake() starting")
         // Step 2: a Heartbeat with its OWN random nonce (never 1, which
         // firmware may special-case) — a keepalive value, NOT part of
         // the want_config mechanism below (conflating the two is the
@@ -960,6 +1016,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         if let version = firmwareVersion {
             isFirmwareBelowSupportedFloor = MeshtasticClient.isVersion(version, below: MeshtasticClient.minimumSupportedFirmware)
         }
+        Self.log("performHandshake() done — firmwareVersion=\(firmwareVersion ?? "nil") myNodeNum=\(myNodeNum.map(String.init) ?? "nil")")
         // Step 6 (.ready) is published by the caller once this returns.
     }
 
@@ -975,21 +1032,29 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         var toRadio = ToRadio()
         toRadio.wantConfigID = nonce
         guard let bytes = try? toRadio.serializedData() else {
+            Self.log("requestConfig(nonce: \(nonce)): encoding ToRadio failed")
             throw MeshtasticClientError.encodingFailed
         }
+        Self.log("requestConfig(nonce: \(nonce)): sending want_config, timeout=\(timeout)")
         try await writeToRadio(bytes)
 
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask {
-                for await id in completions where id == nonce { return }
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    for await id in completions where id == nonce { return }
+                }
+                group.addTask {
+                    try await Task.sleep(for: timeout)
+                    throw MeshtasticClientError.handshakeTimeout(phase: nonce)
+                }
+                try await group.next()
+                group.cancelAll()
             }
-            group.addTask {
-                try await Task.sleep(for: timeout)
-                throw MeshtasticClientError.handshakeTimeout(phase: nonce)
-            }
-            try await group.next()
-            group.cancelAll()
+        } catch {
+            Self.log("requestConfig(nonce: \(nonce)): did not complete — \(error)")
+            throw error
         }
+        Self.log("requestConfig(nonce: \(nonce)): config_complete_id matched")
     }
 
     private func sendHeartbeat() async throws {
@@ -1017,7 +1082,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
 
     private func heartbeatTick(grace: Duration) async {
         if let lastRxAt, Date().timeIntervalSince(lastRxAt) > heartbeatIntervalSeconds() + graceSeconds(grace) {
-            linkHub.yield(.failed("no traffic since \(lastRxAt) — stream transport presumed dead"))
+            publish(.failed("no traffic since \(lastRxAt) — stream transport presumed dead"))
             await disconnect()
             return
         }
@@ -1053,22 +1118,27 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// honestly rather than sitting on a silent `.handshaking` for
     /// minutes; `.failed` only once every attempt in the bound is spent.
     private func handleTransportReconnected() async {
+        Self.log("handleTransportReconnected() starting the bounded handshake-retry loop")
         nodeDB.reset()
         pendingSends.removeAll()
 
         var attempt = 0
         while true {
             attempt += 1
-            linkHub.yield(attempt == 1 ? .handshaking : .reconnecting(attempt: attempt))
+            publish(attempt == 1 ? .handshaking : .reconnecting(attempt: attempt))
             do {
                 try await performHandshake()
                 startHeartbeatLoopIfNeeded()
-                linkHub.yield(.ready)
+                publish(.ready)
                 return
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else {
+                    Self.log("handleTransportReconnected(): attempt \(attempt) cancelled")
+                    return
+                }
+                Self.log("handleTransportReconnected(): attempt \(attempt) threw \(error)")
                 guard attempt < handshakeRetryLimit else {
-                    linkHub.yield(.failed(String(describing: error)))
+                    publish(.failed(String(describing: error)))
                     return
                 }
                 let delay = Self.handshakeRetryDelay(
@@ -1151,6 +1221,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
 
     private func consumeTransportEvents(_ events: AsyncStream<TransportEvent>) async {
         for await event in events {
+            Self.log("consumeTransportEvents: received \(Self.describe(event)) (hasCompletedInitialConnect=\(hasCompletedInitialConnect))")
             switch event {
             case .connecting:
                 break // the client publishes its own .connecting from connect()
@@ -1175,11 +1246,25 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
                 }
             case .received(let data):
                 ingest(data)
-            case .disconnected:
+            case .disconnected(let reason):
+                Self.log("consumeTransportEvents: .disconnected(reason: \(reason ?? "nil")) — publishing .disconnected")
                 heartbeatTask?.cancel(); heartbeatTask = nil
                 reconnectTask?.cancel(); reconnectTask = nil
-                linkHub.yield(.disconnected)
+                publish(.disconnected)
             }
+        }
+        Self.log("consumeTransportEvents: transport event stream ended")
+    }
+
+    /// Log-only — never dumps raw payload bytes (`.received`'s own
+    /// `Data`, which a bare `String(describing:)` would otherwise print
+    /// as a byte array and flood the log during a node-dump).
+    private static func describe(_ event: TransportEvent) -> String {
+        switch event {
+        case .connecting: return ".connecting"
+        case .ready: return ".ready"
+        case .received(let data): return ".received(\(data.count) bytes)"
+        case .disconnected(let reason): return ".disconnected(reason: \(reason ?? "nil"))"
         }
     }
 
@@ -1189,6 +1274,8 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             if let fr = try? FromRadio(serializedBytes: data) {
                 lastRxAt = Date()
                 handle(fromRadio: fr)
+            } else {
+                Self.log("ingest(): \(data.count)B off a .message transport did not decode as FromRadio — dropped")
             }
             // else: malformed bytes off a message transport — dropped
             // silently rather than tearing the link down over one frame.
@@ -1197,6 +1284,8 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
                 if let fr = try? FromRadio(serializedBytes: frame) {
                     lastRxAt = Date()
                     handle(fromRadio: fr)
+                } else {
+                    Self.log("ingest(): \(frame.count)B stream frame did not decode as FromRadio — dropped")
                 }
             }
         }
@@ -1205,6 +1294,15 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     // MARK: - FromRadio dispatch
 
     private func handle(fromRadio fr: FromRadio) {
+        // `Mirror`'s enum case label, not a bespoke `switch` over every
+        // `FromRadio.OneOf_PayloadVariant` case just to name it — this
+        // is diagnostic-only text, never a decode decision, so the
+        // cheaper reflection is the honest tool for the job. Gated by
+        // `verboseLog` (never `log`): a node-dump reconnect is hundreds
+        // of `.nodeInfo` frames, one line each, and that volume is
+        // exactly what `FIREFLY_VERBOSE_LOG`/`-FireflyVerboseLog` exists
+        // to opt into rather than force on every run.
+        Self.verboseLog("handle(fromRadio:): decoded kind=\(Mirror(reflecting: fr.payloadVariant as Any).children.first?.label ?? String(describing: fr.payloadVariant))")
         switch fr.payloadVariant {
         case .rebooted:
             // BLOCKING 1 (PR #272 review): this used to be an untracked
@@ -1218,10 +1316,12 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             // `restartReconnectTask()` the `.ready` case above uses:
             // exactly one handshake attempt is ever outstanding,
             // regardless of which event triggers the retry.
+            Self.log("handle(fromRadio:): .rebooted — restarting the handshake-retry loop")
             heartbeatTask?.cancel(); heartbeatTask = nil
             restartReconnectTask()
 
         case .myInfo(let info):
+            Self.log("handle(fromRadio:): .myInfo myNodeNum=\(info.myNodeNum)")
             myNodeNum = info.myNodeNum
 
         case .nodeInfo(let info):
@@ -1243,6 +1343,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             // sentinel, or arriving with nobody waiting at all, is
             // silently dropped rather than treated as an error, per
             // mc_client.c's own `config_complete_id` branch.
+            Self.log("handle(fromRadio:): .configCompleteID(\(id))")
             configCompleteHub.yield(id)
 
         case .packet(let pkt):

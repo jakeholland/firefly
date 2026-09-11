@@ -14,6 +14,7 @@
 		3B69F83116726CF8C396257C /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 9011CC84111BB0A130A3D3C7 /* FireflyModel */; };
 		452890E34DD01B6CD4D436CA /* ThreadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B41C74CB306C16EC81337A30 /* ThreadView.swift */; };
 		47E0809C008E900451404953 /* ConnectScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */; };
+		1A2C3FA7F689E8B3EC758FA1 /* FireflyAutoConnectLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0A84CBAE95A81B699A26E02 /* FireflyAutoConnectLaunch.swift */; };
 		59A003F0821E61E9DE8E99F5 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */; };
 		63F4CB9CD8015973BF2A6A87 /* NearbyNodesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */; };
 		6640FC7A5590E35700C97181 /* DiagnosticsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */; };
@@ -65,6 +66,7 @@
 		19687863E32B4CA54C5752D8 /* DiagnosticsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsScreen.swift; sourceTree = "<group>"; };
 		2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyNodesViewModel.swift; sourceTree = "<group>"; };
 		336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectScreen.swift; sourceTree = "<group>"; };
+		A0A84CBAE95A81B699A26E02 /* FireflyAutoConnectLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyAutoConnectLaunch.swift; sourceTree = "<group>"; };
 		36054428E7138397E791F1DD /* ChannelImportViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelImportViewModel.swift; sourceTree = "<group>"; };
 		378BC076CD59300BFAE0D0AD /* RadarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadarView.swift; sourceTree = "<group>"; };
 		3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdminWriteConfirmationSheet.swift; sourceTree = "<group>"; };
@@ -149,6 +151,7 @@
 				3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */,
 				36054428E7138397E791F1DD /* ChannelImportViewModel.swift */,
 				336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */,
+				A0A84CBAE95A81B699A26E02 /* FireflyAutoConnectLaunch.swift */,
 				2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */,
 				899B46141ED5400385D53007 /* PeripheralDiscovery.swift */,
 				3FF340B133498D33D74D3976 /* QRScannerSheet.swift */,
@@ -382,6 +385,7 @@
 				7E079696E764A0A0F9E02426 /* DiagnosticsViewModel.swift in Sources */,
 				AFD1E54EF5873B6717B88291 /* FindPanel.swift in Sources */,
 				FB71020F3A2D6764FDD8FE64 /* FireflyApp.swift in Sources */,
+				1A2C3FA7F689E8B3EC758FA1 /* FireflyAutoConnectLaunch.swift in Sources */,
 				124E5B4431C5B0C9509B4C85 /* FlareTakeoverView.swift in Sources */,
 				7FA385525E20C469998B9B83 /* HapticSignaling+UIKit.swift in Sources */,
 				EBE7033561E014B40A656D0B /* InboxListView.swift in Sources */,

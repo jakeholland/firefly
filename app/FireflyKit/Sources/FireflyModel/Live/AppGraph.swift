@@ -154,7 +154,11 @@ public final class AppGraph {
     /// subscription is live", which is the only version of this that a
     /// test can assert on and a user can rely on.
     public func start() async {
-        guard !started else { return }
+        Self.log("start() called (started=\(started))")
+        guard !started else {
+            Self.log("start(): already started — no-op")
+            return
+        }
         started = true
         // `routeDeliveriesToInbox: false` — the view-model path owns the
         // feed's outbox id space here. See
@@ -163,7 +167,9 @@ public final class AppGraph {
         observePrivatePackets()
         observeMyLocation()
         observeIncomingTextsForNotifications()
+        Self.log("start(): awaiting uplink.start()")
         await uplink.start()
+        Self.log("start(): uplink.start() returned")
         tickLoop = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -180,8 +186,23 @@ public final class AppGraph {
         }
         if !hasAttemptedLaunchAutoConnect {
             hasAttemptedLaunchAutoConnect = true
+            let remembered = dependencies.store.string(.lastPeripheralID)
+            Self.log("start(): considering launch auto-connect — lastPeripheralID=\(remembered ?? "nil")")
             autoConnectToLastKnownPeripheral()
         }
+        Self.log("start() completed — every subscription is live")
+    }
+
+    /// Same discipline as `BLETransport.log(_:)`/`MeshtasticClient.log(_:)`:
+    /// a raw stderr write, unconditional, so the composition root's own
+    /// startup sequence — in particular WHEN (if ever) the launch
+    /// auto-connect fires relative to `start()` finishing — is visible
+    /// in the same log a `MeshtasticClient`/`BLETransport` capture
+    /// already carries, not a separate channel that has to be
+    /// cross-referenced by timestamp alone.
+    private static func log(_ message: String) {
+        let line = "[AppGraph] \(message)\n"
+        FileHandle.standardError.write(Data(line.utf8))
     }
 
     /// M2 — "remembering the last connected peripheral identifier and
@@ -203,9 +224,22 @@ public final class AppGraph {
     /// Connect screen's own CONNECT button won the race instead, that
     /// attempt is the one that should finish, not this one.
     private func autoConnectToLastKnownPeripheral() {
-        guard dependencies.store.string(.lastPeripheralID) != nil else { return }
+        guard dependencies.store.string(.lastPeripheralID) != nil else {
+            Self.log("autoConnectToLastKnownPeripheral(): nothing remembered — not connecting")
+            return
+        }
+        Self.log("autoConnectToLastKnownPeripheral(): firing client.connect() as its own Task")
         Task { [dependencies] in
-            try? await dependencies.client.connect()
+            do {
+                try await dependencies.client.connect()
+                Self.log("autoConnectToLastKnownPeripheral(): client.connect() returned successfully")
+            } catch {
+                // `try?` below still swallows this — logged here first so
+                // a `.alreadyConnecting` loss to the Connect screen's own
+                // manual CONNECT (or any other failure) is visible rather
+                // than silently disappearing into the `try?`.
+                Self.log("autoConnectToLastKnownPeripheral(): client.connect() threw \(error)")
+            }
         }
     }
 
@@ -369,6 +403,49 @@ public final class AppGraph {
         // persisted (`autoConnectToLastKnownPeripheral()`'s own doc
         // comment), so FORGET is harmlessly disabled there too
         // (`canForgetNode`).
-        ConnectViewModel(client: dependencies.client, store: dependencies.store)
+        let model = ConnectViewModel(client: dependencies.client, store: dependencies.store)
+        // BUGFIX (app: fix live connect path never reaching CONNECTED on
+        // macOS) — `observe()` started HERE, once, for the life of the
+        // graph, exactly like `core.observe(client:...)`'s own client
+        // subscriptions a few lines up in `start()`: this view model's
+        // ONE `AsyncStream` from `client.linkState()` (idempotent to
+        // (re-)start — `ConnectViewModel.observe()`'s own guard) is now
+        // never left to `ConnectScreen`'s own `.onAppear`/`.onDisappear`
+        // to establish or tear down.
+        //
+        // It used to be exactly that: `ConnectScreen.onAppear { connect
+        // .observe() ... }` / `.onDisappear { connect.stopObserving()
+        // ... }`, the same convention every other per-screen subscription
+        // in this app follows (`NearbyNodesViewModel.observe()`,
+        // `InboxViewModel`'s own). Link state is NOT like those — a
+        // screen's own node/inbox feed is legitimately meaningless while
+        // that screen is off-screen, but "is the radio connected" is
+        // true or false for the WHOLE app, the moment `connect()` is
+        // called from anywhere (a manual CONNECT tap, or `AppGraph`'s own
+        // launch auto-connect to the remembered peripheral, well before
+        // any screen has appeared at all).
+        //
+        // Bench-reproduced (2026-09-11, signed macOS build, launched
+        // plain via `open`, no launch arguments): `NavigationSplitView`'s
+        // detail column remounts ONCE at launch while the sidebar's own
+        // `List(selection:)` settles its initial selection —
+        // `ConnectScreen.onAppear` fires, THEN `.onDisappear` fires
+        // (cancelling the subscription `stopObserving()`'s own doc
+        // comment describes), and `.onAppear` never fires again even
+        // though the window stays open on the Connect tab for the rest
+        // of the session. `MeshtasticClient` itself connects and reaches
+        // `.ready` perfectly — `BLETransport`'s own log shows the whole
+        // sequence complete (`didConnect` through `central.connect
+        // completed`), the want_config handshake both phases — but with
+        // no subscriber left alive to hear ANY of it, `ConnectViewModel
+        // .link` never leaves `.disconnected` and the Connect screen
+        // reads "NOT CONNECTED" for the rest of the process, no matter
+        // how many times CONNECT is tapped afterward. Owning this
+        // subscription here instead — the composition root's own job per
+        // this file's header comment ("subscribed when") — makes it
+        // immune to that remount, or to any other screen-level lifecycle
+        // churn, by construction.
+        model.observe()
+        return model
     }
 }
