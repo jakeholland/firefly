@@ -319,7 +319,10 @@ public protocol MeshtasticClientProtocol: AnyObject, Sendable {
 /// an honest empty answer is exactly what those mocks already report for
 /// everything else they don't model. `StubMeshtasticClient`,
 /// `DemoMeshtasticClient` and the real `MeshtasticClient` each override
-/// both with real behaviour.
+/// both with real behaviour (PR #282 review, SHOULD-FIX: this doc
+/// comment was false for `DemoMeshtasticClient` until this fix — it
+/// still silently fell through to this same "reports nothing" default;
+/// see `DemoMeshtasticClient.scriptedNodeConfig`).
 extension MeshtasticClientProtocol {
     public func nodeConfigUpdates() -> AsyncStream<NodeConfigSnapshot> {
         AsyncStream { $0.finish() }

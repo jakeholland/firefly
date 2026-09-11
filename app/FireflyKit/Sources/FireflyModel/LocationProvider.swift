@@ -37,6 +37,18 @@ public final class LocationProvider: NSObject, LocationProviding, @unchecked Sen
     private let lock = NSLock()
     private var pendingAuthContinuations: [CheckedContinuation<Void, Never>] = []
     private var _authorization: LocationAuthorization
+    // BLOCKING fix (PR #282 review): the system-wide "Location Services"
+    // toggle, CACHED — see `authorization` and `refreshServicesEnabled()`
+    // below. Optimistic `true` until the first background check lands
+    // (a detached `Task` started at the end of `init`, done in
+    // microseconds in practice): `_authorization` (the per-app state,
+    // what actually gates `startUpdatingLocation()`) is unaffected by
+    // this default either way, so a momentarily-stale "enabled" here
+    // cannot itself fabricate a fix — at worst it delays this getter
+    // reporting `.locationServicesDisabled` by the length of that first
+    // check, the same honest "no fix yet" a genuinely-just-opened app
+    // would show regardless.
+    private var _servicesEnabled = true
 
     public override init() {
         let manager = CLLocationManager()
@@ -48,19 +60,54 @@ public final class LocationProvider: NSObject, LocationProviding, @unchecked Sen
         self._authorization = LocationProvider.map(manager.authorizationStatus)
         super.init()
         manager.delegate = self
+        refreshServicesEnabled()
     }
 
-    /// Finding 3: checks the SYSTEM-WIDE "Location Services" toggle
-    /// first, live, every read — `CLLocationManager.locationServicesEnabled()`
-    /// is the one CoreLocation call that tells the system-wide switch
-    /// apart from a per-app denial (both otherwise report `.denied` at
-    /// the per-app authorization level, which is all `_authorization`
-    /// below ever tracks). Not cached: the user can flip this in System
-    /// Settings while Firefly is running, same as authorization itself.
+    /// Finding 3 / PR #282 review, BLOCKING: reads the CACHED system-wide
+    /// "Location Services" toggle — `CLLocationManager.locationServicesEnabled()`
+    /// is the one CoreLocation call that tells that switch apart from a
+    /// per-app denial (both otherwise report `.denied` at the per-app
+    /// authorization level, which is all `_authorization` below ever
+    /// tracks), but Apple's own docs warn it performs synchronous I/O
+    /// against the location daemon and must never be called from the
+    /// main thread. Every caller of this getter
+    /// (`RadarViewModel.observe()`/`.myPositionLine`,
+    /// `SettingsViewModel.setShareGPSWithNode`) is `@MainActor`, and
+    /// `myPositionLine` is read roughly once a second for as long as
+    /// Radar stays open — a live call here would be exactly the
+    /// main-thread-blocking hot-path pattern Apple's docs warn against.
+    /// So: this getter does no I/O of its own. `refreshServicesEnabled()`
+    /// evaluates the toggle off the main thread, once at `init` and again
+    /// after every `locationManagerDidChangeAuthorization` delegate
+    /// callback (the only other moment worth re-checking it — the user
+    /// can flip System Settings while Firefly is running). This getter
+    /// itself only ever reads the cache, under the same `lock` that
+    /// already protects `_authorization`.
     public var authorization: LocationAuthorization {
-        guard CLLocationManager.locationServicesEnabled() else { return .locationServicesDisabled }
         lock.lock(); defer { lock.unlock() }
+        guard _servicesEnabled else { return .locationServicesDisabled }
         return _authorization
+    }
+
+    /// The ONLY place in this file allowed to call
+    /// `CLLocationManager.locationServicesEnabled()` — always off the
+    /// main thread (`Task.detached`, per the BLOCKING fix above), never
+    /// inline in the `authorization` getter or a delegate callback.
+    private func refreshServicesEnabled() {
+        Task.detached { [weak self] in
+            let enabled = CLLocationManager.locationServicesEnabled()
+            self?.storeServicesEnabled(enabled)
+        }
+    }
+
+    // `NSLock.lock()`/`unlock()` are `noasync` (Swift 6) — a locked
+    // mutation lexically inside an `async` function body is a hard
+    // error even with no suspension point between the two calls, the
+    // same rule this codebase's other `async`-adjacent lock helpers
+    // document (e.g. `DemoMeshtasticClient`'s record helpers) — so the
+    // mutation happens in this synchronous helper instead.
+    private func storeServicesEnabled(_ enabled: Bool) {
+        lock.lock(); _servicesEnabled = enabled; lock.unlock()
     }
 
     public func requestWhenInUseAuthorization() async {
@@ -123,6 +170,12 @@ extension LocationProvider: CLLocationManagerDelegate {
     public func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let mapped = LocationProvider.map(manager.authorizationStatus)
         lock.lock(); _authorization = mapped; lock.unlock()
+        // BLOCKING fix (PR #282 review): re-checks the system-wide
+        // toggle too — off the main thread, same as `init`'s own call —
+        // since this callback is exactly the moment CoreLocation itself
+        // says something about authorization changed, and is the only
+        // other point (besides `init`) worth re-evaluating it at.
+        refreshServicesEnabled()
         switch mapped {
         case .whenInUse, .always:
             startIfAuthorized()

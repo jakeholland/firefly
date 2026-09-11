@@ -50,6 +50,42 @@ final class DemoMeshtasticClientTests: XCTestCase {
         XCTAssertEqual(client.connectedNodeNum, 900_001)
     }
 
+    /// PR #282 review, SHOULD-FIX: without a scripted `NodeConfigSnapshot`,
+    /// `DemoMeshtasticClient` fell through to `MeshtasticClientProtocol`'s
+    /// default "reports nothing" extension — Demo mode's Settings screen
+    /// would show Region/Channel "UNKNOWN" and no "from node" label,
+    /// despite this file's own header comment promising "data that
+    /// behaves like the real thing." Both the synchronous read and the
+    /// stream should report the scripted config once `connect()` reaches
+    /// `.ready`, same timing as the scripted node dump.
+    func testConnectPublishesTheScriptedNodeConfig() async throws {
+        let client = DemoMeshtasticClient(myNodeNum: 900_001, nodes: [])
+        let configs = client.nodeConfigUpdates()
+        let collector = Task<NodeConfigSnapshot?, Never> {
+            for await c in configs { return c }
+            return nil
+        }
+
+        try await client.connect()
+        let streamed = await collector.value
+
+        XCTAssertEqual(streamed, DemoMeshtasticClient.scriptedNodeConfig)
+        XCTAssertEqual(client.connectedNodeConfig, DemoMeshtasticClient.scriptedNodeConfig)
+        XCTAssertEqual(client.connectedNodeConfig?.ownerLongName, "JAKE")
+        XCTAssertEqual(client.connectedNodeConfig?.ownerShortName, "JAKE")
+        XCTAssertEqual(client.connectedNodeConfig?.region, .us)
+        XCTAssertEqual(client.connectedNodeConfig?.modemPreset, .longFast)
+        XCTAssertEqual(client.connectedNodeConfig?.primaryChannelName, "Firefly Fields")
+    }
+
+    /// Before `connect()` ever runs, the demo client must be as honest
+    /// as the protocol's own default extension — no config invented
+    /// ahead of the scripted handshake.
+    func testNodeConfigIsNilBeforeConnecting() {
+        let client = DemoMeshtasticClient(myNodeNum: 900_001, nodes: [])
+        XCTAssertNil(client.connectedNodeConfig)
+    }
+
     func testDisconnectClearsConnectedNodeNum() async throws {
         let client = DemoMeshtasticClient(myNodeNum: 900_001, nodes: [])
         try await client.connect()

@@ -600,6 +600,53 @@ final class SettingsViewModelTests: XCTestCase {
         vm.stopObserving()
     }
 
+    // MARK: - NIT (PR #282 review): "from node" label on the pre-filled
+    // name fields, mirroring `nodeConfigSourceLabel`'s Region/Channel
+    // label just below in `channelSection`.
+
+    func testNodeNameSourceLabelsReadFromNodeOnceThePrefillLands() {
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 1
+        client.nodeConfig = NodeConfigSnapshot(ownerLongName: "Firefly One", ownerShortName: "FF1")
+        let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel(),
+                                    client: client)
+        XCTAssertEqual(vm.nodeLongNameSourceLabel, "from node")
+        XCTAssertEqual(vm.nodeShortNameSourceLabel, "from node")
+    }
+
+    /// No source claimed until the client has actually reported an
+    /// owner name — same honesty rule `nodeConfigSourceLabel`'s own test
+    /// (`testChannelNameIsUnknownUntilSomethingIsImportedOrReportedByTheClient`)
+    /// follows.
+    func testNodeNameSourceLabelsAreNilUntilTheClientReportsAnOwnerName() {
+        let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel())
+        XCTAssertNil(vm.nodeLongNameSourceLabel)
+        XCTAssertNil(vm.nodeShortNameSourceLabel)
+    }
+
+    /// The moment the user types a local draft in EITHER field, that
+    /// field's own label stops claiming "from node" — even though the
+    /// other field may still be a genuine, unedited pre-fill.
+    func testNodeNameSourceLabelClearsOnlyForTheFieldWithALocalDraft() async {
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 1
+        let store = SettingsStore(defaults: defaults)
+        let vm = SettingsViewModel(store: store, channelImport: ChannelImportViewModel(), client: client)
+
+        vm.observe()
+        client.nodeConfig = NodeConfigSnapshot(ownerLongName: "Node's Name", ownerShortName: "NODE")
+        for _ in 0..<200 where vm.nodeConfig == nil {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(vm.nodeLongNameSourceLabel, "from node")
+        XCTAssertEqual(vm.nodeShortNameSourceLabel, "from node")
+
+        vm.setNodeLongName("My Own Draft")
+        XCTAssertNil(vm.nodeLongNameSourceLabel, "a typed draft must stop claiming the value came from the node")
+        XCTAssertEqual(vm.nodeShortNameSourceLabel, "from node", "the untouched field is still an honest pre-fill")
+        vm.stopObserving()
+    }
+
     // MARK: - Finding 3 (first real-radio session, macOS): location
     // authorization requested when "Share phone GPS" turns on.
 
@@ -640,26 +687,61 @@ final class SettingsViewModelTests: XCTestCase {
             XCTAssertEqual(location.whenInUseRequestCount, 0, "must not re-prompt for \(authorization)")
         }
     }
+
+    /// PR #282 review, BLOCKING fix: same "counting mock provider"
+    /// regression guard as `RadarViewModelTests`'
+    /// `testMyPositionLineReadsAuthorizationExactlyOncePerCallThroughTheInjectedProviderOnly` —
+    /// `setShareGPSWithNode` must read authorization exactly once per
+    /// call, through the injected `LocationProviding` only, never a
+    /// second, hidden services check of its own.
+    func testSetShareGPSWithNodeReadsAuthorizationExactlyOncePerCallThroughTheInjectedProviderOnly() {
+        let location = ScriptedAuthSettingsLocationProvider(authorization: .whenInUse)
+        let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel(),
+                                    location: location)
+
+        // `value: false` short-circuits `if value, location.authorization
+        // == .notDetermined` before the right-hand side is ever
+        // evaluated — only `true` calls reach the authorization read at
+        // all, so this drives three `true` calls to isolate exactly that.
+        let before = location.authorizationReadCount
+        vm.setShareGPSWithNode(true)
+        vm.setShareGPSWithNode(true)
+        vm.setShareGPSWithNode(true)
+        XCTAssertEqual(location.authorizationReadCount - before, 3,
+                       "setShareGPSWithNode must read the injected provider's cached authorization exactly once per call, never a second hidden check")
+    }
 }
 
 /// Finding 3's own `SettingsViewModelTests` seam — same shape as
 /// `RadarViewModelTests`' private `ScriptedAuthLocationProvider`, kept
 /// separate (this file cannot see that one — different test target/file
 /// visibility) rather than sharing one across targets.
+///
+/// PR #282 review, BLOCKING fix: also counts reads of `authorization`
+/// itself — see `RadarViewModelTests`' own copy of this same addition
+/// for the full "counting mock provider" reasoning.
 private final class ScriptedAuthSettingsLocationProvider: LocationProviding, @unchecked Sendable {
     private let lock = NSLock()
     private let _authorization: LocationAuthorization
     private var _whenInUseRequestCount = 0
+    private var _authorizationReadCount = 0
 
     init(authorization: LocationAuthorization) { self._authorization = authorization }
 
-    var authorization: LocationAuthorization { _authorization }
+    var authorization: LocationAuthorization {
+        recordAuthorizationRead()
+        return _authorization
+    }
     var whenInUseRequestCount: Int { lock.lock(); defer { lock.unlock() }; return _whenInUseRequestCount }
+    var authorizationReadCount: Int { lock.lock(); defer { lock.unlock() }; return _authorizationReadCount }
 
     // Same `NSLock` noasync convention as `RadarViewModelTests`' own
     // `ScriptedAuthLocationProvider`.
     private func recordRequest() {
         lock.lock(); _whenInUseRequestCount += 1; lock.unlock()
+    }
+    private func recordAuthorizationRead() {
+        lock.lock(); _authorizationReadCount += 1; lock.unlock()
     }
     func requestWhenInUseAuthorization() async { recordRequest() }
     func requestAlwaysAuthorization() async {}

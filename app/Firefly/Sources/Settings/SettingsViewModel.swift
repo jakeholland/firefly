@@ -189,6 +189,23 @@ final class SettingsViewModel {
         nodeConfig != nil ? "from node" : nil
     }
 
+    /// NIT (PR #282 review): the NODE NAME block's own version of
+    /// `nodeConfigSourceLabel` just above — the Long/Short name fields
+    /// pre-fill from the node's own owner name (`applyNodeConfig`'s own
+    /// doc comment) exactly the same way the Region/Channel rows
+    /// pre-fill from `nodeConfig`, but had no matching label, leaving a
+    /// user who typed nothing with no way to tell a pre-filled name
+    /// came from the radio rather than a stored local draft. Each field
+    /// reads its OWN prefill condition — the exact one
+    /// `applyNodeConfig`/`init` gate the prefill itself on — since a
+    /// user may have drafted one field but not the other.
+    var nodeLongNameSourceLabel: String? {
+        store.nodeLongNamePreference == nil && nodeConfig?.ownerLongName != nil ? "from node" : nil
+    }
+    var nodeShortNameSourceLabel: String? {
+        store.nodeShortNamePreference == nil && nodeConfig?.ownerShortName != nil ? "from node" : nil
+    }
+
     func setNodeLongName(_ value: String) {
         nodeLongName = value
         store.nodeLongNamePreference = value.isEmpty ? nil : value

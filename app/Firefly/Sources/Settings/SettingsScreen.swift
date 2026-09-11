@@ -143,9 +143,23 @@ struct SettingsScreen: View {
                 TextField("", text: Binding(get: { model.nodeLongName }, set: { model.setNodeLongName($0) }))
                     .textFieldStyle(.roundedBorder)
             }
+            // NIT (PR #282 review): same "from node" label the
+            // Region/Channel rows use just below in `channelSection`,
+            // shown only while THIS field is still the node's own
+            // pre-filled owner name rather than a typed local draft.
+            if let source = model.nodeLongNameSourceLabel {
+                Text(source)
+                    .font(.caption2)
+                    .foregroundStyle(Color.ffMuted)
+            }
             LabeledField(label: "Short name") {
                 TextField("", text: Binding(get: { model.nodeShortName }, set: { model.setNodeShortName($0) }))
                     .textFieldStyle(.roundedBorder)
+            }
+            if let source = model.nodeShortNameSourceLabel {
+                Text(source)
+                    .font(.caption2)
+                    .foregroundStyle(Color.ffMuted)
             }
             // M3 — the write path has landed; "APPLY NAME TO NODE"
             // reaches it behind a confirmation sheet, disabled whenever
