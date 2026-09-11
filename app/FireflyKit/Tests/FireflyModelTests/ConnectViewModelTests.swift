@@ -45,4 +45,36 @@ final class ConnectViewModelTests: XCTestCase {
         XCTAssertEqual(vm.link, .ready)
         XCTAssertNil(vm.lastError)
     }
+
+    // MARK: - M2: reconnecting, with an attempt count and "last connected X ago"
+
+    func testReconnectingReportsItsAttemptCount() {
+        let vm = ConnectViewModel(client: StubMeshtasticClient())
+        vm.apply(.reconnecting(attempt: 3))
+        XCTAssertEqual(vm.statusLabel, "RECONNECTING (attempt 3)",
+                        "a silent HANDSHAKING during a multi-minute retry loop is not telling the truth")
+    }
+
+    func testLastConnectedLabelIsNilUntilTheFirstReadyAndNilWhileReady() {
+        let vm = ConnectViewModel(client: StubMeshtasticClient())
+        XCTAssertNil(vm.lastConnectedLabel, "never connected yet — nothing to say")
+        vm.apply(.ready)
+        XCTAssertNil(vm.lastConnectedLabel, "connected right now — 'last connected' would be a lie")
+    }
+
+    func testLastConnectedLabelReportsElapsedTimeOnceTheLinkDrops() {
+        var now = Date(timeIntervalSince1970: 1_000)
+        let vm = ConnectViewModel(client: StubMeshtasticClient(), now: { now })
+        vm.apply(.ready)
+        now = now.addingTimeInterval(95) // 1m 35s later
+        vm.apply(.reconnecting(attempt: 1))
+        XCTAssertEqual(vm.lastConnectedLabel, "last connected 1m ago")
+    }
+
+    func testRelativeAgoFormatting() {
+        let base = Date(timeIntervalSince1970: 10_000)
+        XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(5)), "5s ago")
+        XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(125)), "2m ago")
+        XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(3 * 3600 + 60)), "3h ago")
+    }
 }

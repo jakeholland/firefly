@@ -91,19 +91,48 @@ public struct AppDependencies: Sendable {
     /// `startUpdatingLocation()` is called, and no permission dialog
     /// appears merely from existing.
     public static func live() -> AppDependencies {
+        let store = SettingsStore()
+        // M2 — "remembering the last connected peripheral identifier"
+        // (docs/specs/A01-companion-app.md): loaded once here, at
+        // construction, and kept current afterward by the two closures
+        // below. `FireflyMesh` cannot depend on `FireflyModel`
+        // (`SettingsStoring` lives here; `Package.swift`'s dependency
+        // graph runs the other way), so `BLETransport` takes plain
+        // closures rather than a settings reference of its own — this is
+        // the one place that seam gets wired to the real store.
+        let lastPeripheralID = store.string(.lastPeripheralID).flatMap(UUID.init(uuidString:))
+        let bondedPeripheralIDs = Self.parsePeripheralIDs(store.string(.bondedPeripheralIDs))
         // ONE transport instance, held twice on purpose: the client
         // connects through it and the node picker scans through it.
         // Two `BLETransport`s would mean two `CBCentralManager`s, two
         // scans, and a picker whose selection the connecting transport
         // never sees.
-        let transport = BLETransport()
+        let transport = BLETransport(
+            preferredPeripheralID: lastPeripheralID,
+            bondedPeripheralIDs: bondedPeripheralIDs,
+            onPreferredPeripheralChanged: { id in store.setString(id.uuidString, .lastPeripheralID) },
+            onBonded: { id in
+                var ids = Self.parsePeripheralIDs(store.string(.bondedPeripheralIDs))
+                ids.insert(id)
+                store.setString(ids.map(\.uuidString).joined(separator: ","), .bondedPeripheralIDs)
+            })
         return AppDependencies(
             client: MeshtasticClient(transport: transport),
             location: LocationProvider(),
             heading: HeadingProvider(),
-            store: SettingsStore(),
+            store: store,
             scanner: transport,
             crewPairingStore: CrewPairingStore())
+    }
+
+    /// `SettingsKey.bondedPeripheralIDs`'s on-disk shape: a comma-joined
+    /// list of UUID strings — `SettingsStoring` has no array/set
+    /// primitive of its own, and this preference never needs to be more
+    /// than that. Malformed entries (there should never be any) are
+    /// dropped rather than failing the whole read.
+    private static func parsePeripheralIDs(_ raw: String?) -> Set<UUID> {
+        guard let raw, !raw.isEmpty else { return [] }
+        return Set(raw.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
     }
 
     /// The iOS Simulator has no Bluetooth at all — `CBCentralManager` is

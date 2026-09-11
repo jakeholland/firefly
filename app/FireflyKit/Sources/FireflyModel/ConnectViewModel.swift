@@ -19,12 +19,23 @@ public final class ConnectViewModel {
     public private(set) var link: LinkState = .disconnected
     /// Non-nil only after a real failure, and it says what failed.
     public private(set) var lastError: String?
+    /// M2 — "link-state UI showing... 'last connected X ago'". The
+    /// moment `.ready` was last observed; nil until the first one ever
+    /// arrives. Never cleared by a later non-ready state — that is
+    /// exactly what makes "X ago" meaningful while reconnecting or
+    /// disconnected.
+    public private(set) var lastConnectedAt: Date?
 
     private let client: any MeshtasticClientProtocol
     private var observation: Task<Void, Never>?
+    /// Injectable so `lastConnectedLabel`'s "X ago" arithmetic is
+    /// testable without a real wall-clock wait — same convention
+    /// `MeshtasticClient.renderedDeliveryState(...)` uses.
+    private let now: () -> Date
 
-    public init(client: any MeshtasticClientProtocol) {
+    public init(client: any MeshtasticClientProtocol, now: @escaping () -> Date = Date.init) {
         self.client = client
+        self.now = now
     }
 
     /// Stop mirroring. Not a `deinit`: this type is `@MainActor`, and
@@ -74,7 +85,11 @@ public final class ConnectViewModel {
     /// `.failed` -> `lastError` rule in one place.
     public func apply(_ state: LinkState) {
         link = state
-        if case .failed(let message) = state { lastError = message }
+        switch state {
+        case .failed(let message): lastError = message
+        case .ready: lastConnectedAt = now()
+        default: break
+        }
     }
 
     /// What the Connect screen puts under the button. Deliberately says
@@ -88,7 +103,30 @@ public final class ConnectViewModel {
         case .connecting: return "CONNECTING"
         case .handshaking: return "HANDSHAKING"
         case .ready: return "CONNECTED"
+        case .reconnecting(let attempt): return "RECONNECTING (attempt \(attempt))"
         case .failed: return "FAILED"
         }
+    }
+
+    /// M2 — "'last connected X ago'": nil while `.ready` (there is
+    /// nothing to say — it IS connected) or before any `.ready` has ever
+    /// been observed; a short relative-time string otherwise, so the
+    /// Connect screen can say something honest about a link that is
+    /// reconnecting or has dropped rather than just "NOT CONNECTED" with
+    /// no further context.
+    public var lastConnectedLabel: String? {
+        guard link != .ready, let lastConnectedAt else { return nil }
+        return "last connected \(Self.relativeAgo(from: lastConnectedAt, to: now()))"
+    }
+
+    /// Pure and testable with no real wall-clock wait. Coarse on
+    /// purpose — this is "roughly how long", not a stopwatch.
+    public static func relativeAgo(from date: Date, to now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
+        if seconds < 60 { return "\(seconds)s ago" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)m ago" }
+        let hours = minutes / 60
+        return "\(hours)h ago"
     }
 }

@@ -146,6 +146,60 @@ final class BLEHardwareTests: XCTestCase {
                         "expected WAITING -> SENT -> DELIVERED off a real routing ack from Firefly 1; saw \(seen)")
     }
 
+    /// M2 acceptance criterion: "reconnecting after the node is power
+    /// cycled". NOT automated end to end — powering a board off and back
+    /// on needs a human at the bench, and a test that silently passed
+    /// because the board happened to still be reachable would be worse
+    /// than no test (same reasoning `testDirectMessageToFirefly1ReachesDelivered`'s
+    /// own doc comment gives for its NO ACK half). This automates what
+    /// CAN be automated — connect, wait for the manual power cycle, then
+    /// assert the link comes back to `.ready` on its own with no code in
+    /// this test calling `connect()` a second time — and leaves the
+    /// power cycle itself to the manual procedure in app/README.md,
+    /// which this test's own failure message points at.
+    func testReconnectsOnItsOwnAfterFirefly2IsPowerCycled() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["FIREFLY_HARDWARE"] == "1",
+            "set FIREFLY_HARDWARE=1 with Meshtastic_e7d4 reachable over BLE to run hardware tests")
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["FIREFLY_MANUAL_POWER_CYCLE"] == "1",
+            "also needs a human at the bench to power-cycle Meshtastic_e7d4 mid-run — " +
+            "see app/README.md, \"Manual test procedure — power-cycle test\"")
+
+        let transport = BLETransport()
+        let targetID = try await discoverTarget(named: Self.targetPeripheralName, on: transport)
+        await transport.setPreferredPeripheral(targetID)
+
+        let client = MeshtasticClient(transport: transport)
+        let states = client.linkState()
+        try await client.connect()
+        addTeardownBlock { await client.disconnect() }
+        let myNodeNumBefore = await client.currentMyNodeNum
+        XCTAssertEqual(myNodeNumBefore, Self.expectedMyNodeNum)
+
+        // The human at the bench powers Firefly 2 off, waits a few
+        // seconds, then powers it back on — see app/README.md. Nothing
+        // else in this test calls `connect()`/`transport.connect()`
+        // again: BLETransport's own reconnect-on-loss (a pending
+        // `central.connect()` re-armed the instant `didDisconnectPeripheral`
+        // fires) and MeshtasticClient's bounded handshake-retry backoff
+        // are what are actually being proved here.
+        var seenReconnecting = false
+        var reachedReadyAgain = false
+        let deadline = Date().addingTimeInterval(180) // firmware boot + BLE re-pair + bounded retry
+        for await state in states {
+            if case .reconnecting = state { seenReconnecting = true }
+            if seenReconnecting, state == .ready { reachedReadyAgain = true; break }
+            if Date() > deadline { break }
+        }
+
+        XCTAssertTrue(seenReconnecting,
+                       "expected an honest .reconnecting(attempt:) while the node was mid-boot, not silence")
+        XCTAssertTrue(reachedReadyAgain, "expected the link to reach .ready again on its own within 180s of the power cycle")
+        let myNodeNumAfter = await client.currentMyNodeNum
+        XCTAssertEqual(myNodeNumAfter, Self.expectedMyNodeNum, "still the same node after reconnecting")
+    }
+
     /// Scans on the service UUID (never a name prefix — MeshtasticBLE's
     /// own rule) and waits for the one board this suite is allowed to
     /// touch, `Meshtastic_e7d4`, ignoring anything else it sees —

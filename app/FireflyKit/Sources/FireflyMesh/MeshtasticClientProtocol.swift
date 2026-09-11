@@ -15,6 +15,17 @@ public enum LinkState: Equatable, Sendable {
     case handshaking
     /// `config_complete_id` matched. Only now is the nodeDB meaningful.
     case ready
+    /// M2 — background BLE: the transport reconnected on its own (a
+    /// pocket-loss reconnect or a node power-cycle) and the client is
+    /// re-running the `want_config` handshake with bounded exponential
+    /// backoff (`MeshtasticClient.handshakeRetryDelay(forAttempt:)`).
+    /// `attempt` is 1-based — the Nth handshake attempt currently in
+    /// flight or about to sleep before retrying. Distinct from the
+    /// plain `.handshaking` case (which is the FIRST, never-yet-failed
+    /// attempt right after an explicit `connect()`): a UI that only
+    /// ever says "HANDSHAKING" during a silent multi-minute retry loop
+    /// is not telling the truth about what is actually happening.
+    case reconnecting(attempt: Int)
     case failed(String)
 }
 

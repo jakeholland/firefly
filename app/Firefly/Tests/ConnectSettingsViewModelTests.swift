@@ -359,6 +359,96 @@ final class DiagnosticsViewModelTests: XCTestCase {
             XCTAssertEqual(value, "UNKNOWN")
         }
     }
+
+    // MARK: - M2: reconnecting label + link uptime
+
+    /// `StubMeshtasticClient` only ever yields its own fixed
+    /// connect()/disconnect() sequence, which never includes
+    /// `.reconnecting` — `ScriptedLinkClient` below lets this test push
+    /// it directly.
+    func testReconnectingReportsItsAttemptCount() async {
+        let client = ScriptedLinkClient()
+        let vm = DiagnosticsViewModel(client: client)
+        vm.observe()
+
+        client.push(.reconnecting(attempt: 2))
+        for _ in 0..<200 where vm.linkStateLabel != "RECONNECTING (attempt 2)" {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(vm.linkStateLabel, "RECONNECTING (attempt 2)",
+                        "a silent HANDSHAKING during a multi-minute retry loop is not telling the truth")
+        vm.stopObserving()
+    }
+
+    /// Uptime is `UNKNOWN` — never a fabricated `0s` — until the link has
+    /// actually reached `.ready` at least once.
+    func testUptimeIsUnknownBeforeEverReachingReady() {
+        let vm = DiagnosticsViewModel(client: StubMeshtasticClient())
+        XCTAssertEqual(vm.uptimeLabel, "UNKNOWN")
+    }
+
+    /// The power-cycle manual test (app/README.md) is specifically "does
+    /// uptime reset after the node comes back" — this pins that a
+    /// SECOND `.ready` streak starts its own clock rather than
+    /// accumulating across the drop.
+    func testUptimeResetsOnEachNewReadyStreak() async throws {
+        var now = Date(timeIntervalSince1970: 0)
+        let client = StubMeshtasticClient()
+        let vm = DiagnosticsViewModel(client: client, now: { now })
+        vm.observe()
+
+        try await client.connect()
+        for _ in 0..<200 where vm.link != .ready {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        now = now.addingTimeInterval(90) // 1m 30s of uptime
+        XCTAssertEqual(vm.uptimeLabel, "1m 30s")
+
+        await client.disconnect()
+        for _ in 0..<200 where vm.link == .ready {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(vm.uptimeLabel, "UNKNOWN", "not connected right now — no uptime to report")
+
+        now = now.addingTimeInterval(10)
+        try await client.connect()
+        for _ in 0..<200 where vm.link != .ready {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(vm.uptimeLabel, "0s", "a fresh .ready streak starts its own clock, not the old one's")
+        vm.stopObserving()
+    }
+}
+
+/// A client a test drives by hand, publishing exactly the `LinkState`
+/// values pushed to it — `StubMeshtasticClient` only ever yields its own
+/// fixed connect()/disconnect() sequence, which never includes
+/// `.reconnecting`. Invents nothing on its own, same rule every other
+/// test double in this codebase follows.
+private final class ScriptedLinkClient: MeshtasticClientProtocol, @unchecked Sendable {
+    private let linkHub = EventHub<LinkState>()
+    private let nodeHub = EventHub<MeshNodeSnapshot>()
+    private let deliveryHub = EventHub<DeliveryEvent>()
+    private let textHub = EventHub<IncomingText>()
+    private let privateHub = EventHub<IncomingPrivate>()
+
+    func linkState() -> AsyncStream<LinkState> { linkHub.subscribe() }
+    func nodeUpdates() -> AsyncStream<MeshNodeSnapshot> { nodeHub.subscribe() }
+    func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
+    func incomingTexts() -> AsyncStream<IncomingText> { textHub.subscribe() }
+    func incomingPrivate() -> AsyncStream<IncomingPrivate> { privateHub.subscribe() }
+    var connectedNodeNum: UInt32?
+
+    func connect() async throws {}
+    func disconnect() async {}
+    @discardableResult
+    func sendText(_ text: String, to destination: UInt32, wantAck: Bool) async throws -> UInt32 { 0 }
+    @discardableResult
+    func sendPosition(_ fix: ExternalPositionFix, to destination: UInt32) async throws -> UInt32 { 0 }
+    @discardableResult
+    func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32 { 0 }
+
+    func push(_ state: LinkState) { linkHub.yield(state) }
 }
 
 // MARK: - Node picker (PeripheralDiscovery)

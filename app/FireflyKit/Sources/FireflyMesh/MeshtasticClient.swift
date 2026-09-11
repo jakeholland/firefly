@@ -38,6 +38,14 @@ public enum MeshtasticClientError: Error, Equatable, Sendable {
     /// (`MeshtasticConfigNonce.onlyConfig` or `.onlyNodeDB`).
     case handshakeTimeout(phase: UInt32)
     case encodingFailed
+    /// M2: `connect()` is not reentrant. `AppGraph` now auto-connects to
+    /// the remembered peripheral at launch (`AppGraph.start()`'s own doc
+    /// comment) at the same time the Connect screen's CONNECT button can
+    /// call `connect()` by hand — without this guard, two overlapping
+    /// calls would each build their own `receiveTask`, leaking one and
+    /// double-consuming `transport.events()`. Thrown by the SECOND
+    /// overlapping call; the first runs to completion normally.
+    case alreadyConnecting
 }
 
 /// The real Meshtastic client: drives `MeshTransport`, runs the
@@ -83,6 +91,17 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     private var heartbeatTask: Task<Void, Never>?
     private var hasCompletedInitialConnect = false
     private var lastRxAt: Date?
+    /// Guards `connect()` against a second, overlapping call — see
+    /// `MeshtasticClientError.alreadyConnecting`'s own doc comment.
+    private var isConnectAttemptInFlight = false
+    /// The handshake-retry-with-backoff loop a transport reconnect
+    /// starts (`handleTransportReconnected()`). Tracked so a NEW
+    /// transport `.ready` (or a `.disconnected` mid-retry) can cancel
+    /// any retry already in flight rather than letting two overlapping
+    /// loops both retry the handshake — the client-level analog of "no
+    /// duplicate CBCentralManager": at most one handshake attempt is
+    /// ever outstanding.
+    private var reconnectTask: Task<Void, Never>?
 
     /// Which want_config phase is currently outstanding, if any —
     /// diagnostic only (a future Diagnostics screen); no longer load-bearing
@@ -143,19 +162,39 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// 5s grace.
     private let heartbeatInterval: Duration
     private let heartbeatGrace: Duration
+    /// M2 — bounded exponential backoff for the want_config handshake
+    /// retry that follows a transport reconnect (docs/specs/
+    /// A01-companion-app.md M2: "reconnecting after the node is power
+    /// cycled" — firmware mid-boot may not answer want_config on the
+    /// first try even though the BLE link itself is back up). Injectable,
+    /// same convention as the two phase timeouts above, so a test can
+    /// exercise the whole bounded loop in milliseconds rather than
+    /// minutes. Defaults: up to 6 attempts, 2s/4s/8s/16s/32s between them,
+    /// capped at 60s — battery-conscious (well over the "no timers under
+    /// 30s" floor between retries) and bounded (never an infinite hot
+    /// loop against a node that is truly gone).
+    private let handshakeRetryLimit: Int
+    private let handshakeRetryBaseDelay: Duration
+    private let handshakeRetryMaxDelay: Duration
 
     public init(
         transport: MeshTransport,
         configPhaseTimeout: Duration = .seconds(30),
         nodeDBPhaseTimeout: Duration = .seconds(120),
         heartbeatInterval: Duration = .seconds(15),
-        heartbeatGrace: Duration = .seconds(5)
+        heartbeatGrace: Duration = .seconds(5),
+        handshakeRetryLimit: Int = 6,
+        handshakeRetryBaseDelay: Duration = .seconds(2),
+        handshakeRetryMaxDelay: Duration = .seconds(60)
     ) {
         self.transport = transport
         self.configPhaseTimeout = configPhaseTimeout
         self.nodeDBPhaseTimeout = nodeDBPhaseTimeout
         self.heartbeatInterval = heartbeatInterval
         self.heartbeatGrace = heartbeatGrace
+        self.handshakeRetryLimit = handshakeRetryLimit
+        self.handshakeRetryBaseDelay = handshakeRetryBaseDelay
+        self.handshakeRetryMaxDelay = handshakeRetryMaxDelay
         // Seeded, not started at 1: two client lifetimes that both start
         // packet ids at 1 collide on every id until the higher session's
         // send count is exceeded, against Meshtastic's short per-(from,
@@ -187,6 +226,16 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     public nonisolated var connectedNodeNum: UInt32? { nodeNumBox.value }
 
     public func connect() async throws {
+        // Reentrancy guard — see `MeshtasticClientError.alreadyConnecting`'s
+        // own doc comment. Checked and set BEFORE `resetSessionState()`
+        // touches anything, so a caller that loses the race never tears
+        // down the FIRST call's in-flight `receiveTask`/transport session.
+        guard !isConnectAttemptInFlight else {
+            throw MeshtasticClientError.alreadyConnecting
+        }
+        isConnectAttemptInFlight = true
+        defer { isConnectAttemptInFlight = false }
+
         resetSessionState()
 
         // Subscribe to the transport's events BEFORE calling connect():
@@ -225,6 +274,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
 
     public func disconnect() async {
         heartbeatTask?.cancel(); heartbeatTask = nil
+        reconnectTask?.cancel(); reconnectTask = nil
         receiveTask?.cancel(); receiveTask = nil
         hasCompletedInitialConnect = false
         // PR #265 review, should-fix: a disconnect must clear who we
@@ -500,22 +550,74 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
 
     // MARK: - Reboot / reconnect
 
+    /// M2 — background BLE: the transport reconnected on its own (a
+    /// pocket-loss reconnect or a node power-cycle,
+    /// `BLETransport.handleDisconnected`'s own reconnect-on-loss). A
+    /// fresh handshake means a fresh session either way — the radio
+    /// resends the full config and node dump, and stale `pendingSends`
+    /// reference packet ids the new session knows nothing about — so
+    /// `nodeDB`/`pendingSends` are reset exactly ONCE here, before the
+    /// retry loop, never per attempt (the node dump is rebuilt once per
+    /// reconnect, not once per handshake attempt within it).
+    ///
+    /// The handshake itself is retried with bounded exponential backoff
+    /// (`handshakeRetryLimit` attempts, `handshakeRetryDelay(forAttempt:)`
+    /// between them): a node mid-boot after a power cycle may not answer
+    /// `want_config` on the very first try even though the BLE link is
+    /// already back up (`configPhaseTimeout`/`nodeDBPhaseTimeout` firing
+    /// is exactly that case, not a fabricated failure). `.reconnecting
+    /// (attempt:)` is published between attempts so the UI can say so
+    /// honestly rather than sitting on a silent `.handshaking` for
+    /// minutes; `.failed` only once every attempt in the bound is spent.
     private func handleTransportReconnected() async {
-        linkHub.yield(.handshaking)
-        // A fresh handshake means a fresh session, whether it was
-        // triggered by `FromRadio.rebooted` or by the transport
-        // reconnecting on its own: the radio resends the full config and
-        // node dump either way, and stale `pendingSends` reference
-        // packet ids the new session knows nothing about.
         nodeDB.reset()
         pendingSends.removeAll()
-        do {
-            try await performHandshake()
-            startHeartbeatLoopIfNeeded()
-            linkHub.yield(.ready)
-        } catch {
-            linkHub.yield(.failed(String(describing: error)))
+
+        var attempt = 0
+        while true {
+            attempt += 1
+            linkHub.yield(attempt == 1 ? .handshaking : .reconnecting(attempt: attempt))
+            do {
+                try await performHandshake()
+                startHeartbeatLoopIfNeeded()
+                linkHub.yield(.ready)
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                guard attempt < handshakeRetryLimit else {
+                    linkHub.yield(.failed(String(describing: error)))
+                    return
+                }
+                let delay = Self.handshakeRetryDelay(
+                    forAttempt: attempt, base: handshakeRetryBaseDelay, cap: handshakeRetryMaxDelay)
+                try? await Task.sleep(for: delay)
+                if Task.isCancelled { return }
+            }
         }
+    }
+
+    /// Pure, and static so it is testable with no actor and no real
+    /// sleeps: doubles `base` after every failed attempt, capped at
+    /// `cap`. `attempt` is the 1-based attempt that JUST failed — the
+    /// delay returned is how long to wait before the NEXT one.
+    ///
+    /// Works in fractional seconds via BOTH `Duration` components
+    /// (`.seconds` and `.attoseconds`) — same conversion
+    /// `heartbeatIntervalSeconds()`/`graceSeconds(_:)` already use below
+    /// — rather than `.components.seconds` alone: a sub-second `base`
+    /// (every test in `ClientReconnectTests` uses one, to run in
+    /// milliseconds rather than minutes) would otherwise truncate to
+    /// `0`, silently discarding the whole backoff.
+    public static func handshakeRetryDelay(forAttempt attempt: Int, base: Duration, cap: Duration) -> Duration {
+        guard attempt > 0 else { return base }
+        // `pow(2, attempt - 1)` as a `Double`, not `Int`/`<<`, so a large
+        // attempt count (this loop is bounded, but the formula itself
+        // should not overflow if that bound is ever raised) saturates
+        // toward `.infinity` rather than wrapping negative.
+        let multiplier = pow(2.0, Double(attempt - 1))
+        let baseSeconds = Double(base.components.seconds) + Double(base.components.attoseconds) / 1e18
+        let capSeconds = Double(cap.components.seconds) + Double(cap.components.attoseconds) / 1e18
+        return .seconds(min(baseSeconds * multiplier, capSeconds))
     }
 
     /// `FromRadio.rebooted` is an immediate session loss, not something
@@ -566,13 +668,29 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
                 // The transport reaching .ready a SECOND time (after the
                 // initial connect()'s own await already resolved) means
                 // it reconnected on its own — redo the handshake.
+                //
+                // Spawned as its OWN task, not awaited inline: this
+                // `for await` loop is the ONLY reader of `events`, so
+                // blocking it here (a bounded backoff loop can sleep for
+                // up to a minute between attempts) would stall processing
+                // of whatever the transport sends next — including the
+                // very `.disconnected`/`.ready` pair a second, faster
+                // reconnect would produce. Cancelling any retry already
+                // in flight before starting a new one is what keeps at
+                // most one handshake attempt outstanding at a time (the
+                // client-level "no duplicate" guarantee — see
+                // `reconnectTask`'s own doc comment).
                 if hasCompletedInitialConnect {
-                    await handleTransportReconnected()
+                    reconnectTask?.cancel()
+                    reconnectTask = Task { [weak self] in
+                        await self?.handleTransportReconnected()
+                    }
                 }
             case .received(let data):
                 ingest(data)
             case .disconnected:
                 heartbeatTask?.cancel(); heartbeatTask = nil
+                reconnectTask?.cancel(); reconnectTask = nil
                 linkHub.yield(.disconnected)
             }
         }

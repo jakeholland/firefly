@@ -44,9 +44,15 @@ struct FireflyApp: App {
     /// is running the demo world at all — this is only ever the
     /// SECOND thing to notice that decision, never the first.
     @State private var demoRunner: DemoRunner?
-    /// M2: tracks foreground/background so an inbound FLARE takes over
-    /// the screen only while the app is actually in front — see
-    /// `AppGraph.setForegrounded(_:)`'s own doc comment.
+    /// M2 — read by two independent `.onChange(of: scenePhase)` handlers
+    /// below, each owning its own concern: tracks foreground/background
+    /// so an inbound FLARE takes over the screen only while the app is
+    /// actually in front (`AppGraph.setForegrounded(_:)`'s own doc
+    /// comment), and drives `AppGraph.handleScenePhaseChange(_:)` —
+    /// background disconnects (and tears the graph down) when "stay
+    /// connected in background" is off, foreground restarts it. A plain
+    /// `@Environment`, not a `@State` this file otherwise constructs —
+    /// SwiftUI owns this value.
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -145,6 +151,27 @@ struct FireflyApp: App {
             .task {
                 await graph.start()
                 await demoRunner?.start()
+            }
+            // M2 — background BLE (docs/specs/A01-companion-app.md):
+            // `.active` -> `.background` is the one transition that
+            // matters (`AppGraph.handleScenePhaseChange`'s own doc
+            // comment gates everything on the "stay connected in
+            // background" setting); `.inactive` is a brief mid-transition
+            // state on both platforms and deliberately ignored rather
+            // than treated as either edge.
+            .onChange(of: scenePhase) { _, newPhase in
+                Task {
+                    switch newPhase {
+                    case .active:
+                        await graph.handleScenePhaseChange(.foreground)
+                    case .background:
+                        await graph.handleScenePhaseChange(.background)
+                    case .inactive:
+                        break
+                    @unknown default:
+                        break
+                    }
+                }
             }
         }
         #if os(macOS)

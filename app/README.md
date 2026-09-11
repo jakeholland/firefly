@@ -317,6 +317,79 @@ that check is best-effort, not a lock: treat "one client at a time" as
 the actual rule, `bench_friend.sh`'s check as a courtesy that catches
 the common mistake.
 
+### Manual test procedure — background BLE (M2)
+
+M2's acceptance criterion — "background-connected for ≥30 min with the
+screen off and the app not foregrounded, reconnecting after the node is
+power cycled" — needs a phone, a real Heltec V3, and a human, none of
+which CI or `FireflyHardwareTests`' skip-clean run can stand in for.
+Both procedures below assume the app is already connected to a board
+(the CONNECT button, Connect screen) and use the **Diagnostics** screen
+(Settings > DIAGNOSTICS) as the only source of truth — never a guess
+about what "should" be happening.
+
+**Before either test:** Settings > CONNECTIVITY > "Stay connected in
+background" must be **ON**. With it off, backgrounding disconnects the
+app on purpose (`AppGraph.handleScenePhaseChange`) — that is a separate,
+much quicker check, below.
+
+**The 30-minute pocket test**
+
+1. Connect to the node. Open Diagnostics and confirm **Link state** =
+   `CONNECTED` and **Link uptime** is counting up from `0s`.
+2. Lock the phone (or switch to another app) and leave it in a pocket or
+   on the desk, screen off, for at least 30 minutes. Do not touch the
+   node.
+3. Unlock the phone and reopen Firefly straight to Diagnostics (Settings
+   > DIAGNOSTICS).
+4. **What to observe:** **Link state** reads `CONNECTED` and **Link
+   uptime** is at or above the elapsed wall-clock time (allow a few
+   seconds of slack for the app itself waking up) — NOT reset to a small
+   number, which would mean the link actually dropped and silently
+   reconnected while backgrounded rather than staying up the whole time.
+   If the OS killed the process outright (visible as the app performing
+   a full cold launch rather than resuming), CoreBluetooth state
+   restoration is what is being exercised instead — Link state should
+   still reach `CONNECTED` on its own within well under a minute of
+   reopening, with no CONNECT tap.
+
+**The power-cycle test**
+
+1. Connect to the node. Confirm Diagnostics shows `CONNECTED`.
+2. Background the app (do not disconnect by hand).
+3. At the node, power it off, wait ~10 seconds, power it back on.
+4. Watch Diagnostics (bring the app back to the foreground after giving
+   the node a little time to reboot and re-advertise — 15–30s is
+   typical for a Heltec V3).
+5. **What to observe:** **Link state** should show `RECONNECTING
+   (attempt N)` at some point — an honest report of the bounded
+   handshake-retry backoff, not silence — and then settle back to
+   `CONNECTED` on its own, with no CONNECT tap. **Link uptime** should
+   read a SMALL number afterward (it resets when a new `.ready` streak
+   begins) — a large or unchanged uptime here means the app is showing
+   the OLD session's clock, not proof of a real reconnect. If Link state
+   instead sits on `FAILED`, the bounded retry was exhausted (default: 6
+   attempts, 2s/4s/8s/16s/32s/60s apart) — reopen Connect and tap
+   CONNECT by hand, and note how long the node actually took to
+   re-advertise, since that is the number the retry bound is tuned
+   against.
+
+**The "off means off" check** (quick, no 30-minute wait): with "Stay
+connected in background" OFF, background the app — Diagnostics (checked
+immediately on returning to the foreground) should show `NOT CONNECTED`,
+and the Connect screen's CONNECT button should be enabled again (never
+auto-reconnected). This is `AppGraph.stop()`'s own contract: the setting
+being off means the link — and the radio's own reconnect-on-loss loop
+underneath it — actually stands down when backgrounded, not just that
+the screen stops updating.
+
+`app/FireflyHardwareTests/BLEHardwareTests.swift`'s
+`testReconnectsOnItsOwnAfterFirefly2IsPowerCycled` automates the
+power-cycle test's ASSERTIONS (gated behind `FIREFLY_HARDWARE=1` AND
+`FIREFLY_MANUAL_POWER_CYCLE=1` — the power cycle itself still needs the
+human step above) for anyone who wants the same check with less manual
+Diagnostics-watching.
+
 ## Regenerating things
 
 **The C core symlinks** — after adding a file to `firmware/core/src` or

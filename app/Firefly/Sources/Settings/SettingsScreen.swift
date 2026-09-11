@@ -104,15 +104,16 @@ struct SettingsScreen: View {
             }
             ToggleRow(
                 label: "Stay connected in background",
-                // PR #265 review, should-fix: the toggle used to imply
-                // a working feature. `AppGraph.stop()`'s own doc
-                // comment has the mechanism — nothing calls it, and
-                // nothing reconnects on return either — so this
-                // subtitle is the honest state of M1: the setting is
-                // stored (and will matter once M2 builds the actual
-                // background behavior), but toggling it does not yet
-                // change what the app does when it is backgrounded.
-                subtitle: "Background reconnect isn't built yet (M2) \u{2014} this only saves the preference for now.",
+                // M2: built. ON keeps the Bluetooth link open — and
+                // reconnecting on its own after a pocket loss or a node
+                // power cycle — with the screen off
+                // (`AppGraph.handleScenePhaseChange`, `BLETransport`'s
+                // reconnect-on-loss and CoreBluetooth state
+                // restoration). OFF disconnects the moment Firefly
+                // leaves the foreground, honestly, rather than quietly
+                // keeping a radio open the setting says is off.
+                subtitle: "On: the link stays up and reconnects on its own while your phone is in your pocket. " +
+                    "Off: Firefly disconnects the moment it leaves the foreground.",
                 isOn: Binding(get: { model.stayConnectedInBackground }, set: model.setStayConnectedInBackground))
         }
     }

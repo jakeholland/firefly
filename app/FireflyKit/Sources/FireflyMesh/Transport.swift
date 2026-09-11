@@ -106,4 +106,25 @@ public final class LoopbackTransport: MeshTransport, @unchecked Sendable {
     public func inject(_ data: Data) {
         hub.yield(.received(data))
     }
+
+    // MARK: - M2 background-reconnect test support
+
+    /// Simulate the underlying link dropping WITHOUT tearing this
+    /// transport down (`disconnect()` calls `hub.finish()`, which is an
+    /// irreversible teardown — a real BLE loss in a pocket is not: the
+    /// link comes back on its own, per `BLETransport`'s own
+    /// reconnect-on-loss). Lets a mocked-transport test drive
+    /// `MeshtasticClient`'s reconnect/handshake-retry path
+    /// (docs/specs/A01-companion-app.md, M2) the same shape a real
+    /// `BLETransport` would: `.disconnected` now, `.ready` again later
+    /// via `simulateReconnect()`.
+    public func simulateDisconnect(reason: String? = nil) {
+        hub.yield(.disconnected(reason: reason))
+    }
+
+    /// The transport-level half of "reconnects on its own" — see
+    /// `simulateDisconnect(reason:)`.
+    public func simulateReconnect() {
+        hub.yield(.ready)
+    }
 }

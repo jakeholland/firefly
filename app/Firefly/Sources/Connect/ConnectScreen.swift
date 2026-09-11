@@ -125,6 +125,12 @@ struct ConnectScreen: View {
                     .foregroundStyle(statusColor)
             }
 
+            if let lastConnected = connect.lastConnectedLabel {
+                Text(lastConnected)
+                    .font(.footnote)
+                    .foregroundStyle(Color.ffMuted)
+            }
+
             if let error = connect.lastError {
                 Text(error)
                     .font(.footnote)
@@ -136,7 +142,7 @@ struct ConnectScreen: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.ffAmber)
                     .foregroundStyle(Color.ffBackground)
-                    .disabled(connect.link == .ready || connect.link == .connecting || connect.link == .handshaking)
+                    .disabled(isBusyOrConnected)
 
                 Button("DISCONNECT") { Task { await connect.disconnect() } }
                     .buttonStyle(.bordered)
@@ -150,9 +156,20 @@ struct ConnectScreen: View {
     private var statusColor: Color {
         switch connect.link {
         case .ready: return .ffLiveGreen
-        case .handshaking, .connecting: return .ffAmber
+        case .handshaking, .connecting, .reconnecting: return .ffAmber
         case .failed: return .ffAlert
         case .disconnected: return .ffMuted
+        }
+    }
+
+    /// M2: `.reconnecting` joins the already-busy states — a manual
+    /// CONNECT tap while the client is mid-backoff-retry would race
+    /// `MeshtasticClient`'s own reentrancy guard
+    /// (`MeshtasticClientError.alreadyConnecting`) for nothing.
+    private var isBusyOrConnected: Bool {
+        switch connect.link {
+        case .ready, .connecting, .handshaking, .reconnecting: return true
+        case .disconnected, .failed: return false
         }
     }
 

@@ -44,6 +44,17 @@ public final class AppGraph {
     private var privateObservation: Task<Void, Never>?
     private var tickLoop: Task<Void, Never>?
     private var started = false
+    /// M2: true once `autoConnectToLastKnownPeripheral()` has been
+    /// considered, ever — set on the FIRST `start()` only, deliberately
+    /// never reset by `stop()`. Without this, `handleScenePhaseChange
+    /// (.foreground)`'s own `start()` call would auto-connect on EVERY
+    /// foreground resume, including one that just followed a
+    /// `backgroundConnectEnabled == false` disconnect — silently undoing
+    /// "off means off, the user taps CONNECT" the moment they glance at
+    /// another app and back. This flag confines the auto-connect to true
+    /// process launch, matching the M2 task's own wording ("auto-
+    /// connecting to it at launch").
+    private var hasAttemptedLaunchAutoConnect = false
     /// Handed a decoded PONG so FIND's replies list and haptics update.
     /// Set when `makeRadarViewModel` builds one; nil before that, which
     /// is why a PONG arriving with no Radar on screen is dropped rather
@@ -167,24 +178,74 @@ public final class AppGraph {
                 self.flareTakeover.tick()
             }
         }
+        if !hasAttemptedLaunchAutoConnect {
+            hasAttemptedLaunchAutoConnect = true
+            autoConnectToLastKnownPeripheral()
+        }
     }
 
-    /// PR #265 review, should-fix: nothing in M1 calls this. There is
-    /// no `ScenePhase` handling in `FireflyApp.swift`, and the Connect
-    /// screen's DISCONNECT button (`ConnectScreen.swift`) calls only
-    /// `ConnectViewModel.disconnect()` -> `client.disconnect()` — never
-    /// this method. That means the tick loop, the ack-timeout sweep and
-    /// the portnum-269 reader all keep running for as long as the
-    /// process is alive, even after the radio itself has disconnected
-    /// or the app has gone to the background. Deliberate for M1 (the
-    /// Settings "stay connected in background" toggle
-    /// (`SettingsScreen.swift`) says plainly that background reconnect
-    /// isn't built yet either — the two gaps are the same milestone),
-    /// not an oversight: tearing the graph down on backgrounding is a
-    /// product decision (does a backgrounded app keep tracking crew
-    /// positions or not?) that M1 has not made, so this stays reachable
-    /// and unused rather than wired to a lifecycle event nobody has
-    /// decided the behavior for yet. Tracked for M2.
+    /// M2 — "remembering the last connected peripheral identifier and
+    /// auto-connecting to it at launch" (docs/specs/A01-companion-app.md;
+    /// behaviour borrowed from Meshtastic-Apple's own launch-time
+    /// auto-connect to the preferred device, re-implemented against this
+    /// app's own client seam). Only ever fires anything under the LIVE
+    /// stack: `.stub()`/`.demo()` each construct a fresh
+    /// `InMemorySettingsStore()` with nothing persisted in it, so
+    /// `lastPeripheralID` reads nil there by construction — no auto-
+    /// connect noise in a test or the iOS Simulator.
+    ///
+    /// Fired off as its own `Task`, never awaited inline: a radio that
+    /// is not in range yet must not hold up the rest of this method's
+    /// own startup (the tick loop, the private-packet reader) — and
+    /// `MeshtasticClientProtocol.connect()`'s own retry/timeout already
+    /// handles a dead or out-of-range node on its own. `try?` swallows
+    /// `MeshtasticClientError.alreadyConnecting` on purpose: if the
+    /// Connect screen's own CONNECT button won the race instead, that
+    /// attempt is the one that should finish, not this one.
+    private func autoConnectToLastKnownPeripheral() {
+        guard dependencies.store.string(.lastPeripheralID) != nil else { return }
+        Task { [dependencies] in
+            try? await dependencies.client.connect()
+        }
+    }
+
+    /// M2 — the "stay connected in background" setting actually gating
+    /// something (`SettingsScreen.swift`'s toggle; PR #265 review,
+    /// should-fix, tracked for M2 on `stop()`'s own doc comment below).
+    /// `FireflyApp.swift` calls this from its `ScenePhase` observer.
+    public enum LifecyclePhase: Sendable { case foreground, background }
+
+    public func handleScenePhaseChange(_ phase: LifecyclePhase) async {
+        switch phase {
+        case .background:
+            // ON: do nothing — BLETransport's own reconnect-on-loss plus
+            // CoreBluetooth's `bluetooth-central` background mode keep
+            // the link (and this graph) alive with the screen off.
+            // OFF: tear the graph down AND disconnect, right now — "off
+            // = disconnect when backgrounded" (the M2 task's own words).
+            guard !dependencies.store.backgroundConnectEnabled else { return }
+            await stop()
+        case .foreground:
+            // Idempotent (`start()`'s own guard): a no-op if the graph
+            // never stopped (the setting was on), and a genuine restart
+            // if it did. Deliberately does NOT reconnect the client by
+            // itself when the setting was off — that would silently
+            // undo "off means off"; the user taps CONNECT again, same
+            // as M1.
+            await start()
+        }
+    }
+
+    /// PR #265 review, should-fix: M1 shipped this reachable and unused
+    /// — no `ScenePhase` handling in `FireflyApp.swift`, and the Connect
+    /// screen's DISCONNECT button (`ConnectScreen.swift`) called only
+    /// `ConnectViewModel.disconnect()` -> `client.disconnect()`, never
+    /// this method — because tearing the graph down on backgrounding was
+    /// a product decision M1 had not made yet (does a backgrounded app
+    /// keep tracking crew positions or not?). M2 makes it: this is now
+    /// the exact thing `handleScenePhaseChange(.background)` calls when
+    /// `backgroundConnectEnabled` is off — "off = disconnect when
+    /// backgrounded", the M2 task's own words.
     public func stop() async {
         started = false
         core.stopObserving()
@@ -193,6 +254,12 @@ public final class AppGraph {
         stopObservingIncomingTextsForNotifications()
         tickLoop?.cancel(); tickLoop = nil
         await uplink.stop()
+        // The graph's own subscriptions stopping is not enough on its
+        // own — the client (and BLETransport's own reconnect-on-loss
+        // loop underneath it) would otherwise keep the radio link open
+        // and reconnecting forever, exactly the thing turning this
+        // setting off is supposed to prevent.
+        await dependencies.client.disconnect()
     }
 
     /// Decode inbound portnum-269 frames and route each one to whatever

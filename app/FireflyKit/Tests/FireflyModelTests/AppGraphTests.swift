@@ -31,6 +31,20 @@ private final class CountingClient: MeshtasticClientProtocol, @unchecked Sendabl
     private var privates: [(Data, UInt32, Bool)] = []
     private var texts: [(String, UInt32, Bool)] = []
     private var _connectedNodeNum: UInt32?
+    // M2: `AppGraph.handleScenePhaseChange`/`autoConnectToLastKnownPeripheral`
+    // now call `connect()`/`disconnect()` on their own — these count
+    // exactly those calls so a test can assert "off backgrounds
+    // disconnect", "on backgrounds do not", and "launch auto-connects
+    // exactly once" mechanically rather than by code reading.
+    private var _connectCallCount = 0
+    private var _disconnectCallCount = 0
+
+    var connectCallCount: Int {
+        lock.lock(); defer { lock.unlock() }; return _connectCallCount
+    }
+    var disconnectCallCount: Int {
+        lock.lock(); defer { lock.unlock() }; return _disconnectCallCount
+    }
 
     func subscriptionCount(_ stream: String) -> Int {
         lock.lock(); defer { lock.unlock() }
@@ -71,8 +85,14 @@ private final class CountingClient: MeshtasticClientProtocol, @unchecked Sendabl
     func yieldNode(_ snapshot: MeshNodeSnapshot) { nodeHub.yield(snapshot) }
     func yieldPrivate(_ packet: IncomingPrivate) { privateHub.yield(packet) }
 
-    func connect() async throws { linkHub.yield(.ready) }
-    func disconnect() async { linkHub.yield(.disconnected) }
+    func connect() async throws {
+        lock.lock(); _connectCallCount += 1; lock.unlock()
+        linkHub.yield(.ready)
+    }
+    func disconnect() async {
+        lock.lock(); _disconnectCallCount += 1; lock.unlock()
+        linkHub.yield(.disconnected)
+    }
 
     @discardableResult
     func sendText(_ text: String, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
@@ -427,6 +447,7 @@ final class AppGraphTests: XCTestCase {
         XCTAssertNil(AppDependencies.stub().scanner,
                       "no radio in the Simulator — an empty picker is the honest answer")
     }
+
 
     // MARK: - M2: PONG auto-reply (S29 PR 2)
 
@@ -882,6 +903,129 @@ final class AppGraphTests: XCTestCase {
         let crew = graph.inboxProvider.thread(for: .crew, now: Date())
         XCTAssertFalse(crew.contains { $0.senderID == 0x0000_9007 }, "no feed item for an unpaired STATUS sender")
         XCTAssertEqual(crew.count, 1, "only the paired sentinel STATUS should have landed")
+
+        await graph.stop()
+    }
+
+    // MARK: - M2: background lifecycle (docs/specs/A01-companion-app.md,
+    // "the 'stay connected in background' setting actually gating this")
+
+    func testBackgroundWithSettingOffStopsAndDisconnects() async {
+        let client = CountingClient()
+        let store = InMemorySettingsStore()
+        store.backgroundConnectEnabled = false
+        let graph = AppGraph(dependencies: dependencies(client: client, store: store))
+        await graph.start()
+
+        await graph.handleScenePhaseChange(.background)
+
+        XCTAssertEqual(client.disconnectCallCount, 1,
+                        "off = disconnect when backgrounded, per the M2 task's own words")
+        // The graph's own subscriptions stood down too — re-subscribing
+        // would show up as a second `link` subscription once restarted.
+        XCTAssertEqual(client.subscriptionCount("link"), 1)
+    }
+
+    func testBackgroundWithSettingOnDoesNothing() async {
+        let client = CountingClient()
+        let store = InMemorySettingsStore()
+        store.backgroundConnectEnabled = true
+        let graph = AppGraph(dependencies: dependencies(client: client, store: store))
+        await graph.start()
+
+        await graph.handleScenePhaseChange(.background)
+
+        XCTAssertEqual(client.disconnectCallCount, 0,
+                        "on = the link (and BLETransport's own reconnect-on-loss loop underneath it) stays up")
+
+        await graph.stop()
+    }
+
+    func testForegroundAfterAnOffBackgroundRestartsTheGraphButDoesNotAutoReconnect() async {
+        let client = CountingClient()
+        let store = InMemorySettingsStore()
+        store.backgroundConnectEnabled = false
+        let graph = AppGraph(dependencies: dependencies(client: client, store: store))
+        await graph.start()
+        let connectCallsAtLaunch = client.connectCallCount
+
+        await graph.handleScenePhaseChange(.background)
+        XCTAssertEqual(client.disconnectCallCount, 1)
+
+        await graph.handleScenePhaseChange(.foreground)
+
+        // The graph's own subscriptions are back (a second `link`
+        // subscription: one from launch, one from this restart)...
+        XCTAssertEqual(client.subscriptionCount("link"), 2)
+        // ...but nothing auto-reconnected the CLIENT on its own — "off
+        // means off, the user taps CONNECT again", same as M1.
+        XCTAssertEqual(client.connectCallCount, connectCallsAtLaunch,
+                        "coming back to the foreground after an off-background disconnect must not silently reconnect")
+
+        await graph.stop()
+    }
+
+    func testForegroundIsANoOpWhenTheGraphNeverStopped() async {
+        let client = CountingClient()
+        let store = InMemorySettingsStore()
+        store.backgroundConnectEnabled = true
+        let graph = AppGraph(dependencies: dependencies(client: client, store: store))
+        await graph.start()
+
+        await graph.handleScenePhaseChange(.foreground) // never backgrounded — start()'s own idempotency
+
+        XCTAssertEqual(client.subscriptionCount("link"), 1, "start() is idempotent; foreground must not resubscribe")
+
+        await graph.stop()
+    }
+
+    // MARK: - M2: auto-connect at launch to the remembered peripheral
+
+    func testStartAutoConnectsWhenALastPeripheralIsRemembered() async {
+        let client = CountingClient()
+        let store = InMemorySettingsStore()
+        store.setString(UUID().uuidString, .lastPeripheralID)
+        let graph = AppGraph(dependencies: dependencies(client: client, store: store))
+
+        await graph.start()
+        await waitUntil { client.connectCallCount == 1 }
+
+        XCTAssertEqual(client.connectCallCount, 1)
+
+        await graph.stop()
+    }
+
+    func testStartDoesNotAutoConnectWithoutARememberedPeripheral() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client)) // fresh InMemorySettingsStore, nothing persisted
+
+        await graph.start()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(client.connectCallCount, 0,
+                        "no remembered peripheral (the stub/demo stacks always start empty here) means no auto-connect noise")
+
+        await graph.stop()
+    }
+
+    func testAutoConnectAtLaunchFiresOnlyOnceEvenAcrossABackgroundRestart() async {
+        let client = CountingClient()
+        let store = InMemorySettingsStore()
+        store.setString(UUID().uuidString, .lastPeripheralID)
+        store.backgroundConnectEnabled = true
+        let graph = AppGraph(dependencies: dependencies(client: client, store: store))
+
+        await graph.start()
+        await waitUntil { client.connectCallCount == 1 }
+
+        // A background/foreground cycle later (setting stays ON here, so
+        // `stop()` is never actually called) must not fire a SECOND
+        // launch auto-connect.
+        await graph.handleScenePhaseChange(.background)
+        await graph.handleScenePhaseChange(.foreground)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(client.connectCallCount, 1, "the launch auto-connect is a one-shot, not per-foreground")
 
         await graph.stop()
     }
