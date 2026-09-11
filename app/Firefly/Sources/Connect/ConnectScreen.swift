@@ -35,6 +35,11 @@ struct ConnectScreen: View {
     @State private var selectedPeripheralID: String?
     @State private var channelURLText = ""
     @State private var isShowingScanner = false
+    /// M3 — "Apply to node" confirmation sheet for the imported channel
+    /// (docs/specs/A01-companion-app.md M3). Separate from
+    /// `isShowingScanner`'s `.sheet` — SwiftUI supports more than one
+    /// `.sheet(isPresented:)` on the same view, each on its own Bool.
+    @State private var isShowingApplyConfirmation = false
     /// `SettingsViewModel.colorblindPalette`, read fresh from `RootView`
     /// on every redraw (M2) — the SAME flag Radar's ring and the Inbox
     /// read, so a paired member's swatch here never disagrees with
@@ -97,6 +102,27 @@ struct ConnectScreen: View {
             }
         }
         #endif
+        // M3 — "Apply to node" behind an explicit confirmation sheet
+        // (docs/specs/A01-companion-app.md M3). A SEPARATE `.sheet`
+        // modifier from the scanner's above, on its own `@State` Bool —
+        // SwiftUI allows more than one on the same view.
+        .sheet(isPresented: $isShowingApplyConfirmation) {
+            if let summary = channelImport.applySummary {
+                AdminWriteConfirmationSheet(
+                    title: "APPLY CHANNEL",
+                    changes: summary.regionLine.map { summary.channelLines + [$0] } ?? summary.channelLines,
+                    isBusy: channelImport.isApplying,
+                    errorMessage: channelImport.applyErrorMessage,
+                    onConfirm: {
+                        Task {
+                            if await channelImport.confirmApply() {
+                                isShowingApplyConfirmation = false
+                            }
+                        }
+                    },
+                    onCancel: { isShowingApplyConfirmation = false })
+            }
+        }
     }
 
     // MARK: - Header
@@ -327,6 +353,16 @@ struct ConnectScreen: View {
                          "territory, out of scope until M3.")
                         .font(.caption2)
                         .foregroundStyle(Color.ffMuted)
+                    // M3 — the write path has landed; "APPLY TO NODE"
+                    // reaches it behind the confirmation sheet above,
+                    // and is disabled whenever there is no node to
+                    // write to.
+                    Button("APPLY TO NODE") { isShowingApplyConfirmation = true }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.ffAmber)
+                        .foregroundStyle(Color.ffBackground)
+                        .disabled(connect.link != .ready)
+                        .frame(minHeight: 44)
                 }
             }
         }

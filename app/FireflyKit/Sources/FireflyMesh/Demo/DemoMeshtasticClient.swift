@@ -21,6 +21,7 @@
 //  what Firefly Fields is.
 //
 import Foundation
+import MeshtasticProto
 
 /// One scripted response to a `sendText`/`sendPrivate` that set
 /// `wantAck`. `.delivered`/`.noAck` fire a `DeliveryEvent` a short,
@@ -177,6 +178,60 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     }
     public var sentPrivateLog: [(Data, UInt32, Bool)] {
         lock.lock(); defer { lock.unlock() }; return sentPrivate
+    }
+
+    // MARK: - M3: channel/config write-back — "applies" honestly to the
+    // demo world itself, per this file's own header rule (only THIS
+    // type is allowed to be fictional): there is no firmware behind it
+    // to diverge from what was asked, so the in-memory record IS the
+    // read-back, exactly like `StubMeshtasticClient`'s own version of
+    // these three methods.
+
+    private var sentChannelWrites: [ChannelWriteRequest] = []
+    private var sentOwnerWrites: [(String, String)] = []
+    private var sentRegionWrites: [Config.LoRaConfig.RegionCode] = []
+
+    @discardableResult
+    public func applyChannelSet(_ request: ChannelWriteRequest) async throws -> ChannelWriteReport {
+        guard connectedNodeNum != nil else { throw AdminWriteError.notConnected }
+        recordChannelWrite(request)
+        return ChannelWriteReport(channels: request.channels, loraConfig: request.loraConfig)
+    }
+
+    @discardableResult
+    public func setOwner(longName: String, shortName: String) async throws -> OwnerWriteReport {
+        guard connectedNodeNum != nil else { throw AdminWriteError.notConnected }
+        recordOwnerWrite(longName, shortName)
+        return OwnerWriteReport(longName: longName, shortName: shortName)
+    }
+
+    @discardableResult
+    public func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
+        guard connectedNodeNum != nil else { throw AdminWriteError.notConnected }
+        recordRegionWrite(region)
+        return RegionWriteReport(region: region)
+    }
+
+    // Non-async on purpose — same NSLock-across-a-suspension-point
+    // convention as `nextOutbox`/`nextPacket` below.
+    private func recordChannelWrite(_ request: ChannelWriteRequest) {
+        lock.lock(); sentChannelWrites.append(request); lock.unlock()
+    }
+    private func recordOwnerWrite(_ longName: String, _ shortName: String) {
+        lock.lock(); sentOwnerWrites.append((longName, shortName)); lock.unlock()
+    }
+    private func recordRegionWrite(_ region: Config.LoRaConfig.RegionCode) {
+        lock.lock(); sentRegionWrites.append(region); lock.unlock()
+    }
+
+    public var sentChannelWriteLog: [ChannelWriteRequest] {
+        lock.lock(); defer { lock.unlock() }; return sentChannelWrites
+    }
+    public var sentOwnerWriteLog: [(String, String)] {
+        lock.lock(); defer { lock.unlock() }; return sentOwnerWrites
+    }
+    public var sentRegionWriteLog: [Config.LoRaConfig.RegionCode] {
+        lock.lock(); defer { lock.unlock() }; return sentRegionWrites
     }
 
     // MARK: - Private

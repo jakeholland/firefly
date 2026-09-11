@@ -60,7 +60,13 @@ struct FireflyApp: App {
         _graph = State(initialValue: graph)
         let connectVM = graph.makeConnectViewModel()
         _connect = State(initialValue: connectVM)
-        let importVM = ChannelImportViewModel()
+        // M3 — `client:` passed through explicitly (its default,
+        // `StubMeshtasticClient()`, only exists so pre-M3 call sites in
+        // tests keep compiling): without this, "Apply to node" would
+        // silently write to a disconnected stand-in instead of
+        // `graph.dependencies.client`, the one real client the rest of
+        // this graph observes.
+        let importVM = ChannelImportViewModel(client: graph.dependencies.client)
         _channelImport = State(initialValue: importVM)
         // Slice C's INTEGRATION TASK, now done: this used to construct
         // its own `SettingsStore()` because `AppDependencies.store` was
@@ -71,7 +77,8 @@ struct FireflyApp: App {
         // phone-GPS uplink above all — share ONE instance, instead of
         // agreeing only by `UserDefaults.standard` coincidence.
         _settings = State(initialValue: SettingsViewModel(store: graph.dependencies.store,
-                                                           channelImport: importVM))
+                                                           channelImport: importVM,
+                                                           client: graph.dependencies.client))
         let inboxVM = graph.makeInboxViewModel()
         _inbox = State(initialValue: inboxVM)
         #if os(iOS)

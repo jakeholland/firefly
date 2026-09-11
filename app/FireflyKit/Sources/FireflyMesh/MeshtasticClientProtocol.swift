@@ -7,6 +7,7 @@
 //  all) run the app at all.
 //
 import Foundation
+import MeshtasticProto
 
 public enum LinkState: Equatable, Sendable {
     case disconnected
@@ -185,6 +186,96 @@ public protocol MeshtasticClientProtocol: AnyObject, Sendable {
     /// opaque here; `FireflyModel`'s `FireflyPacket.encode()` made them.
     @discardableResult
     func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32
+
+    /// M3 — "Channel write-back (admin messages) behind an explicit
+    /// confirmation" (docs/specs/A01-companion-app.md, M3). Writes every
+    /// channel in `request` (in order), plus the LoRa config it carries
+    /// when it carries one, to OUR OWN connected node — never a remote
+    /// one, and never a PSK the app minted itself (the owner's decision:
+    /// QR/URL import only). Wrapped in `begin_edit_settings`/
+    /// `commit_edit_settings` so the firmware saves and reboots once, not
+    /// once per channel (Meshtastic-Apple's own
+    /// `AccessoryManager+ToRadio.swift`, `beginEditSettings`'s doc
+    /// comment, cross-checked against `AdminModule.cpp`). Read back after
+    /// the commit and compared against what was sent — honest success is
+    /// "the node now reports what was written"; a mismatch, or a node
+    /// that never comes back from the reboot a commit triggers, throws
+    /// `AdminWriteError` rather than assuming success.
+    @discardableResult
+    func applyChannelSet(_ request: ChannelWriteRequest) async throws -> ChannelWriteReport
+
+    /// M3 — `set_owner`, wrapped and read back the same way as
+    /// `applyChannelSet`.
+    @discardableResult
+    func setOwner(longName: String, shortName: String) async throws -> OwnerWriteReport
+
+    /// M3 — reads the node's OWN current LoRa config first (so nothing
+    /// besides `region` changes — `set_config.lora` replaces the whole
+    /// submessage on the wire, not just the field named), writes it back
+    /// with only `region` changed, and reads it back the same way as
+    /// `applyChannelSet`.
+    @discardableResult
+    func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport
+}
+
+// MARK: - M3: channel/config write-back (admin messages) — shared types
+
+/// One admin write's worth of channels, plus the LoRa config the write
+/// must carry with it when the imported URL was a full "replace" (it is
+/// nil for an "add" import, which never carries one — `FireflyModel`'s
+/// `ChannelURL`/`ChannelSet` is where this is actually built from an
+/// imported channel-share URL; `FireflyMesh` never touches a URL).
+public struct ChannelWriteRequest: Sendable, Equatable {
+    public var channels: [Channel]
+    public var loraConfig: Config.LoRaConfig?
+
+    public init(channels: [Channel], loraConfig: Config.LoRaConfig? = nil) {
+        self.channels = channels
+        self.loraConfig = loraConfig
+    }
+}
+
+public enum AdminWriteError: Error, Equatable, Sendable {
+    /// No connected node to address the admin message to.
+    case notConnected
+    case encodingFailed
+    /// The node never answered a read (request or read-back), or never
+    /// came back after the reboot a `commit_edit_settings` triggers.
+    case timeout
+    /// The write reached the node, but the read-back that followed does
+    /// not match what was sent — a clear, honest failure rather than an
+    /// assumed success. The associated string names what differed.
+    case readBackMismatch(String)
+}
+
+public struct ChannelWriteReport: Sendable, Equatable {
+    /// Read back from the node after the commit — not simply an echo of
+    /// what `applyChannelSet` was asked to send.
+    public let channels: [Channel]
+    public let loraConfig: Config.LoRaConfig?
+
+    public init(channels: [Channel], loraConfig: Config.LoRaConfig?) {
+        self.channels = channels
+        self.loraConfig = loraConfig
+    }
+}
+
+public struct OwnerWriteReport: Sendable, Equatable {
+    public let longName: String
+    public let shortName: String
+
+    public init(longName: String, shortName: String) {
+        self.longName = longName
+        self.shortName = shortName
+    }
+}
+
+public struct RegionWriteReport: Sendable, Equatable {
+    public let region: Config.LoRaConfig.RegionCode
+
+    public init(region: Config.LoRaConfig.RegionCode) {
+        self.region = region
+    }
 }
 
 /// Broadcast address — `0xFFFFFFFF`, Meshtastic's own.
@@ -351,5 +442,67 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     public var sentTextLog: [(String, UInt32, Bool)] {
         lock.lock(); defer { lock.unlock() }
         return sentTexts
+    }
+
+    // MARK: - M3: channel/config write-back — stub semantics
+
+    private var sentChannelWrites: [ChannelWriteRequest] = []
+    private var sentOwnerWrites: [(String, String)] = []
+    private var sentRegionWrites: [Config.LoRaConfig.RegionCode] = []
+
+    /// A stub has no firmware to diverge from what it was asked to
+    /// write, so its own record IS the read-back — this stays honest
+    /// with the rest of the type's "never invents" rule by reporting
+    /// back exactly the request, never a hidden extra field. Throws
+    /// `.notConnected` under the same rule `sendPosition`'s destination
+    /// check would if this type had one — `connectedNodeNum` is only
+    /// ever set by a test.
+    @discardableResult
+    public func applyChannelSet(_ request: ChannelWriteRequest) async throws -> ChannelWriteReport {
+        guard connectedNodeNum != nil else { throw AdminWriteError.notConnected }
+        recordChannelWrite(request)
+        return ChannelWriteReport(channels: request.channels, loraConfig: request.loraConfig)
+    }
+
+    @discardableResult
+    public func setOwner(longName: String, shortName: String) async throws -> OwnerWriteReport {
+        guard connectedNodeNum != nil else { throw AdminWriteError.notConnected }
+        recordOwnerWrite(longName, shortName)
+        return OwnerWriteReport(longName: longName, shortName: shortName)
+    }
+
+    @discardableResult
+    public func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
+        guard connectedNodeNum != nil else { throw AdminWriteError.notConnected }
+        recordRegionWrite(region)
+        return RegionWriteReport(region: region)
+    }
+
+    // Non-async on purpose — same NSLock-across-a-suspension-point
+    // convention as `nextOutbox`/`nextPacket` above: an `NSLock` taken
+    // inline inside an `async` function is a Swift 6 error, so every
+    // locked mutation happens in a synchronous helper called from the
+    // async entry point.
+    private func recordChannelWrite(_ request: ChannelWriteRequest) {
+        lock.lock(); sentChannelWrites.append(request); lock.unlock()
+    }
+    private func recordOwnerWrite(_ longName: String, _ shortName: String) {
+        lock.lock(); sentOwnerWrites.append((longName, shortName)); lock.unlock()
+    }
+    private func recordRegionWrite(_ region: Config.LoRaConfig.RegionCode) {
+        lock.lock(); sentRegionWrites.append(region); lock.unlock()
+    }
+
+    public var sentChannelWriteLog: [ChannelWriteRequest] {
+        lock.lock(); defer { lock.unlock() }
+        return sentChannelWrites
+    }
+    public var sentOwnerWriteLog: [(String, String)] {
+        lock.lock(); defer { lock.unlock() }
+        return sentOwnerWrites
+    }
+    public var sentRegionWriteLog: [Config.LoRaConfig.RegionCode] {
+        lock.lock(); defer { lock.unlock() }
+        return sentRegionWrites
     }
 }

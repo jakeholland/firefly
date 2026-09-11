@@ -3,6 +3,7 @@
 //  position_precision trap (docs/specs/A01-companion-app.md, Slice C
 //  "Must add").
 //
+import FireflyMesh
 import FireflyModel
 import MeshtasticProto
 import XCTest
@@ -165,6 +166,89 @@ final class ChannelURLTests: XCTestCase {
         let result = try ChannelURL.parse(url)
         XCTAssertTrue(result.addMode)
         XCTAssertEqual(result.channelSet.settings.first?.name, "Crew")
+    }
+
+    // MARK: - M3: lora_config (field 2) and the write-request builder
+
+    func testLoraConfigIsAbsentByDefault() {
+        let set = ChannelSet(settings: [ChannelSettings()])
+        XCTAssertFalse(set.hasLoraConfig, "an 'add' import commonly carries no LoRa config — never invent one")
+    }
+
+    func testLoraConfigRoundTripsThroughParseAndEncode() throws {
+        var settings = ChannelSettings()
+        settings.name = "Firefly"
+        settings.moduleSettings.positionPrecision = 32
+        var lora = Config.LoRaConfig()
+        lora.usePreset = true
+        lora.modemPreset = .longFast
+        lora.region = .us
+        let set = ChannelSet(settings: [settings], loraConfig: lora)
+
+        XCTAssertTrue(set.hasLoraConfig)
+        let url = ChannelURL.encode(set)
+        let result = try ChannelURL.parse(url)
+        XCTAssertTrue(result.channelSet.hasLoraConfig)
+        XCTAssertEqual(result.channelSet.loraConfig.region, .us)
+        XCTAssertEqual(result.channelSet.loraConfig.modemPreset, .longFast)
+    }
+
+    func testMakeChannelWriteRequestAssignsIndexAndRole() {
+        var primary = ChannelSettings()
+        primary.name = "Firefly"
+        primary.moduleSettings.positionPrecision = 32
+        var secondary = ChannelSettings()
+        secondary.name = "Ops"
+        secondary.moduleSettings.positionPrecision = 24
+
+        let result = ChannelImportResult(channelSet: ChannelSet(settings: [primary, secondary]), addMode: false)
+        let request = result.makeChannelWriteRequest()
+
+        XCTAssertEqual(request.channels.count, 2)
+        XCTAssertEqual(request.channels[0].index, 0)
+        XCTAssertEqual(request.channels[0].role, .primary)
+        XCTAssertEqual(request.channels[0].settings.name, "Firefly")
+        XCTAssertEqual(request.channels[1].index, 1)
+        XCTAssertEqual(request.channels[1].role, .secondary)
+        XCTAssertEqual(request.channels[1].settings.name, "Ops")
+    }
+
+    /// The write-request builder must never emit the "absent means full
+    /// precision" trap either — same rule `ChannelURL.encode` already
+    /// enforces, reused here (`withExplicitPositionPrecision`).
+    func testMakeChannelWriteRequestForcesExplicitPositionPrecision() {
+        var settings = ChannelSettings()
+        settings.name = "NoLimit" // no moduleSettings at all
+        let result = ChannelImportResult(channelSet: ChannelSet(settings: [settings]), addMode: false)
+        let request = result.makeChannelWriteRequest()
+
+        XCTAssertTrue(request.channels[0].settings.hasModuleSettings)
+        XCTAssertEqual(request.channels[0].settings.moduleSettings.positionPrecision, 32)
+    }
+
+    /// An "add" import that carried no LoRa config must not fabricate
+    /// one for write-back — `applyChannelSet` must never be asked to
+    /// write a region/modem preset nobody stated.
+    func testMakeChannelWriteRequestOmitsLoraConfigWhenTheImportDidNotCarryOne() {
+        var settings = ChannelSettings()
+        settings.name = "Ops"
+        settings.moduleSettings.positionPrecision = 32
+        let result = ChannelImportResult(channelSet: ChannelSet(settings: [settings]), addMode: true)
+        let request = result.makeChannelWriteRequest()
+        XCTAssertNil(request.loraConfig)
+    }
+
+    func testMakeChannelWriteRequestCarriesTheImportedLoraConfig() {
+        var settings = ChannelSettings()
+        settings.name = "Firefly"
+        settings.moduleSettings.positionPrecision = 32
+        var lora = Config.LoRaConfig()
+        lora.region = .us
+        lora.usePreset = true
+        lora.modemPreset = .longFast
+        let result = ChannelImportResult(channelSet: ChannelSet(settings: [settings], loraConfig: lora), addMode: false)
+        let request = result.makeChannelWriteRequest()
+        XCTAssertEqual(request.loraConfig, lora)
     }
 }
 

@@ -447,8 +447,221 @@ private final class ScriptedLinkClient: MeshtasticClientProtocol, @unchecked Sen
     func sendPosition(_ fix: ExternalPositionFix, to destination: UInt32) async throws -> UInt32 { 0 }
     @discardableResult
     func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32 { 0 }
+    @discardableResult
+    func applyChannelSet(_ request: ChannelWriteRequest) async throws -> ChannelWriteReport {
+        ChannelWriteReport(channels: request.channels, loraConfig: request.loraConfig)
+    }
+    @discardableResult
+    func setOwner(longName: String, shortName: String) async throws -> OwnerWriteReport {
+        OwnerWriteReport(longName: longName, shortName: shortName)
+    }
+    @discardableResult
+    func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
+        RegionWriteReport(region: region)
+    }
 
     func push(_ state: LinkState) { linkHub.yield(state) }
+}
+
+/// M3 — records every admin write call it receives (and nothing else),
+/// so a test can assert exactly how many happened and when: the
+/// mechanical proof behind "never writes without confirmation"
+/// (docs/specs/A01-companion-app.md M3). `shouldThrow`, when set, makes
+/// every write fail with the given error instead of recording+
+/// succeeding — for the error-path assertions.
+private final class RecordingAdminWriteClient: MeshtasticClientProtocol, @unchecked Sendable {
+    private let linkHub = EventHub<LinkState>()
+    private let nodeHub = EventHub<MeshNodeSnapshot>()
+    private let deliveryHub = EventHub<DeliveryEvent>()
+    private let textHub = EventHub<IncomingText>()
+    private let privateHub = EventHub<IncomingPrivate>()
+    private let lock = NSLock()
+
+    private var _channelWrites: [ChannelWriteRequest] = []
+    private var _ownerWrites: [(String, String)] = []
+    private var _regionWrites: [Config.LoRaConfig.RegionCode] = []
+    var shouldThrow: AdminWriteError?
+
+    var channelWrites: [ChannelWriteRequest] { lock.lock(); defer { lock.unlock() }; return _channelWrites }
+    var ownerWrites: [(String, String)] { lock.lock(); defer { lock.unlock() }; return _ownerWrites }
+    var regionWrites: [Config.LoRaConfig.RegionCode] { lock.lock(); defer { lock.unlock() }; return _regionWrites }
+
+    func linkState() -> AsyncStream<LinkState> { linkHub.subscribe() }
+    func nodeUpdates() -> AsyncStream<MeshNodeSnapshot> { nodeHub.subscribe() }
+    func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
+    func incomingTexts() -> AsyncStream<IncomingText> { textHub.subscribe() }
+    func incomingPrivate() -> AsyncStream<IncomingPrivate> { privateHub.subscribe() }
+    var connectedNodeNum: UInt32? = 1
+
+    func connect() async throws { linkHub.yield(.ready) }
+    func disconnect() async { linkHub.yield(.disconnected) }
+    @discardableResult
+    func sendText(_ text: String, to destination: UInt32, wantAck: Bool) async throws -> UInt32 { 0 }
+    @discardableResult
+    func sendPosition(_ fix: ExternalPositionFix, to destination: UInt32) async throws -> UInt32 { 0 }
+    @discardableResult
+    func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32 { 0 }
+    func yieldLink(_ state: LinkState) { linkHub.yield(state) }
+
+    @discardableResult
+    func applyChannelSet(_ request: ChannelWriteRequest) async throws -> ChannelWriteReport {
+        if let shouldThrow { throw shouldThrow }
+        lock.lock(); _channelWrites.append(request); lock.unlock()
+        return ChannelWriteReport(channels: request.channels, loraConfig: request.loraConfig)
+    }
+    @discardableResult
+    func setOwner(longName: String, shortName: String) async throws -> OwnerWriteReport {
+        if let shouldThrow { throw shouldThrow }
+        lock.lock(); _ownerWrites.append((longName, shortName)); lock.unlock()
+        return OwnerWriteReport(longName: longName, shortName: shortName)
+    }
+    @discardableResult
+    func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
+        if let shouldThrow { throw shouldThrow }
+        lock.lock(); _regionWrites.append(region); lock.unlock()
+        return RegionWriteReport(region: region)
+    }
+}
+
+// MARK: - M3: never-writes-without-confirmation state machine
+
+@MainActor
+final class AdminWriteConfirmationStateMachineTests: XCTestCase {
+
+    // MARK: ChannelImportViewModel
+
+    func testImportingAChannelURLNeverWritesToTheNode() throws {
+        let client = RecordingAdminWriteClient()
+        let vm = ChannelImportViewModel(client: client)
+
+        var settings = ChannelSettings()
+        settings.name = "Firefly"
+        settings.moduleSettings.positionPrecision = 32
+        let url = ChannelURL.encode(ChannelSet(settings: [settings]))
+        vm.importURL(url)
+
+        XCTAssertNotNil(vm.result)
+        XCTAssertTrue(client.channelWrites.isEmpty, "parsing/importing a link must never itself write to the node")
+    }
+
+    func testConfirmApplyIsTheOnlyThingThatWrites() async throws {
+        let client = RecordingAdminWriteClient()
+        let vm = ChannelImportViewModel(client: client)
+
+        var settings = ChannelSettings()
+        settings.name = "Firefly"
+        settings.moduleSettings.positionPrecision = 32
+        let url = ChannelURL.encode(ChannelSet(settings: [settings]))
+        vm.importURL(url)
+        XCTAssertTrue(client.channelWrites.isEmpty)
+
+        let ok = await vm.confirmApply()
+
+        XCTAssertTrue(ok)
+        XCTAssertEqual(client.channelWrites.count, 1, "confirmApply must write EXACTLY once")
+        XCTAssertNotNil(vm.lastAppliedReport)
+        XCTAssertNil(vm.applyErrorMessage)
+    }
+
+    func testConfirmApplyWithNoImportedResultWritesNothing() async {
+        let client = RecordingAdminWriteClient()
+        let vm = ChannelImportViewModel(client: client)
+        let ok = await vm.confirmApply()
+        XCTAssertFalse(ok)
+        XCTAssertTrue(client.channelWrites.isEmpty)
+    }
+
+    func testConfirmApplyFailureSurfacesAnErrorAndClearsOnRetry() async throws {
+        let client = RecordingAdminWriteClient()
+        client.shouldThrow = .readBackMismatch("channel 0 did not read back as written")
+        let vm = ChannelImportViewModel(client: client)
+
+        var settings = ChannelSettings()
+        settings.name = "Firefly"
+        settings.moduleSettings.positionPrecision = 32
+        vm.importURL(ChannelURL.encode(ChannelSet(settings: [settings])))
+
+        let ok = await vm.confirmApply()
+        XCTAssertFalse(ok)
+        XCTAssertNotNil(vm.applyErrorMessage)
+        XCTAssertNil(vm.lastAppliedReport)
+    }
+
+    // MARK: SettingsViewModel
+
+    func testEditingTheNodeNameDraftNeverWritesToTheNode() {
+        let client = RecordingAdminWriteClient()
+        let vm = SettingsViewModel(store: InMemorySettingsStore(), channelImport: ChannelImportViewModel(client: client), client: client)
+        vm.setNodeLongName("Firefly One")
+        vm.setNodeShortName("FF1")
+        XCTAssertTrue(client.ownerWrites.isEmpty, "editing the local draft must never itself write to the node")
+    }
+
+    func testApplyNodeNameIsTheOnlyThingThatWritesTheOwner() async {
+        let client = RecordingAdminWriteClient()
+        let vm = SettingsViewModel(store: InMemorySettingsStore(), channelImport: ChannelImportViewModel(client: client), client: client)
+        vm.setNodeLongName("Firefly One")
+        vm.setNodeShortName("FF1")
+
+        let ok = await vm.applyNodeName()
+
+        XCTAssertTrue(ok)
+        XCTAssertEqual(client.ownerWrites.count, 1)
+        XCTAssertEqual(client.ownerWrites.first?.0, "Firefly One")
+        XCTAssertEqual(client.ownerWrites.first?.1, "FF1")
+    }
+
+    func testChangingTheRegionPickerNeverWritesToTheNode() {
+        let client = RecordingAdminWriteClient()
+        let vm = SettingsViewModel(store: InMemorySettingsStore(), channelImport: ChannelImportViewModel(client: client), client: client)
+        vm.regionSelection = .us
+        XCTAssertTrue(client.regionWrites.isEmpty, "picking a region must never itself write to the node")
+    }
+
+    func testApplyRegionIsTheOnlyThingThatWritesTheRegion() async {
+        let client = RecordingAdminWriteClient()
+        let vm = SettingsViewModel(store: InMemorySettingsStore(), channelImport: ChannelImportViewModel(client: client), client: client)
+        vm.regionSelection = .jp
+
+        let ok = await vm.applyRegion()
+
+        XCTAssertTrue(ok)
+        XCTAssertEqual(client.regionWrites, [.jp])
+    }
+
+    func testRegionDefaultsToUnsetNeverGuessingUS() {
+        let client = RecordingAdminWriteClient()
+        let vm = SettingsViewModel(store: InMemorySettingsStore(), channelImport: ChannelImportViewModel(client: client), client: client)
+        XCTAssertEqual(vm.regionSelection, .unset, "never presume a region the node was never asked about")
+    }
+
+    func testIsConnectedReflectsTheClientAtInit() {
+        let client = RecordingAdminWriteClient()
+        client.connectedNodeNum = nil
+        let vm = SettingsViewModel(store: InMemorySettingsStore(), channelImport: ChannelImportViewModel(client: client), client: client)
+        XCTAssertFalse(vm.isConnected)
+    }
+
+    func testObserveTracksLinkStateToReadyAndDisconnected() async {
+        let client = RecordingAdminWriteClient()
+        client.connectedNodeNum = nil
+        let vm = SettingsViewModel(store: InMemorySettingsStore(), channelImport: ChannelImportViewModel(client: client), client: client)
+        XCTAssertFalse(vm.isConnected)
+
+        vm.observe()
+        client.yieldLink(.ready)
+        for _ in 0..<200 where !vm.isConnected {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertTrue(vm.isConnected)
+
+        client.yieldLink(.disconnected)
+        for _ in 0..<200 where vm.isConnected {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertFalse(vm.isConnected)
+        vm.stopObserving()
+    }
 }
 
 // MARK: - Node picker (PeripheralDiscovery)

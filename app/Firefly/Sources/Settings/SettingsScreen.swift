@@ -4,6 +4,7 @@
 //
 import FireflyMesh
 import FireflyModel
+import MeshtasticProto
 import SwiftUI
 
 struct SettingsScreen: View {
@@ -18,6 +19,11 @@ struct SettingsScreen: View {
     /// every non-demo build.
     var autoOpenDiagnostics: Bool = false
     @State private var showDiagnostics = false
+    /// M3 — confirm-then-write sheets for the node-name and region edits
+    /// (docs/specs/A01-companion-app.md M3), the same pattern Connect's
+    /// channel "Apply to node" uses.
+    @State private var isShowingNameConfirmation = false
+    @State private var isShowingRegionConfirmation = false
 
     init(model: SettingsViewModel, client: any MeshtasticClientProtocol, pairing: CrewPairingController,
          autoOpenDiagnostics: Bool = false) {
@@ -60,6 +66,38 @@ struct SettingsScreen: View {
         // moment More is opened again — `crewSettings` is only ever
         // written from a rename/remove tap otherwise.
         .onAppear { crewSettings.refresh() }
+        // M3 — a SEPARATE `.onAppear`/`.onDisappear` pair from the one
+        // above, tracking `model.isConnected` for the two confirm-then-
+        // write buttons below. SwiftUI runs every `.onAppear`/
+        // `.onDisappear` attached to a view, not just the first.
+        .onAppear { model.observe() }
+        .onDisappear { model.stopObserving() }
+        .sheet(isPresented: $isShowingNameConfirmation) {
+            AdminWriteConfirmationSheet(
+                title: "APPLY NAME",
+                changes: model.nameApplySummary,
+                isBusy: model.isApplyingName,
+                errorMessage: model.nameApplyError,
+                onConfirm: {
+                    Task {
+                        if await model.applyNodeName() { isShowingNameConfirmation = false }
+                    }
+                },
+                onCancel: { isShowingNameConfirmation = false })
+        }
+        .sheet(isPresented: $isShowingRegionConfirmation) {
+            AdminWriteConfirmationSheet(
+                title: "APPLY REGION",
+                changes: model.regionApplySummary,
+                isBusy: model.isApplyingRegion,
+                errorMessage: model.regionApplyError,
+                onConfirm: {
+                    Task {
+                        if await model.applyRegion() { isShowingRegionConfirmation = false }
+                    }
+                },
+                onCancel: { isShowingRegionConfirmation = false })
+        }
     }
 
     private var nodeIdentitySection: some View {
@@ -76,6 +114,15 @@ struct SettingsScreen: View {
                 TextField("", text: Binding(get: { model.nodeShortName }, set: model.setNodeShortName))
                     .textFieldStyle(.roundedBorder)
             }
+            // M3 — the write path has landed; "APPLY NAME TO NODE"
+            // reaches it behind a confirmation sheet, disabled whenever
+            // there is no connected node.
+            Button("APPLY NAME TO NODE") { isShowingNameConfirmation = true }
+                .buttonStyle(.borderedProminent)
+                .tint(.ffAmber)
+                .foregroundStyle(Color.ffBackground)
+                .disabled(!model.isConnected)
+                .frame(minHeight: 44)
         }
     }
 
@@ -83,6 +130,24 @@ struct SettingsScreen: View {
         SettingsBlock(title: "CHANNEL") {
             LabeledRow(label: "Region", value: model.region)
             LabeledRow(label: "Channel", value: model.currentChannelName)
+            // M3 — a region PICKED here is only a staged selection
+            // (`SettingsViewModel.regionSelection`) until "APPLY REGION"
+            // is confirmed; it never overrides the "Region" row above,
+            // which stays UNKNOWN per that row's own doc comment (no
+            // passive read-back seam exists yet).
+            Picker("Set region", selection: $model.regionSelection) {
+                ForEach(Config.LoRaConfig.RegionCode.allCases, id: \.self) { region in
+                    Text(String(describing: region).uppercased()).tag(region)
+                }
+            }
+            .pickerStyle(.menu)
+            .frame(minHeight: 44)
+            Button("APPLY REGION") { isShowingRegionConfirmation = true }
+                .buttonStyle(.borderedProminent)
+                .tint(.ffAmber)
+                .foregroundStyle(Color.ffBackground)
+                .disabled(!model.isConnected || model.regionSelection == .unset)
+                .frame(minHeight: 44)
         }
     }
 

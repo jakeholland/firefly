@@ -12,7 +12,16 @@
 //  position_precision trap testable end-to-end and to give M3 a single,
 //  already-tested place to call from when it adds write-back.
 //
+//  M3 update: write-back has arrived (A01 M3: "Channel write-back
+//  (admin messages) behind an explicit confirmation"), and it needs the
+//  LoRa config (region/modem preset) a "replace" URL carries alongside
+//  its channels — `ChannelSet.loraConfig` (field 2, below) and
+//  `ChannelImportResult.makeChannelWriteRequest()` are that addition.
+//  Nothing above this paragraph changed: `parse`/`encode` still round
+//  trip exactly what they did in M1, this just stops skipping field 2.
+//
 import Foundation
+import FireflyMesh
 import MeshtasticProto
 import SwiftProtobuf
 
@@ -26,18 +35,29 @@ import SwiftProtobuf
 /// convenience wrapper the firmware itself never sends or receives —
 /// is not in that set. Extending the generator is shared infra outside
 /// this slice's file list (it is not `FireflyKit/Sources/FireflyModel/
-/// {SettingsStore,ChannelURL}.swift`), so this models JUST the one
-/// field M1's channel import actually needs — `settings` (field 1) —
-/// using the same `SwiftProtobuf.Message` machinery the generated types
-/// use, so wire compatibility with a real `meshtastic.org/e/#…` payload
-/// is exact. Field 2 (`lora_config`) is deliberately NOT modeled: M1
-/// only ever reads an imported channel for display, and never
-/// re-encodes an imported set for write-back (that is M3) — there is
-/// nothing to preserve `lora_config` bytes for yet, and pretending
-/// otherwise would be exactly the kind of invented completeness this
-/// project's honesty rule is about.
+/// {SettingsStore,ChannelURL}.swift`), so this models the two fields
+/// this app actually needs — `settings` (field 1) and, since M3,
+/// `lora_config` (field 2, the region/modem preset a "replace" URL
+/// carries alongside its channels) — using the same
+/// `SwiftProtobuf.Message` machinery the generated types use, so wire
+/// compatibility with a real `meshtastic.org/e/#…` payload is exact.
 public struct ChannelSet: Sendable, Equatable {
     public var settings: [ChannelSettings]
+    /// M3: `lora_config`, modeled the same explicit-presence way
+    /// `ChannelSettings.moduleSettings` already is — `hasLoraConfig` is
+    /// `false`, not a zeroed struct, when the URL never carried one (an
+    /// "add" import commonly doesn't; `ChannelURL.parse` must report
+    /// that honestly rather than inventing a region nobody stated).
+    fileprivate var _loraConfig: Config.LoRaConfig?
+    public var loraConfig: Config.LoRaConfig {
+        get { _loraConfig ?? Config.LoRaConfig() }
+        set { _loraConfig = newValue }
+    }
+    /// Returns true if `loraConfig` has been explicitly set.
+    public var hasLoraConfig: Bool { _loraConfig != nil }
+    /// Clears the value of `loraConfig`. Subsequent reads from it will return its default value.
+    public mutating func clearLoraConfig() { _loraConfig = nil }
+
     public var unknownFields = SwiftProtobuf.UnknownStorage()
 
     // `SwiftProtobuf.Message` requires a bare `init()` witness — a
@@ -46,8 +66,9 @@ public struct ChannelSet: Sendable, Equatable {
         self.settings = []
     }
 
-    public init(settings: [ChannelSettings]) {
+    public init(settings: [ChannelSettings], loraConfig: Config.LoRaConfig? = nil) {
         self.settings = settings
+        self._loraConfig = loraConfig
     }
 }
 
@@ -59,10 +80,7 @@ extension ChannelSet: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementatio
         while let fieldNumber = try decoder.nextFieldNumber() {
             switch fieldNumber {
             case 1: try decoder.decodeRepeatedMessageField(value: &settings)
-            // Field 2 (lora_config) — deliberately skipped, see the
-            // type's own doc comment. `nextFieldNumber()` consumes its
-            // bytes as part of finding the next tag, so this does not
-            // desync the decoder.
+            case 2: try decoder.decodeSingularMessageField(value: &_loraConfig)
             default: break
             }
         }
@@ -72,11 +90,14 @@ extension ChannelSet: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementatio
         if !settings.isEmpty {
             try visitor.visitRepeatedMessageField(value: settings, fieldNumber: 1)
         }
+        if let loraConfig = _loraConfig {
+            try visitor.visitSingularMessageField(value: loraConfig, fieldNumber: 2)
+        }
         try unknownFields.traverse(visitor: &visitor)
     }
 
     public static func == (lhs: ChannelSet, rhs: ChannelSet) -> Bool {
-        lhs.settings == rhs.settings
+        lhs.settings == rhs.settings && lhs._loraConfig == rhs._loraConfig
     }
 }
 
@@ -217,13 +238,13 @@ public enum ChannelURL {
 
     /// The inverse of `parse`, used by `ChannelURLTests` to prove the
     /// position_precision trap end-to-end and to keep `parse` honest
-    /// about round-tripping what it CAN represent (everything except
-    /// `lora_config` — see `ChannelSet`'s doc comment). Every entry is
-    /// passed through `withExplicitPositionPrecision` first: this
-    /// function is the one place M3's write-back is meant to reuse, so
-    /// it never emits the dangerous "absent means full precision" shape
-    /// itself, even though `parse` (reading, not writing) faithfully
-    /// reports it when that is what the source URL actually said.
+    /// about round-tripping everything a `ChannelSet` carries, including
+    /// `lora_config` since M3. Every entry is passed through
+    /// `withExplicitPositionPrecision` first: this function is the one
+    /// place M3's write-back reuses, so it never emits the dangerous
+    /// "absent means full precision" shape itself, even though `parse`
+    /// (reading, not writing) faithfully reports it when that is what
+    /// the source URL actually said.
     public static func encode(_ channelSet: ChannelSet, addMode: Bool = false, host: String = "meshtastic.org") -> String {
         var safe = channelSet
         safe.settings = safe.settings.map { withExplicitPositionPrecision($0) }
@@ -231,5 +252,32 @@ public enum ChannelURL {
         let payload = Base64URL.encode(data)
         let query = addMode ? "?add=true" : ""
         return "https://\(host)/e/\(query)#\(payload)"
+    }
+}
+
+// MARK: - M3: channel write-back
+
+extension ChannelImportResult {
+    /// Builds what `MeshtasticClientProtocol.applyChannelSet(_:)` actually
+    /// sends: index/role-assigned `Channel` messages — index 0 is the
+    /// primary, every following slot is a secondary, Meshtastic-Apple's
+    /// own `makeChannel` convention (`AccessoryManager+ToRadio.swift`),
+    /// cross-checked rather than assumed — with `position_precision`
+    /// forced explicit exactly like `ChannelURL.encode` already does for
+    /// the same reason (never write the "absent means full precision"
+    /// trap), plus the LoRa config this import carried, IF it carried
+    /// one: an "add" import never fabricates a region/modem preset
+    /// nobody stated.
+    public func makeChannelWriteRequest() -> ChannelWriteRequest {
+        let channels: [Channel] = channelSet.settings.enumerated().map { offset, settings in
+            var channel = Channel()
+            channel.index = Int32(offset)
+            channel.role = offset == 0 ? .primary : .secondary
+            channel.settings = ChannelURL.withExplicitPositionPrecision(settings)
+            return channel
+        }
+        return ChannelWriteRequest(
+            channels: channels,
+            loraConfig: channelSet.hasLoraConfig ? channelSet.loraConfig : nil)
     }
 }

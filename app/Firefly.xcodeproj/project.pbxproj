@@ -37,6 +37,7 @@
 		C03641377EDB721D4C81DE9D /* BLEHardwareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */; };
 		C669919991622119FE5BA2FA /* DiagnosticsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19687863E32B4CA54C5752D8 /* DiagnosticsScreen.swift */; };
 		D4509A6BF45005057BE62C69 /* PeripheralDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 899B46141ED5400385D53007 /* PeripheralDiscovery.swift */; };
+		D7A2904C961D1D75584D0142 /* AdminWriteConfirmationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */; };
 		D7A6BDAFEAE4556C2D49508D /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 52CE41AF9EE8F2A1C1595D75 /* FireflyCore */; };
 		E3CC4E9340C161539EDE9E85 /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1798EBF71029584D9BCBDE5F /* FireflyCore */; };
 		E6551196CD37E34092E3B5D8 /* DemoBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657F1057B225B7D58F60D158 /* DemoBadge.swift */; };
@@ -66,6 +67,7 @@
 		336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectScreen.swift; sourceTree = "<group>"; };
 		36054428E7138397E791F1DD /* ChannelImportViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelImportViewModel.swift; sourceTree = "<group>"; };
 		378BC076CD59300BFAE0D0AD /* RadarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadarView.swift; sourceTree = "<group>"; };
+		3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdminWriteConfirmationSheet.swift; sourceTree = "<group>"; };
 		3E99266CE9867C281FAC9513 /* RadarColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadarColors.swift; sourceTree = "<group>"; };
 		3FF340B133498D33D74D3976 /* QRScannerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerSheet.swift; sourceTree = "<group>"; };
 		45BBB6E81333013CC2CE55F2 /* SettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsScreen.swift; sourceTree = "<group>"; };
@@ -144,6 +146,7 @@
 		11421C91FBEAF497D1C0A149 /* Connect */ = {
 			isa = PBXGroup;
 			children = (
+				3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */,
 				36054428E7138397E791F1DD /* ChannelImportViewModel.swift */,
 				336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */,
 				2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */,
@@ -370,6 +373,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D7A2904C961D1D75584D0142 /* AdminWriteConfirmationSheet.swift in Sources */,
 				B11B507435D69A999AC9DD1E /* ChannelImportViewModel.swift in Sources */,
 				47E0809C008E900451404953 /* ConnectScreen.swift in Sources */,
 				6F6C3DEEBFEC351E8F1EA93B /* CrewSettingsViewModel.swift in Sources */,

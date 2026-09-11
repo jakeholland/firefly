@@ -13,6 +13,7 @@
 //
 import FireflyMesh
 import FireflyModel
+import MeshtasticProto
 import XCTest
 
 /// Counts `subscribe()` calls per stream, and records everything sent.
@@ -110,6 +111,19 @@ private final class CountingClient: MeshtasticClientProtocol, @unchecked Sendabl
     func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
         lock.lock(); privates.append((payload, destination, wantAck)); lock.unlock()
         return 3
+    }
+
+    @discardableResult
+    func applyChannelSet(_ request: ChannelWriteRequest) async throws -> ChannelWriteReport {
+        ChannelWriteReport(channels: request.channels, loraConfig: request.loraConfig)
+    }
+    @discardableResult
+    func setOwner(longName: String, shortName: String) async throws -> OwnerWriteReport {
+        OwnerWriteReport(longName: longName, shortName: shortName)
+    }
+    @discardableResult
+    func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
+        RegionWriteReport(region: region)
     }
 }
 
