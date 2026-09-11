@@ -298,7 +298,26 @@ public final class CoreFindSession: FindPinging, @unchecked Sendable {
             guard case .sendPing(let nonce) = find.tick(now: FireflyClock.millis(since: now)),
                   let target else { return false }
             let sender = sender
-            Task { try? await sender.send(.ping(nonce: nonce), to: target, wantAck: false) }
+            // PR #265 review, should-fix: a FIND ping's `try?` above
+            // swallowed both `SendFailure.encodingFailed` (ff_proto
+            // refused the body) and a transport-level throw with no
+            // trace anywhere — a session sitting on "pinging..." with
+            // no pong forever looked identical to a working session
+            // whose replies just hadn't arrived yet. Diagnostic-only
+            // (same `FileHandle.standardError.write` pattern
+            // `BLETransport.log` uses, for the same reason: stdout is
+            // fully block-buffered once `xcodebuild test` pipes it, so
+            // a `print()` here could sit invisible for the whole run);
+            // never surfaced to the UI — FIND has no per-ping failure
+            // affordance, only the session-level trend/haptic path.
+            Task {
+                do {
+                    try await sender.send(.ping(nonce: nonce), to: target, wantAck: false)
+                } catch {
+                    let line = "[CoreFindSession] FIND ping nonce=\(nonce) target=\(target) failed: \(error)\n"
+                    FileHandle.standardError.write(Data(line.utf8))
+                }
+            }
             return true
         }
     }

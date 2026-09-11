@@ -225,6 +225,17 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         heartbeatTask?.cancel(); heartbeatTask = nil
         receiveTask?.cancel(); receiveTask = nil
         hasCompletedInitialConnect = false
+        // PR #265 review, should-fix: a disconnect must clear who we
+        // were connected to. Before this, `myNodeNum`/`connectedNodeNum`
+        // kept the LAST session's value after `disconnect()` returned —
+        // `resetSessionState()` (called at the TOP of `connect()`)
+        // cleared it on the way back IN, but nothing cleared it on the
+        // way out, so `connectedNodeNum` briefly lied about there being
+        // a connected node at all between a disconnect and the next
+        // connect attempt. `PhoneGPSUplink.destinationNodeNum` and
+        // Diagnostics both read this synchronously, so that window was
+        // real, not theoretical.
+        myNodeNum = nil
         await transport.disconnect()
         linkHub.yield(.disconnected)
     }
