@@ -210,4 +210,46 @@ final class CoreInboxProviderTests: XCTestCase {
         XCTAssertEqual(rows.first?.unreadCount, 1)
         XCTAssertTrue(rows.contains { $0.kind == .crew }, "CREW is always present")
     }
+
+    /// M3 regression: `thread(for:now:)`'s own protocol doc comment
+    /// ("oldest first") — found while building the "FROM STORAGE"
+    /// preview tag, which reads `thread(for:).last` to mean "newest".
+    /// `InboxBridge.records(in:)` walks the ring NEWEST FIRST
+    /// internally; this pins that `CoreInboxProvider` re-sorts before
+    /// handing anything back, matching `InMemoryInboxStore`'s own
+    /// already-sorted contract.
+    func testThreadOrdersOldestFirstMatchingInboxProvidingsContract() {
+        let (provider, _, _) = makeProvider()
+        let now = Date()
+        provider.push(FeedMessage(id: 1, kind: .text, direction: .broadcast, senderID: 1, text: "first",
+                                   timestamp: now.addingTimeInterval(-100)), into: .crew)
+        provider.push(FeedMessage(id: 2, kind: .text, direction: .broadcast, senderID: 1, text: "second",
+                                   timestamp: now.addingTimeInterval(-50)), into: .crew)
+        provider.push(FeedMessage(id: 3, kind: .text, direction: .broadcast, senderID: 1, text: "third",
+                                   timestamp: now), into: .crew)
+
+        XCTAssertEqual(provider.thread(for: .crew, now: now).map(\.text), ["first", "second", "third"])
+    }
+
+    /// M3 regression: the Inbox row's `previewDeliveryState` must come
+    /// from the NEWEST item, not the oldest — the exact bug this file's
+    /// header would have masked forever, since no earlier test pushed a
+    /// second item into the same conversation before asserting on it.
+    func testPreviewDeliveryStateReflectsTheNewestItemNotTheOldest() {
+        let (provider, _, crew) = makeProvider()
+        pair(crew, nodeID: 42, shortName: "RILE", longName: "Riley")
+        let now = Date()
+        provider.push(FeedMessage(id: 1, kind: .text, direction: .out, text: "older", timestamp: now.addingTimeInterval(-100),
+                                   destination: 42, deliveryState: .waiting, statusAt: now.addingTimeInterval(-100)),
+                       into: .member(42))
+        provider.markSent(outboxID: 1, packetID: 900, at: now.addingTimeInterval(-100))
+        provider.setStatus(packetID: 900, state: .delivered, at: now.addingTimeInterval(-90))
+
+        provider.push(FeedMessage(id: 2, kind: .text, direction: .out, text: "newer", timestamp: now,
+                                   destination: 42, deliveryState: .waiting, statusAt: now), into: .member(42))
+
+        let row = provider.conversations(now: now).first { $0.kind == .member(42) }
+        XCTAssertEqual(row?.previewText, "newer")
+        XCTAssertEqual(row?.previewDeliveryState, .waiting, "the NEWEST item's own state, not the older DELIVERED one")
+    }
 }

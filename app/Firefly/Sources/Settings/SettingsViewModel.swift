@@ -46,6 +46,15 @@ final class SettingsViewModel {
     /// are honestly disabled rather than optimistically enabled with no
     /// node to write to.
     private let client: any MeshtasticClientProtocol
+    /// M3 — reaches `AppGraph.inboxProvider.clearAll()` (both the live
+    /// ring AND `HistoryStore` together — `PersistingInboxProvider
+    /// .clearAll()`'s own doc comment) without this view model needing
+    /// to depend on `FireflyModel`'s `InboxProviding`/`AppGraph` at all;
+    /// same closure-seam convention `ThreadViewModel.currentFix`/
+    /// `AppGraph`'s own `destinationNodeNum` already use. Defaulted to a
+    /// no-op so every pre-M3 call site (`SettingsViewModel(store:
+    /// channelImport:)` in tests) keeps compiling unchanged.
+    private let clearHistory: () -> Void
     private var linkObservation: Task<Void, Never>?
 
     var nodeLongName: String
@@ -81,10 +90,11 @@ final class SettingsViewModel {
     /// channelImport:)` in tests predating M3) keeps compiling — same
     /// convention `ChannelImportViewModel.init`'s own comment cites.
     init(store: any FireflyExtraSettingsStoring, channelImport: ChannelImportViewModel,
-         client: any MeshtasticClientProtocol = StubMeshtasticClient()) {
+         client: any MeshtasticClientProtocol = StubMeshtasticClient(), clearHistory: @escaping () -> Void = {}) {
         self.store = store
         self.channelImport = channelImport
         self.client = client
+        self.clearHistory = clearHistory
         nodeLongName = store.nodeLongNamePreference ?? ""
         nodeShortName = store.nodeShortNamePreference ?? ""
         shareGPSWithNode = store.bool(.locationSharingEnabled)
@@ -110,8 +120,10 @@ final class SettingsViewModel {
     /// the same role `AppGraph.make*ViewModel()` plays for everything
     /// `FireflyKit` can construct on its own.
     static func makeObserving(store: any FireflyExtraSettingsStoring, channelImport: ChannelImportViewModel,
-                               client: any MeshtasticClientProtocol) -> SettingsViewModel {
-        let model = SettingsViewModel(store: store, channelImport: channelImport, client: client)
+                               client: any MeshtasticClientProtocol,
+                               clearHistory: @escaping () -> Void = {}) -> SettingsViewModel {
+        let model = SettingsViewModel(store: store, channelImport: channelImport, client: client,
+                                       clearHistory: clearHistory)
         model.observe()
         return model
     }
@@ -232,5 +244,24 @@ final class SettingsViewModel {
             regionApplyError = ChannelImportViewModel.writeMessage(for: error)
             return false
         }
+    }
+
+    // MARK: - M3: Clear history
+
+    /// What the "Clear history" confirmation sheet shows — one line,
+    /// deliberately blunt: this is the one action in this whole app that
+    /// silently, irreversibly discards user data on purpose (`HistoryStore
+    /// .makeContainer`'s own doc comment is the OTHER disclosed place
+    /// that happens; this is the deliberate one).
+    var clearHistorySummary: [String] {
+        ["Every saved message, in every thread, deleted from this device."]
+    }
+
+    /// No network round trip, no `isBusy`/error state the way the two
+    /// admin writes above need — `AppGraph.inboxProvider.clearAll()` is
+    /// synchronous and local, so the confirmation sheet's CONFIRM tap
+    /// can close immediately.
+    func confirmClearHistory() {
+        clearHistory()
     }
 }

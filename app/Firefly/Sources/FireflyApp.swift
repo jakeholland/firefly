@@ -66,7 +66,27 @@ struct FireflyApp: App {
         // auto-connect must not run a second, independent `BLETransport`
         // racing whatever the test itself is doing over BLE (2026-09-11
         // bench investigation).
+        //
+        // M3 — `-FireflyDemoRestored`: seed an in-memory `HistoryStore`
+        // with `DemoHistorySeed` BEFORE `AppGraph.init` runs, so its own
+        // restore pass (`HistoryRestorer.restore`) picks the rows up
+        // exactly like a real relaunch would — never a parallel "looks
+        // restored" fake. Gated the SAME way `AppDependencies.current()`
+        // gates every other `DemoLaunch` check (`AppDependencies.swift`'s
+        // own comment): only inside `#if targetEnvironment(simulator)`,
+        // so a stray launch argument can never turn a real device's
+        // history into fictional festival data.
+        #if targetEnvironment(simulator)
+        var historyOverride: HistoryStore?
+        if DemoLaunch.isRestoredRequested() {
+            let seeded = HistoryStore.inMemory()
+            DemoHistorySeed.seed(into: seeded)
+            historyOverride = seeded
+        }
+        let graph = AppGraph(skipLaunchAutoConnectUnderXCTest: true, historyStore: historyOverride)
+        #else
         let graph = AppGraph(skipLaunchAutoConnectUnderXCTest: true)
+        #endif
         _graph = State(initialValue: graph)
         let connectVM = graph.makeConnectViewModel()
         _connect = State(initialValue: connectVM)
@@ -91,9 +111,15 @@ struct FireflyApp: App {
         // factory's own doc comment on `SettingsViewModel.swift` is
         // where the fix (and the NavigationSplitView remount bug it
         // fixes) is written up; this is the one call site that matters.
+        // M3 — `clearHistory:` reaches the SAME `inboxProvider` every
+        // screen reads (`AppGraph.inboxProvider`, `PersistingInboxProvider
+        // .clearAll()`), never a second, independent path — Settings
+        // owns the confirmation UI (`SettingsScreen.swift`), not a
+        // second opinion about what "history" means.
         _settings = State(initialValue: SettingsViewModel.makeObserving(store: graph.dependencies.store,
                                                                          channelImport: importVM,
-                                                                         client: graph.dependencies.client))
+                                                                         client: graph.dependencies.client,
+                                                                         clearHistory: { graph.inboxProvider.clearAll() }))
         let inboxVM = graph.makeInboxViewModel()
         _inbox = State(initialValue: inboxVM)
         #if os(iOS)

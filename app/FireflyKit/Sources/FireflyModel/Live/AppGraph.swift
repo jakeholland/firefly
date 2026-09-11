@@ -28,9 +28,33 @@ public final class AppGraph {
     public let dependencies: AppDependencies
     /// The single owner of every `ff_*` context in the process.
     public let core = CoreStore()
-    /// `InboxProviding`, backed by the C core — never
-    /// `InMemoryInboxStore`, which is test-only from here on.
-    public let inboxProvider: CoreInboxProvider
+    /// `InboxProviding`, backed by the C core through M3's own
+    /// `PersistingInboxProvider` wrapper — never `InMemoryInboxStore`,
+    /// which is test-only from here on, and never the bare
+    /// `CoreInboxProvider` this used to be: every write flows through
+    /// `PersistingInboxProvider` first, so `history` (below) can never
+    /// drift from what the live ring actually holds.
+    public let inboxProvider: any InboxProviding
+    /// M3 — the durable half of message history (docs/specs/
+    /// A01-companion-app.md, M3 + Persistence). Owned here, not by
+    /// `inboxProvider` alone, because `flushPersistedOutbox()` (below)
+    /// needs to read it directly (`pendingOutbox`), and because
+    /// `AppGraph.init` reads from it (`loadAllForRestore()`) before
+    /// `inboxProvider` — the wrapper — even exists.
+    private let historyStore: HistoryStore
+    /// PR #281 review, BLOCKING 1: the id sources `makeInboxViewModel()`
+    /// hands to `InboxViewModel` (which hands `outboxIDGenerator` on to
+    /// every `ThreadViewModel` it opens) — `.shared` by default (every
+    /// real launch), overridable ONLY so a test can inject a fresh
+    /// instance that behaves exactly like a genuinely independent
+    /// process's own `.shared` would, to prove two such lifetimes over
+    /// the SAME `historyStore` never collide (`OutboxIDGenerator`'s own
+    /// doc comment, `ThreadViewModel.swift`). `init` below seeds
+    /// whichever instance it was handed — `.shared` or an override —
+    /// from `historyStore`, every launch, before anything can mint a
+    /// live id from it (`seedIDGenerators(from:store:outbox:inbound:)`).
+    private let outboxIDGenerator: OutboxIDGenerator
+    private let inboundFeedIDGenerator: InboundFeedIDGenerator
     /// Portnum 269 (FLARE, and FIND's PING).
     public let packetSender: MeshFireflyPacketSender
     /// M2: the one place a crew member is paired/unpaired/renamed —
@@ -43,6 +67,12 @@ public final class AppGraph {
 
     private var privateObservation: Task<Void, Never>?
     private var tickLoop: Task<Void, Never>?
+    /// M3 — flushes `historyStore`'s persisted WAITING items on the
+    /// link's next not-ready -> ready edge. See
+    /// `observeHistoryOutboxFlush()`'s own doc comment for why this has
+    /// to be a graph-level subscription rather than left to whichever
+    /// `ThreadViewModel` (if any) happens to be open.
+    private var historyOutboxFlushObservation: Task<Void, Never>?
     private var started = false
     /// M2: true once `autoConnectToLastKnownPeripheral()` has been
     /// considered, ever — set on the FIRST `start()` only, deliberately
@@ -102,12 +132,56 @@ public final class AppGraph {
     /// behave normally under test.
     private let skipLaunchAutoConnectUnderXCTest: Bool
 
+    /// `historyStore:` — M3's own override seam, `nil` by default. When
+    /// `nil`, the store is picked the same way `.stub()`/`.demo()`/
+    /// `.live()` already distinguish themselves elsewhere in this file:
+    /// `dependencies.store is InMemorySettingsStore` is true for both
+    /// `.stub()` and every `.demo()`/`.demoBundle()` composition (and
+    /// for nothing `.live()` ever builds), so it doubles as "is this a
+    /// disposable stack" without a second flag to keep in sync — a
+    /// disposable stack gets a disposable, in-memory history store,
+    /// matching M3's own demo-isolation rule ("Demo doesn't persist
+    /// across launches: in-memory store only") for free. Explicit
+    /// callers use this to inject a store that already has rows in it:
+    /// `DemoRunner`'s own `-FireflyDemoRestored` seeding does exactly
+    /// that (an in-memory store, pre-populated, so the SAME restore code
+    /// path a real relaunch takes is what renders it), and so does any
+    /// test that wants to simulate "two launches sharing one store".
     public init(dependencies: AppDependencies = .current(), notifications: any NotificationSending = UNNotificationSending(),
-                skipLaunchAutoConnectUnderXCTest: Bool = false) {
+                skipLaunchAutoConnectUnderXCTest: Bool = false, historyStore: HistoryStore? = nil,
+                outboxIDGenerator: OutboxIDGenerator = .shared, inboundFeedIDGenerator: InboundFeedIDGenerator = .shared) {
         self.dependencies = dependencies
         self.notifications = notifications
         self.skipLaunchAutoConnectUnderXCTest = skipLaunchAutoConnectUnderXCTest
-        self.inboxProvider = CoreInboxProvider(inbox: core.inbox, crew: core.crew)
+        self.historyStore = historyStore ?? (dependencies.store is InMemorySettingsStore ? .inMemory() : .live())
+        self.outboxIDGenerator = outboxIDGenerator
+        self.inboundFeedIDGenerator = inboundFeedIDGenerator
+        let rawInboxProvider = CoreInboxProvider(inbox: core.inbox, crew: core.crew)
+        // M3 — reseed the live ring from storage NOW, before
+        // `PersistingInboxProvider` even exists and before ANYTHING can
+        // observe a client: pushed straight into the RAW provider so
+        // restoring a message is never itself treated as new traffic to
+        // re-persist (`PersistingInboxProvider`'s own header comment).
+        // Mirrors `CrewPairingRestorer.restore`'s identical ordering
+        // rule a few lines down, for the identical reason: a
+        // want_config replay's first live event must never race a
+        // still-in-progress restore.
+        //
+        // PR #281 review, BLOCKING 1: `seedIDGenerators` runs BEFORE
+        // `HistoryRestorer.restore` for the identical reason — both read
+        // `allHistory`, computed exactly once here, but only the
+        // generator seeding must land before restore's own `push`es,
+        // since neither generator is used by `restore` itself (it
+        // replays each message's own already-assigned id, never a fresh
+        // one) — ordered first anyway so that even the FIRST live id
+        // this process could ever mint, however soon after `init`
+        // returns, is already past everything `historyStore` holds.
+        let allHistory = self.historyStore.loadAllForRestore()
+        Self.seedIDGenerators(from: allHistory, store: self.historyStore,
+                               outbox: self.outboxIDGenerator, inbound: self.inboundFeedIDGenerator)
+        let restoredMessageIDs = HistoryRestorer.restore(allHistory, into: rawInboxProvider)
+        self.inboxProvider = PersistingInboxProvider(wrapping: rawInboxProvider, history: self.historyStore,
+                                                      restoredMessageIDs: restoredMessageIDs)
         self.packetSender = MeshFireflyPacketSender(client: dependencies.client)
         self.flareTakeover = FlareTakeoverViewModel(crew: self.core.crew)
         self.crewPairing = CrewPairingController(crew: core.crew, store: dependencies.crewPairingStore)
@@ -177,6 +251,7 @@ public final class AppGraph {
         observePrivatePackets()
         observeMyLocation()
         observeIncomingTextsForNotifications()
+        observeHistoryOutboxFlush()
         Self.log("start(): awaiting uplink.start()")
         await uplink.start()
         Self.log("start(): uplink.start() returned")
@@ -332,6 +407,7 @@ public final class AppGraph {
         privateObservation?.cancel(); privateObservation = nil
         stopObservingMyLocation()
         stopObservingIncomingTextsForNotifications()
+        historyOutboxFlushObservation?.cancel(); historyOutboxFlushObservation = nil
         tickLoop?.cancel(); tickLoop = nil
         await uplink.stop()
         // The graph's own subscriptions stopping is not enough on its
@@ -407,6 +483,108 @@ public final class AppGraph {
         }
     }
 
+    // MARK: - M3: id generator seeding (PR #281 review, BLOCKING 1)
+
+    /// Raises `outbox`/`inbound`'s floor so neither can ever mint an id
+    /// already sitting in `store` — the fix for the review's BLOCKING
+    /// finding: `OutboxIDGenerator`/`InboundFeedIDGenerator` used to
+    /// restart from the SAME fixed base on every launch, so a second
+    /// session's very first send/receive could alias a first session's,
+    /// letting `HistoryStore.record`'s upsert silently overwrite an
+    /// unrelated persisted row, or letting a live status update
+    /// (`markSent`/`setStatus(outboxID:)`) land on a restored item's row
+    /// instead of the live message that actually earned it.
+    ///
+    /// Two sources are combined with `max`, never either alone:
+    ///  1. The highest id of each id-space actually present in
+    ///     `allHistory` right now (this launch's own `loadAllForRestore`
+    ///     snapshot, passed in rather than re-queried).
+    ///  2. `store`'s own persisted watermark (`HistoryStore.watermark
+    ///     (for:)`) — durable independently of which rows currently
+    ///     exist, so a row `HistoryStore.prune()` already evicted
+    ///     (oldest-BY-TIMESTAMP, not oldest-by-id) cannot silently lower
+    ///     the floor a past launch already proved was necessary.
+    /// The combined floor is then written straight back as the new
+    /// watermark (3) — even a launch that sends or receives nothing
+    /// still raises the durable floor to at least what `allHistory`
+    /// alone already proves, so the NEXT launch is never left relying on
+    /// today's rows surviving pruning.
+    ///
+    /// Ids are partitioned by their OWN top bit, never by
+    /// `FeedMessage.direction` — `InboundFeedIDGenerator` sets the top
+    /// bit on every id it mints and `OutboxIDGenerator` never does
+    /// (both types' own doc comments), and that structural partition is
+    /// what actually determines which generator a given id belongs to,
+    /// regardless of what this app happened to record as that message's
+    /// `direction`.
+    private static func seedIDGenerators(from allHistory: [(ConversationKind, FeedMessage)], store: HistoryStore,
+                                          outbox: OutboxIDGenerator, inbound: InboundFeedIDGenerator) {
+        let topBit: UInt64 = 0x8000_0000_0000_0000
+        let maxOutboundID = allHistory.map(\.1.id).filter { $0 & topBit == 0 }.max()
+        let maxInboundID = allHistory.map(\.1.id).filter { $0 & topBit != 0 }.max()
+
+        let outboxFloor = Swift.max(maxOutboundID.map { $0 &+ 1 } ?? 1,
+                                     store.watermark(for: HistoryStore.outboxWatermarkKey))
+        let inboundFloor = Swift.max(maxInboundID.map { $0 &+ 1 } ?? topBit,
+                                      store.watermark(for: HistoryStore.inboundWatermarkKey))
+
+        outbox.seed(atLeast: outboxFloor)
+        inbound.seed(atLeast: inboundFloor)
+        store.raiseWatermark(for: HistoryStore.outboxWatermarkKey, to: outboxFloor)
+        store.raiseWatermark(for: HistoryStore.inboundWatermarkKey, to: inboundFloor)
+    }
+
+    // MARK: - M3: persisted outbox flush
+
+    /// WAITING items that survived a relaunch (`HistoryStore
+    /// .pendingOutbox`) have no live `ThreadViewModel` watching them —
+    /// that type's own in-memory `outbox` array only ever holds what IT
+    /// personally queued THIS session (`ThreadViewModel.swift`'s own
+    /// header comment). This is the flush that owns them instead: a
+    /// fresh, independent `client.linkState()` subscription (S1 — this
+    /// graph's own, never shared with `core`'s or any view model's), the
+    /// same "flushed automatically the next time the link reaches ready"
+    /// rule a live thread's own outbox follows, applied once, at the
+    /// composition-root level, to whatever persisted WAITING items exist
+    /// regardless of which screen — if any — is open. No double-send
+    /// risk against a live `ThreadViewModel`'s own flush: a restored
+    /// WAITING item was never in any `ThreadViewModel`'s session-local
+    /// array to begin with (that array starts empty every launch), so
+    /// the two queues can never overlap.
+    private func observeHistoryOutboxFlush() {
+        guard historyOutboxFlushObservation == nil else { return }
+        let links = dependencies.client.linkState()
+        historyOutboxFlushObservation = Task { [weak self] in
+            var wasReady = false
+            for await state in links {
+                guard let self else { return }
+                let ready = (state == .ready)
+                if ready, !wasReady { await self.flushPersistedOutbox() }
+                wasReady = ready
+            }
+        }
+    }
+
+    /// Bounded (`ThreadViewModel.outboxCap`), oldest first — the same
+    /// drop-oldest FIFO discipline a live thread's own outbox follows,
+    /// applied here to whatever `historyStore` still has WAITING.
+    /// `item.destination` is read straight off the restored row (never
+    /// re-derived): it is exactly `meshBroadcastAddress` for a
+    /// whole-crew send, matching `ff_feed_item_t.to_node`'s own
+    /// "0 = broadcast" convention one layer up.
+    private func flushPersistedOutbox() async {
+        for (_, item) in historyStore.pendingOutbox(cap: ThreadViewModel.outboxCap) {
+            let dest = item.destination ?? meshBroadcastAddress
+            let wantAck = (dest != meshBroadcastAddress)
+            do {
+                let packetID = try await dependencies.client.sendText(item.text, to: dest, wantAck: wantAck)
+                inboxProvider.markSent(outboxID: item.id, packetID: packetID, at: Date())
+            } catch {
+                inboxProvider.setStatus(outboxID: item.id, state: .dropped, at: Date())
+            }
+        }
+    }
+
     // MARK: - View models
 
     /// The Radar screen's view model, over the REAL bridges: `ff_crew` +
@@ -459,7 +637,8 @@ public final class AppGraph {
     /// until a portnum-269 send existed.
     public func makeInboxViewModel() -> InboxViewModel {
         let model = InboxViewModel(provider: inboxProvider, client: dependencies.client, flareSender: packetSender,
-                                    currentFix: { [weak self] in self?.myFix })
+                                    currentFix: { [weak self] in self?.myFix },
+                                    outboxIDGenerator: outboxIDGenerator, inboundFeedIDGenerator: inboundFeedIDGenerator)
         // Same fix as `makeRadarViewModel(haptics:)` just above, and for
         // the identical reason — see `makeConnectViewModel()`'s doc
         // comment for the full NavigationSplitView remount story this is

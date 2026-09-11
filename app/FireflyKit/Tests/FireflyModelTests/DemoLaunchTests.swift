@@ -39,4 +39,28 @@ final class DemoLaunchTests: XCTestCase {
     func testRequestedScreenIsNilWhenTheFlagIsTheLastArgument() {
         XCTAssertNil(DemoLaunch.requestedScreen(arguments: ["-FireflyDemo", "-FireflyDemoScreen"]))
     }
+
+    // MARK: - M3: -FireflyDemoRestored
+
+    func testRestoredFlagRequestsRestoredMode() {
+        XCTAssertTrue(DemoLaunch.isRestoredRequested(arguments: ["-FireflyDemoRestored"], environment: [:]))
+    }
+
+    func testRestoredEnvVarRequestsRestoredMode() {
+        XCTAssertTrue(DemoLaunch.isRestoredRequested(arguments: [], environment: ["FIREFLY_DEMO_RESTORED": "1"]))
+    }
+
+    func testRestoredFlagAloneAlsoImpliesPlainDemoMode() {
+        // A screenshot script only ever has to pass ONE flag — see
+        // `DemoLaunch.isRequested(...)`'s own doc comment.
+        XCTAssertTrue(DemoLaunch.isRequested(arguments: ["-FireflyDemoRestored"], environment: [:]))
+    }
+
+    func testPlainDemoFlagDoesNotImplyRestoredMode() {
+        XCTAssertFalse(DemoLaunch.isRestoredRequested(arguments: ["-FireflyDemo"], environment: [:]))
+    }
+
+    func testNeitherPresentMeansNotRestoredRequested() {
+        XCTAssertFalse(DemoLaunch.isRestoredRequested(arguments: [], environment: [:]))
+    }
 }

@@ -156,11 +156,23 @@ public struct FeedMessage: Sendable, Equatable, Identifiable {
     /// `ThreadViewModel.renderedDeliveryState(for:now:)`'s render-time
     /// no-ack window measures from.
     public var statusAt: Date
+    /// M3 — `true` for a message this process itself loaded from
+    /// `HistoryStore` on cold launch rather than observed live
+    /// (`PersistingInboxProvider`'s own header comment has the full
+    /// "earns the tag once, permanently" rule). `false` — the default,
+    /// and every call site that predates M3 — means either genuinely
+    /// live, or a provider with no persistence wrapped around it at all
+    /// (`InMemoryInboxStore` in a test, for instance). The view renders
+    /// this as "FROM STORAGE" next to the message's own honest age —
+    /// never as a live delivery/presence claim (docs/specs/
+    /// A01-companion-app.md, M3: "everything restored is rendered AS
+    /// RESTORED... never as live").
+    public var isRestored: Bool
 
     public init(id: UInt64, kind: MessageKind, direction: MessageDirection, senderID: UInt32? = nil,
                 senderName: String? = nil, text: String, timestamp: Date, unread: Bool = false,
                 flareDurationSeconds: UInt16? = nil, destination: UInt32? = nil, packetID: UInt32? = nil,
-                deliveryState: DeliveryState? = nil, statusAt: Date? = nil) {
+                deliveryState: DeliveryState? = nil, statusAt: Date? = nil, isRestored: Bool = false) {
         self.id = id
         self.kind = kind
         self.direction = direction
@@ -174,6 +186,7 @@ public struct FeedMessage: Sendable, Equatable, Identifiable {
         self.packetID = packetID
         self.deliveryState = deliveryState
         self.statusAt = statusAt ?? timestamp
+        self.isRestored = isRestored
     }
 }
 
@@ -207,6 +220,11 @@ public struct InboxConversationRow: Sendable, Equatable, Identifiable {
     /// an outgoing status tag on the Inbox row, so this is a disclosed,
     /// deliberate product divergence for the phone, not an oversight.
     public var previewDeliveryState: DeliveryState?
+    /// M3 — `true` iff this conversation's newest item is itself
+    /// `FeedMessage.isRestored` (that field's own doc comment). Lets the
+    /// Inbox row say "FROM STORAGE" the moment the screen renders, on a
+    /// cold launch, before the user has even opened a thread.
+    public var previewIsRestored: Bool
 
     /// `nil` for CREW. `PresenceTag`/age for a member row.
     public var presence: PresenceTag?
@@ -216,7 +234,7 @@ public struct InboxConversationRow: Sendable, Equatable, Identifiable {
                 unreadCount: Int = 0, itemCount: Int = 0, hasPreview: Bool = false, previewKind: MessageKind? = nil,
                 previewDirection: MessageDirection? = nil, previewText: String = "", previewAge: TimeInterval? = nil,
                 previewFromName: String? = nil, previewDeliveryState: DeliveryState? = nil,
-                presence: PresenceTag? = nil, presenceAge: TimeInterval? = nil) {
+                previewIsRestored: Bool = false, presence: PresenceTag? = nil, presenceAge: TimeInterval? = nil) {
         self.kind = kind
         self.displayName = displayName
         self.initial = initial
@@ -230,6 +248,7 @@ public struct InboxConversationRow: Sendable, Equatable, Identifiable {
         self.previewAge = previewAge
         self.previewFromName = previewFromName
         self.previewDeliveryState = previewDeliveryState
+        self.previewIsRestored = previewIsRestored
         self.presence = presence
         self.presenceAge = presenceAge
     }
@@ -288,6 +307,21 @@ public protocol InboxProviding: AnyObject {
     /// addressed by packet id (the client's `deliveryUpdates()`
     /// correlation key).
     func setStatus(packetID: UInt32, state: DeliveryState, at: Date)
+
+    /// M3 — Settings' "Clear history" action: every message, in every
+    /// conversation, gone. Has no `ff_feed_h` equivalent (the puck never
+    /// needed one — its own ring buffer is already RAM-only and forgets
+    /// everything on every boot); this exists purely because M3 gives
+    /// the phone something worth clearing on purpose. Default
+    /// implementation below is a no-op so a conformance written before
+    /// M3 keeps compiling unchanged; `InMemoryInboxStore`,
+    /// `CoreInboxProvider` and `PersistingInboxProvider` all override it
+    /// properly.
+    func clearAll()
+}
+
+extension InboxProviding {
+    public func clearAll() {}
 }
 
 /// A monotonic id source for INBOUND `FeedMessage`s
@@ -304,15 +338,32 @@ public protocol InboxProviding: AnyObject {
 // PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
 // same way as `EventHub` (`EventHub.swift`'s own comment) — the only
 // mutable state, `counter`, is only ever read or written under `lock`.
-private final class InboundFeedIDGenerator: @unchecked Sendable {
-    static let shared = InboundFeedIDGenerator()
+//
+// PR #281 review, BLOCKING 1: same fix, same reasoning as
+// `OutboxIDGenerator` (`ThreadViewModel.swift`'s own doc comment) —
+// `.shared` alone always restarted at the identical top-bit-set base
+// value on every process launch, so a second session's first inbound
+// message could alias a first session's. `public`, with an accessible
+// plain `init()`, for the identical reason: `AppGraph.init`'s
+// `inboundFeedIDGenerator:` override seam and its own tests need a
+// fresh instance that behaves exactly like a brand-new process's
+// `.shared` would, without touching global state.
+public final class InboundFeedIDGenerator: @unchecked Sendable {
+    public static let shared = InboundFeedIDGenerator()
     private let lock = NSLock()
     private var counter: UInt64 = 0x8000_0000_0000_0000
-    func next() -> UInt64 {
+    public init() {}
+    public func next() -> UInt64 {
         lock.lock(); defer { lock.unlock() }
         let value = counter
         counter &+= 1
         return value
+    }
+    /// See `OutboxIDGenerator.seed(atLeast:)`'s own doc comment — the
+    /// identical contract, one bit-space over.
+    public func seed(atLeast minimum: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        counter = Swift.max(counter, minimum)
     }
 }
 
@@ -470,6 +521,18 @@ public final class InMemoryInboxStore: InboxProviding, @unchecked Sendable {
         return (messagesByConversation[conversation] ?? []).sorted { $0.timestamp < $1.timestamp }
     }
 
+    /// M3 — clears every conversation's messages, keeping registered
+    /// members (and their presence) intact: "clear history" forgets
+    /// what was said, not who is paired, the same split
+    /// `PersistingInboxProvider.clearAll()`'s own doc comment draws for
+    /// the real bridge (crew pairing lives in `CrewPairingStore`, not
+    /// here or there).
+    public func clearAll() {
+        lock.lock(); defer { lock.unlock() }
+        for key in messagesByConversation.keys { messagesByConversation[key] = [] }
+        mySentPacketIDs = SentIDRing()
+    }
+
     @discardableResult
     public func markRead(_ conversation: ConversationKind) -> Int {
         lock.lock(); defer { lock.unlock() }
@@ -589,6 +652,27 @@ public enum InboxText {
     }
 }
 
+/// A short, mono age string — "NOW", "6M", "2H", "3D". Never a raw
+/// second count; the same "words, not measurements you can't back up"
+/// spirit `SignalTierPresentation` uses, applied to time instead of
+/// signal strength. Lives here rather than in a SwiftUI file (same
+/// precedent as `InboxAvatar`/`InboxText` just above) precisely so it is
+/// `swift test`-reachable: M3's own restored-message age labels
+/// (`ThreadView`'s "FROM STORAGE" tag) and every un-restored row/bubble
+/// age in this app share this ONE table — see `InboxAgeTests` for the
+/// boundary values it is pinned against.
+public enum InboxAge {
+    public static func short(_ interval: TimeInterval) -> String {
+        let seconds = max(0, Int(interval))
+        if seconds < 60 { return "NOW" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)M" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)H" }
+        return "\(hours / 24)D"
+    }
+}
+
 /// The single-character glyph `InboxListView`'s member-row avatar
 /// renders — pulled out of that view so the "no `Character("")` trap"
 /// fix (PR #267 review) is unit-testable, not just eyeballed. A paired
@@ -641,13 +725,28 @@ public final class InboxViewModel {
     /// this view model against `InMemoryInboxStore` directly — so this
     /// is the one place an inbound message can reach the screen today.
     private var incomingTextObservation: Task<Void, Never>?
+    /// PR #281 review, BLOCKING 1 — see `OutboxIDGenerator`'s own doc
+    /// comment (`ThreadViewModel.swift`) for why this exists at all.
+    /// `.shared` by default; handed straight through to every
+    /// `ThreadViewModel` this view model opens (`openThread(_:)`, below)
+    /// so both view models a single `AppGraph` composes always mint into
+    /// the SAME outbox id space, whether that's the real `.shared` or an
+    /// override a test injected.
+    private let outboxIDGenerator: OutboxIDGenerator
+    /// The inbound counterpart to `outboxIDGenerator`, same reasoning —
+    /// `ingest(_:)` is this view model's own only minting call site.
+    private let inboundFeedIDGenerator: InboundFeedIDGenerator
 
     public init(provider: any InboxProviding, client: any MeshtasticClientProtocol,
-                flareSender: (any FireflyPacketSending)? = nil, currentFix: (() -> LocationFix?)? = nil) {
+                flareSender: (any FireflyPacketSending)? = nil, currentFix: (() -> LocationFix?)? = nil,
+                outboxIDGenerator: OutboxIDGenerator = .shared,
+                inboundFeedIDGenerator: InboundFeedIDGenerator = .shared) {
         self.provider = provider
         self.client = client
         self.flareSender = flareSender
         self.currentFix = currentFix
+        self.outboxIDGenerator = outboxIDGenerator
+        self.inboundFeedIDGenerator = inboundFeedIDGenerator
     }
 
     /// Idempotent, like every other view model's `observe()`.
@@ -707,7 +806,7 @@ public final class InboxViewModel {
         let isBroadcast = isBroadcastDestination(incoming.to)
         let conversation: ConversationKind = isBroadcast ? .crew : .member(incoming.from)
         let message = FeedMessage(
-            id: InboundFeedIDGenerator.shared.next(),
+            id: inboundFeedIDGenerator.next(),
             kind: .text,
             direction: isBroadcast ? .broadcast : .direct,
             senderID: incoming.from,
@@ -742,6 +841,7 @@ public final class InboxViewModel {
         }
         return ThreadViewModel(conversation: conversation, provider: provider, client: client,
                                 flareSender: flareSender, currentFix: currentFix,
-                                memberDisplayName: memberDisplayName, memberColorIndex: memberColorIndex)
+                                memberDisplayName: memberDisplayName, memberColorIndex: memberColorIndex,
+                                outboxIDGenerator: outboxIDGenerator)
     }
 }

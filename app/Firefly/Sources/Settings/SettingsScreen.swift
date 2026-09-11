@@ -24,6 +24,10 @@ struct SettingsScreen: View {
     /// channel "Apply to node" uses.
     @State private var isShowingNameConfirmation = false
     @State private var isShowingRegionConfirmation = false
+    /// M3 — "Clear history" (docs/specs/A01-companion-app.md M3),
+    /// behind the same confirm-then-write pattern as the two admin
+    /// writes above.
+    @State private var isShowingClearHistoryConfirmation = false
 
     init(model: SettingsViewModel, client: any MeshtasticClientProtocol, pairing: CrewPairingController,
          autoOpenDiagnostics: Bool = false) {
@@ -42,6 +46,7 @@ struct SettingsScreen: View {
                 unitsSection
                 crewSection
                 appearanceSection
+                historySection
                 Button("DIAGNOSTICS") { showDiagnostics = true }
                     .buttonStyle(.bordered)
                     .tint(.ffAmber)
@@ -105,6 +110,22 @@ struct SettingsScreen: View {
                     }
                 },
                 onCancel: { isShowingRegionConfirmation = false })
+        }
+        // M3 — "Clear history": no network round trip
+        // (`SettingsViewModel.confirmClearHistory()`'s own doc comment),
+        // so CONFIRM closes the sheet immediately rather than awaiting
+        // anything.
+        .sheet(isPresented: $isShowingClearHistoryConfirmation) {
+            AdminWriteConfirmationSheet(
+                title: "CLEAR HISTORY",
+                changes: model.clearHistorySummary,
+                isBusy: false,
+                errorMessage: nil,
+                onConfirm: {
+                    model.confirmClearHistory()
+                    isShowingClearHistoryConfirmation = false
+                },
+                onCancel: { isShowingClearHistoryConfirmation = false })
         }
     }
 
@@ -229,6 +250,38 @@ struct SettingsScreen: View {
             ToggleRow(
                 label: "Colorblind crew palette",
                 isOn: Binding(get: { model.colorblindPalette }, set: { model.setColorblindPalette($0) }))
+        }
+    }
+
+    // MARK: - History (M3)
+
+    /// docs/specs/A01-companion-app.md, M3: "a 'Clear history' action in
+    /// Settings with confirmation." A destructive-tinted button, plain
+    /// text warning — the same bluntness `AdminWriteConfirmationSheet`
+    /// itself uses for a write it cannot undo, applied here to a delete
+    /// it cannot undo either.
+    ///
+    /// PR #281 review, SHOULD-FIX 2: a second line discloses the OTHER
+    /// way history can disappear — an app update whose on-disk format
+    /// changed, or a corrupted store file, clears it automatically, with
+    /// no button ever tapped (`HistoryStore.makeContainer`'s
+    /// drop-and-recreate fallback; that type's own header comment and
+    /// `HistorySchema.swift`'s have the full justification). The spec's
+    /// own "disclosed in three places" claim named this screen as one of
+    /// them; before this fix the copy below disclosed only that the
+    /// MANUAL button is irreversible, never the automatic case.
+    private var historySection: some View {
+        SettingsBlock(title: "HISTORY") {
+            Text("Saved messages live only on this device. Clearing them cannot be undone.")
+                .font(.caption2)
+                .foregroundStyle(Color.ffMuted)
+            Text("If the app's history format changes, old history is cleared automatically.")
+                .font(.caption2)
+                .foregroundStyle(Color.ffMuted)
+            Button("CLEAR HISTORY") { isShowingClearHistoryConfirmation = true }
+                .buttonStyle(.bordered)
+                .tint(.ffAlert)
+                .frame(minHeight: 44)
         }
     }
 
