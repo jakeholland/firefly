@@ -44,6 +44,9 @@ struct ThreadView: View {
             if !model.isLinkReady {
                 LinkDownBanner(queuedCount: model.queuedCount)
             }
+            if let failure = model.immediateSendFailure {
+                ImmediateSendFailureBanner(failure: failure)
+            }
 
             QuickReplyRow(model: model)
             ComposeBar(model: model)
@@ -69,6 +72,33 @@ private struct LinkDownBanner: View {
         HStack(spacing: 6) {
             Image(systemName: "antenna.radiowaves.left.and.right.slash")
             Text(queuedCount > 0 ? "NODE NOT CONNECTED · \(queuedCount) QUEUED" : "NODE NOT CONNECTED")
+        }
+        .font(.system(.caption, design: .monospaced).weight(.semibold))
+        .foregroundStyle(Color(fireflyHex: FireflyTheme.staleAmber))
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .background(Color.ffSurface)
+    }
+}
+
+/// The transient, non-queued failure banner for a quick-reply or FLARE
+/// tap (BLOCKING review item 3: neither is ever queued, so a link-down
+/// or transport-error tap needs to fail VISIBLY here instead).
+private struct ImmediateSendFailureBanner: View {
+    let failure: ImmediateSendFailure
+
+    private var label: String {
+        switch failure {
+        case .linkDown: return "NOT SENT · NODE NOT CONNECTED"
+        case .transportError: return "NOT SENT · TRY AGAIN"
+        case .flareUnavailable: return ThreadViewModel.flareUnavailableLabel.uppercased()
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text(label)
         }
         .font(.system(.caption, design: .monospaced).weight(.semibold))
         .foregroundStyle(Color(fireflyHex: FireflyTheme.staleAmber))
@@ -106,6 +136,11 @@ private struct MessageBubble: View {
                                 .font(.system(.caption2, design: .monospaced).weight(.bold))
                                 .foregroundStyle(Color.ffAmber)
                                 .buttonStyle(.plain)
+                                // 44pt minimum tap target (SHOULD-FIX 7),
+                                // without inflating the caption text's own
+                                // visual size.
+                                .frame(minWidth: 44, minHeight: 44)
+                                .contentShape(Rectangle())
                         }
                     }
                 }
@@ -162,21 +197,31 @@ private struct QuickReplyRow: View {
                             .foregroundStyle(Color.ffInk)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
+                            .frame(minWidth: 44, minHeight: 44) // SHOULD-FIX 7
                             .background(Color.ffSurface, in: Capsule())
                     }
                     .buttonStyle(.plain)
+                    .contentShape(Capsule())
                 }
+                // Disabled with an honest label, never a placeholder
+                // transmission, whenever no FLARE seam was injected
+                // (BLOCKING review item 2).
                 Button {
                     Task { await model.sendFlare() }
                 } label: {
                     Label("FLARE", systemImage: "flame.fill")
                         .font(.system(.caption, design: .rounded).weight(.bold))
-                        .foregroundStyle(Color.ffBackground)
+                        .foregroundStyle(model.flareAvailable ? Color.ffBackground : Color.ffMuted)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .background(Color.ffAmber, in: Capsule())
+                        .frame(minWidth: 44, minHeight: 44) // SHOULD-FIX 7
+                        .background(model.flareAvailable ? Color.ffAmber : Color.ffSurface, in: Capsule())
                 }
                 .buttonStyle(.plain)
+                .contentShape(Capsule())
+                .disabled(!model.flareAvailable)
+                .accessibilityLabel(model.flareAvailable ? "Flare" : ThreadViewModel.flareUnavailableLabel)
+                .help(model.flareAvailable ? "" : ThreadViewModel.flareUnavailableLabel)
             }
             .padding(.horizontal, 12)
         }
@@ -207,8 +252,10 @@ private struct ComposeBar: View {
                     .font(.system(size: 30))
                     .foregroundStyle(model.composeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                       ? Color.ffMuted : Color.ffAmber)
+                    .frame(minWidth: 44, minHeight: 44) // SHOULD-FIX 7 — the glyph stays 30pt, the tap target doesn't
             }
             .buttonStyle(.plain)
+            .contentShape(Rectangle())
             .disabled(model.composeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(.horizontal, 10)

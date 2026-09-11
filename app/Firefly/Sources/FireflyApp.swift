@@ -71,6 +71,11 @@ struct FireflyApp: App {
 
     var body: some Scene {
         WindowGroup {
+            // One argument per line (SHOULD-FIX 4): every slice that adds
+            // a `RootView` dependency (slice D's `radar`, any future
+            // slice C addition) appends its own line here instead of
+            // editing this call's single line, so sibling slices'
+            // hunks land as pure insertions and never collide.
             RootView(
                 connect: connect,
                 settings: settings,

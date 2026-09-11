@@ -36,6 +36,53 @@ public struct QuickReply: Sendable, Equatable, Identifiable {
     }
 }
 
+/// This seam's own node-address type — kept distinct from a bare
+/// `UInt32` only so a future real conformance's call site reads as "a
+/// node," matching `MeshNodeSnapshot.num`'s underlying type
+/// (`MeshtasticClientProtocol.swift`) without this slice needing to
+/// depend on that file to say so.
+public typealias NodeID = UInt32
+
+/// The narrow seam FLARE needs and `MeshtasticClientProtocol` does not
+/// provide today: a private-portnum send (`S04-firefly-protocol.md`:
+/// portnum 269, type `0x02`, body `[dur_s:2]`, `want_ack = true`) —
+/// never `TEXT_MESSAGE_APP`/`sendText` (BLOCKING review item 2: a real
+/// FLARE transmitted as plain text is worse than failing honestly,
+/// since a receiver never takes over its screen or locks its arrow the
+/// way S04 promises). The actual wire encoding is slice B's
+/// `FireflyPacket`/`ff_proto` territory, and wiring a real conformance
+/// onto a portnum-269 send is slice A's client — neither has landed in
+/// this worktree (A01's six slices build in parallel). This slice
+/// defines ONLY the seam (here) and, in its own tests, a mock
+/// conformance — never a body that falls back to `sendText`.
+/// `to: nil` means broadcast, with crew filtering happening
+/// receiver-side, exactly as S04's own "Addressing" rule specifies —
+/// this seam does not filter.
+public protocol FireflyPacketSending: AnyObject, Sendable {
+    func sendFlare(to: NodeID?, durationSeconds: UInt16) async throws
+}
+
+/// A transient, non-queued failure surfaced by a quick-reply or FLARE
+/// tap. Unlike free-typed compose text, neither is ever queued into
+/// the bounded outbox (BLOCKING review item 3 — S24's 2026-09-07
+/// amendment: canned replies "still call send_text with no
+/// out_packet_id and no outbox tracking; a link-down tap on one still
+/// fails outright exactly as it did before this amendment... Flare/
+/// Rally sends are likewise unchanged... only FEED_TEXT sends... go
+/// through the outbox"). The view reads this, shows it, and it is
+/// cleared on the next attempt — never silently retried later.
+public enum ImmediateSendFailure: Sendable, Equatable {
+    /// The link was down at the moment of the tap.
+    case linkDown
+    /// The link was up but the send itself failed (a genuine transport
+    /// error, or — for FLARE only — the routing ack simply never came
+    /// back before some future tracking window; not modeled yet).
+    case transportError
+    /// FLARE specifically: no `FireflyPacketSending` conformance was
+    /// injected, so there is no wire path to attempt at all.
+    case flareUnavailable
+}
+
 private final class OutboxIDGenerator: @unchecked Sendable {
     static let shared = OutboxIDGenerator()
     private let lock = NSLock()
@@ -57,8 +104,13 @@ public final class ThreadViewModel {
     public private(set) var isLinkReady = false
     /// How many of this thread's sends are sitting in the local outbox,
     /// waiting for the link to come back — the thread's own "N queued"
-    /// affordance.
+    /// affordance. Free-text compose only: quick replies and FLARE
+    /// never contribute to this count (BLOCKING review item 3).
     public private(set) var queuedCount = 0
+    /// The view's transient, non-queued failure for a quick-reply or
+    /// FLARE tap — see `ImmediateSendFailure`'s own doc comment. Reset
+    /// to `nil` at the start of every quick-reply/FLARE attempt.
+    public private(set) var immediateSendFailure: ImmediateSendFailure?
 
     public static let quickReplies: [QuickReply] = [
         QuickReply(label: "Omw", seedsComposeText: false),
@@ -91,14 +143,55 @@ public final class ThreadViewModel {
 
     private let provider: any InboxProviding
     private let client: any MeshtasticClientProtocol
+    /// The FLARE seam — see `FireflyPacketSending`'s doc comment. `nil`
+    /// is today's default live wiring: no slice has landed a real
+    /// portnum-269 conformance yet, so FLARE renders disabled
+    /// (`flareAvailable`) rather than falling back to a placeholder
+    /// transmission.
+    private let flareSender: (any FireflyPacketSending)?
     private var linkObservation: Task<Void, Never>?
     private var deliveryObservation: Task<Void, Never>?
     private var outbox: [PendingSend] = []
+    /// The single send queue this thread's transport-touching work runs
+    /// on — every unit is chained after whatever was chained before it,
+    /// so `flushOutbox()` and a freshly tapped compose send can never
+    /// interleave on the wire (SHOULD-FIX 5): a send tapped mid-flush is
+    /// chained after the flush and only reaches the transport once the
+    /// flush's own chained unit has fully finished.
+    private var sendChainTail: Task<Void, Never>?
 
-    public init(conversation: ConversationKind, provider: any InboxProviding, client: any MeshtasticClientProtocol) {
+    public init(conversation: ConversationKind, provider: any InboxProviding, client: any MeshtasticClientProtocol,
+                flareSender: (any FireflyPacketSending)? = nil) {
         self.conversation = conversation
         self.provider = provider
         self.client = client
+        self.flareSender = flareSender
+    }
+
+    /// Whether the FLARE control should be usable at all — `false`
+    /// whenever no `FireflyPacketSending` conformance was injected.
+    /// The view is expected to render FLARE disabled with
+    /// `flareUnavailableLabel` in that case, never a tappable control
+    /// that silently no-ops or, worse, falls back to plain text.
+    public var flareAvailable: Bool { flareSender != nil }
+    /// The honest label the view shows next to a disabled FLARE
+    /// control (BLOCKING review item 2).
+    public static let flareUnavailableLabel = "Flare needs the mesh client"
+
+    /// Appends `work` to this thread's single send chain and returns
+    /// the `Task` representing "my turn, after everyone chained before
+    /// me." Every unit that touches `client.sendText` — a fresh
+    /// compose send and a reconnect flush alike — goes through this,
+    /// so the two can never race for the wire.
+    @discardableResult
+    private func chained(_ work: @escaping () async -> Void) -> Task<Void, Never> {
+        let previous = sendChainTail
+        let task = Task { [work] in
+            await previous?.value
+            await work()
+        }
+        sendChainTail = task
+        return task
     }
 
     /// Idempotent, like every other view model's `observe()`. Subscribes
@@ -141,14 +234,20 @@ public final class ThreadViewModel {
 
     // MARK: - Composing and sending
 
+    /// Omw/Here/Wait: fire-and-forget, exactly like FLARE — NEVER
+    /// enters the bounded outbox (BLOCKING review item 3). Sends
+    /// immediately when the link is up; when it is down the tap fails
+    /// visibly (`immediateSendFailure`), not queued for a later flush.
     public func tap(_ reply: QuickReply) async {
         if reply.seedsComposeText {
             composeText = "Meet at "
             return
         }
-        await send(text: reply.label, kind: .text)
+        await sendImmediate(text: reply.label)
     }
 
+    /// Free-text compose is the ONLY sender that uses the bounded
+    /// outbox — quick replies and FLARE deliberately do not (item 3).
     public func sendCompose() async {
         let text = composeText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
@@ -157,23 +256,77 @@ public final class ThreadViewModel {
     }
 
     /// FLARE send (`S04-firefly-protocol.md` type `0x02`, default
-    /// 300 s). Routed through the same text/outbox/delivery pipeline as
-    /// everything else: `MeshtasticClientProtocol` — the one seam this
-    /// slice may depend on — has no portnum-269 send entry point yet
-    /// (`ff_proto`'s wire encoding is S04/slice A territory, and
-    /// `MeshtasticClientProtocol.swift` is not one of slice E's owned or
-    /// shared-hunk files). Disclosed gap, not a silent shortcut: once the
-    /// client grows a private-port send method, only this function's
-    /// body changes.
+    /// 300 s) — goes ONLY through `FireflyPacketSending.sendFlare`,
+    /// NEVER through `send(text:kind:)`/`client.sendText`
+    /// (BLOCKING review items 2 and 3). Fire-and-forget like the quick
+    /// replies: never enters the outbox, fails visibly when the link
+    /// is down or the seam is missing.
     public func sendFlare(durationSeconds: UInt16 = 300) async {
-        await send(text: "FLARE", kind: .flare, flareDurationSeconds: durationSeconds)
+        immediateSendFailure = nil
+        guard let flareSender else {
+            immediateSendFailure = .flareUnavailable
+            return
+        }
+        guard isLinkReady else {
+            immediateSendFailure = .linkDown
+            return
+        }
+        let dest: NodeID? = (conversation == .crew) ? nil : destination
+        do {
+            try await flareSender.sendFlare(to: dest, durationSeconds: durationSeconds)
+            let now = Date()
+            let sent = FeedMessage(id: OutboxIDGenerator.shared.next(), kind: .flare, direction: .out,
+                                    text: "FLARE", timestamp: now, flareDurationSeconds: durationSeconds,
+                                    destination: dest ?? meshBroadcastAddress, deliveryState: .sent, statusAt: now)
+            provider.push(sent, into: conversation)
+            refresh()
+        } catch {
+            immediateSendFailure = .transportError
+        }
+    }
+
+    /// The single non-outbox send path shared by quick replies (FLARE
+    /// has its own, above, since it uses a different seam entirely).
+    /// Pushes a local record only once the send has actually been
+    /// attempted — no phantom WAITING row sitting forever behind a
+    /// link that may never come back, since (unlike compose) this is
+    /// never going to be flushed later.
+    private func sendImmediate(text: String) async {
+        immediateSendFailure = nil
+        guard isLinkReady else {
+            immediateSendFailure = .linkDown
+            return
+        }
+        let dest = destination
+        let wantAck = (conversation != .crew)
+        let outboxID = OutboxIDGenerator.shared.next()
+        let now = Date()
+        let pending = FeedMessage(id: outboxID, kind: .text, direction: .out, text: text, timestamp: now,
+                                   destination: dest, deliveryState: .waiting, statusAt: now)
+        provider.push(pending, into: conversation)
+        refresh()
+        do {
+            let packetID = try await client.sendText(text, to: dest, wantAck: wantAck)
+            provider.markSent(outboxID: outboxID, packetID: packetID, at: Date())
+            refresh()
+        } catch {
+            provider.setStatus(outboxID: outboxID, state: .dropped, at: Date())
+            refresh()
+            immediateSendFailure = .transportError
+        }
     }
 
     /// The delivery-state table's own "resend action" for a NO ACK
     /// (or DROPPED) message: re-attempts the exact same content as a
-    /// fresh send.
+    /// fresh send. A FLARE resend goes back through `sendFlare`, never
+    /// through the text/outbox pipeline — the same BLOCKING item 2/3
+    /// rule applies to a retry as it does to the original tap.
     public func resend(_ message: FeedMessage) async {
         guard message.direction == .out else { return }
+        if message.kind == .flare {
+            await sendFlare(durationSeconds: message.flareDurationSeconds ?? 300)
+            return
+        }
         await send(text: message.text, kind: message.kind, flareDurationSeconds: message.flareDurationSeconds)
     }
 
@@ -213,14 +366,22 @@ public final class ThreadViewModel {
         provider.push(pending, into: conversation)
         refresh()
 
-        guard isLinkReady else {
-            enqueue(PendingSend(outboxID: outboxID, text: text, kind: kind,
-                                 flareDurationSeconds: flareDurationSeconds))
-            return
-        }
-        await attemptSend(outboxID: outboxID, text: text, dest: dest, wantAck: wantAck,
-                           fallback: PendingSend(outboxID: outboxID, text: text, kind: kind,
-                                                  flareDurationSeconds: flareDurationSeconds))
+        // Only the transport-touching half is chained (SHOULD-FIX 5):
+        // the WAITING row above is visible immediately regardless of
+        // whatever a concurrent flush is doing, but the actual
+        // enqueue-or-attempt decision waits its turn on the single
+        // send chain shared with `flushOutbox()`.
+        await chained { [weak self] in
+            guard let self else { return }
+            guard self.isLinkReady else {
+                self.enqueue(PendingSend(outboxID: outboxID, text: text, kind: kind,
+                                          flareDurationSeconds: flareDurationSeconds))
+                return
+            }
+            await self.attemptSend(outboxID: outboxID, text: text, dest: dest, wantAck: wantAck,
+                                    fallback: PendingSend(outboxID: outboxID, text: text, kind: kind,
+                                                           flareDurationSeconds: flareDurationSeconds))
+        }.value
     }
 
     private func attemptSend(outboxID: UInt64, text: String, dest: UInt32, wantAck: Bool,
@@ -252,8 +413,17 @@ public final class ThreadViewModel {
 
     /// Flushed automatically on the link's next not-ready -> ready edge
     /// (S24's amendment: "flushed automatically the next time the link
-    /// reaches MC_STATE_READY").
+    /// reaches MC_STATE_READY"). Runs as ONE unit on the single send
+    /// chain (SHOULD-FIX 5), so every queued item is fully drained
+    /// before any send chained after it — including a compose tap that
+    /// landed while this flush was still in flight — gets its turn.
     private func flushOutbox() async {
+        await chained { [weak self] in
+            await self?.drainOutbox()
+        }.value
+    }
+
+    private func drainOutbox() async {
         guard isLinkReady else { return }
         let pending = outbox
         outbox.removeAll()

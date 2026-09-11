@@ -256,9 +256,10 @@ public protocol InboxProviding: AnyObject, Sendable {
     @discardableResult
     func markRead(_ conversation: ConversationKind) -> Int
 
-    /// Mirrors `ff_feed_push`, with the same echo-dedup-by-packet-id
-    /// guard the client applies to inbound text before it ever reaches
-    /// the feed (A01, "Routing ACK -> delivery state").
+    /// Mirrors `ff_feed_push`, with an echo-dedup-by-packet-id guard
+    /// scoped to MY OWN sent packet ids only (A01, "Routing ACK ->
+    /// delivery state") — never a global "every id ever seen" set; see
+    /// `InMemoryInboxStore.mySentPacketIDs`'s doc comment for why.
     func push(_ message: FeedMessage, into conversation: ConversationKind)
     /// Mirrors `ff_feed_mark_sent_by_outbox_id`: the WAITING -> SENT
     /// transition, stamping the packet id the radio assigned.
@@ -271,6 +272,28 @@ public protocol InboxProviding: AnyObject, Sendable {
     /// addressed by packet id (the client's `deliveryUpdates()`
     /// correlation key).
     func setStatus(packetID: UInt32, state: DeliveryState, at: Date)
+}
+
+/// A fixed-size FIFO of the most recent 64 packet ids — `InMemoryInboxStore`'s
+/// echo-dedup memory (see `mySentPacketIDs`'s doc comment). Insertion
+/// order determines eviction: the OLDEST id falls out once a 65th is
+/// inserted, exactly the "ring of the last 64" the review asked for,
+/// never an unbounded set.
+private struct SentIDRing {
+    static let capacity = 64
+    private var order: [UInt32] = []
+    private var members: Set<UInt32> = []
+
+    mutating func insert(_ id: UInt32) {
+        guard !members.contains(id) else { return }
+        order.append(id)
+        members.insert(id)
+        if order.count > Self.capacity {
+            members.remove(order.removeFirst())
+        }
+    }
+
+    func contains(_ id: UInt32) -> Bool { members.contains(id) }
 }
 
 /// The M1 stand-in for `InboxBridge` — see this file's header comment.
@@ -290,9 +313,21 @@ public final class InMemoryInboxStore: InboxProviding, @unchecked Sendable {
     private let lock = NSLock()
     private var members: [UInt32: Member] = [:]
     private var messagesByConversation: [ConversationKind: [FeedMessage]] = [.crew: []]
-    /// Every packet id this store has ever seen, inbound or outbound —
-    /// the echo-dedup guard's memory.
-    private var seenPacketIDs: Set<UInt32> = []
+    /// The echo-dedup guard's memory — bounded to MY OWN sent packet
+    /// ids only (the ids `markSent` recorded, i.e. exactly what the
+    /// client returned for MY sends), never a global "every id ever
+    /// seen" set. Meshtastic packet ids are 32-bit values generated
+    /// independently per device; over a multi-day festival with
+    /// several paired members, two different senders reusing the same
+    /// id is a real, non-adversarial birthday-collision risk, not just
+    /// a hypothetical one — a global set would silently and
+    /// permanently eat one of their messages (BLOCKING review item 1
+    /// on this PR). Scoping to "ids I myself sent" means only a TRUE
+    /// echo of my own broadcast is ever dropped; an unrelated sender's
+    /// message that happens to reuse an id I never sent is always
+    /// kept. `SentIDRing.capacity` bounds it to the most recent 64
+    /// sends so this memory never grows unbounded either.
+    private var mySentPacketIDs = SentIDRing()
 
     public init() {}
 
@@ -321,18 +356,30 @@ public final class InMemoryInboxStore: InboxProviding, @unchecked Sendable {
         members[member]?.presenceAgeMS = ageMS
     }
 
+    /// NIT 9 on this PR — membership note: unlike `ff_inbox_build`, which
+    /// re-derives conversation membership from the WHOLE feed's own
+    /// `dir`/`from_node`/`to_node` fields on every build, this stand-in
+    /// takes `conversation` as an explicit destination from the caller.
+    /// Harmless here since every call site already knows the right
+    /// conversation, but a structurally different shape from the real
+    /// `InboxBridge` (slice B) — re-verify the ordering/membership tests
+    /// once that swap happens.
     public func push(_ message: FeedMessage, into conversation: ConversationKind) {
         lock.lock(); defer { lock.unlock() }
-        if message.direction != .out, let packetID = message.packetID, seenPacketIDs.contains(packetID) {
-            return // our own broadcast, echoed back — dropped before it ever reaches the feed
+        // Echo-dedup: only an id THIS store's own `markSent` recorded —
+        // never a global "every id ever seen" set. See
+        // `mySentPacketIDs`'s doc comment.
+        if message.direction != .out, let packetID = message.packetID, mySentPacketIDs.contains(packetID) {
+            return // an echo of one of MY OWN sent packet ids — dropped before it ever reaches the feed
         }
-        if let packetID = message.packetID { seenPacketIDs.insert(packetID) }
         messagesByConversation[conversation, default: []].append(message)
     }
 
     public func markSent(outboxID: UInt64, packetID: UInt32, at: Date) {
         lock.lock(); defer { lock.unlock() }
-        seenPacketIDs.insert(packetID)
+        // The ONLY place a packet id enters the echo-dedup memory: the
+        // moment the radio hands back an id for something I myself sent.
+        mySentPacketIDs.insert(packetID)
         mutateLocked(outboxID: outboxID) {
             $0.packetID = packetID
             $0.deliveryState = .sent
@@ -508,11 +555,18 @@ public final class InboxViewModel {
 
     private let provider: any InboxProviding
     private let client: any MeshtasticClientProtocol
+    /// Handed straight through to every `ThreadViewModel` this view
+    /// model opens. `nil` — today's default live wiring — means FLARE
+    /// renders disabled everywhere (`ThreadViewModel.flareAvailable`);
+    /// see `ThreadViewModel.swift`'s `FireflyPacketSending` doc comment.
+    private let flareSender: (any FireflyPacketSending)?
     private var deliveryObservation: Task<Void, Never>?
 
-    public init(provider: any InboxProviding, client: any MeshtasticClientProtocol) {
+    public init(provider: any InboxProviding, client: any MeshtasticClientProtocol,
+                flareSender: (any FireflyPacketSending)? = nil) {
         self.provider = provider
         self.client = client
+        self.flareSender = flareSender
     }
 
     /// Idempotent, like every other view model's `observe()`.
@@ -547,6 +601,6 @@ public final class InboxViewModel {
     public func openThread(_ conversation: ConversationKind) -> ThreadViewModel {
         provider.markRead(conversation)
         refresh()
-        return ThreadViewModel(conversation: conversation, provider: provider, client: client)
+        return ThreadViewModel(conversation: conversation, provider: provider, client: client, flareSender: flareSender)
     }
 }

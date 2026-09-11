@@ -187,6 +187,24 @@ final class InboxViewModelTests: XCTestCase {
         XCTAssertFalse(preview.hasSuffix("…"))
     }
 
+    /// NIT 8 on this PR: a combining mark (base + U+0301 COMBINING ACUTE
+    /// ACCENT) is two scalars but ONE grapheme cluster/`Character`, the
+    /// same "never torn mid-cluster" rule as the ZWJ family and flag
+    /// cases above — different Unicode mechanism (combining, not ZWJ or
+    /// regional-indicator pairing), same truncation guarantee.
+    func testPreviewTruncationNeverSplitsACombiningMarkCluster() {
+        let eAcute = "e\u{0301}" // "é" as two scalars, one Character
+        let text = String(repeating: "x", count: 41) + eAcute + "y"
+        let preview = InboxText.preview(text, maxLength: 42)
+        // Either the whole combining-mark cluster is present or wholly
+        // absent — never a bare base character with its accent torn off.
+        XCTAssertTrue(preview.hasSuffix("…"))
+        XCTAssertFalse(preview.unicodeScalars.contains(where: { $0.value == 0 }))
+        for character in preview where character != "…" {
+            XCTAssertFalse(character.unicodeScalars.isEmpty)
+        }
+    }
+
     // MARK: - InboxViewModel: refresh + delivery-state wiring
 
     func testObserveRefreshesFromTheProviderAndDeliveryUpdatesFlow() async {
