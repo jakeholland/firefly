@@ -159,6 +159,24 @@ prompt for Bluetooth permission the first time.
 screen works against the stub client, but it will never see a radio.
 That is not a bug to chase.
 
+### Debug launch arguments
+
+- `-FireflyDemo` (or `FIREFLY_DEMO=1` in the environment) — the
+  scripted, no-radio demo world (`DemoLaunch.isRequested`). Only ever
+  consulted inside `#if targetEnvironment(simulator)`, so a real device
+  ignores it whether or not it is passed.
+- `-FireflyDemoScreen <name>` — opens straight on that screen under
+  demo mode (`DemoLaunch.requestedScreen`); see `RootView` for the
+  recognised names.
+- `-FireflyAutoConnect <name>` — scans for, selects, and CONNECTs to the
+  peripheral advertising that exact name, automatically, once the
+  Connect screen appears (`FireflyAutoConnectLaunch`). **`#if DEBUG`
+  only** — a Release/TestFlight/App Store build compiles this out
+  entirely and always reads `nil`, unlike `-FireflyDemo` above: this one
+  drives a real CONNECT against a real peripheral rather than synthetic
+  demo data, so it is not something a shipping build should honor even
+  inertly.
+
 ### Run the hardware tests
 
 Integration tests that need a real Heltec V3 are tagged and **skip

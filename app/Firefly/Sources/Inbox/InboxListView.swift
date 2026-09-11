@@ -39,8 +39,18 @@ struct InboxContainerView: View {
                 ThreadContainerView(model: thread, colorblind: colorblind)
             }
         }
-        .onAppear { model.observe() }
-        .onDisappear { model.stopObserving() }
+        // `model.observe()`/`model.stopObserving()` are deliberately NOT
+        // called here any more — `AppGraph.makeInboxViewModel()` starts
+        // `observe()` once, for the life of the graph. Same fix,
+        // identical NavigationSplitView detail-column remount hazard, as
+        // `ConnectScreen.swift`'s own `.onAppear` comment documents (this
+        // screen is one of `RootView`'s own `detail(for:)` destinations,
+        // same as Connect). `ThreadViewModel`, opened fresh per
+        // `model.openThread(_:)` call below and pushed through this
+        // view's own nested `NavigationStack`, is unaffected — that is
+        // genuinely per-navigation state, not a `detail(for:)`
+        // destination — and keeps its own `.onAppear`/`.onDisappear` in
+        // `ThreadView.swift`.
         .task {
             guard let demoInitialThread, activeThread == nil else { return }
             activeThread = model.openThread(demoInitialThread)

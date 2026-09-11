@@ -49,8 +49,16 @@ struct RadarView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Color.ffBackground)
-        .onAppear { model.observe() }
-        .onDisappear { model.stopObserving() }
+        // `model.observe()`/`model.stopObserving()` are deliberately NOT
+        // called here any more — `AppGraph.makeRadarViewModel(haptics:)`
+        // starts `observe()` once, for the life of the graph, the same
+        // fix `ConnectScreen.swift`'s own `.onAppear` comment documents
+        // for the identical NavigationSplitView detail-column remount
+        // hazard (this screen is one of `RootView`'s own `detail(for:)`
+        // destinations, same as Connect). Tying heading/location
+        // mirroring to THIS screen's appear/disappear risked the exact
+        // same permanent-orphan bug — a remount firing `.onDisappear`
+        // once with no matching `.onAppear` ever following it again.
         .onChange(of: colorblind, initial: true) { _, newValue in model.colorblind = newValue }
         .sheet(isPresented: $showingFind) {
             FindPanel(model: model)
