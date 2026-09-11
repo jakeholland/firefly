@@ -37,13 +37,32 @@ import Foundation
 /// one hop this file exists to make: delegate-queue callback ->
 /// `BLETransport` actor. `@unchecked` because CoreBluetooth's own types
 /// predate `Sendable` — NOT because anything here is actually shared,
-/// mutable state. Safety comes from CoreBluetooth's documented contract
-/// that a peripheral's delegate callbacks are serialized on one queue,
-/// matched here by handing the value to exactly one `Task` and never
-/// retaining the box itself. Never use this for state this file (or its
-/// callers) mutate from more than one place — that would be the "real
-/// shared mutable state" case `nonisolated(unsafe)`/`@unchecked
-/// Sendable` must not be used for.
+/// mutable state, and NOT because the box enforces which queue/executor
+/// ever touches the value afterward (PR #275 review, SHOULD-FIX 5 — an
+/// earlier version of this comment oversold that guarantee).
+///
+/// The box's own job is narrow: it exists purely to satisfy the
+/// Sendable-closure check on the `Task { ... }` these callbacks build —
+/// handing a non-`Sendable` CoreBluetooth reference to `Task` directly
+/// is what strict concurrency flags, and this is a documented, narrowly-
+/// scoped way to say "this specific value is fine to cross." The reason
+/// it is ACTUALLY fine to use afterward is CoreBluetooth's own thread-
+/// safety contract for its instance methods (`CBPeripheral.writeValue`/
+/// `.discoverServices`/`.discoverCharacteristics`/`.setNotifyValue`/
+/// `.readValue`, `CBCentralManager.connect`, etc.): Apple documents these
+/// as safe to call from ANY thread or queue, not only the one passed to
+/// `CBCentralManager(delegate:queue:)` — that queue governs DELEGATE
+/// CALLBACK delivery (serialized, one at a time, which is what makes
+/// each `BLEDelegateBridge` method itself simple and non-reentrant), not
+/// which thread may call INTO CoreBluetooth. `BLETransport` (a plain
+/// `actor`, no custom executor pinned to that queue —
+/// `ensureCentralManagerExists`'s own doc comment) calling those methods
+/// from its own actor executor, a different execution context than the
+/// delegate queue, is exactly this documented "any thread" contract in
+/// use, not an incidental accident this box happens to paper over.
+/// Never use this for state this file (or its callers) mutate from more
+/// than one place — that would be the "real shared mutable state" case
+/// `nonisolated(unsafe)`/`@unchecked Sendable` must not be used for.
 private struct CoreBluetoothCrossing<Value>: @unchecked Sendable {
     let value: Value
 }

@@ -213,26 +213,48 @@ schemes:
       config: Debug
     test:
       config: Debug
-      # FireflyKit's own (non-hardware) tests run under `swift test`,
-      # which is faster and needs no simulator or app host. The
-      # app-hosted BLE hardware suite and slice C's app-target
-      # view-model suite both run through this scheme.
-      targets:
-        - name: FireflyHardwareTests
-          parallelizable: false
-        - name: FireflyAppTests
-        - name: FireflyUITests
-      # macOS launches an app-hosted test's host process via
-      # LaunchServices, which does NOT inherit the invoking shell's
-      # environment the way a plain child process would — so
-      # `FIREFLY_HARDWARE=1 xcodebuild test ...` (the command B1 and
-      # app/README.md both document) silently never reaches
-      # `ProcessInfo.processInfo.environment` inside the test without
-      # this: `$(FIREFLY_HARDWARE)` is expanded from xcodebuild's OWN
-      # process environment at scheme-launch time and threaded through
-      # explicitly. Left unset, it expands empty and the gate reads as
-      # "not set", i.e. skip — the safe default.
-      environmentVariables:
-        FIREFLY_HARDWARE: $(FIREFLY_HARDWARE)
+      # Two test plans, not the legacy per-scheme `targets:`/
+      # `environmentVariables:` list:
+      #
+      # - Firefly.xctestplan (default): FireflyHardwareTests +
+      #   FireflyAppTests. FireflyKit's own (non-hardware) tests run
+      #   under `swift test`, which is faster and needs no simulator or
+      #   app host; the app-hosted BLE hardware suite and slice C's
+      #   app-target view-model suite run through this plan.
+      #
+      # - FireflyUITests.xctestplan (not default): FireflyUITests only.
+      #
+      # Review PR #275, BLOCKING 1: a hosted CI runner cannot grant the
+      # Accessibility permission macOS UI-automation needs, and there is
+      # no persisted TCC grant between ephemeral runner instances — a
+      # UI-test runner bundle apparently needs that grant just to
+      # bootstrap and report which of its tests are enabled/skipped, so
+      # even a single skipped-but-still-a-member test crashes it on
+      # launch (confirmed empirically fixing this: `skippedTests` on an
+      # otherwise-present, enabled target still triggered the "crashed
+      # with signal kill before establishing connection" failure on
+      # macOS). Excluding FireflyUITests from the DEFAULT plan entirely
+      # is what keeps a bare `xcodebuild test`/Cmd+U from ever attempting
+      # it, on either platform.
+      #
+      # `-only-testing:<target>` needs the target to be an actual member
+      # of whichever plan is in effect (confirmed empirically: it errors
+      # "isn't a member of the specified test plan or scheme" against a
+      # target that is absent, or disabled, in the plan `xcodebuild`
+      # resolves to) — it does NOT reach across into a different plan
+      # attached to the same scheme. So CI's iOS Simulator leg selects
+      # the FireflyUITests plan explicitly:
+      #
+      #   xcodebuild test -scheme Firefly -testPlan FireflyUITests \
+      #     -only-testing:FireflyUITests \
+      #     -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
+      #
+      # which is exactly how a developer opts in locally on macOS too,
+      # after granting Accessibility to Xcode — see app/README.md,
+      # "Running the macOS UI smoke test locally".
+      testPlans:
+        - path: FireflyUITests.xctestplan
+        - path: Firefly.xctestplan
+          defaultPlan: true
     archive:
       config: Release

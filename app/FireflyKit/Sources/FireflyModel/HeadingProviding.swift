@@ -42,6 +42,10 @@ public protocol HeadingProviding: AnyObject, Sendable {
 /// This is correct, not a gap: running a tilt-compensated fusion on top
 /// of CoreLocation's own would be two filters fighting, and the spec
 /// says so explicitly.
+// PR #275 review, SHOULD-FIX 3 (a site the review itself did not list,
+// found completing its sweep): `@unchecked Sendable` here needs no lock
+// at all — this class has no stored properties beyond what `init()`
+// takes, and no mutable state of any kind to race on.
 public final class NoHeadingProvider: HeadingProviding, @unchecked Sendable {
     public init() {}
     public func headings() -> AsyncStream<HeadingReading?> {

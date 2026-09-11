@@ -1,0 +1,37 @@
+{
+  "configurations" : [
+    {
+      "id" : "9B7176DA-C602-4058-8674-971666507B55",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "environmentVariableEntries" : [
+      {
+        "key" : "FIREFLY_HARDWARE",
+        "value" : "$(FIREFLY_HARDWARE)"
+      }
+    ]
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : false,
+      "target" : {
+        "containerPath" : "container:Firefly.xcodeproj",
+        "identifier" : "2E869653C9A7BA8AA66ED9F5",
+        "name" : "FireflyHardwareTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:Firefly.xcodeproj",
+        "identifier" : "61EA809CD815CB1D1128C085",
+        "name" : "FireflyAppTests"
+      }
+    }
+  ],
+  "version" : 1
+}

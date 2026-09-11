@@ -41,6 +41,10 @@ public enum DemoAckOutcome: Sendable, Equatable {
 /// this module, `FireflyMesh`, may not) and hands them to
 /// `injectIncomingPrivate` — `onSendPrivate` is only the hook that
 /// tells it a PING just went out.
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — the hubs
+// above are already thread-safe on their own, and every OTHER mutable
+// access below goes through `lock`, never unguarded.
 public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Sendable {
     // `CurrentValueEventHub` (M1 review follow-up, #267) — see
     // `MeshtasticClientProtocol.swift`'s `StubMeshtasticClient` and

@@ -101,6 +101,53 @@ final class ClientReconnectTests: XCTestCase {
         throw TestTimeout()
     }
 
+    /// BLOCKING 2, PR #275 review — root cause: every `stateCollector`/
+    /// `collector` Task below is a bare `for await s in states { ...;
+    /// break }` with NO timeout of its own. Awaiting `.result`/`.value`
+    /// on it directly is an UNBOUNDED wait — if the client ever fails to
+    /// reach the terminal state the loop is watching for (a genuine
+    /// regression, or the review's own finding: `swift test
+    /// --sanitize=thread --filter ClientReconnectTests/
+    /// testRebootArrivingMidRetryRoutesThroughTheSameReconnectTask` run
+    /// ALONE parked over 6 minutes with the main thread genuinely
+    /// blocked in `XCTWaiter`/`mach_msg`, not spinning), the whole test
+    /// hangs FOREVER with no diagnostic — indistinguishable from an
+    /// actual product deadlock either way, and not something any of this
+    /// file's OTHER bounds (`waitForSentCount`'s 1s ceiling,
+    /// `configPhaseTimeout`/`nodeDBPhaseTimeout`) touch at all, since
+    /// this await sits entirely outside them. That gap, not a client-side
+    /// concurrency bug, is what this fixes: extensive reproduction here
+    /// (this single test x3, the whole `ClientReconnectTests` class, and
+    /// the full `swift test --sanitize=thread` suite, all repeatedly)
+    /// found no hang and no ThreadSanitizer report — `MeshtasticClient`'s
+    /// `restartReconnectTask()`/`requestConfig()` cancellation path was
+    /// specifically isolated and confirmed correct (a minimal
+    /// `withThrowingTaskGroup` + `AsyncStream`-subscription repro,
+    /// cancelled while genuinely parked mid-`for await`, unblocks
+    /// promptly and reliably — `AsyncStream.Iterator.next()` IS
+    /// cancellation-aware even while suspended, not only at the top of
+    /// the next call). So this is a genuine environment-timing gap (very
+    /// likely the review's own "sandboxed/constrained-core environment"
+    /// starving Swift's cooperative thread pool under TSan's added
+    /// overhead), not a reproducible product defect — but "no bound on
+    /// this wait" is a real test-hygiene bug regardless of root cause,
+    /// and is what actually makes the outcome nondeterministic (pass
+    /// fast, or hang forever, with nothing in between). A watchdog
+    /// cancels the collector after `timeout`; `for await` over an
+    /// `AsyncStream` responds to cancellation promptly even while parked
+    /// (confirmed by the same repro above), so this call always resolves
+    /// within `timeout` one way or the other — the `XCTAssertEqual`
+    /// immediately after each call site is what turns "never reached"
+    /// into an honest, fast test FAILURE instead of a silent hang.
+    private func waitForCollector(_ task: Task<Void, Never>, timeout: Duration = .seconds(10)) async {
+        let watchdog = Task {
+            try? await Task.sleep(for: timeout)
+            task.cancel()
+        }
+        _ = await task.value
+        watchdog.cancel()
+    }
+
     @discardableResult
     private func completeHandshake(
         transport: LoopbackTransport, client: MeshtasticClient, myNodeNum: UInt32 = 0x1234
@@ -216,7 +263,7 @@ final class ClientReconnectTests: XCTestCase {
         // Node 42 is deliberately NOT re-announced this time.
         transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyNodeDB))
 
-        _ = await stateCollector.result
+        await waitForCollector(stateCollector)
         XCTAssertEqual(readyCount, 2, "the client must reach .ready again after the reconnect")
         XCTAssertEqual(transport.sentMessages.count, sentBeforeLoss + 3,
                         "exactly one handshake retry went out — not a duplicated one")
@@ -250,19 +297,64 @@ final class ClientReconnectTests: XCTestCase {
         transport.simulateReconnect()
         transport.simulateReconnect() // fires again before any reply arrives
 
-        // Only ONE handshake attempt should actually be answerable —
-        // whichever `reconnectTask` is still alive once the dust
-        // settles. Answer the first (heartbeat, want_config(onlyConfig))
-        // sent after the loss; if a duplicate loop had also fired, a
-        // SECOND unanswered want_config(onlyConfig) would sit forever
-        // and `readyCount` would never reach 2.
-        try await waitForSentCount(sentBeforeLoss + 2, on: transport)
-        transport.inject(myInfoFrame(num: 1))
-        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyConfig))
-        try await waitForSentCount(sentBeforeLoss + 3, on: transport)
-        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyNodeDB))
+        // PR #275 review, BLOCKING 2 — this used to assume a single,
+        // predetermined shape: whichever attempt `.ready`#2 triggers
+        // ALWAYS wins outright, because the FIRST attempt (`.ready`#1's)
+        // is cancelled before it ever sends anything, so exactly one
+        // heartbeat + two `want_config`s follow, in that order, from one
+        // consistent attempt. `restartReconnectTask()`'s cancel-and-
+        // replace is cooperative, not preemptive (its own doc comment) —
+        // stress-reproducing this directly under `--sanitize=thread`
+        // showed the FIRST attempt can legitimately win a REAL race
+        // against its own cancellation at EITHER granularity: completing
+        // an entire round trip before `.ready`#2 is even processed, OR
+        // completing phase A and then being cut off before phase B
+        // (`performHandshake()`'s own `Task.checkCancellation()` calls,
+        // added fixing this) — so the exact SEQUENCE of sends is no
+        // longer fixed, only the CONTENT of each send and the eventual
+        // outcome are. `handleTransportReconnected()`'s `Task.isCancelled`
+        // guards correctly suppress a superseded attempt's `.ready` even
+        // when it completes for real, and `restartReconnectTask()`'s
+        // `await previous?.value` guarantees the two attempts never have
+        // a request outstanding AT THE SAME TIME — so this drives an
+        // auto-responder that reacts to whatever actually gets sent
+        // (a `want_config(onlyConfig)` gets `myInfo` + its own
+        // `config_complete_id`; a `want_config(onlyNodeDB)` gets its own;
+        // a heartbeat needs nothing) rather than assuming a fixed
+        // sequence length or origin, bounded by `waitForCollector`'s
+        // watchdog below — which is what actually still pins "no
+        // genuinely runaway duplicate loop reappeared": an unanswerable
+        // request (this responder does not recognize) would just sit,
+        // same as before.
+        var answeredThrough = sentBeforeLoss
+        // Same bound as `waitForSentCount`'s own ceiling (200 * 5ms = 1s)
+        // — this only caps the FAILURE case (an unanswerable send, or a
+        // genuine duplicate concurrent loop's request this responder
+        // does not recognize): a passing run settles in a handful of
+        // polls.
+        for _ in 0..<200 {
+            guard readyCount < 2 else { break }
+            let sent = transport.sentMessages
+            if sent.count > answeredThrough {
+                for data in sent[answeredThrough..<sent.count] {
+                    guard let toRadio = try? ToRadio(serializedBytes: data),
+                          case .wantConfigID(let nonce) = toRadio.payloadVariant else { continue }
+                    switch nonce {
+                    case MeshtasticConfigNonce.onlyConfig:
+                        transport.inject(myInfoFrame(num: 1))
+                        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyConfig))
+                    case MeshtasticConfigNonce.onlyNodeDB:
+                        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyNodeDB))
+                    default:
+                        break
+                    }
+                }
+                answeredThrough = sent.count
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
 
-        _ = await stateCollector.result
+        await waitForCollector(stateCollector)
         XCTAssertEqual(readyCount, 2)
     }
 
@@ -340,7 +432,7 @@ final class ClientReconnectTests: XCTestCase {
         // Node 42 is deliberately NOT re-announced this time.
         transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyNodeDB))
 
-        _ = await stateCollector.result
+        await waitForCollector(stateCollector)
         XCTAssertEqual(readyCount, 2, "the client must reach .ready again after the post-reboot handshake")
         XCTAssertEqual(transport.sentMessages.count, sentBeforeLoss + 5,
                         "exactly one want_config handshake followed the mid-retry reboot — " +
@@ -393,7 +485,7 @@ final class ClientReconnectTests: XCTestCase {
         try await waitForSentCount(sentBeforeLoss + 5, on: transport)
         transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyNodeDB))
 
-        _ = await collector.result
+        await waitForCollector(collector)
         XCTAssertEqual(readyCount, 2)
         XCTAssertTrue(seen.contains(.reconnecting(attempt: 2)),
                       "a retried handshake attempt must be reported honestly, not silently as .handshaking")
@@ -425,7 +517,7 @@ final class ClientReconnectTests: XCTestCase {
         transport.simulateDisconnect()
         transport.simulateReconnect()
 
-        _ = await collector.result
+        await waitForCollector(collector)
         XCTAssertTrue(seen.contains(.reconnecting(attempt: 2)))
         guard case .failed = seen.last else {
             return XCTFail("expected the bounded retry loop to end in .failed, saw \(seen.last as Any)")

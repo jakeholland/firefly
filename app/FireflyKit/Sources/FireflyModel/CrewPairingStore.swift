@@ -96,6 +96,9 @@ extension CrewPairingStoring {
 /// nothing that survives a process relaunch — what a hermetic test
 /// needs, and what `.stub()`/`.demoBundle()` use by default (matching
 /// `InMemorySettingsStore`'s own role for the six shared keys).
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — every
+// mutable access to `order` goes through `lock`, never unguarded.
 public final class InMemoryCrewPairingStore: CrewPairingStoring, @unchecked Sendable {
     private let lock = NSLock()
     private var order: [CrewPairingRecord] = []
@@ -127,6 +130,10 @@ public final class InMemoryCrewPairingStore: CrewPairingStoring, @unchecked Send
 /// per-field `UserDefaults` key the way `SettingsStore`'s scalar
 /// preferences do, so this follows `Codable` + a single key rather than
 /// inventing eight parallel per-index keys.
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — every
+// mutable access (the `UserDefaults` read-decode-mutate-encode-write
+// sequence below) runs under `lock`, never unguarded.
 public final class CrewPairingStore: CrewPairingStoring, @unchecked Sendable {
     private let defaults: UserDefaults
     private let lock = NSLock()

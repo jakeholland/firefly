@@ -20,6 +20,21 @@ name: app
 # -only-testing:FireflyHardwareTests` with that env var unset, but only
 # to prove the app-hosted BLE hardware suite builds and skips cleanly
 # (docs/specs/A01-companion-app.md, B1) - never to exercise a board.
+#
+# The macOS leg of FireflyUITests does NOT run here (Review PR #275,
+# BLOCKING 1): macOS XCUITest automation needs the Accessibility
+# permission granted to the test runner, a hosted GitHub Actions runner
+# is ephemeral with no persisted TCC grant between runs, and there is no
+# verified way to pre-authorize it in CI. That leg is buildable but
+# opt-in only - see app/README.md, "Running the macOS UI smoke test
+# locally", and FireflyUITests.xctestplan / app/project.yml's scheme
+# `test:` comment for how it is kept out of the default test plan
+# without disturbing the iOS Simulator leg this workflow DOES run.
+#
+# Every step below carries its own timeout-minutes on top of each job's
+# overall timeout, so a single hung step fails fast with a clear signal
+# rather than silently eating the whole job budget before the job-level
+# timeout finally kills it.
 
 on:
   pull_request:
@@ -63,12 +78,14 @@ jobs:
       # default Xcode is recorded in the log instead, so a build that
       # breaks on a toolchain bump can be read back to the bump.
       - name: Versions
+        timeout-minutes: 5
         run: swift --version && xcodebuild -version
 
       # The symlink farm is committed, but a checkout on a filesystem
       # that mangles symlinks (or a stale farm) must fail LOUDLY here
       # rather than as a confusing compile error 200 lines down.
       - name: Core source links are intact
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           missing=0
@@ -94,10 +111,12 @@ jobs:
 
       - name: swift build
         working-directory: app/FireflyKit
+        timeout-minutes: 10
         run: swift build
 
       - name: swift test
         working-directory: app/FireflyKit
+        timeout-minutes: 10
         run: swift test
 
   xcode:
@@ -113,12 +132,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Versions
+        timeout-minutes: 5
         run: xcodebuild -version
 
       # Code signing is off in project.yml (CODE_SIGNING_ALLOWED=NO), so
       # neither leg needs a certificate or a provisioning profile.
       - name: Build for macOS
         working-directory: app
+        timeout-minutes: 10
         run: |
           xcodebuild \
             -project Firefly.xcodeproj \
@@ -131,6 +152,7 @@ jobs:
       # which iPhone models the runner image happens to ship.
       - name: Build for iOS Simulator
         working-directory: app
+        timeout-minutes: 10
         run: |
           xcodebuild \
             -project Firefly.xcodeproj \
@@ -145,6 +167,7 @@ jobs:
       # job staying green (PR #262 review, BLOCKING).
       - name: FireflyAppTests
         working-directory: app
+        timeout-minutes: 10
         run: |
           xcodebuild test \
             -project Firefly.xcodeproj \
@@ -158,6 +181,7 @@ jobs:
       # B1) - it never runs a hardware test here, only proves the skip.
       - name: FireflyHardwareTests build + skip on a machine with no board
         working-directory: app
+        timeout-minutes: 10
         run: |
           xcodebuild test \
             -project Firefly.xcodeproj \
@@ -174,27 +198,22 @@ jobs:
       # device this repo's own verification runs against — GitHub's
       # macos-26 runner image ships it as of this workflow's own
       # "Versions" pin above (Xcode 26.x).
+      #
+      # `-testPlan FireflyUITests`: FireflyUITests is deliberately NOT a
+      # member of the scheme's default test plan (Review PR #275,
+      # BLOCKING 1 - see this file's own header comment and
+      # app/project.yml's scheme `test:` comment), so it has to be
+      # selected through its own, non-default plan explicitly. This is
+      # also why there is no macOS counterpart step here: that leg lives
+      # only in the same named plan, run by hand locally after granting
+      # Accessibility to Xcode (app/README.md).
       - name: FireflyUITests (iOS Simulator)
         working-directory: app
+        timeout-minutes: 10
         run: |
           xcodebuild test \
             -project Firefly.xcodeproj \
             -scheme Firefly \
+            -testPlan FireflyUITests \
             -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
-            -only-testing:FireflyUITests
-
-      # The same suite's macOS leg — see `FireflyUITests.swift`'s own
-      # header comment for why this one is launch-only (no
-      # `-FireflyDemo`, no navigation walk): `targetEnvironment
-      # (simulator)` is false for a native macOS build, so demo mode
-      # never activates here regardless of the flag, and the real
-      # `.live()` composition never touches CoreBluetooth merely by
-      # launching (`BLETransport.connect()`'s own doc comment).
-      - name: FireflyUITests (macOS launch smoke)
-        working-directory: app
-        run: |
-          xcodebuild test \
-            -project Firefly.xcodeproj \
-            -scheme Firefly \
-            -destination 'platform=macOS' \
             -only-testing:FireflyUITests

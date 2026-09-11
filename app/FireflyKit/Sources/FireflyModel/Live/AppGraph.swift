@@ -302,6 +302,16 @@ public final class AppGraph {
     /// `ff_proto_decode` rejects is dropped silently, the same way the
     /// client drops a malformed protobuf, rather than rendered as
     /// anything.
+    // NIT (PR #275 review): no per-packet `await MainActor.run` here on
+    // purpose, and this is not an oversight to "fix" later. `AppGraph`
+    // is `@MainActor` (this file's own class declaration above), and a
+    // `Task { ... }` created from `@MainActor`-isolated code (this
+    // method) inherits that isolation for its WHOLE lifetime — not just
+    // its first line. So every iteration of `for await packet in
+    // stream`, and `self.handle(private: packet)` in particular, already
+    // runs ON the main actor as a direct, synchronous call — there is no
+    // hop to add per packet on this radio-traffic hot path, and adding
+    // one would only add latency for nothing.
     private func observePrivatePackets() {
         guard privateObservation == nil else { return }
         let stream = dependencies.client.incomingPrivate()

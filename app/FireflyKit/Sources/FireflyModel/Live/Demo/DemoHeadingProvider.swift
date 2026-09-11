@@ -6,6 +6,9 @@
 //
 import Foundation
 
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — every
+// mutable access below goes through `lock`, never unguarded.
 public final class DemoHeadingProvider: HeadingProviding, @unchecked Sendable {
     private let lock = NSLock()
     private var current: HeadingReading?

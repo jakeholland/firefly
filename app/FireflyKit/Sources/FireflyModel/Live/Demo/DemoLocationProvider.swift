@@ -17,6 +17,9 @@
 //
 import Foundation
 
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — every
+// mutable access below goes through `lock`, never unguarded.
 public final class DemoLocationProvider: LocationProviding, @unchecked Sendable {
     public let authorization: LocationAuthorization = .whenInUse
 

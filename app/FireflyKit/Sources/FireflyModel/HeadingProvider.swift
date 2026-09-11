@@ -20,6 +20,12 @@ import Foundation
 
 /// `HeadingProviding` over `CLLocationManager.startUpdatingHeading` —
 /// iOS only, where a magnetometer actually exists.
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` here is not about
+// a lock — this class holds no unsynchronized mutable state of its own.
+// `manager` is only ever touched from `init` and from
+// `CLLocationManagerDelegate` callbacks (CoreLocation's own serialized
+// delivery, below), and `hub` is `EventHub`, already thread-safe on its
+// own (`EventHub.swift`'s own comment).
 public final class HeadingProvider: NSObject, HeadingProviding, @unchecked Sendable {
     private let manager: CLLocationManager
     private let hub = EventHub<HeadingReading?>()

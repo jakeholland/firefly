@@ -22,6 +22,10 @@
 import Foundation
 import Network
 
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — every
+// mutable access below goes through `lock`, never unguarded; `hub`
+// itself is already thread-safe on its own.
 public final class TCPTransport: MeshTransport, @unchecked Sendable {
     public let kind: TransportKind = .stream
     public let host: String

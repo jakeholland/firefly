@@ -340,6 +340,10 @@ public func isBroadcastDestination(_ to: UInt32) -> Bool {
 /// incoming messages. An empty Radar on a stub client is the honest
 /// answer, and it is the same empty Radar a real radio with nothing in
 /// range produces.
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — the hubs
+// above are already thread-safe on their own, and every OTHER mutable
+// access below goes through `lock`, never unguarded.
 public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Sendable {
     // `CurrentValueEventHub`, not `EventHub` (M1 review follow-up,
     // #267): `linkState()` needs current-value semantics so a late

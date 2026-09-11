@@ -112,6 +112,9 @@ public enum ImmediateSendFailure: Error, Sendable, Equatable {
     case rallyNoFix
 }
 
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — the only
+// mutable state, `counter`, is only ever read or written under `lock`.
 private final class OutboxIDGenerator: @unchecked Sendable {
     static let shared = OutboxIDGenerator()
     private let lock = NSLock()

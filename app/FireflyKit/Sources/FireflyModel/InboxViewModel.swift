@@ -301,6 +301,9 @@ public protocol InboxProviding: AnyObject {
 /// wrong row. Reserving the top bit for every INBOUND id keeps the two
 /// generators' output disjoint for as long as either could plausibly
 /// run, not merely "in practice today".
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — the only
+// mutable state, `counter`, is only ever read or written under `lock`.
 private final class InboundFeedIDGenerator: @unchecked Sendable {
     static let shared = InboundFeedIDGenerator()
     private let lock = NSLock()
@@ -340,6 +343,9 @@ private struct SentIDRing {
 /// no traffic, no members and no presence. Everything it renders was put
 /// there by `push`/`registerMember`/`setPresence`, or by `ThreadViewModel`
 /// acting on a real (or injected) `MeshtasticClientProtocol`.
+// PR #275 review, SHOULD-FIX 3: `@unchecked Sendable` justified the
+// same way as `EventHub` (`EventHub.swift`'s own comment) — every
+// mutable access below goes through `lock`, never unguarded.
 public final class InMemoryInboxStore: InboxProviding, @unchecked Sendable {
     private struct Member {
         var displayName: String
