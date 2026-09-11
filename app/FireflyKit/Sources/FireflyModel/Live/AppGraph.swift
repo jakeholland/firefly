@@ -94,9 +94,19 @@ public final class AppGraph {
     /// PONG auto-reply's "one reply per nonce" memory.
     var repliedPongNonces = PongReplyDedup()
 
-    public init(dependencies: AppDependencies = .current(), notifications: any NotificationSending = UNNotificationSending()) {
+    /// `FireflyApp.init()` alone passes `true` — see
+    /// `autoConnectToLastKnownPeripheral()`'s own doc comment for why
+    /// this needs to be an explicit opt-in rather than `isRunningUnderXCTest`
+    /// alone: `AppGraphTests` constructs `AppGraph` directly and also
+    /// runs under XCTest, but legitimately wants launch auto-connect to
+    /// behave normally under test.
+    private let skipLaunchAutoConnectUnderXCTest: Bool
+
+    public init(dependencies: AppDependencies = .current(), notifications: any NotificationSending = UNNotificationSending(),
+                skipLaunchAutoConnectUnderXCTest: Bool = false) {
         self.dependencies = dependencies
         self.notifications = notifications
+        self.skipLaunchAutoConnectUnderXCTest = skipLaunchAutoConnectUnderXCTest
         self.inboxProvider = CoreInboxProvider(inbox: core.inbox, crew: core.crew)
         self.packetSender = MeshFireflyPacketSender(client: dependencies.client)
         self.flareTakeover = FlareTakeoverViewModel(crew: self.core.crew)
@@ -205,6 +215,18 @@ public final class AppGraph {
         FileHandle.standardError.write(Data(line.utf8))
     }
 
+    /// True when THIS process is an XCTest host. `XCTestConfigurationFilePath`
+    /// is the same environment key XCTest itself sets on every test run,
+    /// app-hosted or not (Apple's own documented mechanism, not a
+    /// heuristic this repo invented) — true just as much for `swift
+    /// test`'s own `AppGraphTests` (a completely different process, never
+    /// hosted by `Firefly.app`) as for `xcodebuild test`. Deliberately
+    /// NOT gated on by itself — `autoConnectToLastKnownPeripheral()`'s
+    /// own doc comment on `skipLaunchAutoConnectUnderXCTest` says why.
+    static var isRunningUnderXCTest: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+
     /// M2 — "remembering the last connected peripheral identifier and
     /// auto-connecting to it at launch" (docs/specs/A01-companion-app.md;
     /// behaviour borrowed from Meshtastic-Apple's own launch-time
@@ -224,6 +246,30 @@ public final class AppGraph {
     /// Connect screen's own CONNECT button won the race instead, that
     /// attempt is the one that should finish, not this one.
     private func autoConnectToLastKnownPeripheral() {
+        if skipLaunchAutoConnectUnderXCTest, Self.isRunningUnderXCTest {
+            // Follow-up to the 2026-09-11 bench-reproduced power-cycle
+            // investigation (`docs/specs/A01-companion-app.md`, M2):
+            // `BLEHardwareTests` constructs and drives its OWN
+            // `BLETransport`/`MeshtasticClient` directly, never through
+            // this graph — but `xcodebuild test -only-testing:
+            // FireflyHardwareTests` still launches `Firefly.app` itself
+            // as the test's HOST application, and `FireflyApp`'s own
+            // `.task { await graph.start() }` ran this graph's launch
+            // auto-connect in that SAME process the whole time: a
+            // second, entirely independent `BLETransport` connecting to
+            // `SettingsKey.lastPeripheralID`'s remembered peripheral
+            // (`Meshtastic_06b0`, on this bench) and racing whatever the
+            // test itself was doing over BLE, confusing the test's own
+            // log with a second `[AppGraph]`/`[BLETransport]` sequence
+            // that has nothing to do with the test. Only
+            // `FireflyApp.init()` passes `skipLaunchAutoConnectUnderXCTest:
+            // true` (this type's own doc comment) — every test that
+            // constructs `AppGraph` directly, including this file's own
+            // auto-connect tests, defaults to `false` and is untouched.
+            Self.log("autoConnectToLastKnownPeripheral(): running under XCTest (XCTestConfigurationFilePath set) " +
+                     "and skipLaunchAutoConnectUnderXCTest is set — not connecting")
+            return
+        }
         guard dependencies.store.string(.lastPeripheralID) != nil else {
             Self.log("autoConnectToLastKnownPeripheral(): nothing remembered — not connecting")
             return

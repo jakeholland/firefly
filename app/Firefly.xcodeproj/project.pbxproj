@@ -17,6 +17,7 @@
 		59A003F0821E61E9DE8E99F5 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */; };
 		63F4CB9CD8015973BF2A6A87 /* NearbyNodesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */; };
 		6640FC7A5590E35700C97181 /* DiagnosticsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */; };
+		6A9AD720CC190DB306F0F9DA /* BLEReconnectHardwareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05F189342B5B984F2BBDAB8A /* BLEReconnectHardwareTests.swift */; };
 		6EED1D607A836BC23FCF5D43 /* SettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45BBB6E81333013CC2CE55F2 /* SettingsScreen.swift */; };
 		6F6C3DEEBFEC351E8F1EA93B /* CrewSettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E1D66A6EFF83C09A11DB7FB /* CrewSettingsViewModel.swift */; };
 		71D8EF04CB8A979CD7738201 /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 4982066A256926406E7325EB /* FireflyModel */; };
@@ -71,6 +72,7 @@
 
 /* Begin PBXFileReference section */
 		05D20D18F962B7E51C03A90B /* FireflyKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FireflyKit; path = FireflyKit; sourceTree = SOURCE_ROOT; };
+		05F189342B5B984F2BBDAB8A /* BLEReconnectHardwareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEReconnectHardwareTests.swift; sourceTree = "<group>"; };
 		154087BCAC0E87D7868BF253 /* RadarRingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadarRingView.swift; sourceTree = "<group>"; };
 		19687863E32B4CA54C5752D8 /* DiagnosticsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsScreen.swift; sourceTree = "<group>"; };
 		2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyNodesViewModel.swift; sourceTree = "<group>"; };
@@ -259,6 +261,7 @@
 			isa = PBXGroup;
 			children = (
 				9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */,
+				05F189342B5B984F2BBDAB8A /* BLEReconnectHardwareTests.swift */,
 			);
 			path = FireflyHardwareTests;
 			sourceTree = "<group>";
@@ -482,6 +485,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				C03641377EDB721D4C81DE9D /* BLEHardwareTests.swift in Sources */,
+				6A9AD720CC190DB306F0F9DA /* BLEReconnectHardwareTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
