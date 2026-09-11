@@ -153,6 +153,19 @@ private struct MessageBubble: View {
                 }
                 bubbleBody
                 HStack(spacing: 6) {
+                    // M3 — "FROM STORAGE" before the age, never after: a
+                    // restored bubble's age is real (its ORIGINAL
+                    // timestamp, threaded through by `HistoryRestorer`),
+                    // but the tag has to read first so nobody mistakes
+                    // "2H AGO" alone for a live message that simply
+                    // arrived two hours ago (docs/specs/
+                    // A01-companion-app.md, M3: "rendered AS RESTORED
+                    // with its age... never as live").
+                    if message.isRestored {
+                        Text("FROM STORAGE")
+                            .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                            .foregroundStyle(Color.ffMuted)
+                    }
                     Text(InboxAge.short(Date().timeIntervalSince(message.timestamp)))
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(Color.ffMuted)

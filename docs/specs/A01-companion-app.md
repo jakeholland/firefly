@@ -668,7 +668,7 @@ Radar testable.
 
 ## Persistence
 
-Deliberately small in M1–M3:
+Deliberately small:
 
 - **`UserDefaults`**: last connected peripheral id, the set of
   successfully bonded peripherals (the bond hint that picks the connect
@@ -676,10 +676,141 @@ Deliberately small in M1–M3:
   interval, the chosen transport.
 - **Keychain**: channel PSKs. They are keys; they do not belong in
   `UserDefaults`.
-- **Nothing else in M1.** No node database on disk, no message history on
-  disk. M3 adds SwiftData for message history and, if it earns its place,
-  the nodeDB — and anything restored from disk must be rendered as
-  restored, with its age, never as live.
+- **Nothing else in M1/M2.** No node database on disk, no message history
+  on disk.
+- **M3 adds SwiftData for message history** (`app/FireflyKit/Sources/
+  FireflyModel/Persistence/`) — and nothing else. The nodeDB was
+  considered and NOT persisted; see "Why the nodeDB is not persisted"
+  below.
+
+### What M3 persists, and how
+
+`HistoryStore` owns one SwiftData `ModelContainer` holding
+`PersistedMessage` rows — the durable mirror of every `FeedMessage` this
+app has ever pushed, live or restored. `PersistingInboxProvider` (an
+`InboxProviding` decorator) is the only writer: it wraps the real
+`CoreInboxProvider` and mirrors every `push`/`markSent`/`setStatus` call
+into `HistoryStore` after forwarding it, so there is exactly one code
+path for "this needs to survive a relaunch" — never a second one that
+could drift from what the live ring actually shows.
+
+**Cold-launch restore (`HistoryRestorer`).** Runs inside `AppGraph.init`,
+before anything can observe a client (the same ordering rule
+`CrewPairingRestorer.restore` already follows, for the identical
+reason): it reads every persisted message, then pushes the most recent
+ones back into the live `ff_feed_t` ring with their ORIGINAL timestamps
+— never `Date()` — so the core's own age/presence math renders them
+exactly as honestly as an uninterrupted session would have.
+
+- **N = 32**, mirroring `FF_FEED_CAP` (`firmware/core/include/ff_feed.h`)
+  — the live ring's own hard cap. Reseeding more would just evict the
+  oldest of those on the very next push, so there is no honest way to
+  show more than this many restored messages in the ring a screen
+  actually reads from. This is not a new limit M3 introduces: a session
+  that never restarted already loses anything past the 32 most recent
+  items to the same ring. The rest of a longer history stays on disk,
+  unreachable to any live screen until a future feature reads it
+  directly.
+- Every currently-**WAITING** item is reseeded unconditionally,
+  regardless of that cap — a message that never left the device before
+  the process ended is unfinished business, not history, and must not
+  be silently forgotten.
+- **SENT restores as NO ACK.** A routing ack cannot arrive for a packet
+  this process no longer has a live send in flight for: either the ack
+  already came back (DELIVERED, untouched) or it did not, and after a
+  relaunch there is no future in which it still could. WAITING is left
+  alone — unlike SENT, it never left the device, so flushing it on the
+  next connect (below) is a genuine continuation, not a claim about what
+  already happened.
+- Every restored message renders with an explicit **"FROM STORAGE"**
+  tag next to its own honest age (`InboxAge`) — in the Thread's message
+  bubbles and the Inbox row's preview alike — and never as a live
+  delivery/presence claim. The tag is earned once, permanently, for a
+  given message: a LIVE event arriving later for the same conversation
+  never retroactively "un-restores" an older message, and is itself
+  never mistaken for restored (`PersistingInboxProvider`'s own
+  `restoredMessageIDs`, populated exactly once from `HistoryRestorer
+  .restore`'s return value).
+
+**Outbox flush on connect.** A WAITING item restored from disk has no
+live `ThreadViewModel` watching it — that type's own in-memory outbox
+only ever holds what it personally queued in the CURRENT session.
+`AppGraph.flushPersistedOutbox()` owns these instead: a dedicated,
+independent `client.linkState()` subscription (S1) that, on the link's
+next not-ready → ready edge, re-attempts every persisted WAITING item —
+bounded at `ThreadViewModel.outboxCap` (8), oldest first, the same
+drop-oldest discipline a live thread's own outbox already follows.
+
+**Migration policy.** One schema, versioned (`HistorySchemaV1` /
+`HistoryMigrationPlan`), plus **drop-and-recreate** on any mismatch the
+migration plan does not cover. Message history is convenience/context,
+not a safety- or identity-critical record — unlike `CrewPairingStore`'s
+persisted pairing, or the Keychain-held channel PSKs, this app never
+promises to keep it. A future schema this binary predates, or a
+corrupted store file, is deleted and rebuilt empty rather than crashing
+the app on launch (`HistoryStore.makeContainer`). This is the one place
+in the app that silently discards user data on purpose, and it is
+disclosed in three places: here, `HistoryStore`'s own header comment,
+and the Settings **"Clear history"** action (with confirmation), which
+exercises the identical "wipe the store" path deliberately, on request.
+
+**Demo isolation.** `.stub()`/`.demo()`/`.demoBundle()` all get a
+disposable `HistoryStore.inMemory()` — never `.live()` — picked
+automatically inside `AppGraph.init` from `dependencies.store is
+InMemorySettingsStore` (true for both, and for nothing `.live()` ever
+builds), so demo mode never persists across a real relaunch. For
+screenshots, `-FireflyDemoRestored` (or `FIREFLY_DEMO_RESTORED=1`)
+seeds a fresh in-memory store (`DemoHistorySeed`) with a small
+"yesterday" history BEFORE `AppGraph.init` runs its own restore pass —
+so the exact same restore code path a real relaunch takes is what
+renders the "FROM STORAGE" treatment, never a parallel "looks restored"
+fake. Gated the same way every other `DemoLaunch` check is: only inside
+`#if targetEnvironment(simulator)`, so a stray launch argument can never
+turn a real device's history into fictional festival data.
+
+### Why the nodeDB is not persisted
+
+M3 considered persisting each paired crew member's last-known position
+alongside their message history — the parenthetical in this project's
+own M3 task description even sketches how it would have to work (feed a
+restored position into `ff_crew` with its original timestamp, so the
+core's own freshness math renders it as an honest LOST/last-known ghost,
+never a live fix). It was **not built**, for three reasons:
+
+1. **The durable half of "nodeDB" already exists.** `CrewPairingStore`
+   (M2) already persists exactly the part of a crew member's identity
+   that is worth keeping across a relaunch — who is paired, their
+   colour, their local nickname — and `CrewPairingRestorer` replays it
+   onto a fresh `ff_crew_t` before anything else can observe a client.
+   What M3 would add on top is only the VOLATILE half: position, RSSI,
+   heard-timestamps — precisely the fields whose entire value is being
+   current.
+2. **A live reconnect supersedes it almost immediately, honestly.** The
+   moment the app reconnects, a real want_config replay repopulates the
+   whole current nodeDB from the radio itself — fresh, live, and not a
+   guess. A persisted position would buy, at best, a few seconds of
+   "last known" ghost display before the real data arrives and replaces
+   it — a narrow benefit for a second SwiftData model, a second restore
+   path into `ff_crew`, and a second "duplicate on live replay" hazard
+   to build and test (message history already needed exactly that
+   machinery once; building it twice roughly doubles the M3 surface for
+   a payoff measured in seconds).
+3. **The honest answer is "nothing," and that is already correct.**
+   Radar's own rule is that no restored position is ever drawn as a
+   live fix — the strongest way to prove that mechanically is to feed
+   it NOTHING to draw at cold launch: a paired member with no
+   `ff_crew_on_position`/`ff_crew_on_heard` call since the process
+   started renders LINKED (`ff_sigview`'s own "no evidence yet" state),
+   never a fabricated ghost dot. That is the same empty-but-honest
+   Radar a real radio with nothing in range produces (`AppDependencies
+   .stub()`'s own defining property, restated for a cold launch instead
+   of a stub radio) — not a gap M3 leaves open, but the deliberately
+   simpler, equally honest answer.
+
+If a future milestone wants "last seen HERE" on Radar across a
+relaunch, `HistoryStore`'s own schema-versioning/migration machinery
+already generalizes to a second `@Model` type — this decision can be
+revisited without redesigning the persistence layer underneath it.
 
 ## Test strategy
 
@@ -698,6 +829,16 @@ could silently go wrong:
   contain a number or a unit; the stub client never emits `DELIVERED`.
 - *Protocol tests*: framer dribble/resync/oversize, delivery-state
   mapping, the BLE drain triggers.
+- *M3 persistence*: `HistoryStoreTests` (the SwiftData round trip, an
+  in-memory `ModelContainer`, pruning, isolation between stores),
+  `HistoryRestorerTests` (reseed cap/ordering, WAITING always included,
+  SENT → NO ACK), `AppGraphTests`' own M3 section (a restored member
+  later heard live flips to live with no duplicates, through a REAL
+  `CoreInboxProvider` and a scripted want_config-shaped replay; the
+  persisted-outbox flush on connect, bounded, oldest first),
+  `InboxAgeTests` (the age-rendering table), `DemoHistoryIsolationTests`
+  (demo/stub never share or persist history; `-FireflyDemoRestored`'s
+  own seed path).
 
 **Integration, with hardware (manual, from a Mac). Two suites, run two
 different ways — not a stylistic split, a TCC constraint (B1):**
@@ -838,13 +979,16 @@ hardware tests skip cleanly with no board and pass with one.
 
 ### M3 — it remembers, and it is honest about remembering
 
-- Message history and (if earned) the nodeDB in SwiftData.
+- Message history in SwiftData; the nodeDB was considered and NOT
+  persisted (disclosed decision — see "Persistence" > "Why the nodeDB is
+  not persisted").
 - Restored data rendered **as restored**, with its age — never as live.
 - Channel write-back (admin messages) behind an explicit confirmation.
 - Swift 6 strict concurrency; XCUITest smoke tests in CI.
 
 **Acceptance criteria:** a cold launch shows history with an explicit
-"from storage, last seen …" treatment and no restored position is ever
+"FROM STORAGE" + honest-age treatment (Thread bubbles and Inbox row
+previews alike — see "Persistence") and no restored position is ever
 drawn as a live fix; the package builds clean under
 `SWIFT_STRICT_CONCURRENCY: complete`.
 

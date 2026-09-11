@@ -131,6 +131,15 @@ private struct InboxRow: View {
                     }
                 }
                 HStack(spacing: 6) {
+                    // M3 — a restored row's preview is read from
+                    // storage, not the live mesh; said so right next to
+                    // it, same "never render restored as live" rule
+                    // `ThreadView`'s own bubble tag follows.
+                    if conversation.previewIsRestored {
+                        Text("FROM STORAGE")
+                            .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                            .foregroundStyle(Color.ffMuted)
+                    }
                     Text(previewLine)
                         .font(.subheadline)
                         .foregroundStyle(conversation.hasPreview ? Color.ffMuted : Color.ffMuted.opacity(0.6))
@@ -261,21 +270,5 @@ private struct UnreadBadge: View {
             .padding(.vertical, 3)
             .background(Color.ffAmber, in: Capsule())
             .frame(minWidth: 20)
-    }
-}
-
-/// A short, mono age string for a row — "6M", "2H", "3D". Never a raw
-/// second count; the same "words, not measurements you can't back up"
-/// spirit `SignalTierPresentation` uses, applied to time instead of
-/// signal strength.
-enum InboxAge {
-    static func short(_ interval: TimeInterval) -> String {
-        let seconds = max(0, Int(interval))
-        if seconds < 60 { return "NOW" }
-        let minutes = seconds / 60
-        if minutes < 60 { return "\(minutes)M" }
-        let hours = minutes / 60
-        if hours < 24 { return "\(hours)H" }
-        return "\(hours / 24)D"
     }
 }

@@ -310,6 +310,14 @@ public final class InboxBridge {
 
     public func markAllRead() { ff_feed_mark_all_read(context) }
 
+    /// M3 — Settings' "Clear history": re-runs `ff_feed_init` on the
+    /// SAME heap-allocated context this bridge already owns (the exact
+    /// call `init()` above made once, at allocation) rather than
+    /// deallocating and re-allocating — cheap, and it keeps this
+    /// bridge's own pointer identity stable for whatever else might be
+    /// mid-call against it.
+    public func reset() { ff_feed_init(context) }
+
     public var unreadCount: UInt16 { ff_feed_unread_count(context) }
     public var itemCount: Int { Int(ff_feed_count(context)) }
 

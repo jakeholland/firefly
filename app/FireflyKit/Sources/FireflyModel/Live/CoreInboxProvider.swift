@@ -72,7 +72,17 @@ public final class CoreInboxProvider: InboxProviding {
         // comment). So it is read from the newest raw feed record for
         // this conversation: a keyed read of the same item the preview
         // came from, never a guess.
-        let newest = inbox.records(in: conversation.kind).last
+        //
+        // `.first`, not `.last` (M3 fix — found while building the
+        // "FROM STORAGE" preview tag, which reads this exact "newest"
+        // notion): `InboxBridge.records(in:)` walks `ff_feed_at(0..<n)`,
+        // whose own doc comment is explicit — "0 = most recently
+        // pushed" — so the array it returns is NEWEST FIRST, and `.last`
+        // was silently picking the OLDEST matching item for a
+        // conversation with more than one message. Invisible in every
+        // existing test because none of them pushed a second item into
+        // the same conversation before asserting on `previewDeliveryState`.
+        let newest = inbox.records(in: conversation.kind).first
         let previewDeliveryState: DeliveryState? = {
             guard conversation.previewDirection == .out, let newest, newest.direction == .out else { return nil }
             return DeliveryState(ffSendStatus: newest.sendStatus.ffValue)
@@ -134,12 +144,23 @@ public final class CoreInboxProvider: InboxProviding {
         // render projection: `ff_inbox_msg_t` deliberately carries no
         // `outbox_id`/`packet_id`/absolute timestamp, and `FeedMessage`
         // is keyed on exactly those (`InboxBridge.records(in:)`'s own
-        // doc comment). Membership and order are still the core's —
-        // `records(in:)` uses `ff_inbox_item_in_conv`, the same
-        // predicate thread-building uses.
-        return inbox.records(in: conversation).map { record in
-            message(from: record, nowMs: nowMs, now: now)
-        }
+        // doc comment). Membership is still the core's — `records(in:)`
+        // uses `ff_inbox_item_in_conv`, the same predicate thread-
+        // building uses.
+        //
+        // ORDER is NOT taken from `records(in:)` as-is (M3 fix):
+        // `InboxBridge.records(in:)` walks the ring NEWEST FIRST
+        // (`ff_feed_at`'s own "0 = most recently pushed" doc comment),
+        // while `InboxProviding.thread(for:now:)`'s own contract is
+        // explicit — "one conversation's messages, oldest first" — the
+        // exact order `InMemoryInboxStore.thread(for:now:)` already sorts
+        // for. This re-sort is what makes the two conformances agree, and
+        // what makes `ThreadView`'s bubbles (and M3's own
+        // `HistoryRestorer`/`PersistingInboxProvider`, both of which rely
+        // on "newest = last") render in the right order.
+        return inbox.records(in: conversation)
+            .map { record in message(from: record, nowMs: nowMs, now: now) }
+            .sorted { $0.timestamp < $1.timestamp }
     }
 
     private func message(from record: FeedItemRecord, nowMs: UInt32, now: Date) -> FeedMessage {
@@ -208,6 +229,15 @@ public final class CoreInboxProvider: InboxProviding {
 
     public func markRead(_ conversation: ConversationKind) -> Int {
         inbox.markThreadRead(conversation)
+    }
+
+    /// M3 — Settings' "Clear history": wipes the live `ff_feed_t` ring
+    /// (`InboxBridge.reset()`) and this provider's own echo-dedup memory
+    /// together, so a stale "already saw this packet id" entry can never
+    /// outlive the history it was tracking on behalf of.
+    public func clearAll() {
+        inbox.reset()
+        mySentPacketIDs = PacketIDRing()
     }
 
     public func push(_ message: FeedMessage, into conversation: ConversationKind) {

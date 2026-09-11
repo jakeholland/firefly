@@ -256,7 +256,13 @@ final class AppGraphTests: XCTestCase {
         await graph.start() // idempotent, like every observe() in this app
         await graph.start()
 
-        XCTAssertEqual(client.subscriptionCount("link"), 1)
+        // M3: the graph now holds a SECOND, independent `linkState()`
+        // subscription too — `observeHistoryOutboxFlush()`, which
+        // flushes any persisted-WAITING outbox items on the link's next
+        // not-ready -> ready edge. Same S1 multicast rule as `"text"`
+        // above: this is its OWN subscription, not a second reader
+        // stealing `core.observe(client:)`'s.
+        XCTAssertEqual(client.subscriptionCount("link"), 2)
         XCTAssertEqual(client.subscriptionCount("node"), 1)
         XCTAssertEqual(client.subscriptionCount("delivery"), 1)
         XCTAssertEqual(client.subscriptionCount("private"), 1)
@@ -975,8 +981,12 @@ final class AppGraphTests: XCTestCase {
         XCTAssertEqual(client.disconnectCallCount, 1,
                         "off = disconnect when backgrounded, per the M2 task's own words")
         // The graph's own subscriptions stood down too — re-subscribing
-        // would show up as a second `link` subscription once restarted.
-        XCTAssertEqual(client.subscriptionCount("link"), 1)
+        // would show up as more `link` subscriptions once restarted. "2"
+        // is both of the graph's OWN `linkState()` readers from this one
+        // `start()` — `core.observe(client:)` and M3's
+        // `observeHistoryOutboxFlush()` (each its own independent S1
+        // subscription) — not a sign either one resubscribed.
+        XCTAssertEqual(client.subscriptionCount("link"), 2)
     }
 
     func testBackgroundWithSettingOnDoesNothing() async {
@@ -1007,9 +1017,11 @@ final class AppGraphTests: XCTestCase {
 
         await graph.handleScenePhaseChange(.foreground)
 
-        // The graph's own subscriptions are back (a second `link`
-        // subscription: one from launch, one from this restart)...
-        XCTAssertEqual(client.subscriptionCount("link"), 2)
+        // The graph's own subscriptions are back — "4" is two
+        // independent `link` readers (`core.observe(client:)` and M3's
+        // `observeHistoryOutboxFlush()`) per `start()`, times two
+        // `start()` calls (launch + this restart)...
+        XCTAssertEqual(client.subscriptionCount("link"), 4)
         // ...but nothing auto-reconnected the CLIENT on its own — "off
         // means off, the user taps CONNECT again", same as M1.
         XCTAssertEqual(client.connectCallCount, connectCallsAtLaunch,
@@ -1027,7 +1039,10 @@ final class AppGraphTests: XCTestCase {
 
         await graph.handleScenePhaseChange(.foreground) // never backgrounded — start()'s own idempotency
 
-        XCTAssertEqual(client.subscriptionCount("link"), 1, "start() is idempotent; foreground must not resubscribe")
+        // "2" is the graph's own two independent `link` readers from the
+        // ONE `start()` call above (`core.observe(client:)` +
+        // `observeHistoryOutboxFlush()`), not a resubscription.
+        XCTAssertEqual(client.subscriptionCount("link"), 2, "start() is idempotent; foreground must not resubscribe")
 
         await graph.stop()
     }
@@ -1257,6 +1272,134 @@ final class AppGraphTests: XCTestCase {
         XCTAssertTrue(crewRow?.hasPreview ?? false)
 
         await graph.stop()
+    }
+
+    // MARK: - M3: persistence (docs/specs/A01-companion-app.md, M3)
+
+    /// The persisted-outbox flush: a WAITING item that never left the
+    /// device before a relaunch has no live `ThreadViewModel` watching
+    /// it (that type's own in-memory outbox only ever holds what IT
+    /// personally queued this session) — `AppGraph.flushPersistedOutbox()`
+    /// is what re-attempts it, on the link's next not-ready -> ready
+    /// edge, entirely independent of whether any screen is open.
+    func testPersistedWaitingOutboxFlushesOnConnect() async {
+        let client = CountingClient()
+        let history = HistoryStore.inMemory()
+        history.record(
+            FeedMessage(id: 1, kind: .text, direction: .out, text: "still waiting when the app died",
+                        timestamp: Date().addingTimeInterval(-600), destination: 0x0000_2001,
+                        deliveryState: .waiting),
+            in: .member(0x0000_2001))
+
+        let graph = AppGraph(dependencies: dependencies(client: client), historyStore: history)
+        await graph.start()
+
+        // Not sent yet — nothing has connected.
+        XCTAssertTrue(client.sentTexts.isEmpty)
+
+        // The link's own not-ready -> ready edge is what triggers the
+        // flush — never `start()` itself.
+        client.yieldLink(.ready)
+        await waitUntil { !client.sentTexts.isEmpty }
+
+        XCTAssertEqual(client.sentTexts.first?.0, "still waiting when the app died")
+        XCTAssertEqual(client.sentTexts.first?.1, 0x0000_2001)
+
+        await waitUntil {
+            self.graphInboxThread(graph, .member(0x0000_2001)).first?.deliveryState == .sent
+        }
+        let restored = graphInboxThread(graph, .member(0x0000_2001)).first
+        XCTAssertEqual(restored?.deliveryState, .sent, "flushed WAITING -> SENT, the same transition a live send makes")
+
+        // The persisted store agrees — nothing is WAITING any more.
+        XCTAssertTrue(history.pendingOutbox(cap: 8).isEmpty)
+
+        await graph.stop()
+    }
+
+    /// A WAITING item beyond `ThreadViewModel.outboxCap` is never
+    /// flushed at all (the same bounded-FIFO discipline a live thread's
+    /// own outbox enforces) — proved here with exactly `outboxCap + 1`
+    /// persisted items, oldest dropped from the flush.
+    func testPersistedOutboxFlushIsBoundedOldestFirst() async {
+        let client = CountingClient()
+        let history = HistoryStore.inMemory()
+        let cap = ThreadViewModel.outboxCap
+        for i in 0..<(cap + 1) {
+            history.record(
+                FeedMessage(id: UInt64(i + 1), kind: .text, direction: .out, text: "msg \(i)",
+                            timestamp: Date().addingTimeInterval(TimeInterval(i) - 1000), destination: 0x0000_2002,
+                            deliveryState: .waiting),
+                in: .member(0x0000_2002))
+        }
+
+        let graph = AppGraph(dependencies: dependencies(client: client), historyStore: history)
+        await graph.start()
+        client.yieldLink(.ready)
+        await waitUntil { client.sentTexts.count >= cap }
+        // Give any (incorrect) extra flush a moment to show up before
+        // asserting the ceiling held.
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(client.sentTexts.count, cap, "the flush must never exceed ThreadViewModel.outboxCap")
+        XCTAssertEqual(client.sentTexts.first?.0, "msg 0", "oldest first")
+        XCTAssertFalse(client.sentTexts.contains { $0.0 == "msg \(cap)" }, "the newest overflow item stays queued")
+
+        await graph.stop()
+    }
+
+    /// Cold-launch restore, then a REAL live want_config-shaped replay
+    /// for the same member: the restored messages keep their own
+    /// "FROM STORAGE" tag and original ages, the live one does not, and
+    /// nothing is duplicated — the exact rule `HistoryRestorer`'s own
+    /// header comment states ("a restored member later heard live must
+    /// flip to live without duplicates").
+    func testRestoredHistorySurvivesALiveWantConfigReplayWithoutDuplicating() async {
+        let taylor: UInt32 = 0x0000_3001
+        let history = HistoryStore.inMemory()
+        history.record(
+            FeedMessage(id: 0x8000_0000_0000_9001, kind: .text, direction: .direct, senderID: taylor,
+                        senderName: "Taylor", text: "yesterday's message", timestamp: Date().addingTimeInterval(-3600)),
+            in: .member(taylor))
+
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client), historyStore: history)
+
+        // Restore already ran, inside `AppGraph.init`, before `start()`
+        // (and therefore before ANY client stream is even subscribed) —
+        // the ordering `HistoryRestorer.restore`'s own doc comment
+        // requires.
+        let beforeReplay = graphInboxThread(graph, .member(taylor))
+        XCTAssertEqual(beforeReplay.count, 1)
+        XCTAssertTrue(beforeReplay[0].isRestored, "loaded from storage before any client stream existed")
+
+        await graph.start()
+        let inbox = graph.makeInboxViewModel()
+        _ = inbox.openThread(.member(taylor)) // the same subscription a real Thread screen would start
+
+        // The want_config-shaped replay: identity/position for Taylor,
+        // THEN a live inbound text — the exact sequence a real
+        // reconnect's nodeDB dump followed by fresh mesh traffic
+        // produces.
+        client.yieldNode(MeshNodeSnapshot(num: taylor, shortName: "TAY", longName: "Taylor", position: nil,
+                                           lastHeard: Date(), rssiDbm: -50, snrDb: 6, hopsAway: 0))
+        client.yieldText(IncomingText(from: taylor, to: 0x0000_0001, channel: 0, packetID: 555,
+                                       text: "morning! live now", rxTime: Date(), rssiDbm: -50, snrDb: 6, direct: true))
+
+        await waitUntil { self.graphInboxThread(graph, .member(taylor)).count == 2 }
+        let afterReplay = graphInboxThread(graph, .member(taylor)).sorted { $0.timestamp < $1.timestamp }
+
+        XCTAssertEqual(afterReplay.count, 2, "no duplicate of the restored message")
+        XCTAssertTrue(afterReplay[0].isRestored, "the OLD message keeps its own restored tag permanently")
+        XCTAssertEqual(afterReplay[0].text, "yesterday's message")
+        XCTAssertFalse(afterReplay[1].isRestored, "the NEW live message was never in storage — it renders live")
+        XCTAssertEqual(afterReplay[1].text, "morning! live now")
+
+        await graph.stop()
+    }
+
+    private func graphInboxThread(_ graph: AppGraph, _ conversation: ConversationKind) -> [FeedMessage] {
+        graph.inboxProvider.thread(for: conversation, now: Date())
     }
 
     private struct GraphTestTimeout: Error {}

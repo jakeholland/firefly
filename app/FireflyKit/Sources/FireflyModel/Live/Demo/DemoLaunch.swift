@@ -18,6 +18,22 @@ public enum DemoLaunch {
     public static func isRequested(arguments: [String] = CommandLine.arguments,
                                     environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         arguments.contains("-FireflyDemo") || environment["FIREFLY_DEMO"] == "1"
+            || isRestoredRequested(arguments: arguments, environment: environment)
+    }
+
+    /// M3 — `-FireflyDemoRestored` on the command line, or
+    /// `FIREFLY_DEMO_RESTORED=1` in the environment: demo mode, but
+    /// seeded through the REAL persistence path
+    /// (`DemoHistorySeed.seed(into:)` + `HistoryRestorer.restore`)
+    /// instead of the scripted live timeline alone, so the "from
+    /// storage · restored" treatment is screenshot-able even though demo
+    /// mode itself never persists across a real relaunch (M3's own
+    /// demo-isolation rule — see `HistoryStore.inMemory()`). Implies
+    /// `isRequested(...)` — this flag alone is enough to turn demo mode
+    /// on; a screenshot script never has to pass both.
+    public static func isRestoredRequested(arguments: [String] = CommandLine.arguments,
+                                            environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        arguments.contains("-FireflyDemoRestored") || environment["FIREFLY_DEMO_RESTORED"] == "1"
     }
 
     /// `-FireflyDemoScreen <name>` — demo-only, and simpler than UI

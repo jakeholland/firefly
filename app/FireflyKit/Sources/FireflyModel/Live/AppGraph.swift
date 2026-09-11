@@ -28,9 +28,20 @@ public final class AppGraph {
     public let dependencies: AppDependencies
     /// The single owner of every `ff_*` context in the process.
     public let core = CoreStore()
-    /// `InboxProviding`, backed by the C core — never
-    /// `InMemoryInboxStore`, which is test-only from here on.
-    public let inboxProvider: CoreInboxProvider
+    /// `InboxProviding`, backed by the C core through M3's own
+    /// `PersistingInboxProvider` wrapper — never `InMemoryInboxStore`,
+    /// which is test-only from here on, and never the bare
+    /// `CoreInboxProvider` this used to be: every write flows through
+    /// `PersistingInboxProvider` first, so `history` (below) can never
+    /// drift from what the live ring actually holds.
+    public let inboxProvider: any InboxProviding
+    /// M3 — the durable half of message history (docs/specs/
+    /// A01-companion-app.md, M3 + Persistence). Owned here, not by
+    /// `inboxProvider` alone, because `flushPersistedOutbox()` (below)
+    /// needs to read it directly (`pendingOutbox`), and because
+    /// `AppGraph.init` reads from it (`loadAllForRestore()`) before
+    /// `inboxProvider` — the wrapper — even exists.
+    private let historyStore: HistoryStore
     /// Portnum 269 (FLARE, and FIND's PING).
     public let packetSender: MeshFireflyPacketSender
     /// M2: the one place a crew member is paired/unpaired/renamed —
@@ -43,6 +54,12 @@ public final class AppGraph {
 
     private var privateObservation: Task<Void, Never>?
     private var tickLoop: Task<Void, Never>?
+    /// M3 — flushes `historyStore`'s persisted WAITING items on the
+    /// link's next not-ready -> ready edge. See
+    /// `observeHistoryOutboxFlush()`'s own doc comment for why this has
+    /// to be a graph-level subscription rather than left to whichever
+    /// `ThreadViewModel` (if any) happens to be open.
+    private var historyOutboxFlushObservation: Task<Void, Never>?
     private var started = false
     /// M2: true once `autoConnectToLastKnownPeripheral()` has been
     /// considered, ever — set on the FIRST `start()` only, deliberately
@@ -102,12 +119,40 @@ public final class AppGraph {
     /// behave normally under test.
     private let skipLaunchAutoConnectUnderXCTest: Bool
 
+    /// `historyStore:` — M3's own override seam, `nil` by default. When
+    /// `nil`, the store is picked the same way `.stub()`/`.demo()`/
+    /// `.live()` already distinguish themselves elsewhere in this file:
+    /// `dependencies.store is InMemorySettingsStore` is true for both
+    /// `.stub()` and every `.demo()`/`.demoBundle()` composition (and
+    /// for nothing `.live()` ever builds), so it doubles as "is this a
+    /// disposable stack" without a second flag to keep in sync — a
+    /// disposable stack gets a disposable, in-memory history store,
+    /// matching M3's own demo-isolation rule ("Demo doesn't persist
+    /// across launches: in-memory store only") for free. Explicit
+    /// callers use this to inject a store that already has rows in it:
+    /// `DemoRunner`'s own `-FireflyDemoRestored` seeding does exactly
+    /// that (an in-memory store, pre-populated, so the SAME restore code
+    /// path a real relaunch takes is what renders it), and so does any
+    /// test that wants to simulate "two launches sharing one store".
     public init(dependencies: AppDependencies = .current(), notifications: any NotificationSending = UNNotificationSending(),
-                skipLaunchAutoConnectUnderXCTest: Bool = false) {
+                skipLaunchAutoConnectUnderXCTest: Bool = false, historyStore: HistoryStore? = nil) {
         self.dependencies = dependencies
         self.notifications = notifications
         self.skipLaunchAutoConnectUnderXCTest = skipLaunchAutoConnectUnderXCTest
-        self.inboxProvider = CoreInboxProvider(inbox: core.inbox, crew: core.crew)
+        self.historyStore = historyStore ?? (dependencies.store is InMemorySettingsStore ? .inMemory() : .live())
+        let rawInboxProvider = CoreInboxProvider(inbox: core.inbox, crew: core.crew)
+        // M3 — reseed the live ring from storage NOW, before
+        // `PersistingInboxProvider` even exists and before ANYTHING can
+        // observe a client: pushed straight into the RAW provider so
+        // restoring a message is never itself treated as new traffic to
+        // re-persist (`PersistingInboxProvider`'s own header comment).
+        // Mirrors `CrewPairingRestorer.restore`'s identical ordering
+        // rule a few lines down, for the identical reason: a
+        // want_config replay's first live event must never race a
+        // still-in-progress restore.
+        let restoredMessageIDs = HistoryRestorer.restore(self.historyStore.loadAllForRestore(), into: rawInboxProvider)
+        self.inboxProvider = PersistingInboxProvider(wrapping: rawInboxProvider, history: self.historyStore,
+                                                      restoredMessageIDs: restoredMessageIDs)
         self.packetSender = MeshFireflyPacketSender(client: dependencies.client)
         self.flareTakeover = FlareTakeoverViewModel(crew: self.core.crew)
         self.crewPairing = CrewPairingController(crew: core.crew, store: dependencies.crewPairingStore)
@@ -177,6 +222,7 @@ public final class AppGraph {
         observePrivatePackets()
         observeMyLocation()
         observeIncomingTextsForNotifications()
+        observeHistoryOutboxFlush()
         Self.log("start(): awaiting uplink.start()")
         await uplink.start()
         Self.log("start(): uplink.start() returned")
@@ -332,6 +378,7 @@ public final class AppGraph {
         privateObservation?.cancel(); privateObservation = nil
         stopObservingMyLocation()
         stopObservingIncomingTextsForNotifications()
+        historyOutboxFlushObservation?.cancel(); historyOutboxFlushObservation = nil
         tickLoop?.cancel(); tickLoop = nil
         await uplink.stop()
         // The graph's own subscriptions stopping is not enough on its
@@ -404,6 +451,57 @@ public final class AppGraph {
             // honestly nothing to do, same as the puck's own
             // `app/ff_wiring.c`.
             break
+        }
+    }
+
+    // MARK: - M3: persisted outbox flush
+
+    /// WAITING items that survived a relaunch (`HistoryStore
+    /// .pendingOutbox`) have no live `ThreadViewModel` watching them —
+    /// that type's own in-memory `outbox` array only ever holds what IT
+    /// personally queued THIS session (`ThreadViewModel.swift`'s own
+    /// header comment). This is the flush that owns them instead: a
+    /// fresh, independent `client.linkState()` subscription (S1 — this
+    /// graph's own, never shared with `core`'s or any view model's), the
+    /// same "flushed automatically the next time the link reaches ready"
+    /// rule a live thread's own outbox follows, applied once, at the
+    /// composition-root level, to whatever persisted WAITING items exist
+    /// regardless of which screen — if any — is open. No double-send
+    /// risk against a live `ThreadViewModel`'s own flush: a restored
+    /// WAITING item was never in any `ThreadViewModel`'s session-local
+    /// array to begin with (that array starts empty every launch), so
+    /// the two queues can never overlap.
+    private func observeHistoryOutboxFlush() {
+        guard historyOutboxFlushObservation == nil else { return }
+        let links = dependencies.client.linkState()
+        historyOutboxFlushObservation = Task { [weak self] in
+            var wasReady = false
+            for await state in links {
+                guard let self else { return }
+                let ready = (state == .ready)
+                if ready, !wasReady { await self.flushPersistedOutbox() }
+                wasReady = ready
+            }
+        }
+    }
+
+    /// Bounded (`ThreadViewModel.outboxCap`), oldest first — the same
+    /// drop-oldest FIFO discipline a live thread's own outbox follows,
+    /// applied here to whatever `historyStore` still has WAITING.
+    /// `item.destination` is read straight off the restored row (never
+    /// re-derived): it is exactly `meshBroadcastAddress` for a
+    /// whole-crew send, matching `ff_feed_item_t.to_node`'s own
+    /// "0 = broadcast" convention one layer up.
+    private func flushPersistedOutbox() async {
+        for (_, item) in historyStore.pendingOutbox(cap: ThreadViewModel.outboxCap) {
+            let dest = item.destination ?? meshBroadcastAddress
+            let wantAck = (dest != meshBroadcastAddress)
+            do {
+                let packetID = try await dependencies.client.sendText(item.text, to: dest, wantAck: wantAck)
+                inboxProvider.markSent(outboxID: item.id, packetID: packetID, at: Date())
+            } catch {
+                inboxProvider.setStatus(outboxID: item.id, state: .dropped, at: Date())
+            }
         }
     }
 
