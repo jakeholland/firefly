@@ -20,21 +20,71 @@ static ff_crew_member_t *crew_find(ff_crew_t *c, uint32_t node_id, int *out_idx)
     return NULL;
 }
 
-/* find-or-create: shared by upsert/set_paired/on_position/on_rssi. Never
- * evicts (AC2: fixed no-eviction-in-v1 policy) — returns NULL once
- * FF_CREW_MAX distinct ids are already occupied and `node_id` isn't one
- * of them. */
+/* 2026-09-11 [api] S02 amendment (issue #266) — bounded unpaired-LRU
+ * roster eviction. Finds the UNPAIRED occupant with the OLDEST
+ * `last_heard_ms` (an occupant that has never had `ff_crew_on_heard`
+ * called for it — `has_heard == false` — is treated as older than any
+ * occupant that has, i.e. evicted first: "no heard timestamp at all" is
+ * a weaker claim on the slot than "heard X ms ago", however large X
+ * is). Paired members are never candidates. Returns -1 if every
+ * currently-occupied slot is paired (the genuinely-no-room case).
+ *
+ * "now" for the age comparison comes from the clock `ff_crew_init` bound
+ * (the same source `ff_crew_on_rssi` already uses for a timestamp it
+ * wasn't handed explicitly) rather than a parameter, so this can be
+ * called from `ff_crew_upsert`/`ff_crew_set_paired`, neither of which
+ * carries an explicit "now" of its own. Ages are computed the same
+ * wraparound-safe way as `ff_crew_freshness`/`ff_crew_presence`; ties
+ * (equal ages, including two never-heard occupants) keep the
+ * lowest-index candidate, which is fine — LRU order among genuinely
+ * equal timestamps is unobservable. */
+static int crew_find_lru_unpaired_victim(ff_crew_t const *c)
+{
+    uint32_t const now = (c->clock && c->clock->now_ms) ? c->clock->now_ms(c->clock->user) : 0u;
+    int victim = -1;
+    uint32_t victim_age = 0;
+
+    for (uint8_t i = 0; i < c->count; i++) {
+        if (c->members[i].paired) {
+            continue; /* pinned - never a candidate */
+        }
+        uint32_t const age = c->members[i].has_heard
+                                  ? (now - c->members[i].last_heard_ms) /* wraparound-safe */
+                                  : UINT32_MAX;                         /* never heard: maximally evictable */
+        if (victim < 0 || age > victim_age) {
+            victim = (int)i;
+            victim_age = age;
+        }
+    }
+    return victim;
+}
+
+/* find-or-create: shared by upsert/set_paired/on_position/on_rssi/
+ * on_heard. 2026-09-11 [api] S02 amendment (issue #266): when the
+ * roster is full, evicts the least-recently-heard UNPAIRED occupant
+ * (crew_find_lru_unpaired_victim above) to make room for a genuinely new
+ * `node_id`, rather than unconditionally refusing. Paired members are
+ * pinned and never reached by this path. Returns NULL only when every
+ * occupied slot is paired (see crew_find_lru_unpaired_victim's doc
+ * comment for why that is the only remaining failure case). */
 static ff_crew_member_t *crew_find_or_create(ff_crew_t *c, uint32_t node_id, int *out_idx)
 {
     ff_crew_member_t *m = crew_find(c, node_id, out_idx);
     if (m) {
         return m;
     }
-    if (c->count >= FF_CREW_MAX) {
-        return NULL;
+
+    uint8_t idx;
+    if (c->count < FF_CREW_MAX) {
+        idx = c->count++;
+    } else {
+        int const victim = crew_find_lru_unpaired_victim(c);
+        if (victim < 0) {
+            return NULL; /* honest failure: every slot is paired, genuinely no room */
+        }
+        idx = (uint8_t)victim;
     }
 
-    uint8_t idx = c->count++;
     ff_crew_member_t *nm = &c->members[idx];
     memset(nm, 0, sizeof(*nm));
     nm->node_id = node_id;
@@ -42,6 +92,11 @@ static ff_crew_member_t *crew_find_or_create(ff_crew_t *c, uint32_t node_id, int
     nm->rssi_dbm = INT16_MIN;  /* never direct, per spec comment */
     nm->has_pos = false;       /* NEVER until the first on_position */
 
+    /* A reused (evicted) slot's RSSI trend-window history belonged to
+     * the previous, now-gone occupant — dropped along with everything
+     * else in `*nm` above (spec amendment: "what happens to an evicted
+     * stranger's data"). A freshly-appended slot has simply never had
+     * samples; the same reset covers both cases in one place. */
     c->rssi_hist_count[idx] = 0;
     c->rssi_hist_head[idx] = 0;
 
@@ -86,15 +141,17 @@ ff_crew_member_t const *ff_crew_find(ff_crew_t const *c, uint32_t node_id)
     return NULL;
 }
 
-void ff_crew_set_paired(ff_crew_t *c, uint32_t node_id, bool paired)
+bool ff_crew_set_paired(ff_crew_t *c, uint32_t node_id, bool paired)
 {
     if (!c) {
-        return;
+        return false;
     }
     ff_crew_member_t *m = crew_find_or_create(c, node_id, NULL);
-    if (m) {
-        m->paired = paired;
+    if (!m) {
+        return false; /* roster full of FF_CREW_MAX already-paired members */
     }
+    m->paired = paired;
+    return true;
 }
 
 /* ------------------------------------------------------------------- */

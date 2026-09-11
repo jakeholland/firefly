@@ -57,7 +57,16 @@
 extern "C" {
 #endif
 
-/** Max crew slots (paired + merely-heard, no eviction — see AC2). */
+/* Max crew slots (paired + merely-heard). 2026-09-11 [api] S02 amendment
+ * — bounded unpaired-LRU roster eviction (issue #266): paired members
+ * are PINNED here, never evicted; unpaired ("merely heard") members
+ * share these SAME slots as a bounded LRU keyed on `last_heard_ms` — a
+ * full roster evicts its least-recently-heard UNPAIRED occupant to admit
+ * a genuinely new node, and fails (NULL/false) only once all 8 are
+ * paired. See `ff_crew_upsert`/`ff_crew_set_paired`'s doc comments below
+ * and the spec amendment for the full policy, including what happens to
+ * an evicted stranger's data (dropped) and why FF_CREW_MAX itself is
+ * unchanged rather than grown. */
 #define FF_CREW_MAX 8
 
 /* 2026-09-06 [api] — crew long names. Meshtastic's NodeInfo carries both a
@@ -335,15 +344,30 @@ void ff_crew_init(ff_crew_t *c, ff_clock_t const *clock);
 /**
  * ff_crew_upsert — find-or-create a member slot for `node_id`.
  *
- * Existing id returns the same slot (pointer stable across calls — the
- * backing array never moves or shrinks). A brand-new id gets a freshly
- * zeroed slot (unpaired, no position, battery/RSSI sentinels set) with
- * `node_id` filled in; the caller fills in name/initial/color_idx/etc.
- * once known (e.g. from the Meshtastic nodeDB — crew doesn't know names).
+ * Existing id returns the same slot (pointer stable across calls, EXCEPT
+ * across an eviction of a *different* unpaired occupant — see below;
+ * the backing array itself never moves or shrinks). A brand-new id gets
+ * a freshly zeroed slot (unpaired, no position, battery/RSSI sentinels
+ * set) with `node_id` filled in; the caller fills in
+ * name/initial/color_idx/etc. once known (e.g. from the Meshtastic
+ * nodeDB — crew doesn't know names).
  *
- * Returns NULL if the roster is full (`FF_CREW_MAX` distinct ids already
- * present) and `node_id` isn't one of them — fixed policy, no eviction in
- * v1, even if some occupied slots are unpaired (AC2).
+ * 2026-09-11 [api] S02 amendment (issue #266) — bounded unpaired-LRU
+ * eviction: when the roster is already full (`FF_CREW_MAX` distinct ids
+ * present) and `node_id` isn't one of them, this no longer always fails.
+ * Paired members are PINNED (never evicted, never touched). Among the
+ * UNPAIRED occupants, the one with the OLDEST `last_heard_ms` (an
+ * occupant that has never had `ff_crew_on_heard` called for it —
+ * `has_heard == false` — counts as older than any occupant that has)
+ * is evicted — its ENTIRE record, including RSSI trend history, is
+ * dropped and the slot is reused for `node_id`, exactly like a brand-new
+ * slot. Returns NULL only when every occupied slot is paired (the
+ * genuinely-no-room case) — by construction this means all `FF_CREW_MAX`
+ * are paired, since a lower paired count always leaves at least one
+ * unpaired occupant to evict. See the spec amendment for the full
+ * rationale (why this lives in core rather than each caller, what
+ * happens to evicted data, and the selection/persistence-order
+ * consequence).
  */
 ff_crew_member_t *ff_crew_upsert(ff_crew_t *c, uint32_t node_id);
 
@@ -356,9 +380,14 @@ ff_crew_member_t *ff_crew_upsert(ff_crew_t *c, uint32_t node_id);
  * fixed `FF_CREW_MAX` slots just by asking "is this sender paired?" —
  * `ff_crew_upsert`'s create-on-miss behavior meant a flood of packets
  * from distinct never-before-heard node ids could permanently fill every
- * slot before any of them were ever paired, since v1 has no eviction).
- * Callers that only need to ask "do I already know this id, and is it
- * paired?" — without the side effect of claiming a slot for it — should
+ * slot before any of them were ever paired — true at the time under the
+ * original no-eviction-at-all policy, and STILL true after the
+ * 2026-09-11 bounded-unpaired-LRU amendment: unpaired strangers still
+ * consume real roster slots and can still evict each other, they just no
+ * longer permanently WEDGE pairing shut. `ff_crew_find` stays the right
+ * tool for "don't spend a slot just to ask"). Callers that only need to
+ * ask "do I already know this id, and is it paired?" — without the side
+ * effect of claiming a slot for it — should
  * use this, not `ff_crew_upsert`. Pairing a genuinely new node still
  * goes through `ff_crew_upsert`/`ff_crew_set_paired` as before (an
  * explicit user pairing action, never inbound radio traffic).
@@ -367,11 +396,21 @@ ff_crew_member_t const *ff_crew_find(ff_crew_t const *c, uint32_t node_id);
 
 /**
  * ff_crew_set_paired — mark `node_id` paired/unpaired (in-crew vs.
- * merely-heard). Find-or-creates the slot (same no-eviction-when-full
- * policy as `ff_crew_upsert`); a no-op if the roster is full and
- * `node_id` isn't already present.
+ * merely-heard). Find-or-creates the slot (same bounded-unpaired-LRU
+ * eviction policy as `ff_crew_upsert`, 2026-09-11 [api] S02 amendment,
+ * issue #266): pairing a node not currently in the roster always
+ * succeeds while fewer than `FF_CREW_MAX` are paired, evicting the
+ * least-recently-heard unpaired stranger if the roster is full of them.
+ *
+ * Returns true iff `node_id` ends this call in the roster with `paired`
+ * set to the requested value — false only when the roster is full AND
+ * every occupied slot is already paired (the honest "no room, 8/8
+ * paired" failure; `[api]` — this function returned `void` before the
+ * 2026-09-11 amendment, see the spec for the full rationale and the
+ * caller audit). Marking an already-present node's pairing state (in
+ * either direction) always succeeds — it never needs a new slot.
  */
-void ff_crew_set_paired(ff_crew_t *c, uint32_t node_id, bool paired);
+bool ff_crew_set_paired(ff_crew_t *c, uint32_t node_id, bool paired);
 
 /**
  * ff_crew_on_position — record a position fix for `node_id`, received at
@@ -424,8 +463,10 @@ void ff_crew_on_rssi(ff_crew_t *c, uint32_t node_id, int16_t rssi_dbm);
  * ff_crew_on_heard — record that a packet arrived from `node_id` at
  * `rx_time_ms`, independent of what kind of packet it was or whether it
  * carried a position, and whether it arrived DIRECT or via a relay
- * (`direct`). Find-or-creates the slot (same effect-not-name/no-eviction
- * convention as `ff_crew_on_position`/`ff_crew_on_rssi`). The ONLY writer
+ * (`direct`). Find-or-creates the slot (same effect-not-name convention,
+ * and the same bounded-unpaired-LRU eviction-when-full policy, as
+ * `ff_crew_upsert`/`ff_crew_on_position`/`ff_crew_on_rssi` — see
+ * `ff_crew_upsert`'s doc comment). The ONLY writer
  * of `last_heard_ms`/`has_heard`/`heard_direct` — see `ff_crew_presence`,
  * the primary reader.
  *

@@ -126,7 +126,7 @@ static void S02_AC1_freshness_handles_uint32_wraparound(void)
 }
 
 /* ------------------------------------------------------------------- */
-/* AC2 — upsert / no-eviction policy                                    */
+/* AC2 — upsert basics (find-or-create, existing-id stability)          */
 /* ------------------------------------------------------------------- */
 
 static void S02_AC2_upsert_existing_id_returns_same_slot(void)
@@ -143,76 +143,314 @@ static void S02_AC2_upsert_existing_id_returns_same_slot(void)
     TEST_ASSERT_EQUAL_UINT32(42u, p1->node_id);
 }
 
-static void S02_AC2_ninth_unpaired_member_rejected(void)
+/* ------------------------------------------------------------------- */
+/* AC10 — bounded unpaired-LRU roster eviction (2026-09-11 S02          */
+/* amendment, issue #266). Supersedes the old fixed no-eviction policy  */
+/* the pre-amendment AC2 tests used to pin (see git history/PR body for */
+/* the retired S02_AC2_ninth_... / S02_AC2_set_paired_cannot_exceed...   */
+/* tests this group replaces).                                          */
+/* ------------------------------------------------------------------- */
+
+static void S02_AC10a_ninth_stranger_evicts_lru_unpaired_and_succeeds(void)
 {
+    /* Fill the roster with FF_CREW_MAX never-paired strangers, each
+     * heard at a distinct, increasing timestamp (id 1 heard first/
+     * oldest, id FF_CREW_MAX heard last/newest). Upserting a genuinely
+     * new id must now succeed - proof this isn't just "eviction is
+     * possible", it's "eviction is what actually happens on a full,
+     * all-stranger roster", the exact scenario issue #266 reports. */
     fake_clock_t fc = {0};
     ff_clock_t clk = make_clock(&fc);
     ff_crew_t c;
     ff_crew_init(&c, &clk);
 
     for (uint32_t i = 1; i <= FF_CREW_MAX; i++) {
-        ff_crew_member_t *p = ff_crew_upsert(&c, i);
-        TEST_ASSERT_NOT_NULL(p);
-    }
-    ff_crew_member_t *ninth = ff_crew_upsert(&c, 999u);
-    TEST_ASSERT_NULL(ninth);
-}
-
-static void S02_AC2_ninth_rejected_even_when_a_slot_is_unpaired(void)
-{
-    fake_clock_t fc = {0};
-    ff_clock_t clk = make_clock(&fc);
-    ff_crew_t c;
-    ff_crew_init(&c, &clk);
-
-    for (uint32_t i = 1; i <= FF_CREW_MAX; i++) {
-        ff_crew_member_t *p = ff_crew_upsert(&c, i);
-        TEST_ASSERT_NOT_NULL(p);
-    }
-    /* Slot 1 is explicitly unpaired (freeable-looking) - fixed policy:
-     * still no eviction. */
-    ff_crew_set_paired(&c, 1u, false);
-
-    ff_crew_member_t *ninth = ff_crew_upsert(&c, 999u);
-    TEST_ASSERT_NULL(ninth);
-    /* And the "freeable" slot is untouched. */
-    ff_crew_member_t *still_there = ff_crew_upsert(&c, 1u);
-    TEST_ASSERT_NOT_NULL(still_there);
-    TEST_ASSERT_EQUAL_UINT32(1u, still_there->node_id);
-}
-
-static void S02_AC2_set_paired_cannot_exceed_capacity(void)
-{
-    /* ff_crew_set_paired find-or-creates internally, same as upsert - the
-     * no-eviction cap must hold on THIS path too, not just via
-     * ff_crew_upsert. A capacity-bypass regression here would write past
-     * the fixed-size `members[FF_CREW_MAX]` array (an out-of-bounds
-     * write), so this also guards AC8's zero-heap/no-corruption story. */
-    fake_clock_t fc = {0};
-    ff_clock_t clk = make_clock(&fc);
-    ff_crew_t c;
-    ff_crew_init(&c, &clk);
-
-    for (uint32_t i = 1; i <= FF_CREW_MAX; i++) {
-        ff_crew_member_t *p = ff_crew_upsert(&c, i);
-        TEST_ASSERT_NOT_NULL(p);
+        ff_crew_on_heard(&c, i, i * 1000u, true);
     }
     TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, c.count);
 
-    uint32_t const novel_id = 999u;
-    ff_crew_set_paired(&c, novel_id, true);
+    fc.t = (FF_CREW_MAX + 1u) * 1000u; /* "now", for the eviction's own age math */
+    ff_crew_member_t *ninth = ff_crew_upsert(&c, 999u);
+    TEST_ASSERT_NOT_NULL_MESSAGE(ninth, "a full-of-strangers roster must admit a genuinely new node");
+    TEST_ASSERT_EQUAL_UINT32(999u, ninth->node_id);
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, c.count); /* still 8 - reused a slot, didn't grow */
 
-    /* No new slot was created ... */
+    /* id 1 (oldest last_heard_ms) is the one that should be gone. */
+    TEST_ASSERT_NULL(ff_crew_find(&c, 1u));
+    /* Every other stranger (2..8) is untouched. */
+    for (uint32_t i = 2; i <= FF_CREW_MAX; i++) {
+        TEST_ASSERT_NOT_NULL(ff_crew_find(&c, i));
+    }
+}
+
+static void S02_AC10a_pairing_a_new_node_on_a_full_stranger_roster_succeeds(void)
+{
+    /* The issue's actual complaint, end to end: an all-stranger-full
+     * roster must not block PAIRING a new friend. */
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    for (uint32_t i = 1; i <= FF_CREW_MAX; i++) {
+        ff_crew_on_heard(&c, i, i * 1000u, true);
+    }
+
+    fc.t = (FF_CREW_MAX + 1u) * 1000u;
+    uint32_t const friend_id = 0xF00Du;
+    TEST_ASSERT_TRUE(ff_crew_set_paired(&c, friend_id, true));
+
+    ff_crew_member_t const *m = ff_crew_find(&c, friend_id);
+    TEST_ASSERT_NOT_NULL(m);
+    TEST_ASSERT_TRUE(m->paired);
     TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, c.count);
-    /* ... and nothing in the roster now claims the novel id. */
+}
+
+static void S02_AC10b_ninth_pairing_fails_honestly_once_eight_are_paired(void)
+{
+    /* The one failure case eviction leaves standing: with all
+     * FF_CREW_MAX slots genuinely PAIRED, a 9th pairing attempt must
+     * fail honestly (not silently evict a paired member). */
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    for (uint32_t i = 1; i <= FF_CREW_MAX; i++) {
+        TEST_ASSERT_TRUE(ff_crew_set_paired(&c, i, true));
+    }
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, c.count);
+
+    TEST_ASSERT_NULL(ff_crew_upsert(&c, 999u));
+    TEST_ASSERT_FALSE(ff_crew_set_paired(&c, 999u, true));
+
+    /* Nothing in the roster claims the rejected id, and every original
+     * paired member is untouched (no silent overwrite, no accidental
+     * unpairing). */
     for (uint8_t i = 0; i < c.count; i++) {
-        TEST_ASSERT_NOT_EQUAL_UINT32(novel_id, c.members[i].node_id);
+        TEST_ASSERT_NOT_EQUAL_UINT32(999u, c.members[i].node_id);
     }
-    /* The 9 original members are untouched (no silent overwrite either). */
     for (uint32_t i = 1; i <= FF_CREW_MAX; i++) {
-        ff_crew_member_t *m = ff_crew_upsert(&c, i);
+        ff_crew_member_t const *m = ff_crew_find(&c, i);
         TEST_ASSERT_NOT_NULL(m);
         TEST_ASSERT_EQUAL_UINT32(i, m->node_id);
+        TEST_ASSERT_TRUE(m->paired);
+    }
+}
+
+static void S02_AC10c_paired_member_never_evicted_no_matter_how_many_strangers(void)
+{
+    /* Two paired members claim slots 0-1; every subsequent stranger must
+     * churn through the REMAINING 6 slots only - the two paired members
+     * must never move, vanish, or change identity, regardless of how
+     * many distinct new strangers arrive afterward (well past the
+     * roster's own capacity). */
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    TEST_ASSERT_TRUE(ff_crew_set_paired(&c, 1u, true));
+    TEST_ASSERT_TRUE(ff_crew_set_paired(&c, 2u, true));
+
+    for (uint32_t i = 0; i < 500u; i++) {
+        fc.t = 1000u + i;
+        ff_crew_on_heard(&c, 10000u + i, fc.t, true);
+    }
+
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, c.count); /* never grew past 8 */
+
+    ff_crew_member_t const *m1 = ff_crew_find(&c, 1u);
+    ff_crew_member_t const *m2 = ff_crew_find(&c, 2u);
+    TEST_ASSERT_NOT_NULL(m1);
+    TEST_ASSERT_NOT_NULL(m2);
+    TEST_ASSERT_TRUE(m1->paired);
+    TEST_ASSERT_TRUE(m2->paired);
+}
+
+static void S02_AC10d_eviction_order_follows_last_heard_ms_strictly(void)
+{
+    /* A deliberately NON-insertion-order fixture: id 5 was heard FIRST
+     * (oldest) even though it was upserted last, so an implementation
+     * that (wrongly) evicts by slot index or insertion order rather than
+     * last_heard_ms would evict the wrong id. Fill order: 1,2,3,4,5 but
+     * heard-time order (oldest->newest): 5,3,1,4,2. */
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    ff_crew_on_heard(&c, 1u, 300u, true); /* 3rd oldest */
+    ff_crew_on_heard(&c, 2u, 500u, true); /* newest */
+    ff_crew_on_heard(&c, 3u, 200u, true); /* 2nd oldest */
+    ff_crew_on_heard(&c, 4u, 400u, true); /* 4th oldest */
+    ff_crew_on_heard(&c, 5u, 100u, true); /* oldest */
+    TEST_ASSERT_EQUAL_UINT8(5u, c.count);
+
+    /* Pad to FF_CREW_MAX with three more, newer than all of the above. */
+    ff_crew_on_heard(&c, 6u, 600u, true);
+    ff_crew_on_heard(&c, 7u, 700u, true);
+    ff_crew_on_heard(&c, 8u, 800u, true);
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, c.count);
+
+    /* Both replacement admissions go through ff_crew_on_heard (not a bare
+     * ff_crew_upsert) so every occupant carries real heard evidence
+     * throughout - this test isolates last_heard_ms ORDERING; the
+     * separate never-heard-is-most-evictable rule has its own test
+     * right below. */
+    fc.t = 900u;
+    ff_crew_on_heard(&c, 900u, 900u, true); /* evicts 5 (oldest: t=100) */
+    TEST_ASSERT_NOT_NULL(ff_crew_find(&c, 900u));
+    TEST_ASSERT_NULL(ff_crew_find(&c, 5u));
+    TEST_ASSERT_NOT_NULL(ff_crew_find(&c, 3u)); /* next-oldest, still present */
+
+    fc.t = 901u;
+    ff_crew_on_heard(&c, 901u, 901u, true); /* evicts 3 (now oldest: t=200) */
+    TEST_ASSERT_NOT_NULL(ff_crew_find(&c, 901u));
+    TEST_ASSERT_NULL(ff_crew_find(&c, 3u));
+    TEST_ASSERT_NOT_NULL(ff_crew_find(&c, 1u)); /* next-oldest after that, still present */
+}
+
+static void S02_AC10d_never_heard_occupant_is_evicted_before_any_heard_one(void)
+{
+    /* A slot created purely via ff_crew_upsert (never ff_crew_on_heard)
+     * has has_heard == false and must be treated as MORE evictable than
+     * any occupant with a real, however-old, last_heard_ms. */
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    /* id 1: heard a long time ago (t=1) - real evidence, just old. */
+    ff_crew_on_heard(&c, 1u, 1u, true);
+    /* ids 2..8: upserted directly, never heard. */
+    for (uint32_t i = 2; i <= FF_CREW_MAX; i++) {
+        TEST_ASSERT_NOT_NULL(ff_crew_upsert(&c, i));
+    }
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, c.count);
+
+    fc.t = 100000u;
+    TEST_ASSERT_NOT_NULL(ff_crew_upsert(&c, 999u));
+
+    /* id 1 (has_heard == true, just old) must survive; one of the
+     * never-heard occupants must be the one that's gone. */
+    TEST_ASSERT_NOT_NULL(ff_crew_find(&c, 1u));
+    bool any_never_heard_evicted = false;
+    for (uint32_t i = 2; i <= FF_CREW_MAX; i++) {
+        if (ff_crew_find(&c, i) == NULL) {
+            any_never_heard_evicted = true;
+        }
+    }
+    TEST_ASSERT_TRUE(any_never_heard_evicted);
+}
+
+static void S02_AC10e_evicting_a_stranger_with_a_position_drops_it_cleanly(void)
+{
+    /* The evicted occupant had a full record - position, RSSI, status,
+     * heard timestamp. After eviction, the REUSED slot must read exactly
+     * like a brand-new one: nothing about the old occupant leaks through. */
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    for (uint32_t i = 1; i <= FF_CREW_MAX; i++) {
+        ff_crew_on_heard(&c, i, i * 1000u, true);
+    }
+    /* id 1 (the future eviction victim - oldest heard) gets a rich record. */
+    ff_crew_on_position(&c, 1u, (ff_latlon_t){39.9, -82.4}, 1000u, FF_CREW_POS_META_NONE);
+    fc.t = 1000u;
+    ff_crew_on_rssi(&c, 1u, -55);
+    ff_crew_member_t *victim_before = ff_crew_upsert(&c, 1u);
+    strcpy(victim_before->status, "RAGING");
+    victim_before->battery_pct = 42;
+
+    fc.t = (FF_CREW_MAX + 1u) * 1000u;
+    ff_crew_member_t *fresh = ff_crew_upsert(&c, 999u);
+    TEST_ASSERT_NOT_NULL(fresh);
+
+    /* The reused slot reads exactly like a brand-new one. */
+    TEST_ASSERT_FALSE(fresh->has_pos);
+    TEST_ASSERT_FALSE(fresh->has_heard);
+    TEST_ASSERT_EQUAL_INT16(INT16_MIN, fresh->rssi_dbm);
+    TEST_ASSERT_EQUAL_INT8(-1, fresh->battery_pct);
+    TEST_ASSERT_EQUAL_STRING("", fresh->status);
+    TEST_ASSERT_FALSE(fresh->paired);
+
+    /* And its RSSI trend history is gone too - not just the scalar
+     * rssi_dbm field, the whole ring buffer used to compute the trend. */
+    TEST_ASSERT_EQUAL_INT8(0, ff_crew_rssi_trend(&c, 999u, fc.t));
+
+    /* The evicted id, if it ever comes back, starts fresh - not a
+     * resurrection of its old record. */
+    TEST_ASSERT_NULL(ff_crew_find(&c, 1u));
+}
+
+static void S02_AC10f_fuzz_smoke_10k_random_ops_never_corrupts_invariants(void)
+{
+    /* Deterministic PRNG (no external dependency, reproducible across
+     * runs/platforms) driving a bounded id space (0..31, well over
+     * FF_CREW_MAX so both hits and misses/evictions are exercised) with
+     * a mix of heard/pair/unpair operations. `desired_paired[id]`
+     * mirrors this loop's OWN last pair/unpair decision for `id`
+     * (independent of whatever core actually did) so the invariant
+     * checked every single iteration is exactly issue #266's promise:
+     * a currently-paired id can never vanish or read unpaired because
+     * of RF noise - only this loop's own explicit unpair can do that. */
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    uint32_t rng = 0x20260911u; /* fixed seed - reproducible */
+    bool desired_paired[32];
+    memset(desired_paired, 0, sizeof(desired_paired));
+
+    for (uint32_t iter = 0; iter < 10000u; iter++) {
+        /* xorshift32 */
+        rng ^= rng << 13;
+        rng ^= rng >> 17;
+        rng ^= rng << 5;
+
+        uint32_t const id = rng % 32u;
+        uint32_t const op = (rng >> 8) % 3u;
+        fc.t = 1u + iter; /* strictly increasing "now" */
+
+        if (op == 0) {
+            ff_crew_on_heard(&c, id, fc.t, (rng & 1u) != 0u);
+        } else if (op == 1) {
+            if (ff_crew_set_paired(&c, id, true)) {
+                desired_paired[id] = true;
+            }
+            /* A failure here means "roster full of 8 already-paired
+             * members" (AC10b) - id's desired state is left unchanged
+             * (still whatever it was), which is correct: this op didn't
+             * happen. */
+        } else {
+            ff_crew_set_paired(&c, id, false); /* unpairing always succeeds */
+            desired_paired[id] = false;
+        }
+
+        /* Invariants, checked EVERY iteration, not just at the end -
+         * corruption that self-heals before a final-only check would
+         * otherwise go unnoticed. */
+        TEST_ASSERT_TRUE_MESSAGE(c.count <= FF_CREW_MAX, "count exceeded FF_CREW_MAX");
+
+        for (uint8_t i = 0; i < c.count; i++) {
+            for (uint8_t j = (uint8_t)(i + 1u); j < c.count; j++) {
+                TEST_ASSERT_NOT_EQUAL_UINT32_MESSAGE(c.members[i].node_id, c.members[j].node_id,
+                                                      "duplicate node_id in roster");
+            }
+        }
+
+        for (uint32_t did = 0; did < 32u; did++) {
+            if (!desired_paired[did]) {
+                continue;
+            }
+            ff_crew_member_t const *m = ff_crew_find(&c, did);
+            TEST_ASSERT_NOT_NULL_MESSAGE(m, "a currently-paired id vanished from the roster");
+            TEST_ASSERT_TRUE_MESSAGE(m->paired, "a currently-paired id was silently unpaired");
+        }
     }
 }
 
@@ -1249,9 +1487,15 @@ int main(void)
     RUN_TEST(S02_AC1_freshness_handles_uint32_wraparound);
 
     RUN_TEST(S02_AC2_upsert_existing_id_returns_same_slot);
-    RUN_TEST(S02_AC2_ninth_unpaired_member_rejected);
-    RUN_TEST(S02_AC2_ninth_rejected_even_when_a_slot_is_unpaired);
-    RUN_TEST(S02_AC2_set_paired_cannot_exceed_capacity);
+
+    RUN_TEST(S02_AC10a_ninth_stranger_evicts_lru_unpaired_and_succeeds);
+    RUN_TEST(S02_AC10a_pairing_a_new_node_on_a_full_stranger_roster_succeeds);
+    RUN_TEST(S02_AC10b_ninth_pairing_fails_honestly_once_eight_are_paired);
+    RUN_TEST(S02_AC10c_paired_member_never_evicted_no_matter_how_many_strangers);
+    RUN_TEST(S02_AC10d_eviction_order_follows_last_heard_ms_strictly);
+    RUN_TEST(S02_AC10d_never_heard_occupant_is_evicted_before_any_heard_one);
+    RUN_TEST(S02_AC10e_evicting_a_stranger_with_a_position_drops_it_cleanly);
+    RUN_TEST(S02_AC10f_fuzz_smoke_10k_random_ops_never_corrupts_invariants);
 
     RUN_TEST(S02_AC3_on_position_first_fix_is_never_to_live);
     RUN_TEST(S02_AC3_on_position_age_advances_with_now_ms);

@@ -175,13 +175,75 @@ final class BridgeCrewStoreTests: XCTestCase {
         XCTAssertNil(store.member(nodeID: 1, now: 0)?.batteryPercent)
     }
 
-    // MARK: - Roster policy: no eviction when full (FF_CREW_MAX = 8).
+    // MARK: - Roster policy: bounded unpaired-LRU eviction (FF_CREW_MAX = 8),
+    // 2026-09-11 [api] ff_crew.h's S02 amendment (issue #266). Mirrors
+    // firmware/core/tests/test_crew.c's S02_AC10* group.
 
-    func testRosterHasNoEvictionWhenFull() {
+    func testRosterEvictsLRUStrangerWhenFullOfUnpaired() {
         let store = CrewStore(now: { 0 })
         for id in 1...8 { XCTAssertTrue(store.upsert(nodeID: UInt32(id))) }
-        XCTAssertFalse(store.upsert(nodeID: 9), "a 9th distinct id must be rejected, not evict an existing one")
-        XCTAssertEqual(store.members(now: 0).count, 8)
+        // A 9th distinct id now succeeds by evicting the LRU stranger,
+        // rather than being rejected outright.
+        XCTAssertTrue(store.upsert(nodeID: 9), "a roster full of mere strangers must admit a genuinely new node")
+        XCTAssertEqual(store.members(now: 0).count, 8, "still bounded at FF_CREW_MAX - a slot was reused, not grown")
+    }
+
+    func testPairingNewNodeOnFullStrangerRosterSucceeds() {
+        // The issue's actual complaint: a public-mesh-flooded roster must
+        // not block pairing a real friend.
+        let store = CrewStore(now: { 0 })
+        for id in 1...8 { XCTAssertTrue(store.upsert(nodeID: UInt32(id))) }
+        XCTAssertTrue(store.setPaired(nodeID: 999, paired: true))
+        XCTAssertEqual(store.member(nodeID: 999, now: 0)?.paired, true)
+    }
+
+    func testNinthPairingFailsOnlyOnceEightAreAlreadyPaired() {
+        let store = CrewStore(now: { 0 })
+        for id in 1...8 { XCTAssertTrue(store.setPaired(nodeID: UInt32(id), paired: true)) }
+        XCTAssertFalse(store.upsert(nodeID: 999))
+        XCTAssertFalse(store.setPaired(nodeID: 999, paired: true))
+        // Every original paired member is untouched.
+        for id in 1...8 {
+            XCTAssertEqual(store.member(nodeID: UInt32(id), now: 0)?.paired, true)
+        }
+    }
+
+    func testPairedMembersAreNeverEvictedByStrangerChurn() {
+        let store = CrewStore(now: { 0 })
+        store.setPaired(nodeID: 1, paired: true)
+        store.setPaired(nodeID: 2, paired: true)
+        for id in UInt32(100)...UInt32(199) {
+            store.upsert(nodeID: id)
+        }
+        XCTAssertEqual(store.member(nodeID: 1, now: 0)?.paired, true)
+        XCTAssertEqual(store.member(nodeID: 2, now: 0)?.paired, true)
+        XCTAssertEqual(store.count, 8)
+    }
+
+    // PR #268 review, SHOULD-FIX #2: `nodeIDs` used to be an
+    // `[UInt32]` array, appended to (never pruned) on every `track()`
+    // call — before the S02 eviction amendment this was implicitly
+    // bounded to FF_CREW_MAX (a 9th distinct id was simply rejected, so
+    // `track()` never saw one), but after it `ff_crew_t` churns through
+    // arbitrarily many distinct ids on a busy mesh, so the array grew
+    // unboundedly. This drives 1000 distinct never-paired ids through
+    // `onHeard` (the same call `shell_ev_rx_meta`'s heard-tracking path
+    // makes per inbound packet) and asserts the store's internal
+    // tracking set never exceeds FF_CREW_MAX — not merely "the roster
+    // itself is bounded" (`ff_crew_t` was always bounded; that was never
+    // the bug) but the Swift-side bookkeeping this PR fixes.
+    func testTrackingStaysBoundedAcrossAThousandDistinctHeardNodes() {
+        let store = CrewStore(now: { 0 })
+        for id in UInt32(1)...UInt32(1000) {
+            store.onHeard(nodeID: id, rxTimeMs: 0, direct: false)
+            XCTAssertLessThanOrEqual(store.trackedIDCount, Int(FF_CREW_MAX),
+                "id-tracking set grew past FF_CREW_MAX at node \(id) - nodeIDs regressed to unbounded growth")
+        }
+        XCTAssertLessThanOrEqual(store.trackedIDCount, Int(FF_CREW_MAX))
+        XCTAssertEqual(store.count, Int(FF_CREW_MAX), "the C roster itself stays bounded too, as always")
+        // And the public surface is unaffected: still only currently-live
+        // members, same as before this fix.
+        XCTAssertEqual(store.members(now: 0).count, Int(FF_CREW_MAX))
     }
 
     // MARK: - Selection.

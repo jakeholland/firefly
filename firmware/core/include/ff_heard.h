@@ -11,13 +11,25 @@
  * heard on the mesh" are two different things that `app/ff_wiring.c`
  * used to conflate: it called `ff_crew_upsert` (find-**or-create**) for
  * every inbound packet, including ones from senders that turned out to
- * be unpaired and got dropped. `ff_crew_t` documents "no eviction in
- * v1" for its fixed `FF_CREW_MAX` (8) slots — so eight packets from
- * eight distinct, never-before-heard node ids permanently occupied
- * every roster slot before any of them were ever paired, silently
- * blocking any REAL crew member from being pairable for the rest of the
- * session. At a festival with thousands of Meshtastic nodes in range,
- * this needs no malice at all, just normal RF noise.
+ * be unpaired and got dropped. At the time, `ff_crew_t` had a hard "no
+ * eviction in v1" policy for its fixed `FF_CREW_MAX` (8) slots — so
+ * eight packets from eight distinct, never-before-heard node ids
+ * permanently occupied every roster slot before any of them were ever
+ * paired, silently blocking any REAL crew member from being pairable
+ * for the rest of the session. At a festival with thousands of
+ * Meshtastic nodes in range, this needs no malice at all, just normal RF
+ * noise. (2026-09-11 update: `ff_crew_t` gained its own bounded
+ * unpaired-LRU eviction — see `ff_crew.h`'s `ff_crew_upsert` doc comment
+ * and `docs/specs/S02-core-crew.md`'s amendment, issue #266 — so a
+ * `ff_crew_upsert`-per-packet caller would no longer wedge pairing shut
+ * quite this permanently either. That does NOT change anything here:
+ * `ff_heard_t` stays the right tool for "surface recently heard
+ * strangers for pairing" — its 16 slots are sized independently of how
+ * many friends are already paired, where `ff_crew_t`'s unpaired-LRU
+ * capacity shrinks to zero as pairing fills up. `ff_wiring.c`/
+ * `ff_shell.c` keep routing unknown/unpaired senders here, never through
+ * `ff_crew_upsert`, for exactly that reason — see this header's own
+ * "why this exists" note above, still current.)
  *
  * The fix: the paired roster is user-chosen, protected, and never
  * writable by inbound radio traffic (see `ff_crew_find`'s doc comment in

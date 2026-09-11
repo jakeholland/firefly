@@ -125,6 +125,21 @@ public final class CoreStore {
     /// `Bridge/CrewStore.swift`. Never fabricates: a field the snapshot
     /// doesn't carry (no position, no direct RSSI) simply isn't fed —
     /// there is no synthesized fallback for any of the three.
+    ///
+    /// KNOWN GAP (issue #273, filed from the PR #268 review's
+    /// SHOULD-FIX #3): unlike the puck firmware (`ff_shell.c`'s
+    /// `shell_ev_rx_meta`, which gates its `ff_crew_on_*` calls on
+    /// `sender->paired` and tracks everyone else in the bounded,
+    /// LRU-evictable `ff_heard_t` instead), this calls `crew.onPosition`/
+    /// `crew.onRSSI`/`crew.onHeard` unconditionally for EVERY node
+    /// snapshot — there is no Swift-side `ff_heard` bridge to route
+    /// unpaired strangers to instead. `CrewStore`'s own bounded-LRU
+    /// eviction (2026-09-11 S02 amendment, issue #266) keeps this from
+    /// wedging pairing shut the way it could pre-#266, but a future
+    /// pairing/Nearby UI built on `CrewStore.members(now:).filter { !
+    /// $0.paired }` would still inherit the "shrinks to zero as you pair
+    /// real friends" ceiling `ff_heard_t` exists on the firmware side to
+    /// avoid — see #273 before building one.
     public func apply(nodeUpdate: MeshNodeSnapshot) {
         let now = FireflyClock.nowMillis()
 

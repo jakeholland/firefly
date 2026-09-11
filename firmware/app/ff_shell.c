@@ -1113,9 +1113,17 @@ static void shell_maybe_adopt_my_pos(shell_t *sh, mc_position_t const *p, uint32
 /**
  * shell_sync_paired_settings — rebuild `sh->settings.paired_ids`/
  * `paired_count` (S12/S04, format v10) from the CURRENT roster's paired
- * members, in roster SLOT order — which is also pairing order, since v1
- * never evicts or reorders (`ff_crew_upsert`'s find-or-create, ff_crew.h)
- * — and persist through the existing settings-save seam iff the derived
+ * members, in roster SLOT order — which was ALSO pairing order before
+ * the 2026-09-11 S02 eviction amendment (every new member was simply
+ * appended, so the two orders could never diverge). A paired member's
+ * slot is still stable for its whole paired lifetime post-amendment
+ * (pairing is pinned, never evicted/moved — ff_crew.h), but slot order
+ * is no longer guaranteed to equal literal pairing chronology once an
+ * eviction has reused a lower-index slot for a later-paired member than
+ * a higher-index slot already held; see the spec amendment's own note on
+ * this ("an accepted, documented consequence, not fixed here") for why
+ * this file doesn't add a sequence field to track it instead — and
+ * persist through the existing settings-save seam iff the derived
  * list actually differs from what is already stored (byte-for-byte,
  * count included). That equality check is what makes replaying the very
  * list `ff_shell_init`'s boot re-pair just loaded cost no extra NVS
@@ -1158,23 +1166,48 @@ static bool shell_pair(shell_t *sh, uint32_t node_id, bool paired)
 {
     bool const existed = ff_crew_find(&sh->crew, node_id) != NULL;
     ff_crew_member_t *m = ff_crew_upsert(&sh->crew, node_id);
-    if (m == NULL) return false; /* roster full, no eviction in v1 */
+    /* 2026-09-11 [api] S02 amendment (issue #266): ff_crew_upsert now
+     * evicts the LRU unpaired stranger when the roster is full, so this
+     * only returns NULL once every one of the FF_CREW_MAX slots is
+     * already paired — still the correct "no room" check, just a
+     * narrower condition than before (was "roster full, no eviction in
+     * v1"; see ff_crew.h/docs/specs/S02-core-crew.md). */
+    if (m == NULL) return false;
 
     /* App-assigned identity color (ff_crew.h: `color_idx` is "app-assigned"
      * — core creates the slot memset to 0 and never fills it). Assigned ONCE,
-     * when a member first enters the roster, to its roster slot index: stable
-     * because v1 never evicts (crew_find_or_create), so every paired friend
+     * when a member first enters the roster, to ITS ACTUAL SLOT INDEX: stable
+     * for the member's whole paired lifetime (a paired member is pinned,
+     * never evicted/moved — see the S02 amendment), so every paired friend
      * keeps one distinct crew-palette color across radar / signals / map. The
      * shell is the ONLY roster-growth path (every inbound radio path is gated
      * behind a read-only ff_crew_find), so this one site colors every member.
-     * ff_theme_crew_color wraps mod-8, so a 9th member reuses a color rather
-     * than reading out of range. Without this, m->color_idx stayed 0 for all
-     * members and every 1:1 (and every radar dot) rendered palette[0]. */
+     * ff_theme_crew_color wraps mod-8, so a 9th (by pairing order) member
+     * reuses a color rather than reading out of range. Without this, m->color_idx
+     * stayed 0 for all members and every 1:1 (and every radar dot) rendered
+     * palette[0].
+     *
+     * `m - sh->crew.members`, NOT `sh->crew.count - 1`: before the S02
+     * eviction amendment, every new member was simply APPENDED, so those
+     * two expressions were always equal. Since eviction can now reuse a
+     * slot at ANY index (not just the tail) to admit a new member while
+     * `count` stays pinned at FF_CREW_MAX, `count - 1` would silently
+     * assign color_idx=7 to every member added via eviction regardless of
+     * which physical slot it actually landed in — pointer arithmetic on
+     * the member `ff_crew_upsert` just returned is correct either way. */
     if (!existed) {
-        uint8_t const slot = (sh->crew.count > 0u) ? (uint8_t)(sh->crew.count - 1u) : 0u;
+        uint8_t const slot = (uint8_t)(m - sh->crew.members);
         m->color_idx = slot;
     }
-    ff_crew_set_paired(&sh->crew, node_id, paired);
+    /* Set directly on `m` rather than calling ff_crew_set_paired(&sh->crew,
+     * node_id, paired) — that would re-run crew_find_or_create's linear
+     * scan for a node_id we already hold a valid pointer to (m came from
+     * ff_crew_upsert above, in the roster for the same node_id, so the
+     * second lookup could only ever re-find it, never evict — the
+     * find-or-create path is only taken on a miss). NIT from the PR #268
+     * review: redundant second roster scan, safe to drop since `m` is
+     * still fresh (no intervening crew-mutating call for another id). */
+    m->paired = paired;
 
     /* S12/S04, format v10 — write the persisted paired list back through
      * the existing settings-save seam on every pair/unpair (see

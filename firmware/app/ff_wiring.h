@@ -35,10 +35,15 @@
  *    haptic. This module used to call `ff_crew_upsert` (find-**or-
  *    create**) here, which meant an unpaired/unknown sender's packet
  *    still claimed one of `ff_crew_t`'s fixed `FF_CREW_MAX` (8) slots
- *    even though the event itself got dropped — v1 has no eviction
- *    (`ff_crew.h`), so 8 packets from 8 distinct never-before-heard node
- *    ids permanently filled the roster and no real crew member could
- *    ever be paired again for the rest of the session (S08 PR #25 code
+ *    even though the event itself got dropped — v1 had no eviction at
+ *    all (`ff_crew.h`; a later, 2026-09-11 amendment gave `ff_crew_t` its
+ *    own bounded unpaired-LRU eviction, issue #266, but that is a core-
+ *    level safety net, not a reason to route untrusted RF input through
+ *    `ff_crew_upsert` here — `ff_heard_t` below stays the right, larger,
+ *    pairing-count-independent tool for this job), so 8 packets from 8
+ *    distinct never-before-heard node ids permanently filled the roster
+ *    and no real crew member could ever be paired again for the rest of
+ *    the session (S08 PR #25 code
  *    review, MEDIUM finding — this module is the first live call path
  *    that lets untrusted RF input touch the roster at all, and at a
  *    festival with thousands of nodes in range this needs no malice,
