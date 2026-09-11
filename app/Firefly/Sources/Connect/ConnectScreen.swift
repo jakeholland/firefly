@@ -123,7 +123,7 @@ struct ConnectScreen: View {
         switch connect.link {
         case .ready: return .ffLiveGreen
         case .handshaking, .connecting: return .ffAmber
-        case .failed: return .red
+        case .failed: return .ffAlert
         case .disconnected: return .ffMuted
         }
     }
@@ -227,7 +227,7 @@ struct ConnectScreen: View {
             if let error = channelImport.errorMessage {
                 Text(error)
                     .font(.footnote)
-                    .foregroundStyle(Color.red)
+                    .foregroundStyle(Color.ffAlert)
             }
 
             if let result = channelImport.result {

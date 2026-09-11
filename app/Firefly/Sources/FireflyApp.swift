@@ -39,13 +39,32 @@ struct FireflyApp: App {
         _connect = State(initialValue: ConnectViewModel(client: dependencies.client))
         let importVM = ChannelImportViewModel()
         _channelImport = State(initialValue: importVM)
+        // INTEGRATION TASK (tracked, not fixed here — PR #262 review,
+        // SHOULD-FIX 2): this constructs its own `SettingsStore()` rather
+        // than taking one from `dependencies` because `AppDependencies`
+        // isn't owned by any slice and `AppDependencies.store` is still
+        // `InMemorySettingsStore` under both `.stub()` and `.live()`
+        // (see `AppDependencies.live()`'s own comment). The task is: once
+        // `AppDependencies.live()` is pointed at the real `SettingsStore`,
+        // change this line to `SettingsViewModel(store: dependencies.store,
+        // channelImport: importVM)` and delete this comment. Until then,
+        // `UserDefaults.standard` being a de facto singleton keeps this
+        // instance and `dependencies.store` in practical agreement, but a
+        // future Radar-screen read of
+        // `dependencies.store.bool(.locationSharingEnabled)` will not see
+        // what Settings wrote (see `SettingsViewModel.swift`'s own comment).
         _settings = State(initialValue: SettingsViewModel(store: SettingsStore(), channelImport: importVM))
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView(connect: connect, settings: settings, channelImport: channelImport, client: dependencies.client)
-                .preferredColorScheme(.dark)
+            RootView(
+                connect: connect,
+                settings: settings,
+                channelImport: channelImport,
+                client: dependencies.client
+            )
+            .preferredColorScheme(.dark)
         }
         #if os(macOS)
         .defaultSize(width: 420, height: 720)

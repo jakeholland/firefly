@@ -70,13 +70,8 @@ struct RootView: View {
     private func detail(for destination: Destination) -> some View {
         switch destination {
         case .connect: ConnectScreen(connect: connect, client: client, channelImport: channelImport)
-        case .radar: PlaceholderView(
-            title: "Radar",
-            note: "Live bearings when a node reports a position, the no-GPS signal view when none does, and FIND. "
-                + "Nothing is drawn until a radio says something.")
-        case .inbox: PlaceholderView(
-            title: "Inbox",
-            note: "Conversations and threads, with WAITING / SENT / DELIVERED / NO ACK on every outbound message.")
+        case .radar: PlaceholderView(title: "Radar", note: "Live bearings when a node reports a position, the no-GPS signal view when none does, and FIND. Nothing is drawn until a radio says something.")
+        case .inbox: PlaceholderView(title: "Inbox", note: "Conversations and threads, with WAITING / SENT / DELIVERED / NO ACK on every outbound message.")
         case .settings: SettingsScreen(model: settings, client: client)
         }
     }
