@@ -681,7 +681,7 @@ public final class InboxViewModel {
     /// keeps between "decide what to push" and "the provider's own
     /// invariants about what it accepts".
     private func ingest(_ incoming: IncomingText) {
-        let isBroadcast = incoming.to == meshBroadcastAddress
+        let isBroadcast = isBroadcastDestination(incoming.to)
         let conversation: ConversationKind = isBroadcast ? .crew : .member(incoming.from)
         let message = FeedMessage(
             id: InboundFeedIDGenerator.shared.next(),

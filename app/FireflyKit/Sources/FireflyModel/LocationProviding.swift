@@ -10,6 +10,7 @@
 //  authorization denial is a distinct, explicit state — never silently
 //  folded into "no fix" the way a lazier seam would.
 //
+import FireflyCore
 import Foundation
 
 /// One real GPS reading. `LOC_EXTERNAL` on the wire, never
@@ -73,4 +74,36 @@ public final class UnavailableLocationProvider: LocationProviding, @unchecked Se
             continuation.finish()
         }
     }
+}
+
+/// Staleness of OUR OWN fix (PR #271 review, SHOULD-FIX 3) — reused by
+/// both `FlareTakeoverViewModel.show` and `AppGraph.formatRallyText`,
+/// the two places a phone GPS reading turns into a confident-looking
+/// bearing.
+///
+/// Deliberately reuses `ff_crew.h`'s `FF_CREW_LIVE_MS` — the puck's own
+/// POSITION-freshness threshold (45 s; see that header's own doc
+/// comment: "how old is this member's last known coordinate," a
+/// separate axis from radio-heard presence) — rather than inventing a
+/// second number. `ff_crew_freshness` itself only ever classifies a
+/// STORED CREW MEMBER's position, never the phone's own fix, so this
+/// mirrors its exact `age < FF_CREW_LIVE_MS` → LIVE boundary (strict
+/// less-than; `ff_crew.c`'s own `ff_crew_freshness`) by hand rather than
+/// calling it.
+extension LocationFix {
+    /// Honestly clamped to zero — a `now` that claims to precede `time`
+    /// is clock skew, not a fix from the future, and must never read as
+    /// "extra fresh."
+    func age(now: Date) -> TimeInterval { max(0, now.timeIntervalSince(time)) }
+
+    /// True once this fix is no longer LIVE by the puck's own
+    /// POSITION-freshness cutoff — i.e. it has aged into STALE or LOST,
+    /// puck-vocabulary-wise. Not honest grounds for a confident bearing
+    /// any more.
+    func isStale(now: Date) -> Bool { age(now: now) * 1000 >= Double(FF_CREW_LIVE_MS) }
+
+    /// "N min old" phrasing for the staleness message. Floored at 1 —
+    /// `isStale` only ever returns true at 45s or later, and "0 min old"
+    /// would read as fresh, contradicting the very message it's part of.
+    func ageMinutesText(now: Date) -> Int { max(1, Int((age(now: now) / 60).rounded())) }
 }

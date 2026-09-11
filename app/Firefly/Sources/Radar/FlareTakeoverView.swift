@@ -66,6 +66,10 @@ struct FlareTakeoverView: View {
             Text("\(distanceText) \(compassPoint) of you")
                 .font(.system(.title2, design: .monospaced).weight(.bold))
                 .foregroundStyle(Color.ffAmber)
+        } else if let reason = model.noBearingReason {
+            Text("no bearing (\(reason))")
+                .font(.system(.callout, design: .monospaced))
+                .foregroundStyle(Color.ffMuted)
         } else {
             Text("no bearing — position not known for both of you")
                 .font(.system(.callout, design: .monospaced))

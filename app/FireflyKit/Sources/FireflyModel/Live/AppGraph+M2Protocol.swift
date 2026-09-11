@@ -58,7 +58,13 @@ extension AppGraph {
     /// fires instead. Either way the feed keeps a record (S10: "DISMISS
     /// -> back, feed item remains" — true here whether or not anyone was
     /// looking when it arrived).
+    ///
+    /// Gated on `isPairedSender` (PR #271 review, BLOCKING finding 1)
+    /// BEFORE any of that — an unpaired or unknown sender gets no
+    /// takeover, no haptic, no notification, and no feed item, exactly
+    /// the puck's own `wiring_push_if_paired` (`ff_wiring.c`).
     func handleInboundFlare(from: UInt32, to: UInt32, durationS: UInt16) {
+        guard isPairedSender(from) else { logDroppedUnpaired("FLARE", from: from); return }
         pushInboundFeedItem(kind: .flare, from: from, to: to, text: "FLARE")
         if isForegrounded {
             flareTakeover.show(senderNodeID: from, durationSeconds: durationS)
@@ -73,7 +79,15 @@ extension AppGraph {
     /// THIS sender (`FlareTakeoverViewModel.end(from:)`'s own guard); no
     /// feed item (mirrors the puck's own FLARE_END, which has never been
     /// a feed-worthy event on either client).
+    ///
+    /// Gated on `isPairedSender` too, for the same trust-boundary reason
+    /// as `handleInboundFlare` — though in practice this is a no-op
+    /// either way for an unpaired sender, since a takeover for one could
+    /// never have started (`handleInboundFlare` above already dropped
+    /// it) for `end(from:)`'s own sender-match guard to have anything to
+    /// clear.
     func handleInboundFlareEnd(from: UInt32) {
+        guard isPairedSender(from) else { logDroppedUnpaired("FLARE_END", from: from); return }
         flareTakeover.end(from: from)
     }
 
@@ -87,7 +101,12 @@ extension AppGraph {
     /// feed's own storage), so this computed string IS the persisted
     /// record, exactly as the puck's own feed never stores anything but
     /// text either.
+    ///
+    /// Gated on `isPairedSender` (PR #271 review, BLOCKING finding 1) —
+    /// S04's Addressing section: "RALLY/STATUS broadcast likewise" (as
+    /// FLARE's own receiver-side crew filtering).
     func handleInboundRally(from: UInt32, to: UInt32, latitude: Double, longitude: Double, name: String) {
+        guard isPairedSender(from) else { logDroppedUnpaired("RALLY", from: from); return }
         let text = formatRallyText(name: name, latitude: latitude, longitude: longitude)
         pushInboundFeedItem(kind: .rally, from: from, to: to, text: text)
     }
@@ -95,33 +114,75 @@ extension AppGraph {
     /// RALLY_CLEAR carries no place of its own to clear from the feed
     /// (S04's body is empty) — nothing dishonest to render, so nothing
     /// is pushed, mirroring FLARE_END's own "no feed item" treatment.
+    /// Already an unconditional no-op, so there is nothing an unpaired
+    /// sender could trigger here to gate.
     func handleInboundRallyClear(from: UInt32) {}
 
+    /// Gated on `isPairedSender`, same as `handleInboundRally` — S04's
+    /// "RALLY/STATUS broadcast likewise."
     func handleInboundStatus(from: UInt32, to: UInt32, text: String) {
+        guard isPairedSender(from) else { logDroppedUnpaired("STATUS", from: from); return }
         pushInboundFeedItem(kind: .status, from: from, to: to, text: text)
     }
 
     // MARK: - Shared helpers
 
+    /// Read-only crew-pairing check (PR #271 review, BLOCKING finding
+    /// 1) — mirrors the puck's own `wiring_push_if_paired`'s lookup
+    /// (`ff_wiring.c`): `core.crew.member(nodeID:now:)` calls
+    /// `ff_crew_find` under the hood (`CrewStore.member(nodeID:now:)`),
+    /// never `ff_crew_upsert`, so merely checking whether a sender is
+    /// paired can never itself consume one of the roster's fixed
+    /// `FF_CREW_MAX` slots. An unknown sender (`nil`) and a
+    /// known-but-unpaired one are both untrusted — S04's Addressing
+    /// section: "FLARE to broadcast with crew filtering receiver-side
+    /// (only react if sender is paired) ... RALLY/STATUS broadcast
+    /// likewise." Must be called BEFORE `pushInboundFeedItem` — that
+    /// method's own `inboxProvider.push` upserts the sender into the
+    /// roster as a pre-existing side effect, so the pairing check can
+    /// never be inferred from having already reached that call.
+    func isPairedSender(_ from: UInt32) -> Bool {
+        core.crew.member(nodeID: from, now: FireflyClock.nowMillis())?.paired == true
+    }
+
+    /// The debug-log-only record of a dropped-for-unpaired-sender M2
+    /// event (task's own "dropped silently with a debug log" ask) —
+    /// same `FileHandle.standardError.write` convention `replyToPing`
+    /// already uses for its own non-fatal error path.
+    private func logDroppedUnpaired(_ kind: String, from: UInt32) {
+        let line = "[AppGraph] dropping inbound \(kind) from unpaired/unknown sender=\(from)\n"
+        FileHandle.standardError.write(Data(line.utf8))
+    }
+
     /// Every inbound M2 feed item goes through here: CREW when the
     /// packet was broadcast, the sender's own 1:1 thread otherwise —
     /// same membership rule `InboxViewModel.ingest(_:)` uses for
-    /// ordinary inbound text. `id: 0` is the correct, honest choice for
-    /// an inbound item (`OutboxID`'s own "0 = not tracked" sentinel) —
-    /// unlike an outbound send, nothing will ever look this item up by
-    /// outbox id again; `CoreInboxProvider` derives its real,
-    /// stable-across-rebuilds id for an inbound item from the record
-    /// itself, not from what gets pushed here.
+    /// ordinary inbound text, via the ONE shared `isBroadcastDestination`
+    /// helper both now call (PR #271 review, SHOULD-FIX 2) — no more
+    /// divergent `to == 0` special case here that `ingest(_:)` doesn't
+    /// also have. `id: 0` is the correct, honest choice for an inbound
+    /// item (`OutboxID`'s own "0 = not tracked" sentinel) — unlike an
+    /// outbound send, nothing will ever look this item up by outbox id
+    /// again; `CoreInboxProvider` derives its real, stable-across-
+    /// rebuilds id for an inbound item from the record itself, not from
+    /// what gets pushed here.
     func pushInboundFeedItem(kind: MessageKind, from: UInt32, to: UInt32, text: String) {
-        let isBroadcast = (to == meshBroadcastAddress) || (to == 0)
+        let isBroadcast = isBroadcastDestination(to)
         let conversation: ConversationKind = isBroadcast ? .crew : .member(from)
         let message = FeedMessage(id: 0, kind: kind, direction: isBroadcast ? .broadcast : .direct,
                                    senderID: from, text: text, timestamp: Date(), unread: true)
         inboxProvider.push(message, into: conversation)
     }
 
-    func formatRallyText(name: String, latitude: Double, longitude: Double) -> String {
+    /// Refuses a confident-looking bearing off a stale fix of OUR OWN
+    /// (PR #271 review, SHOULD-FIX 3) — same `LocationFix.isStale` rule
+    /// `FlareTakeoverViewModel.show` now applies, reused rather than a
+    /// second staleness number invented here.
+    func formatRallyText(name: String, latitude: Double, longitude: Double, now: Date = Date()) -> String {
         guard let fix = myFix else { return name }
+        guard !fix.isStale(now: now) else {
+            return "\(name) — no bearing (your fix is \(fix.ageMinutesText(now: now)) min old)"
+        }
         let from = ff_latlon_t(lat: fix.latitude, lon: fix.longitude)
         let to = ff_latlon_t(lat: latitude, lon: longitude)
         let distance = FlareTakeoverViewModel.formatDistance(Double(ff_geo_distance_m(from, to)))

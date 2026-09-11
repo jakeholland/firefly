@@ -137,8 +137,8 @@ private struct MessageBubble: View {
                                 .font(.system(.caption2, design: .monospaced).weight(.bold))
                                 .foregroundStyle(Color.ffAmber)
                                 .buttonStyle(.plain)
-                                // 44pt minimum tap target (SHOULD-FIX 7),
-                                // without inflating the caption text's own
+                                // HIG 44pt minimum tap target, without
+                                // inflating the caption text's own
                                 // visual size.
                                 .frame(minWidth: 44, minHeight: 44)
                                 .contentShape(Rectangle())
@@ -224,7 +224,7 @@ private struct QuickReplyRow: View {
                             .foregroundStyle(Color.ffInk)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
-                            .frame(minWidth: 44, minHeight: 44) // SHOULD-FIX 7
+                            .frame(minWidth: 44, minHeight: 44) // HIG 44pt minimum tap target
                             .background(Color.ffSurface, in: Capsule())
                     }
                     .buttonStyle(.plain)
@@ -241,7 +241,7 @@ private struct QuickReplyRow: View {
                         .foregroundStyle(model.flareAvailable ? Color.ffBackground : Color.ffMuted)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .frame(minWidth: 44, minHeight: 44) // SHOULD-FIX 7
+                        .frame(minWidth: 44, minHeight: 44) // HIG 44pt minimum tap target
                         .background(model.flareAvailable ? Color.ffAmber : Color.ffSurface, in: Capsule())
                 }
                 .buttonStyle(.plain)
@@ -263,7 +263,7 @@ private struct QuickReplyRow: View {
                         .foregroundStyle(model.rallyAvailable ? Color.ffBackground : Color.ffMuted)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .frame(minWidth: 44, minHeight: 44) // SHOULD-FIX 7
+                        .frame(minWidth: 44, minHeight: 44) // HIG 44pt minimum tap target
                         .background(model.rallyAvailable ? Color.ffAmber : Color.ffSurface, in: Capsule())
                 }
                 .buttonStyle(.plain)
@@ -301,7 +301,7 @@ private struct ComposeBar: View {
                     .font(.system(size: 30))
                     .foregroundStyle(model.composeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                       ? Color.ffMuted : Color.ffAmber)
-                    .frame(minWidth: 44, minHeight: 44) // SHOULD-FIX 7 — the glyph stays 30pt, the tap target doesn't
+                    .frame(minWidth: 44, minHeight: 44) // HIG 44pt minimum tap target — the glyph stays 30pt, the tap target doesn't
             }
             .buttonStyle(.plain)
             .contentShape(Rectangle())

@@ -179,6 +179,23 @@ public protocol MeshtasticClientProtocol: AnyObject, Sendable {
 /// Broadcast address — `0xFFFFFFFF`, Meshtastic's own.
 public let meshBroadcastAddress: UInt32 = 0xFFFF_FFFF
 
+/// The ONE broadcast-vs-direct routing rule every inbound-item path
+/// must agree on (PR #271 review, SHOULD-FIX 2) — `InboxViewModel.
+/// ingest`'s ordinary-text routing and `AppGraph.pushInboundFeedItem`'s
+/// M2 FLARE/RALLY/STATUS routing both call this, so the same `to` value
+/// can never land in the CREW thread down one path and a 1:1 thread
+/// down the other.
+///
+/// True only for the wire's actual broadcast address. `to == 0` is
+/// protobuf's zero-default for an unset field, not a real broadcast — a
+/// real puck should never send it, and treating it as broadcast here
+/// would silently paper over a sender bug rather than surface it (the
+/// same "decode is strict, no defensive slack" reasoning S04's
+/// Amendments section already applies to trailing bytes).
+public func isBroadcastDestination(_ to: UInt32) -> Bool {
+    to == meshBroadcastAddress
+}
+
 /// Milestone-1 stand-in. Reaches `.ready` over whatever transport it is
 /// given and records what was sent; it NEVER invents nodes, positions or
 /// incoming messages. An empty Radar on a stub client is the honest

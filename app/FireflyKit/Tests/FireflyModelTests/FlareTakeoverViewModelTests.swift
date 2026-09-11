@@ -63,6 +63,42 @@ final class FlareTakeoverViewModelTests: XCTestCase {
         XCTAssertNil(model.bearingDegrees, "the sender's position is unknown — never a fabricated bearing")
     }
 
+    /// PR #271 review, SHOULD-FIX 3: a stale fix of our own is not
+    /// honest grounds for a confident bearing either, even when the
+    /// sender's position IS known — and the reason rendered is specific
+    /// (not the generic "position not known" fallback).
+    func testShowRendersAStaleFixReasonInsteadOfAConfidentBearing() {
+        let crew = crewWithMember(nodeID: 1, latitude: 43.701000, longitude: -121.500000)
+        let now = Date(timeIntervalSince1970: 3_000_000)
+        // FF_CREW_LIVE_MS is 45s (ff_crew.h) — 6 minutes old is squarely
+        // past it.
+        let staleFixTime = now.addingTimeInterval(-6 * 60)
+        let model = FlareTakeoverViewModel(crew: crew, currentFix: {
+            LocationFix(latitude: 43.700000, longitude: -121.500000, altitude: nil, time: staleFixTime,
+                        horizontalAccuracyMeters: nil, groundSpeedMetersPerSecond: nil, groundTrackDegrees: nil)
+        }, clock: { now })
+
+        model.show(senderNodeID: 1, durationSeconds: 300)
+
+        XCTAssertTrue(model.isActive)
+        XCTAssertNil(model.bearingDegrees, "a stale fix of our own is not honest grounds for a confident bearing")
+        XCTAssertNil(model.compassPoint)
+        XCTAssertNil(model.distanceText)
+        XCTAssertEqual(model.noBearingReason, "your fix is 6 min old")
+    }
+
+    /// The two "no bearing" causes stay distinct: missing position gets
+    /// no specific reason (the generic fallback text the view renders
+    /// instead), only a STALE fix does.
+    func testNoBearingReasonStaysNilWhenTheCauseIsAMissingPositionNotStaleness() {
+        let crew = crewWithMember(nodeID: 1, latitude: 43.701000, longitude: -121.500000)
+        let model = FlareTakeoverViewModel(crew: crew) // default currentFix: { nil }
+
+        model.show(senderNodeID: 1, durationSeconds: 300)
+
+        XCTAssertNil(model.noBearingReason, "no fix at all is a different cause from a stale one")
+    }
+
     func testUnknownSenderStillShowsWithAnHonestFallbackName() {
         let crew = CrewStore() // empty roster — the sender was never paired/identified
         let model = FlareTakeoverViewModel(crew: crew)

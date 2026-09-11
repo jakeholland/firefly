@@ -43,6 +43,12 @@ public final class FlareTakeoverViewModel {
     public private(set) var bearingDegrees: Double?
     public private(set) var compassPoint: String?
     public private(set) var distanceText: String?
+    /// Set only when the bearing/distance are missing BECAUSE our own
+    /// fix has gone stale (`LocationFix.isStale`, PR #271 review,
+    /// SHOULD-FIX 3) — nil for the other, pre-existing "no bearing"
+    /// cause (either fix simply missing). Lets the view render a more
+    /// specific, still-honest reason instead of the generic fallback.
+    public private(set) var noBearingReason: String?
     public private(set) var totalDurationSeconds: Int = 0
 
     private let crew: CrewStore
@@ -91,13 +97,14 @@ public final class FlareTakeoverViewModel {
         self.senderName = name.isEmpty ? "Someone" : name
         self.senderColorIndex = Int(member?.colorIndex ?? 0)
 
-        if let fix = currentFix(), let pos = member?.position {
+        if let fix = currentFix(), let pos = member?.position, !fix.isStale(now: now) {
             let from = ff_latlon_t(lat: fix.latitude, lon: fix.longitude)
             let to = ff_latlon_t(lat: pos.latitude, lon: pos.longitude)
             let bearing = Double(ff_geo_bearing_deg(from, to))
             bearingDegrees = bearing
             compassPoint = CompassPoint.name(forBearingDegrees: bearing)
             distanceText = FlareTakeoverViewModel.formatDistance(Double(ff_geo_distance_m(from, to)))
+            noBearingReason = nil
         } else {
             // Honest "no bearing": either OUR fix or THEIR last known
             // position is missing — never a fabricated arrow. Same
@@ -105,6 +112,16 @@ public final class FlareTakeoverViewModel {
             bearingDegrees = nil
             compassPoint = nil
             distanceText = nil
+            // A stale fix of our own gets its own, more specific reason
+            // (PR #271 review, SHOULD-FIX 3) — a GPS reading that's gone
+            // several minutes stale is not honest grounds for a
+            // confident-looking bearing either, even when the sender's
+            // position IS known.
+            if let fix = currentFix(), fix.isStale(now: now) {
+                noBearingReason = "your fix is \(fix.ageMinutesText(now: now)) min old"
+            } else {
+                noBearingReason = nil
+            }
         }
 
         let duration = max(1, Int(durationSeconds))
