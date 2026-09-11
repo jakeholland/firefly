@@ -22,6 +22,18 @@ struct FireflyApp: App {
     /// protocols rather than concrete types.
     let dependencies: AppDependencies
     @State private var connect: ConnectViewModel
+    // Slice E's hunk (A01's shared-file table): its own view model,
+    // constructed from `AppDependencies` and injected into `RootView`'s
+    // Inbox destination — never touching `connect`'s line above.
+    //
+    // `InboxProviding` is not one of `AppDependencies`' four fields
+    // (slice B's `InboxBridge`, which would normally fill this role, has
+    // not landed in this worktree — A01's six slices build in parallel).
+    // `InMemoryInboxStore()` is the same honest M1 stand-in
+    // `InboxViewModel.swift`'s header comment describes: it invents no
+    // traffic and no members, exactly like `AppDependencies.stub()`
+    // invents no nodes.
+    @State private var inbox: InboxViewModel
 
     /// Slice C's own hunk (A01's shared-file table): Settings and
     /// Diagnostics' view models, constructed here and injected into the
@@ -54,6 +66,7 @@ struct FireflyApp: App {
         // `dependencies.store.bool(.locationSharingEnabled)` will not see
         // what Settings wrote (see `SettingsViewModel.swift`'s own comment).
         _settings = State(initialValue: SettingsViewModel(store: SettingsStore(), channelImport: importVM))
+        _inbox = State(initialValue: InboxViewModel(provider: InMemoryInboxStore(), client: dependencies.client))
     }
 
     var body: some Scene {
@@ -62,7 +75,8 @@ struct FireflyApp: App {
                 connect: connect,
                 settings: settings,
                 channelImport: channelImport,
-                client: dependencies.client
+                client: dependencies.client,
+                inbox: inbox
             )
             .preferredColorScheme(.dark)
         }

@@ -37,6 +37,10 @@ struct RootView: View {
     let settings: SettingsViewModel
     let channelImport: ChannelImportViewModel
     let client: any MeshtasticClientProtocol
+    // Slice E's hunk (A01's Slices table: "Slices C, D, E each change
+    // exactly one of those [switch] lines" — constructing that line's
+    // view needs this view model reference alongside `connect`'s).
+    let inbox: InboxViewModel
     @State private var selection: Destination = .connect
 
     var body: some View {
@@ -71,7 +75,7 @@ struct RootView: View {
         switch destination {
         case .connect: ConnectScreen(connect: connect, client: client, channelImport: channelImport)
         case .radar: RadarView()
-        case .inbox: PlaceholderView(title: "Inbox", note: "Conversations and threads, with WAITING / SENT / DELIVERED / NO ACK on every outbound message.")
+        case .inbox: InboxContainerView(model: inbox)
         case .settings: SettingsScreen(model: settings, client: client)
         }
     }
