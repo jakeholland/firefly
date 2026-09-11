@@ -8,17 +8,17 @@
 //  `DemoMeshtasticClient` from a real one, which is exactly the point
 //  (`DemoMeshtasticClient.swift`'s own header comment).
 //
-//  Why crew PAIRING is seeded straight onto `core.crew` rather than
-//  through `nodeUpdates()`: M1's own "Add to crew" UI is still
-//  session-local and does not call `ff_crew_set_paired`
-//  (`NearbyNodesViewModel.swift`'s "LOCAL AND SESSION-ONLY for M1" —
-//  the real wiring is a later milestone). A demo that only drove
-//  `nodeUpdates()` would therefore never show a paired member on Radar
-//  at all — an empty ring, same as the stub. Calling
-//  `core.crew.setPaired` directly is not a shortcut around the real
-//  API: it is the SAME `ff_crew_set_paired` that UI will call once it
-//  exists, exercised here because M1 has not built the tap that reaches
-//  it yet.
+//  Why crew PAIRING is seeded through `graph.crewPairing` rather than
+//  through `nodeUpdates()`: a demo that only drove `nodeUpdates()` would
+//  never show a paired member on Radar at all — an empty ring, same as
+//  the stub. M1 called `core.crew.setPaired` directly here because the
+//  real "Add to crew" UI was still session-local and had nothing to
+//  exercise; M2 built that UI (`CrewPairingController`), so this now
+//  calls the SAME controller Connect's Nearby section and the Crew
+//  section in More both write through — a real pairing action, not a
+//  shortcut around it, which is also what gives every demo member a
+//  real, distinct colour (`CrewColorAssignment`'s "first free index in
+//  roster order") instead of every member defaulting to slot 0.
 //
 //  Why Mo gets NO `nodeUpdates()` entry at all: `has_heard` is a sticky
 //  "has ANY packet, ever, arrived from this node" flag
@@ -106,15 +106,17 @@ public final class DemoRunner {
         try? await client.connect()
 
         // Taylor, Dana, Sam: real crew, paired the moment they are
-        // known (mirrors what a "you two are now crew" tap will do once
-        // M2 wires it — see this file's header comment).
-        graph.core.crew.setPaired(nodeID: DemoCrew.taylor, paired: true)
-        graph.core.crew.setPaired(nodeID: DemoCrew.dana, paired: true)
-        graph.core.crew.setPaired(nodeID: DemoCrew.sam, paired: true)
+        // known — through the real `CrewPairingController`, the exact
+        // tap Connect's Nearby "ADD TO CREW" makes (this file's header
+        // comment). Each gets a distinct colour, first free index in
+        // roster order.
+        graph.crewPairing.pair(nodeID: DemoCrew.taylor)
+        graph.crewPairing.pair(nodeID: DemoCrew.dana)
+        graph.crewPairing.pair(nodeID: DemoCrew.sam)
 
         // Mo: paired, never heard — the one honest RADAR_LOST case
         // (this file's header comment). No nodeDB entry, ever.
-        graph.core.crew.setPaired(nodeID: DemoCrew.mo, paired: true)
+        graph.crewPairing.pair(nodeID: DemoCrew.mo)
 
         // CAMP: an asserted landmark, seeded the same way a real
         // "somebody typed this in" position would be
@@ -131,7 +133,7 @@ public final class DemoRunner {
             nodeID: DemoCrew.camp, latitude: DemoWorld.campLatitude, longitude: DemoWorld.campLongitude,
             rxTimeMs: FireflyClock.nowMillis(),
             meta: CrewStore.PositionMeta(asserted: true, precisionBits: nil))
-        graph.core.crew.setPaired(nodeID: DemoCrew.camp, paired: true)
+        graph.crewPairing.pair(nodeID: DemoCrew.camp)
 
         // Taylor selected by default: the member every LIVE/no-GPS
         // signal/Find screenshot is built around.

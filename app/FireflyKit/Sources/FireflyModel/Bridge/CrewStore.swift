@@ -281,8 +281,10 @@ public final class CrewStore {
     }
 
     /// Write the identity fields the MESH reports (`NodeInfo.user`'s
-    /// short/long name) plus the two `ff_crew.h` explicitly documents as
-    /// "app-assigned" (`initial`, `color_idx`) into a member slot.
+    /// short/long name) into a member slot — `initial` too, since it is
+    /// derived from whichever name arrived (`ff_crew.h`'s "app-assigned"
+    /// note covers both, but `initial` is a pure function of the name
+    /// fields, not an independent choice).
     ///
     /// There is no `ff_crew_set_names` to call: `ff_crew_member_t` is a
     /// fully-defined struct whose name fields the OWNING APP fills in
@@ -296,10 +298,14 @@ public final class CrewStore {
     /// rather than deriving one from the long name (`long_name`'s own
     /// header note: "never synthesized from `name`"), and `initial` is
     /// '\0' — honestly unknown — until some name is actually known.
-    /// `colorIndex` is the one genuinely app-side choice: a stable
-    /// per-node palette slot, derived from the node id so the same
-    /// friend keeps the same colour across launches with nothing
-    /// persisted.
+    ///
+    /// Deliberately does NOT touch `color_idx` (M2 change — see
+    /// `setColorIndex`'s own doc comment): a NodeInfo re-announcement is
+    /// exactly the kind of routine, repeated event `CoreStore.apply
+    /// (nodeUpdate:)` calls this on every time a name is present, and a
+    /// colour re-derived on every one of those would have silently
+    /// reassigned a member's colour mid-session under the OLD `nodeID %
+    /// 8` scheme this method used to run here.
     @discardableResult
     public func setIdentity(nodeID: UInt32, shortName: String?, longName: String?) -> Bool {
         guard let member = ff_crew_upsert(context, nodeID) else { return false }
@@ -307,7 +313,6 @@ public final class CrewStore {
         if let shortName { FixedCString.encode(shortName, into: &member.pointee.name) }
         if let longName { FixedCString.encode(longName, into: &member.pointee.long_name) }
         member.pointee.initial = CrewStore.initialByte(shortName: shortName, longName: longName)
-        member.pointee.color_idx = CrewStore.colorIndex(nodeID: nodeID)
         return true
     }
 
@@ -324,12 +329,24 @@ public final class CrewStore {
         return 0
     }
 
-    /// A stable palette slot per node — `ff_crew_member_t.color_idx` is
-    /// "app-assigned", and deriving it from the node id (rather than
-    /// from arrival order) is what makes a friend's colour survive a
-    /// relaunch with nothing written to disk. 8 slots, matching
-    /// `FireflyTheme.crew`/`RadarCrewPalette`.
-    static func colorIndex(nodeID: UInt32) -> UInt8 { UInt8(nodeID % 8) }
+    /// Sets a member's palette slot directly — `ff_crew_member_t
+    /// .color_idx` is "app-assigned" (`ff_crew.h`), and as of M2 the
+    /// app's assignment policy is `CrewPairingStore.swift`'s
+    /// `CrewColorAssignment` ("first free index in roster order",
+    /// assigned once at pairing time and persisted) rather than the
+    /// OLD `nodeID % 8` derivation `setIdentity` used to apply on every
+    /// identity update — that scheme could collide (two paired members
+    /// sharing one `nodeID % 8` slot) and reassigned itself on every
+    /// NodeInfo re-announcement, neither of which is honest once a
+    /// colour is something the app promises to keep stable.
+    /// Find-or-create (matches `setIdentity`'s own contract): a slot
+    /// this store has never seen gets created rather than silently
+    /// dropping the colour.
+    public func setColorIndex(nodeID: UInt32, index: UInt8) {
+        guard let member = ff_crew_upsert(context, nodeID) else { return }
+        track(nodeID)
+        member.pointee.color_idx = index
+    }
 
     /// Provenance/precision accompanying one position report — Swift's
     /// side of `ff_crew_pos_meta_t`. `.none` (not asserted, precision

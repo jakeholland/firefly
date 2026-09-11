@@ -333,4 +333,30 @@ final class InboxViewModelTests: XCTestCase {
 
         vm.stopObserving()
     }
+
+    /// M2: `openThread` hands the header the SAME name/colour the row
+    /// it was opened from just showed — never re-derived independently.
+    func testOpenThreadCarriesTheMembersNameAndColourForTheHeader() {
+        let store = InMemoryInboxStore()
+        let client = StubMeshtasticClient()
+        let vm = InboxViewModel(provider: store, client: client)
+        store.registerMember(3, displayName: "Three", initial: "T", colorIndex: 2)
+        vm.refresh()
+
+        let thread = vm.openThread(.member(3))
+        XCTAssertEqual(thread.memberDisplayName, "Three")
+        XCTAssertEqual(thread.memberColorIndex, 2)
+    }
+
+    /// CREW has no single member — the header must not invent one.
+    func testOpenThreadOnCrewCarriesNoMemberNameOrColour() {
+        let store = InMemoryInboxStore()
+        let client = StubMeshtasticClient()
+        let vm = InboxViewModel(provider: store, client: client)
+        vm.refresh()
+
+        let thread = vm.openThread(.crew)
+        XCTAssertNil(thread.memberDisplayName)
+        XCTAssertNil(thread.memberColorIndex)
+    }
 }

@@ -16,9 +16,15 @@ import SwiftUI
 struct RadarView: View {
     @State private var model: RadarViewModel
     @State private var showingFind = false
+    /// `SettingsViewModel.colorblindPalette`, read fresh by `RootView`
+    /// on every redraw (M2) and synced onto `model.colorblind` below —
+    /// this view model's own doc comment: "wiring it to `SettingsStoring`
+    /// once slice C lands is a follow-up", which this is.
+    let colorblind: Bool
 
-    init(model: RadarViewModel) {
+    init(model: RadarViewModel, colorblind: Bool) {
         _model = State(initialValue: model)
+        self.colorblind = colorblind
     }
 
     // There is deliberately NO no-argument `init()` any more. The one
@@ -45,6 +51,7 @@ struct RadarView: View {
         .background(Color.ffBackground)
         .onAppear { model.observe() }
         .onDisappear { model.stopObserving() }
+        .onChange(of: colorblind, initial: true) { _, newValue in model.colorblind = newValue }
         .sheet(isPresented: $showingFind) {
             FindPanel(model: model)
         }

@@ -21,17 +21,22 @@ struct InboxContainerView: View {
     /// "Thread with the delivery states" screenshot is the real Thread
     /// screen, not a stand-in. `nil` in every non-demo build.
     var demoInitialThread: ConversationKind?
+    /// `SettingsViewModel.colorblindPalette` (M2) — threaded down to
+    /// every avatar/swatch this screen and its Thread destination
+    /// render, the SAME flag Radar's ring reads, so a member's colour
+    /// never disagrees between the two faces.
+    var colorblind: Bool = false
     @State private var activeThread: ThreadViewModel?
 
     var body: some View {
         NavigationStack {
-            InboxListView(model: model) { kind in
+            InboxListView(model: model, colorblind: colorblind) { kind in
                 activeThread = model.openThread(kind)
             }
             .navigationTitle("INBOX")
             .background(Color.ffBackground)
             .navigationDestination(item: $activeThread) { thread in
-                ThreadContainerView(model: thread)
+                ThreadContainerView(model: thread, colorblind: colorblind)
             }
         }
         .onAppear { model.observe() }
@@ -45,6 +50,7 @@ struct InboxContainerView: View {
 
 struct InboxListView: View {
     let model: InboxViewModel
+    var colorblind: Bool = false
     let onSelect: (ConversationKind) -> Void
 
     /// S24's "no crew paired" edge state: only the CREW row exists.
@@ -56,7 +62,7 @@ struct InboxListView: View {
         List {
             ForEach(model.conversations) { conversation in
                 Button { onSelect(conversation.kind) } label: {
-                    InboxRow(conversation: conversation)
+                    InboxRow(conversation: conversation, colorblind: colorblind)
                 }
                 .buttonStyle(.plain)
             }
@@ -85,6 +91,7 @@ struct InboxListView: View {
 
 private struct InboxRow: View {
     let conversation: InboxConversationRow
+    let colorblind: Bool
 
     var body: some View {
         HStack(spacing: 12) {
@@ -135,7 +142,12 @@ private struct InboxRow: View {
 
     @ViewBuilder
     private var avatar: some View {
-        let color = conversation.colorIndex.map { Color(fireflyHex: FireflyTheme.crewColor(index: $0)) } ?? Color.ffAmber
+        // `RadarCrewPalette.hex(index:colorblind:)`, not
+        // `FireflyTheme.crewColor(index:)` directly (M2) — the SAME
+        // palette-selector Radar's ring uses, so a member's avatar here
+        // never disagrees with their dot there.
+        let color = conversation.colorIndex
+            .map { Color(fireflyHex: RadarCrewPalette.hex(index: $0, colorblind: colorblind)) } ?? Color.ffAmber
         ZStack {
             Circle().fill(color.opacity(0.24))
             if conversation.kind == .crew {

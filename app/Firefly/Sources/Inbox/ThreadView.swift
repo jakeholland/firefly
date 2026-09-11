@@ -10,9 +10,12 @@ import SwiftUI
 
 struct ThreadContainerView: View {
     let model: ThreadViewModel
+    /// `SettingsViewModel.colorblindPalette` (M2) — see
+    /// `InboxContainerView`'s own doc comment.
+    var colorblind: Bool = false
 
     var body: some View {
-        ThreadView(model: model)
+        ThreadView(model: model, colorblind: colorblind)
             .onAppear { model.observe() }
             .onDisappear { model.stopObserving() }
     }
@@ -20,6 +23,7 @@ struct ThreadContainerView: View {
 
 struct ThreadView: View {
     @Bindable var model: ThreadViewModel
+    var colorblind: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -56,6 +60,25 @@ struct ThreadView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        // M2: the member's colour swatch + name in the header — the
+        // SAME source (`ThreadViewModel.memberColorIndex`, read off the
+        // Inbox row this thread was opened from) Radar's ring and the
+        // Inbox avatar both read. `nil` for `.crew`, which keeps the
+        // plain "CREW" `navigationTitle` above.
+        .toolbar {
+            if let colorIndex = model.memberColorIndex, let name = model.memberDisplayName {
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Color(fireflyHex: RadarCrewPalette.hex(index: colorIndex, colorblind: colorblind)))
+                            .frame(width: 10, height: 10)
+                        Text(name.uppercased())
+                            .font(.system(.headline, design: .rounded).weight(.bold))
+                            .foregroundStyle(Color.ffInk)
+                    }
+                }
+            }
+        }
     }
 
     private var title: String {
