@@ -73,7 +73,7 @@ struct InboxListView: View {
 }
 
 private struct InboxRow: View {
-    let conversation: InboxConversation
+    let conversation: InboxConversationRow
 
     var body: some View {
         HStack(spacing: 12) {

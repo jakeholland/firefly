@@ -35,25 +35,25 @@ import Foundation
 import Observation
 
 // MARK: - Radar mode (mirrors `radar_mode_t`, core/include/ff_radar.h)
-
-public enum RadarMode: String, Sendable, CaseIterable, Equatable {
-    case live, stale, lost, place, close, nofix, nohdg, signal, nosel
-}
+//
+// `RadarMode` itself now comes from slice B's `Bridge/RadarBridge.swift`
+// (same 9 cases this file used to declare as its own stand-in —
+// `live/stale/lost/place/close/noFix/noHdg/signal/noSel` — just this
+// file's `nofix/nohdg/nosel` recased to match, see call sites below): B
+// has landed in this tree, so the duplicate declared here collided with
+// the bridge's own `RadarMode` as two top-level types of the same name
+// in this module — exactly the convergence this file's header comment
+// already anticipated ("slice B's RadarBridge... swapped in... nothing
+// else in this file changes").
 
 // MARK: - Heard presence (mirrors `ff_crew_presence_t`, core/include/ff_crew.h)
-
-public enum HeardPresence: String, Sendable, Equatable {
-    case heard, stale, lost, never
-
-    public init(ffPresence: ff_crew_presence_t) {
-        switch ffPresence {
-        case FF_CREW_PRESENCE_HEARD: self = .heard
-        case FF_CREW_PRESENCE_STALE: self = .stale
-        case FF_CREW_PRESENCE_LOST: self = .lost
-        default: self = .never
-        }
-    }
-}
+//
+// `HeardPresence` itself now comes from slice B's `Bridge/CrewStore.swift`
+// — identical 4 cases (`heard/stale/lost/never`) and the same
+// `init(ffPresence:)` mapping this file used to declare as its own
+// stand-in. B has landed in this tree, so the duplicate declared here
+// collided with the bridge's own `HeardPresence` as two top-level types
+// of the same name in this module.
 
 // MARK: - Compass point (wraps `ff_geo_compass_point` — a pure, stateless
 
@@ -78,7 +78,7 @@ public enum CompassPoint {
 
 // MARK: - View-state value types (mirror `ff_radar_view_t` field-for-field)
 
-public struct RadarDot: Sendable, Equatable, Identifiable {
+public struct RadarSnapshotDot: Sendable, Equatable, Identifiable {
     public var id: Int
     public var ringDegrees: Double
     public var initial: Character
@@ -107,9 +107,9 @@ public struct RadarDot: Sendable, Equatable, Identifiable {
 
 /// One entry on the S29 inner "signal ring" — a paired member who is
 /// heard but has no placeable position. Mutually exclusive with
-/// `RadarDot` by construction (a positioned member is on the ordinary
+/// `RadarSnapshotDot` by construction (a positioned member is on the ordinary
 /// ring, never both).
-public struct RadarSignalDot: Sendable, Equatable, Identifiable {
+public struct RadarSnapshotSignalDot: Sendable, Equatable, Identifiable {
     public var id: Int
     public var initial: Character
     public var colorIndex: Int
@@ -161,14 +161,14 @@ public struct RadarSnapshot: Sendable, Equatable {
     /// The HEARD axis (any packet, not position) — distinguishes "near,
     /// no fix" from a genuinely silent radio in the never-fixed LOST case.
     public var heardPresence: HeardPresence
-    public var dots: [RadarDot]
+    public var dots: [RadarSnapshotDot]
 
     // S29 — computed unconditionally, independent of mode.
     public var signalTier: SignalTierPresentation
     public var signalHeard: Bool
     public var signalViaRelay: Bool
     public var signalAgeText: String
-    public var signalDots: [RadarSignalDot]
+    public var signalDots: [RadarSnapshotSignalDot]
 
     // Not derived by the compute step — populated by the caller from the
     // clock/battery/mesh-link subsystems, mirroring `ff_radar_view_t`'s
@@ -180,9 +180,9 @@ public struct RadarSnapshot: Sendable, Equatable {
     public init(mode: RadarMode, arrowDegrees: Double, arrowValid: Bool, name: String,
                 distanceText: String, distanceImprecise: Bool, ageText: String, trend: Int,
                 bearingDegrees: Double, bearingValid: Bool, place: Bool, stale: Bool,
-                heardPresence: HeardPresence, dots: [RadarDot], signalTier: SignalTierPresentation,
+                heardPresence: HeardPresence, dots: [RadarSnapshotDot], signalTier: SignalTierPresentation,
                 signalHeard: Bool, signalViaRelay: Bool, signalAgeText: String,
-                signalDots: [RadarSignalDot], clockText: String, battPct: Int8?, meshOK: Bool) {
+                signalDots: [RadarSnapshotSignalDot], clockText: String, battPct: Int8?, meshOK: Bool) {
         self.mode = mode
         self.arrowDegrees = arrowDegrees
         self.arrowValid = arrowValid
@@ -212,7 +212,7 @@ public struct RadarSnapshot: Sendable, Equatable {
     /// renders — the same "an empty Radar on a stub is the honest
     /// answer" rule `AppDependencies.stub()` documents for the client.
     public static let empty = RadarSnapshot(
-        mode: .nosel, arrowDegrees: 0, arrowValid: false, name: "",
+        mode: .noSel, arrowDegrees: 0, arrowValid: false, name: "",
         distanceText: "", distanceImprecise: false, ageText: "", trend: 0,
         bearingDegrees: 0, bearingValid: false, place: false, stale: false,
         heardPresence: .never, dots: [], signalTier: .none, signalHeard: false,
@@ -724,9 +724,9 @@ public final class RadarViewModel {
     /// string a UI is allowed to show, in one place, so it is testable.
     public var chipText: String {
         switch snapshot.mode {
-        case .nosel: return "SELECT A FRIEND"
-        case .nofix: return "NO FIX \u{00B7} RADIO ONLY"
-        case .nohdg: return "NO COMPASS"
+        case .noSel: return "SELECT A FRIEND"
+        case .noFix: return "NO FIX \u{00B7} RADIO ONLY"
+        case .noHdg: return "NO COMPASS"
         case .live: return distanceAreaSuffix.isEmpty ? "LIVE" : "LIVE\(distanceAreaSuffix)"
         case .stale: return "LAST SEEN \(snapshot.ageText)\(distanceAreaSuffix)"
         case .lost:
@@ -758,7 +758,7 @@ public final class RadarViewModel {
     /// nothing honest to add beyond the chip.
     public var subheadline: String? {
         switch snapshot.mode {
-        case .nofix: return "Looking for \(snapshot.name)"
+        case .noFix: return "Looking for \(snapshot.name)"
         case .lost where snapshot.ageText.isEmpty:
             switch snapshot.heardPresence {
             case .heard, .stale: return "Heard recently, no GPS fix yet"
@@ -801,7 +801,7 @@ public final class RadarViewModel {
     /// number").
     public var primaryReadoutText: String {
         switch snapshot.mode {
-        case .nosel, .nofix:
+        case .noSel, .noFix:
             return ""
         case .signal:
             return snapshot.arrowValid ? displayDistanceText : ""
@@ -836,7 +836,7 @@ public final class RadarViewModel {
 
     /// NOHDG's bearing hint: "BEARING 180° · S".
     public var bearingHintText: String? {
-        guard snapshot.mode == .nohdg, snapshot.bearingValid else { return nil }
+        guard snapshot.mode == .noHdg, snapshot.bearingValid else { return nil }
         let point = CompassPoint.name(forBearingDegrees: snapshot.bearingDegrees)
         return "BEARING \(Int(snapshot.bearingDegrees.rounded()))\u{00B0} \u{00B7} \(point)"
     }
@@ -852,9 +852,9 @@ public final class RadarViewModel {
     public var theirPositionLine: String? {
         let who = snapshot.name.isEmpty ? "they" : snapshot.name
         switch snapshot.mode {
-        case .nosel:
+        case .noSel:
             return nil
-        case .nofix:
+        case .noFix:
             // MY position is unknown, so distance/bearing are not
             // honestly computable — but a last-known age for THEIR fix
             // may still be, and dropping it entirely would under-report
@@ -865,7 +865,7 @@ public final class RadarViewModel {
                 + "(your distance unknown — no fix of your own)"
         case .place:
             return "\(who)'s position: fixed position, asserted (no age given)"
-        case .nohdg, .live, .stale:
+        case .noHdg, .live, .stale:
             guard !snapshot.ageText.isEmpty else { return nil }
             return "\(who)'s position: their puck GPS, \(snapshot.ageText) ago"
         case .lost:

@@ -149,9 +149,9 @@ struct RadarView: View {
 
     private var chipColor: Color {
         switch model.snapshot.mode {
-        case .nosel: return .ffMuted
-        case .nofix: return .ffAmber
-        case .nohdg: return .radarStaleAmber
+        case .noSel: return .ffMuted
+        case .noFix: return .ffAmber
+        case .noHdg: return .radarStaleAmber
         case .live: return .ffLiveGreen
         case .stale: return .radarStaleAmber
         case .lost: return .ffMuted

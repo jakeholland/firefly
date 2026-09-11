@@ -34,14 +34,14 @@ private final class MockFlareSender: FireflyPacketSending, @unchecked Sendable {
 /// controllable double SHOULD-FIX 5's serialization test needs.
 private final class OrderingMockClient: MeshtasticClientProtocol, @unchecked Sendable {
     private let linkHub = EventHub<LinkState>()
-    private let deliveryHub = EventHub<(UInt32, DeliveryState)>()
+    private let deliveryHub = EventHub<DeliveryEvent>()
     private let lock = NSLock()
     private var nextPacketID: UInt32 = 1
     private(set) var sendOrder: [String] = []
 
     func linkState() -> AsyncStream<LinkState> { linkHub.subscribe() }
     func nodeUpdates() -> AsyncStream<MeshNodeSnapshot> { EventHub<MeshNodeSnapshot>().subscribe() }
-    func deliveryUpdates() -> AsyncStream<(UInt32, DeliveryState)> { deliveryHub.subscribe() }
+    func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
 
     func connect() async throws { linkHub.yield(.ready) }
     func disconnect() async { linkHub.yield(.disconnected) }

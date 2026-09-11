@@ -32,8 +32,8 @@ final class RadarViewModelTests: XCTestCase {
     }
 
     private func dot(_ ring: Double, _ initial: Character, _ idx: Int, stale: Bool = false,
-                      place: Bool = false, imprecise: Bool = false) -> RadarDot {
-        RadarDot(id: idx, ringDegrees: ring, initial: initial, colorIndex: idx,
+                      place: Bool = false, imprecise: Bool = false) -> RadarSnapshotDot {
+        RadarSnapshotDot(id: idx, ringDegrees: ring, initial: initial, colorIndex: idx,
                  stale: stale, place: place, imprecise: imprecise)
     }
 
@@ -41,9 +41,9 @@ final class RadarViewModelTests: XCTestCase {
         mode: RadarMode, arrowDegrees: Double = 0, arrowValid: Bool = false, name: String = "",
         distanceText: String = "", distanceImprecise: Bool = false, ageText: String = "", trend: Int = 0,
         bearingDegrees: Double = 0, bearingValid: Bool = false, place: Bool = false, stale: Bool = false,
-        heardPresence: HeardPresence = .never, dots: [RadarDot] = [],
+        heardPresence: HeardPresence = .never, dots: [RadarSnapshotDot] = [],
         signalTier: SignalTierPresentation = .none, signalHeard: Bool = false, signalViaRelay: Bool = false,
-        signalAgeText: String = "", signalDots: [RadarSignalDot] = []
+        signalAgeText: String = "", signalDots: [RadarSnapshotSignalDot] = []
     ) -> RadarSnapshot {
         RadarSnapshot(mode: mode, arrowDegrees: arrowDegrees, arrowValid: arrowValid, name: name,
                       distanceText: distanceText, distanceImprecise: distanceImprecise, ageText: ageText,
@@ -56,7 +56,7 @@ final class RadarViewModelTests: XCTestCase {
     // MARK: - radar_nosel.json
 
     func testNoselShowsNoArrowAndAsksForASelection() {
-        let s = snapshot(mode: .nosel, arrowValid: false, dots: [])
+        let s = snapshot(mode: .noSel, arrowValid: false, dots: [])
         let (model, radar, _) = makeModel(snapshot: s, hasPairedMembers: false, selectedNodeID: nil)
         model.observe(); defer { model.stopObserving() }
         XCTAssertEqual(model.chipText, "SELECT A FRIEND")
@@ -69,7 +69,7 @@ final class RadarViewModelTests: XCTestCase {
     // MARK: - radar_nofix.json
 
     func testNofixShowsRadioOnlyAndLooksForTheSelection() {
-        let s = snapshot(mode: .nofix, arrowValid: false, name: "DANA", distanceText: "", ageText: "6 MIN")
+        let s = snapshot(mode: .noFix, arrowValid: false, name: "DANA", distanceText: "", ageText: "6 MIN")
         let (model, _, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
         XCTAssertEqual(model.chipText, "NO FIX \u{00B7} RADIO ONLY")
@@ -85,7 +85,7 @@ final class RadarViewModelTests: XCTestCase {
     // MARK: - radar_nohdg.json / radar_nohdg_stale.json
 
     func testNohdgShowsBearingHintNoArrowNoLastSeenChip() {
-        let s = snapshot(mode: .nohdg, arrowValid: false, name: "Taylor", distanceText: "492 ft",
+        let s = snapshot(mode: .noHdg, arrowValid: false, name: "Taylor", distanceText: "492 ft",
                           ageText: "8 SEC", bearingDegrees: 180, bearingValid: true, place: false, stale: false)
         let (model, radar, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
@@ -106,7 +106,7 @@ final class RadarViewModelTests: XCTestCase {
     }
 
     func testNohdgStaleDoesNotGrowASecondChip() {
-        let s = snapshot(mode: .nohdg, name: "Taylor", distanceText: "492 ft", ageText: "12 MIN",
+        let s = snapshot(mode: .noHdg, name: "Taylor", distanceText: "492 ft", ageText: "12 MIN",
                           bearingDegrees: 180, bearingValid: true, place: false, stale: true)
         let (model, _, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
@@ -282,8 +282,8 @@ final class RadarViewModelTests: XCTestCase {
         let s = snapshot(mode: .signal, arrowValid: false, name: "DANA", trend: 1,
                           signalTier: .strong, signalHeard: true, signalViaRelay: false, signalAgeText: "8 SEC",
                           signalDots: [
-                              RadarSignalDot(id: 0, initial: "R", colorIndex: 1, tier: .weak, viaRelay: false),
-                              RadarSignalDot(id: 1, initial: "M", colorIndex: 2, tier: .none, viaRelay: true),
+                              RadarSnapshotSignalDot(id: 0, initial: "R", colorIndex: 1, tier: .weak, viaRelay: false),
+                              RadarSnapshotSignalDot(id: 1, initial: "M", colorIndex: 2, tier: .none, viaRelay: true),
                           ])
         let (model, _, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
@@ -395,7 +395,7 @@ final class RadarViewModelTests: XCTestCase {
     // MARK: - "your position" line (always present, never blank)
 
     func testMyPositionLineNamesSourceAndAgeEvenWhenUnavailable() {
-        let s = snapshot(mode: .nosel)
+        let s = snapshot(mode: .noSel)
         let (model, _, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
         // NoHeadingProvider/UnavailableLocationProvider: both halves
@@ -469,7 +469,7 @@ final class RadarViewModelTests: XCTestCase {
     }
 
     func testFindDoesNothingWithoutASelection() {
-        let s = snapshot(mode: .nosel)
+        let s = snapshot(mode: .noSel)
         let (model, _, find) = makeModel(snapshot: s, selectedNodeID: nil)
         model.observe(); defer { model.stopObserving() }
         model.startFindOnSelection()
