@@ -160,6 +160,60 @@ Neither suite ever runs WITH a board or `FIREFLY_HARDWARE=1` in CI: a
 hosted runner has no radio and no serial device. CI only proves both
 suites still build and skip cleanly. See `.github/workflows/app.yml`.
 
+### The serial + TCP rig (slice F)
+
+`FireflyKit/Tests/HardwareTests` needs a second env var alongside
+`FIREFLY_HARDWARE=1`, naming the port:
+
+```sh
+cd app/FireflyKit
+FIREFLY_HARDWARE=1 FIREFLY_SERIAL_PORT=/dev/cu.usbserial-4 \
+  swift test --filter Hardware
+```
+
+Without `FIREFLY_SERIAL_PORT` (or with `FIREFLY_HARDWARE` unset) the
+suite skips cleanly — both are required, and the skip message says
+which is missing.
+
+`SerialHardwareTests` does not depend on slice A's `MeshtasticClient` —
+that class is not merged as of this PR — so it drives the two-phase
+`want_config` handshake directly through `SerialTransport` +
+`StreamFramer` with hand-built `ToRadio` protobufs from
+`MeshtasticProto`, and asserts the bench board's own identity read back
+off the wire: node num, owner name, and the asserted fixed position from
+`docs/hardware/heltec-v3.md`'s bench table. It never sends an admin
+message and never exercises the phone-GPS `LOC_EXTERNAL` push against
+the bench board — that push would risk overwriting Firefly 1's asserted
+fixed position with a measured one, exactly the provenance trap that
+file's "Use 2" section warns about, so the push path is covered by
+unit tests (`LocationProviderTests`, no radio) instead.
+
+**Single client, one port, one script.** A Meshtastic serial port
+accepts exactly one client — this is `HardwareTests`' own "Contention
+warning" above, restated because it bites in practice: while
+`FIREFLY_HARDWARE=1 swift test --filter Hardware` holds
+`/dev/cu.usbserial-4` open, nothing else (a `meshtastic` CLI session, a
+console, Xcode) can also open it, and the failure looks like a hang, not
+a clean error.
+
+`app/tools/bench_friend.sh` sends a text broadcast on Firefly 1's
+primary (Firefly) channel via the `meshtastic` CLI, so the *phone side*
+of the app can be exercised by hand — connect the app to Firefly 2 (or
+watch Firefly 1's own traffic), then:
+
+```sh
+app/tools/bench_friend.sh "hey crew"          # defaults to /dev/cu.usbserial-4
+FIREFLY_SERIAL_PORT=/dev/cu.usbserial-4 \
+MESHTASTIC_BIN=/Users/jakeholland/.local/bin/meshtastic \
+  app/tools/bench_friend.sh                   # explicit, same defaults
+```
+
+Never run it while `HardwareTests` holds the port — it checks with
+`lsof` first and refuses rather than racing the test for the fd, but
+that check is best-effort, not a lock: treat "one client at a time" as
+the actual rule, `bench_friend.sh`'s check as a courtesy that catches
+the common mistake.
+
 ## Regenerating things
 
 **The C core symlinks** — after adding a file to `firmware/core/src` or
