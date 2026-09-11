@@ -78,10 +78,17 @@ public struct NodePosition: Sendable, Equatable {
 }
 
 public protocol MeshtasticClientProtocol: AnyObject, Sendable {
-    var linkState: AsyncStream<LinkState> { get }
-    var nodeUpdates: AsyncStream<MeshNodeSnapshot> { get }
+    /// A fresh, independent stream for the caller. Multicast via
+    /// `EventHub` (docs/specs/A01-companion-app.md, S1): a view model
+    /// AND `CoreStore` (and, for `linkState`, Diagnostics too) each need
+    /// their own subscription, so this is a method, not a stored
+    /// `AsyncStream` property — a second `for await` on one shared
+    /// instance would compete with the first for elements rather than
+    /// getting its own copy. Every stream is `.bufferingNewest(4096)`.
+    func linkState() -> AsyncStream<LinkState>
+    func nodeUpdates() -> AsyncStream<MeshNodeSnapshot>
     /// (packetID, state) as routing acks and ack timeouts resolve.
-    var deliveryUpdates: AsyncStream<(UInt32, DeliveryState)> { get }
+    func deliveryUpdates() -> AsyncStream<(UInt32, DeliveryState)>
 
     func connect() async throws
     func disconnect() async
@@ -100,13 +107,9 @@ public let meshBroadcastAddress: UInt32 = 0xFFFF_FFFF
 /// answer, and it is the same empty Radar a real radio with nothing in
 /// range produces.
 public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Sendable {
-    public let linkState: AsyncStream<LinkState>
-    public let nodeUpdates: AsyncStream<MeshNodeSnapshot>
-    public let deliveryUpdates: AsyncStream<(UInt32, DeliveryState)>
-
-    private let linkCont: AsyncStream<LinkState>.Continuation
-    private let nodeCont: AsyncStream<MeshNodeSnapshot>.Continuation
-    private let deliveryCont: AsyncStream<(UInt32, DeliveryState)>.Continuation
+    private let linkHub = EventHub<LinkState>()
+    private let nodeHub = EventHub<MeshNodeSnapshot>()
+    private let deliveryHub = EventHub<(UInt32, DeliveryState)>()
 
     private let transport: MeshTransport
     private let lock = NSLock()
@@ -115,35 +118,30 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
 
     public init(transport: MeshTransport = LoopbackTransport()) {
         self.transport = transport
-        var lc: AsyncStream<LinkState>.Continuation!
-        self.linkState = AsyncStream { lc = $0 }
-        self.linkCont = lc
-        var nc: AsyncStream<MeshNodeSnapshot>.Continuation!
-        self.nodeUpdates = AsyncStream { nc = $0 }
-        self.nodeCont = nc
-        var dc: AsyncStream<(UInt32, DeliveryState)>.Continuation!
-        self.deliveryUpdates = AsyncStream { dc = $0 }
-        self.deliveryCont = dc
     }
 
+    public func linkState() -> AsyncStream<LinkState> { linkHub.subscribe() }
+    public func nodeUpdates() -> AsyncStream<MeshNodeSnapshot> { nodeHub.subscribe() }
+    public func deliveryUpdates() -> AsyncStream<(UInt32, DeliveryState)> { deliveryHub.subscribe() }
+
     public func connect() async throws {
-        linkCont.yield(.connecting)
+        linkHub.yield(.connecting)
         try await transport.connect()
-        linkCont.yield(.handshaking)
-        linkCont.yield(.ready)
+        linkHub.yield(.handshaking)
+        linkHub.yield(.ready)
     }
 
     public func disconnect() async {
         await transport.disconnect()
-        linkCont.yield(.disconnected)
+        linkHub.yield(.disconnected)
     }
 
     @discardableResult
     public func sendText(_ text: String, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
         let id = nextID(text: text, destination: destination, wantAck: wantAck)
-        deliveryCont.yield((id, .waiting))
+        deliveryHub.yield((id, .waiting))
         try await transport.send(Data(text.utf8))
-        deliveryCont.yield((id, .sent))
+        deliveryHub.yield((id, .sent))
         // No DELIVERED is fabricated. A stub has no mesh to ack it, and
         // a broadcast would never be acked even by a real one.
         return id

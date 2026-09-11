@@ -3,11 +3,15 @@
 <plist version="1.0">
 <dict>
 	<!-- macOS sandbox. The Mac build is the hardware-test rig, so it
-	     needs the Bluetooth device and (for the USB-serial transport,
-	     slice 3) the USB one. -->
+	     needs the Bluetooth device and (for the serial transport, slice
+	     F) both the USB device (IOKit enumeration) AND the serial
+	     device (the entitlement that actually lets a sandboxed app open
+	     /dev/cu.* — device.usb alone does not grant that). -->
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
 	<key>com.apple.security.device.bluetooth</key>
+	<true/>
+	<key>com.apple.security.device.serial</key>
 	<true/>
 	<key>com.apple.security.device.usb</key>
 	<true/>

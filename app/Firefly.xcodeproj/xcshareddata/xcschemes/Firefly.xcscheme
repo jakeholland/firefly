@@ -21,6 +21,20 @@
                ReferencedContainer = "container:Firefly.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "2E869653C9A7BA8AA66ED9F5"
+               BuildableName = "FireflyHardwareTests.xctest"
+               BlueprintName = "FireflyHardwareTests"
+               ReferencedContainer = "container:Firefly.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -39,6 +53,17 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "2E869653C9A7BA8AA66ED9F5"
+               BuildableName = "FireflyHardwareTests.xctest"
+               BlueprintName = "FireflyHardwareTests"
+               ReferencedContainer = "container:Firefly.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
       <CommandLineArguments>
       </CommandLineArguments>

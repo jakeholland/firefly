@@ -53,3 +53,8 @@ xcuserdata/
 # dependency pin is what makes a CI build reproducible.
 app/FireflyKit/.build/
 app/FireflyKit/.swiftpm/
+# Personal on-device signing team, never committed. Copy
+# app/Config/Local.xcconfig.example to app/Config/Local.xcconfig and put
+# your own DEVELOPMENT_TEAM there. app/Config/Firefly.xcconfig (committed)
+# includes it optionally, so its absence never breaks a clean checkout.
+app/Config/Local.xcconfig

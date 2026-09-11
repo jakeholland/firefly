@@ -36,10 +36,20 @@ public final class ConnectViewModel {
     }
 
     /// Start mirroring the client's link state. Idempotent.
+    ///
+    /// `client.linkState()` is called HERE, synchronously, rather than
+    /// inside the `Task` below: `EventHub.subscribe()` (what backs it)
+    /// registers the subscription the instant it is called, and a value
+    /// yielded before a subscriber exists is simply missed — multicast,
+    /// not replayed. Capturing the stream before the `Task` is created
+    /// guarantees the subscription is live before `connect()` can
+    /// publish anything, regardless of how the cooperative pool happens
+    /// to schedule the `Task`.
     public func observe() {
         guard observation == nil else { return }
-        observation = Task { [weak self, client] in
-            for await state in client.linkState {
+        let stream = client.linkState()
+        observation = Task { [weak self] in
+            for await state in stream {
                 guard let self else { return }
                 self.apply(state)
             }

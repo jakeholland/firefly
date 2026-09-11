@@ -13,9 +13,13 @@ name: app
 # file under app/. That is the whole reason CoreSourceLinkTests exists,
 # and this filter is what makes it run at the right moment.
 #
-# HARDWARE tests are NOT here. They need a Heltec V3 on USB or in
-# Bluetooth range, and a hosted runner has neither; they are tagged
-# FIREFLY_HARDWARE and run manually from a Mac (see app/README.md).
+# Hardware tests that need a REAL Heltec V3 are NOT run here - a hosted
+# runner has no USB device and no Bluetooth range, and they are gated
+# FIREFLY_HARDWARE=1, run manually from a Mac (see app/README.md). The
+# `xcode` job's last step DOES run `xcodebuild test
+# -only-testing:FireflyHardwareTests` with that env var unset, but only
+# to prove the app-hosted BLE hardware suite builds and skips cleanly
+# (docs/specs/A01-companion-app.md, B1) - never to exercise a board.
 
 on:
   pull_request:
@@ -43,7 +47,12 @@ concurrency:
 jobs:
   package:
     name: FireflyKit (swift build + test)
-    runs-on: macos-15
+    # macos-26 (Tahoe): GitHub Actions' macOS-26 runner image reached
+    # general availability 2026-02-26 (github.blog/changelog, 2025-09-11
+    # preview -> 2026-02-26 GA) and carries Xcode 26.x by default, matching
+    # the Xcode 26.6 / Swift 6.3.3 every build claim in this repo is
+    # verified against. Bump this again if a later Xcode major is needed.
+    runs-on: macos-26
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +79,17 @@ jobs:
               missing=1
             fi
           done
+          # Headers too (S8): a copied header passes a src-only check
+          # silently, and this farm also pulls in firmware/platform/include.
+          for d in firmware/core/include firmware/platform/include; do
+            for f in "$d"/*.h; do
+              b="$(basename "$f")"
+              if [ ! -L "app/FireflyKit/Sources/FireflyCore/include/$b" ]; then
+                echo "::error file=$d/$b::not linked into FireflyCore - run app/tools/link_core_sources.sh"
+                missing=1
+              fi
+            done
+          done
           exit $missing
 
       - name: swift build
@@ -82,7 +102,12 @@ jobs:
 
   xcode:
     name: Firefly.app (macOS + iOS Simulator)
-    runs-on: macos-15
+    # macos-26 (Tahoe): GitHub Actions' macOS-26 runner image reached
+    # general availability 2026-02-26 (github.blog/changelog, 2025-09-11
+    # preview -> 2026-02-26 GA) and carries Xcode 26.x by default, matching
+    # the Xcode 26.6 / Swift 6.3.3 every build claim in this repo is
+    # verified against. Bump this again if a later Xcode major is needed.
+    runs-on: macos-26
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -112,3 +137,16 @@ jobs:
             -scheme Firefly \
             -destination 'generic/platform=iOS Simulator' \
             build
+
+      # NOT `FIREFLY_HARDWARE=1` and no board: this proves the app-hosted
+      # BLE hardware suite builds, launches inside Firefly.app, and SKIPS
+      # cleanly on a runner with no radio (docs/specs/A01-companion-app.md,
+      # B1) - it never runs a hardware test here, only proves the skip.
+      - name: FireflyHardwareTests build + skip on a machine with no board
+        working-directory: app
+        run: |
+          xcodebuild test \
+            -project Firefly.xcodeproj \
+            -scheme Firefly \
+            -destination 'platform=macOS' \
+            -only-testing:FireflyHardwareTests

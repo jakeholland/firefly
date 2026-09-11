@@ -116,24 +116,38 @@ app/
       MeshtasticProto/             generated SwiftProtobuf types (committed)
       FireflyMesh/                 transports + Meshtastic client
         Transport.swift            MeshTransport, TransportEvent, LoopbackTransport
+        EventHub.swift             multicast AsyncStream fan-out (S1) — shared seam
         StreamFramer.swift         0x94 0xC3 framing (serial + TCP)
         MeshtasticBLE.swift        GATT UUIDs + the drain/pairing policy
         MeshtasticClientProtocol.swift  the seam view models depend on
-        DeliveryState.swift        WAITING/SENT/DELIVERED/NO ACK/DROPPED
+        DeliveryState.swift        WAITING/SENT/DELIVERED/NO ACK/DROPPED (+ NONE = absent)
         BLE/ Serial/ TCP/          concrete transports (slices A, F)
       FireflyModel/                view models, presentation rules, theme
         FireflyTheme.swift         the palette, pinned against ff_theme.h
         SignalPresentation.swift   tiers as words, never as distance
         ConnectViewModel.swift     the MVVM template every screen follows
+        CoreStore.swift            the @MainActor seam the data flow routes
+                                   through — shared, landed as a skeleton (S5)
+        AppDependencies.swift      the DI composition root — shared, landed
+                                   as a skeleton with .stub()/.live() (S5)
+        LocationProviding.swift    phone-GPS seam + UnavailableLocationProvider
+        HeadingProviding.swift     compass seam + NoHeadingProvider (NOHDG)
+        SettingsStoring.swift      UserDefaults-shaped seam + InMemorySettingsStore
         Bridge/                    Swift-safe wrappers over the C core (slice B)
     Tests/
       FireflyCoreTests/            the C bridge + the anti-drift guards
       MeshtasticProtoTests/        wire round-trips + the pin guard
-      FireflyMeshTests/            framer, delivery states, BLE contract
-      FireflyModelTests/           theme, honesty rules, view models
-      HardwareTests/               tagged; skipped without a board (slice F)
+      FireflyMeshTests/            framer, delivery states, BLE contract, EventHub
+      FireflyModelTests/           theme, honesty rules, view models, CoreStore
+      HardwareTests/               serial + TCP; tagged, skipped without a board
+                                   (slice F). BLE hardware tests are NOT here — see
+                                   FireflyHardwareTests below and B1.
   Firefly/Sources/                 the SwiftUI shell
   Firefly/Resources/               Info.plist, entitlements
+  FireflyHardwareTests/            BLE hardware tests, HOSTED in Firefly.app —
+                                   `xcodebuild test`, not `swift test` (B1)
+  Config/                          Firefly.xcconfig (committed, #include?s
+                                   Local.xcconfig) + Local.xcconfig.example
   Firefly.xcodeproj + project.yml  committed project, regenerable
   tools/                           link_core_sources.sh, gen_swift_protos.sh
 ```
@@ -144,6 +158,14 @@ The stack is strictly one-directional: `FireflyCore` knows nothing;
 depends on all four and is the only place SwiftUI appears. Each layer can
 be built and tested without the one above it — the same discipline
 `docs/ARCHITECTURE.md` states for the firmware.
+
+`EventHub.swift`, `CoreStore.swift`, `AppDependencies.swift`,
+`LocationProviding.swift`, `HeadingProviding.swift` and
+`SettingsStoring.swift` are landed in this PR as real, tested,
+minimal-but-working seams — not claimed by any one slice's file list
+(the same way `MeshtasticClientProtocol.swift` and `DeliveryState.swift`
+already were not) — so slices C, D, E and F each depend on a symbol that
+already exists instead of inventing their own shape for it (S5).
 
 ## Data flow
 
@@ -157,20 +179,29 @@ be built and tested without the one above it — the same discipline
                              MeshtasticClient (actor)
                    ┌──────────────────┼──────────────────┐
                    │                  │                  │
-           linkState stream    nodeUpdates stream   deliveryUpdates stream
+         linkState()EventHub  nodeUpdates()EventHub  deliveryUpdates()EventHub
+           (multicast, S1)      (multicast, S1)        (multicast, S1)
                    │                  │                  │
-                   └──────────────────┼──────────────────┘
-                                      ▼
-                              CoreStore  (@MainActor)
-                     owns ff_crew_t / ff_feed_t / ff_find_t
-                     feeds them with ff_crew_on_position,
-                     ff_crew_on_rssi, ff_crew_on_heard, ff_feed_push …
-                                      │
-                       ff_radar_compute / ff_inbox_build
-                                      │  plain Swift value types
-                                      ▼
-                        view models (@Observable) ──▶ SwiftUI
+          ┌────────┴────────┐        │                  │
+          ▼                 ▼        ▼                  ▼
+   view models         CoreStore  (@MainActor) ◀─────────┘
+   (@Observable)   owns ff_crew_t / ff_feed_t / ff_find_t
+        │            feeds them with ff_crew_on_position,
+        │            ff_crew_on_rssi, ff_crew_on_heard, ff_feed_push …
+        │                          │
+        │            ff_radar_compute / ff_inbox_build
+        │                          │  plain Swift value types
+        ▼                          ▼
+      SwiftUI  ◀───────── view models (@Observable)
 ```
+
+Every stream is `EventHub`-backed (S1): `CoreStore` and a screen's own
+view model each hold an INDEPENDENT subscription obtained by calling
+`linkState()` / `nodeUpdates()` / `deliveryUpdates()` once and keeping
+the returned `AsyncStream` — not two consumers racing over one shared
+stream, which a stored `AsyncStream` property would have been. See
+"Threading model" below for the ordering rule that subscribing before
+publishing depends on.
 
 Two rules make this readable and keep it honest:
 
@@ -199,13 +230,31 @@ Two rules make this readable and keep it honest:
   the one place that has to change.
 - **Transports and the client are actors.** CoreBluetooth delegate
   callbacks, the serial read source and the TCP receive loop all land off
-  the main thread and are funnelled into the client actor, which publishes
-  `AsyncStream`s. The Meshtastic-Apple TCP reader's own note — that
-  main-actor-isolating the receive drain stalled it enough for the OS to
-  drop the connection — is the reason this is not simply main-actor
-  everywhere.
-- **Back-pressure is bounded, and drops the oldest.** Every
-  `AsyncStream` uses `.bufferingNewest(4096)`, matching Meshtastic-Apple.
+  the main thread and are funnelled into the client actor, which
+  publishes through `EventHub`s (below). The Meshtastic-Apple TCP
+  reader's own note — that main-actor-isolating the receive drain stalled
+  it enough for the OS to drop the connection — is the reason this is not
+  simply main-actor everywhere.
+- **Every event stream is multicast, via `EventHub`, not a stored
+  `AsyncStream`.** `AsyncStream` itself is single-consumer: a second
+  `for await` over the same instance competes with the first for
+  elements rather than getting its own copy. `linkState`, `nodeUpdates`
+  and `deliveryUpdates` each need independent readers — `CoreStore`
+  *and* a view model, and for `linkState` also Diagnostics — so
+  `MeshtasticClientProtocol` and `MeshTransport` expose them as methods
+  (`func linkState() -> AsyncStream<LinkState>`, and so on), each
+  handing the caller a fresh subscription from a small
+  `FireflyMesh.EventHub<Element>` (a class that fans one `yield(_:)` out
+  to every current subscriber's own continuation). A caller that needs
+  every value must call the method — and capture the returned stream —
+  **before** triggering whatever will publish into it: a subscription
+  registered after a value was yielded simply misses that value,
+  multicast rather than replayed. `ConnectViewModel.observe()` and
+  `CoreStore.observe(client:)` are the worked examples, and
+  `EventHubTests`/`CoreStoreTests` pin both the fan-out and the ordering
+  rule.
+- **Back-pressure is bounded, and drops the oldest.** Every `EventHub`
+  subscription uses `.bufferingNewest(4096)`, matching Meshtastic-Apple.
   A stalled consumer must not grow memory without limit, and for live
   presence the newest packet is the one that matters.
 - **No Combine.** `@Observable` + `AsyncStream` throughout. The archived
@@ -235,10 +284,13 @@ view models copy that shape.
 ## Dependency injection
 
 Constructor injection, one composition root, no service locator and no
-singletons.
+singletons. Landed in this PR as a real, working, tested seam
+(`FireflyModel/AppDependencies.swift`, S5) rather than left for a slice
+to invent — `FireflyApp.swift`'s one stored `ConnectViewModel` is built
+from it today.
 
 ```swift
-struct AppDependencies {
+struct AppDependencies: Sendable {
     var client: any MeshtasticClientProtocol
     var location: any LocationProviding
     var heading: any HeadingProviding
@@ -246,15 +298,22 @@ struct AppDependencies {
 }
 ```
 
-- `AppDependencies.live()` builds the real BLE (or serial, or TCP) stack.
 - `AppDependencies.stub()` builds `StubMeshtasticClient` over
-  `LoopbackTransport` and a location/heading provider that reports
+  `LoopbackTransport` and a location/heading provider
+  (`UnavailableLocationProvider` / `NoHeadingProvider`) that reports
   **unavailable**, not fake coordinates.
-- The iOS Simulator gets `.stub()` automatically via
-  `#if targetEnvironment(simulator)` — an idea taken directly from the
-  archived app's `DependencyContainer.simulatorContainer()`, which existed
-  because instantiating `CBCentralManager` under the Simulator is a
-  dead end.
+- `AppDependencies.live()` is the milestone-1 placeholder for the real
+  BLE (or serial, or TCP) stack: until slice A's client and slice F's
+  providers land, it is identical to `.stub()`, on purpose — nothing
+  above this seam should behave differently depending on which one is
+  picked, which is exactly what makes it safe to land before the slices
+  that fill it in do.
+- `AppDependencies.current()` is what callers actually use: `.stub()` in
+  the iOS Simulator via `#if targetEnvironment(simulator)` — an idea
+  taken directly from the archived app's
+  `DependencyContainer.simulatorContainer()`, which existed because
+  instantiating `CBCentralManager` under the Simulator is a dead end —
+  and `.live()` everywhere else.
 
 The stub client's defining property is what it *refuses* to do: it
 reaches `.ready`, records what was sent, and invents no nodes, no
@@ -415,24 +474,68 @@ the firmware's: one `meshtasticd` accepts one client at a time.
 
 ### Handshake
 
+`want_config_id` is not an arbitrary correlation nonce — it is one of
+two **firmware-recognized sentinel values**, and using anything else
+does not do what the spec previously (incorrectly) implied:
+
+```swift
+/// Meshtastic's own sentinels for ToRadio.want_config_id — NOT
+/// arbitrary. Confirmed two ways: Meshtastic-Apple's
+/// AccessoryManager.swift:150-151 defines exactly these two constants
+/// and AccessoryManager.swift:1188,1199 dispatch config_complete_id on
+/// them by name ("Unknown nonce completed" for anything else); this
+/// repo's own archived app (`git show 8b0967f:
+/// Firefly/Core/Models/MeshtasticClient.swift:53-56,121`) documents
+/// 69420 as "the Meshtastic firmware constant" for the same split.
+/// Meshtastic TV's MeshClient.swift:21-24 states the mechanism
+/// outright: sending wantConfigID with NONCE_ONLY_CONFIG triggers the
+/// config dump, NONCE_ONLY_DB the node-database dump — and older
+/// firmware returns the FULL dump for either one, so a client that
+/// sends a random value where the firmware expects one of these two
+/// gets a full dump on phase A and a second full dump on phase B,
+/// exactly the interleaved-double-dump failure the reboot/rebooted
+/// guard below exists to prevent.
+enum MeshtasticConfigNonce {
+    static let onlyConfig: UInt32 = 69420
+    static let onlyNodeDB: UInt32 = 69421
+}
+```
+
 1. Transport reaches `.ready` (for BLE: subscription ACKed).
-2. Send a `Heartbeat` with `nonce = UInt32.random(in: 2...UInt32.max)` —
-   never 1, which firmware may special-case.
-3. `ToRadio.want_config_id = <nonce A>` → the radio streams `my_info`,
-   `metadata`, `channel`s, `config`, `module_config`, terminated by
-   `config_complete_id == nonce A`. Timeout 30 s.
-4. `ToRadio.want_config_id = <nonce B>` → the node database dump,
-   terminated by `config_complete_id == nonce B`. Timeout 120 s; do
-   **not** re-send this if a dump is already in progress — a re-request
-   restarts it from the top and interleaves two dumps.
-5. Check the firmware version; below the supported floor, say so plainly
-   instead of failing mysteriously later.
+2. Send a `Heartbeat` with its OWN nonce,
+   `nonce = UInt32.random(in: 2...UInt32.max)` — never 1, which firmware
+   may special-case. **This is a different field from
+   `want_config_id` below** — `Heartbeat.nonce` is a keepalive value with
+   no firmware-recognized meaning, while `want_config_id` in steps 3–4
+   MUST be one of the two sentinels above. Conflating them (as an
+   earlier draft of this section did, by numbering both "nonce A") reads
+   as though the heartbeat's random value drives the handshake; it does
+   not.
+3. `ToRadio.want_config_id = MeshtasticConfigNonce.onlyConfig` (69420) →
+   the radio streams `my_info`, `metadata`, `channel`s, `config`,
+   `module_config`, terminated by
+   `config_complete_id == MeshtasticConfigNonce.onlyConfig`. Timeout
+   30 s.
+4. `ToRadio.want_config_id = MeshtasticConfigNonce.onlyNodeDB` (69421) →
+   the node database dump, terminated by
+   `config_complete_id == MeshtasticConfigNonce.onlyNodeDB`. Timeout
+   120 s; do **not** re-send this if a dump is already in progress — a
+   re-request restarts it from the top and interleaves two dumps.
+5. Check the firmware version; below the supported floor (2.7.26 — see
+   "Decisions already made"), say so plainly instead of failing
+   mysteriously later.
 6. `.ready`. Only now is the nodeDB meaningful.
 
-Two nonces rather than one, so a large mesh's node dump cannot delay the
+Two phases rather than one, so a large mesh's node dump cannot delay the
 config the UI needs to draw anything. Both the archived app and
-Meshtastic-Apple do this; the nonce values themselves carry no meaning
-and ours are our own.
+Meshtastic-Apple do this, and both use these exact two sentinel values —
+not because the wire format requires any particular number (proto3 just
+sees a `uint32`), but because that is what the firmware on the other end
+actually branches on. A01_AC4 ("completes both `want_config` phases") is
+only satisfiable with these two values; a client that generates its own
+per-connection nonces here (as opposed to `Heartbeat.nonce`, which
+legitimately is random) will get a full dump twice and never reach a
+clean `.ready`.
 
 `FromRadio.rebooted` is an **immediate session loss**, not something to
 discover via a silence timeout: reissue `want_config` at once. The puck
@@ -482,13 +585,24 @@ because nothing acks a broadcast.
 | `error_reason != NONE` | `DROPPED`, with the reason shown (no route, max retransmit, duty cycle…) |
 | `want_ack`, and 5 minutes elapsed with no routing packet | `NO ACK` |
 
-The five states are exactly `ff_feed_send_status_t`
-(`FF_SEND_WAITING/SENT/DELIVERED/NO_ACK/DROPPED`) and
-`DeliveryStateTests` pins the mapping, so a reorder of the C enum fails
-here rather than making the two products disagree about what DELIVERED
-means. The 5-minute window is **derived at render time** from the
-message's timestamp, not driven by a timer — a timer that fires while the
-app is suspended is a timer that lies.
+The five states in the table above are five of the SIX values of
+`ff_feed_send_status_t`
+(`FF_SEND_WAITING/SENT/DELIVERED/NO_ACK/DROPPED`), and `DeliveryState`
+pins the mapping both directions: `ffSendStatus` (Swift → C, for what
+this app sends) and `init?(ffSendStatus:)` (C → Swift, for what
+`InboxBridge` reads back). The sixth C value, `FF_SEND_NONE` — the zero
+value every *inbound* feed item carries, deliberately zero so a
+zero-initialized or legacy item never accidentally claims a delivery
+fact it doesn't have (`ff_feed.h`'s own doc comment) — has **no**
+`DeliveryState` case; `init?(ffSendStatus:)` returns `nil` for it rather
+than inventing a sixth Swift case or crashing. `DeliveryStateTests` pins
+both the five-way forward mapping and the `nil`-for-`NONE` reverse one,
+so a reorder of the C enum fails here rather than making the two
+products disagree about what DELIVERED means, and a bridge that reads
+`send_status` off an inbound item cannot silently invent a state for it.
+The 5-minute window is **derived at render time** from the message's
+timestamp, not driven by a timer — a timer that fires while the app is
+suspended is a timer that lies.
 
 Inbound text is deduplicated on `packet.id` before it reaches the feed:
 the mesh echoes your own packet back within seconds, and without the
@@ -573,13 +687,44 @@ could silently go wrong:
 - *Protocol tests*: framer dribble/resync/oversize, delivery-state
   mapping, the BLE drain triggers.
 
-**Integration, with hardware (manual, from a Mac).** A `HardwareTests`
-target, skipped unless `FIREFLY_HARDWARE=1` **and** a board is reachable,
-so a green suite never depends on what is plugged in. It covers what
-cannot be faked: real BLE discovery and pairing, a real two-phase
-`want_config` reaching `.ready`, a real nodeDB dump, a real DM between
-the two Heltecs with a real routing ACK, and a real phone-position push
-read back with `meshtastic --info`.
+**Integration, with hardware (manual, from a Mac). Two suites, run two
+different ways — not a stylistic split, a TCC constraint (B1):**
+
+- **BLE — `FireflyHardwareTests`, an app-hosted test target, run with
+  `xcodebuild test`.** macOS aborts
+  (`__TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__`) any CoreBluetooth process
+  that is not inside a signed `.app` bundle carrying
+  `NSBluetoothAlwaysUsageDescription` and launched via LaunchServices. A
+  `swift test` xctest binary is none of those three things — constructing
+  a `CBCentralManager` there does not fail one test, it **aborts the
+  whole process**. So the BLE half of the hardware suite lives in
+  `app/FireflyHardwareTests`, a unit-test bundle whose host application
+  is `Firefly.app` (`project.yml`'s `FireflyHardwareTests` target,
+  `TEST_HOST`/`BUNDLE_LOADER` pointed at the built app), run with:
+
+  ```
+  FIREFLY_HARDWARE=1 xcodebuild test -scheme Firefly \
+    -destination 'platform=macOS' -only-testing:FireflyHardwareTests
+  ```
+
+  Skipped (not failed, not hung) without `FIREFLY_HARDWARE=1` — the one
+  placeholder test in this PR proves exactly that skip, and `xcodebuild
+  test` running it (skipped) is checked into CI.
+- **Serial and TCP — `HardwareTests`, plain `swift test`.** These
+  transports are not CoreBluetooth and are unaffected by the TCC
+  restriction above, so they stay a normal SwiftPM test target, skipped
+  unless `FIREFLY_HARDWARE=1` **and** a board is reachable:
+
+  ```
+  FIREFLY_HARDWARE=1 swift test --filter Hardware
+  ```
+
+Between the two suites, hardware tests cover what cannot be faked: real
+BLE discovery and pairing, a real two-phase `want_config` reaching
+`.ready`, a real nodeDB dump, a real DM between the two Heltecs with a
+real routing ACK, and a real phone-position push read back with
+`meshtastic --info`. Neither suite ever runs WITH a board or the env var
+in CI — a green run there only proves both build and skip cleanly.
 
 **UI.** One XCUITest smoke test per platform — launch, visit all four
 destinations, assert nothing crashes and that the placeholder screens do
@@ -592,17 +737,22 @@ that are tested directly.
 `firmware/core/**`, `firmware/platform/**`, `ff_theme.h` and
 `gen_nanopb.sh`. Two jobs:
 
-- **package** — verify the symlink farm survived checkout, then
-  `swift build` and `swift test`.
+- **package** — verify the symlink farm (sources AND headers, S8)
+  survived checkout, then `swift build` and `swift test`.
 - **xcode** — `xcodebuild build` for `platform=macOS` and for
   `generic/platform=iOS Simulator` (generic: no booted device needed, and
-  it does not depend on which iPhone models the runner image ships).
+  it does not depend on which iPhone models the runner image ships);
+  then `xcodebuild test -only-testing:FireflyHardwareTests` with NO
+  `FIREFLY_HARDWARE` and no board, proving the app-hosted BLE hardware
+  suite builds and skips cleanly (B1) — never proving it passes with a
+  board, which no hosted runner has.
 
 `firmware/core/**` is in the filter on purpose: `FireflyCore` *is* the
 core, so a change under `firmware/core/src` can break the app without
-touching `app/`. Hardware tests never run in CI — a hosted runner has no
-radio, and a job that is red for want of a cable teaches people to ignore
-red.
+touching `app/`. Hardware tests never run WITH a board or
+`FIREFLY_HARDWARE=1` in CI — a hosted runner has no radio and no serial
+device, and a job that is red for want of a cable teaches people to
+ignore red.
 
 macOS minutes cost ~10× Linux, which is why this is a separate,
 filtered workflow rather than jobs bolted onto `ci.yml`.
@@ -625,11 +775,16 @@ filtered workflow rather than jobs bolted onto `ci.yml`.
 
 1. **A01_AC1** — `swift build` and `swift test` pass on macOS with no
    hardware and no network beyond dependency resolution; `xcodebuild`
-   builds for `platform=macOS` and `generic/platform=iOS Simulator`.
-2. **A01_AC2** — the app links `firmware/core`'s C sources in place. A
-   new `firmware/core/src/*.c` that is not linked fails
-   `CoreSourceLinkTests` by name; a linked entry that is a copy rather
-   than a symlink fails too.
+   builds for `platform=macOS` and `generic/platform=iOS Simulator`; and
+   `FIREFLY_HARDWARE=1` unset, `xcodebuild test
+   -only-testing:FireflyHardwareTests` builds and skips (B1) — it must
+   never abort the test process the way constructing a `CBCentralManager`
+   under bare `swift test` does.
+2. **A01_AC2** — the app links `firmware/core`'s C sources AND headers
+   in place. A new `firmware/core/src/*.c` or a new header under
+   `firmware/core/include`/`firmware/platform/include` that is not
+   linked fails `CoreSourceLinkTests` by name; a linked entry — source or
+   header — that is a copy rather than a symlink fails too (S8).
 3. **A01_AC3** — the Swift protobufs and the puck's nanopb sources come
    from the same pinned `meshtastic/protobufs` commit; a drift fails both
    the generator script and `ProtobufPinTests`, naming both values.
@@ -698,9 +853,13 @@ drawn as a live fix; the package builds clean under
    as an intermittent "connects but receives nothing" and is the single
    most expensive thing in the archive to re-derive. Taken as a *policy
    with a test*, not as a comment in a delegate.
-2. **The two-phase `want_config`** with nonce-keyed completion
-   continuations and per-phase timeouts (30 s config, 60 s nodeDB), and
-   the heartbeat nonce ≥ 2. Taken as the algorithm.
+2. **The two-phase `want_config`**, taken as the algorithm: the
+   firmware-recognized sentinel nonces themselves (`NONCE_ONLY_CONFIG =
+   69420`, `NONCE_ONLY_DB = 69421` — see "Meshtastic client" > "Handshake"
+   for the full citation), completion continuations keyed on them, and
+   per-phase timeouts (30 s config, 120 s nodeDB). The heartbeat's OWN
+   nonce (≥ 2, a separate field) is taken too, but is not part of this
+   mechanism.
 3. **The empty-read-terminates-drain loop.** Taken.
 4. **The five GATT UUIDs.** Taken verbatim — and cross-checked against
    Meshtastic-Apple rather than trusted.
@@ -805,36 +964,69 @@ deal of machinery for features that are explicitly out of scope.
 
 ## Slices
 
-Six slices, written to be built in parallel by separate agents. File
-ownership is disjoint with exactly **one** declared exception, noted in
-slice C.
+Six slices, written to be built in parallel by separate agents. Most
+files are owned by exactly one slice. Four files are **shared, and
+each slice edits them append-only, one declared hunk per slice** (S6) —
+the same rule `RootView.swift`'s destination switch already followed,
+now stated for all four:
+
+| Shared file | Each slice's one hunk |
+|---|---|
+| `app/Firefly/Sources/RootView.swift` | one line in the destination `switch` (already declared, below, in slice C) |
+| `app/Firefly/Sources/FireflyApp.swift` | its own view model, constructed from `AppDependencies` and injected into `RootView`/the destination it owns — never touching another slice's line |
+| `app/Firefly.xcodeproj/project.pbxproj` | regenerate via `xcodegen generate` after adding files under `app/Firefly/Sources/` or `app/FireflyKit/**`, and commit only the resulting diff — never hand-edit |
+| `app/FireflyKit/Package.swift` | a new `.testTarget` (slice F needs one for `HardwareTests`) or a new dependency, appended to the relevant array — never reordering another slice's entry |
+
+Landed in this PR, and depended on by name rather than owned by any one
+slice below (S5) — the same way `MeshtasticClientProtocol.swift` and
+`DeliveryState.swift` already were not slice-owned: `EventHub.swift`,
+`CoreStore.swift`, `AppDependencies.swift`, `LocationProviding.swift`,
+`HeadingProviding.swift`, `SettingsStoring.swift`.
 
 ### Slice A — BLE transport + the real Meshtastic client
 
 **Owns:** `FireflyKit/Sources/FireflyMesh/BLE/*`,
 `FireflyMesh/MeshtasticClient.swift`, `FireflyMesh/NodeDB.swift`,
-`Tests/FireflyMeshTests/{ClientHandshakeTests,NodeDBTests}.swift`.
+`Tests/FireflyMeshTests/{ClientHandshakeTests,NodeDBTests}.swift`,
+`app/FireflyHardwareTests/*` (the real BLE hardware tests — app-hosted,
+`xcodebuild test`, see B1; the placeholder in this PR is replaced, not
+moved).
 **Depends on:** `MeshTransport`, `TransportEvent`,
-`MeshtasticClientProtocol`, `DeliveryState`, `MeshtasticBLE`,
+`MeshtasticClientProtocol`, `EventHub`, `DeliveryState`, `MeshtasticBLE`,
 `StreamFramer` (all existing), `MeshtasticProto`.
 **Must add:** handshake tests driven by injected `FromRadio` bytes over
-`LoopbackTransport` (both nonces, the stale-nonce case, `rebooted`
-mid-session); nodeDB tests for the three absence rules (loc source,
+`LoopbackTransport` — both phases via the two firmware sentinel nonces
+(`MeshtasticConfigNonce.onlyConfig` / `.onlyNodeDB`, see B2), a
+`config_complete_id` that matches neither sentinel, and `rebooted`
+mid-session; nodeDB tests for the three absence rules (loc source,
 RSSI/hop path, precision bits); routing-ack → delivery-state tests
-including the broadcast case and the no-ack window.
+including the broadcast case and the no-ack window; real
+`FireflyHardwareTests` BLE tests (discovery, pairing, both sentinel
+phases reaching `.ready` against a real Heltec V3), gated
+`FIREFLY_HARDWARE=1` the same way the placeholder is.
 **Acceptance:** a `MeshtasticClient` reaches `.ready` from injected bytes
 with no radio; every absence rule is asserted; `FromRadio.rebooted`
-reissues `want_config` with a *new* nonce; the BLE transport compiles and
-runs on both platforms.
+reissues both `want_config` phases from scratch (same two sentinels, not
+fresh ones); the BLE transport compiles and runs on both platforms;
+`FIREFLY_HARDWARE=1 xcodebuild test -only-testing:FireflyHardwareTests`
+completes a real two-phase handshake against a Heltec V3.
 
 ### Slice B — the C-core bridge
 
 **Owns:** `FireflyKit/Sources/FireflyModel/Bridge/*` (`CoreClock.swift`,
 `CrewStore.swift`, `RadarBridge.swift`, `InboxBridge.swift`,
 `FindBridge.swift`, `FireflyPacket.swift`, `CString+Swift.swift`),
-`Tests/FireflyCoreTests/Bridge*.swift`.
-**Depends on:** `FireflyCore` only. Must **not** import `FireflyMesh` —
-the bridge takes plain values, so it is testable with no client at all.
+`Tests/FireflyCoreTests/Bridge*.swift`. **Fills in** (does not move)
+`CoreStore.swift`'s two `apply()` bodies, which this PR lands as
+deliberate no-ops (S5) — routing them into `ff_crew_on_*` /
+`ff_feed_set_send_status_by_outbox_id` through the `Bridge/*` types
+above is this slice's job.
+**Depends on:** `FireflyCore` only for `Bridge/*` itself. Must **not**
+import `FireflyMesh` there — the bridge takes plain values, so it is
+testable with no client at all. (`CoreStore.swift`, which this slice
+edits but does not own, depends on `FireflyMesh` for the client
+protocol and `EventHub`-backed streams it subscribes to — that is
+`CoreStore`'s seam, not the bridge's.)
 **Must add:** a lifetime test (allocate/free a `CrewStore` in a loop
 under the address sanitiser without a leak or a use-after-free); tests
 that `ff_radar_compute`'s output survives the round trip into Swift
@@ -842,20 +1034,29 @@ values; a test that a `char[16]` name containing no terminator does not
 over-read.
 **Acceptance:** no `UnsafeMutablePointer` or imported C tuple appears in
 any public API; the clock struct outlives every context that borrows it;
-all eight M1 modules are bound.
+all eight M1 modules are bound; `CoreStore`'s `apply()` hooks are real
+and `CoreStoreTests` (already pinning the multicast fan-out, S1) grows
+tests that they land in `ff_crew_t`/`ff_feed_t`.
 
 ### Slice C — app shell, Connect, Settings/Diagnostics
 
 **Owns:** `app/Firefly/Sources/RootView.swift` (and the destination
 registry in it), `app/Firefly/Sources/Connect/*`,
 `app/Firefly/Sources/Settings/*`,
-`FireflyKit/Sources/FireflyModel/{SettingsStore,ChannelURL}.swift`,
+`FireflyKit/Sources/FireflyModel/{SettingsStore,ChannelURL}.swift`
+(`SettingsStore` is the real `UserDefaults`-backed `SettingsStoring`
+implementation — the protocol and its `InMemorySettingsStore` mock are
+already landed, S5),
 `Tests/FireflyModelTests/ChannelURLTests.swift`.
 **Shared file, declared:** `RootView.swift`'s destination switch has one
 line per screen. Slices D and E each change exactly one of those lines.
-Merge order C → D → E; nothing else in the file is touched.
+Merge order C → D → E; nothing else in the file is touched. (See the
+table above for the other three shared files.)
 **Depends on:** `ConnectViewModel`, `MeshtasticClientProtocol`,
-`FireflyTheme`.
+`FireflyTheme`, `AppDependencies`, `SettingsStoring` (all existing, S5) —
+`SettingsStore` from the original file list is `SettingsStoring` plus
+`InMemorySettingsStore`, already landed; this slice adds the
+`UserDefaults`-backed real implementation, not the protocol.
 **Must add:** channel-URL import tests — `https://meshtastic.org/e/#…`
 and `meshtastic://e/#…`, `?add=true` in both query and fragment,
 base64url padding, a malformed payload rejected rather than
@@ -872,7 +1073,9 @@ shows link state, frame counters and firmware version, and shows
 `Tests/FireflyModelTests/RadarViewModelTests.swift`. One line in
 `RootView.swift`.
 **Depends on:** slice B's `RadarBridge` and `CrewStore`,
-`SignalPresentation`, `HeadingProviding`.
+`SignalPresentation`, `HeadingProviding` (protocol landed in this PR,
+S5 — this slice consumes it, slice F supplies the real
+`HeadingProvider`).
 **Must add:** view-model tests for every `radar_mode_t` the app can
 reach — LIVE / STALE / LOST / CLOSE / NOFIX / NOHDG / SIGNAL / NOSEL —
 each asserting the exact strings shown; a test that an asserted position
@@ -888,48 +1091,75 @@ source and its age.
 **Owns:** `app/Firefly/Sources/Inbox/*`,
 `FireflyKit/Sources/FireflyModel/{InboxViewModel,ThreadViewModel}.swift`,
 `Tests/FireflyModelTests/Inbox*.swift`. One line in `RootView.swift`.
-**Depends on:** slice B's `InboxBridge`, slice A's
-`deliveryUpdates`, `DeliveryState`.
+**Depends on:** slice B's `InboxBridge`, slice A's client via
+`deliveryUpdates()` (a fresh `EventHub` subscription, S1 — this view
+model's own, independent of `CoreStore`'s), `DeliveryState` (five
+non-`NONE` cases; `FF_SEND_NONE` reads as `nil`, S3).
 **Must add:** conversation-list and thread tests built from injected feed
 items (unread counts, previews, direction); a delivery-state progression
 test per state including the broadcast-never-DELIVERED case; a duplicate
 `packet.id` echo test proving the sent row is not overwritten.
 **Acceptance:** CREW plus one conversation per paired member, exactly as
-`ff_inbox` builds them; every outbound row shows one of the five states
-and never an invented one.
+`ff_inbox` builds them; every outbound row shows one of the five
+non-`NONE` states and never an invented one.
 
 ### Slice F — location, heading, serial + TCP transports, hardware rig
 
 **Owns:** `FireflyKit/Sources/FireflyMesh/{Serial,TCP}/*`,
-`FireflyKit/Sources/FireflyModel/{LocationProvider,HeadingProvider}.swift`,
-`FireflyKit/Tests/HardwareTests/*`, the hardware section of
-`app/README.md`.
-**Depends on:** `MeshTransport`, `StreamFramer`, slice A's client.
+`FireflyKit/Sources/FireflyModel/{LocationProvider,HeadingProvider}.swift`
+(the real, CoreLocation-backed implementations of the
+`LocationProviding`/`HeadingProviding` protocols landed in this PR, S5 —
+not the protocols themselves), `FireflyKit/Tests/HardwareTests/*`
+(**serial and TCP only** — BLE hardware tests are slice A's
+`app/FireflyHardwareTests`, per B1, not this target), the hardware
+section of `app/README.md`.
+**Depends on:** `MeshTransport`, `StreamFramer`, slice A's client,
+`LocationProviding`, `HeadingProviding` (protocols, existing, S5).
 **Must add:** serial framing tests against recorded bytes (no port
 needed); a TCP transport test against a local socket; provider tests
 that "permission denied" and "no fix" produce *absence*, never a
-coordinate; and the hardware suite itself, which must skip cleanly with
-no board.
+coordinate; and the serial/TCP hardware suite itself, which must skip
+cleanly with no board — a new `HardwareTests` `.testTarget` in
+`FireflyKit/Package.swift` (a shared file, see the table above).
 **Acceptance:** `swift test` stays green on a machine with no radio and
 no serial device; `FIREFLY_HARDWARE=1 swift test --filter Hardware`
-completes a handshake, a DM with a real ACK, and a phone-position push
-verified by `meshtastic --info`, against a Heltec V3.
+completes a serial handshake, a DM with a real ACK, and a
+phone-position push verified by `meshtastic --info`, against a Heltec
+V3.
 
-## Open questions for the owner
+## Decisions from the owner (formerly open questions)
 
-1. **Bundle id case.** The spec says `com.jakeholland.firefly`; the
-   archived project used `com.jakeholland.Firefly`. Ours is lowercase as
-   specified — confirm, since changing it later is an App Store identity
-   change.
-2. **Signing.** Signing is off so a clean checkout builds. Which team /
-   provisioning do you want wired in for on-device runs?
-3. **Firefly 1's bench position.** `docs/hardware/heltec-v3.md` now
-   records it as pending; what coordinates do you want asserted, and
-   should it be `CLIENT_MUTE` while it plays landmark?
-4. **Minimum firmware floor.** The handshake checks a version and says so
-   plainly below the floor. 2.7.26 is what is on the bench — do we
-   declare that the floor, or support older?
-5. **Channel PSK handling.** M1 imports a channel from a QR/URL and keeps
-   the PSK in the Keychain. Do you also want the app able to *generate* a
-   channel (so the phone can provision a new puck), or is the CLI the
-   only thing that ever mints a PSK?
+All five settled; recorded here so the reasoning is not lost, the same
+way "Decisions already made" is at the top of this spec.
+
+1. **Bundle id case: `com.jakeholland.firefly`, lowercase.** Confirmed
+   as specified, not the archived project's `com.jakeholland.Firefly` —
+   an App Store identity change is a one-way door, so this is settled
+   now rather than revisited after M1 ships.
+2. **Signing: git-ignored `app/Config/Local.xcconfig`, committed project
+   stays unsigned.** `app/Config/Firefly.xcconfig` (committed, wired into
+   the `Firefly` target) `#include?`s a personal, git-ignored
+   `Local.xcconfig` carrying `DEVELOPMENT_TEAM` — the `?` makes the
+   include optional, so its absence changes nothing for a clean
+   checkout. `app/Config/Local.xcconfig.example` is the committed
+   template; copy it, fill in a team id, never commit the copy. See
+   `app/README.md`, "On-device signing".
+3. **Firefly 1's bench position: `CLIENT`, not `CLIENT_MUTE`, asserted
+   explicitly.** `47.708135, -122.2820993`, altitude 40, set with
+   `--setlat`/`--setlon`/`--setalt` (never the fixed-position flag
+   alone), configured 2026-09-10 over its serial console. `CLIENT`
+   rather than `CLIENT_MUTE` is deliberate: the point of the bench pair
+   is exercising a real mesh with the app, and a node that acks and
+   relays like a real friend node is more useful for that than a mute
+   landmark stand-in would be. `docs/hardware/heltec-v3.md`'s bench
+   table is updated to **Done** with this — see S7. Both boards remain
+   flagged REVERT BEFORE THE FESTIVAL.
+4. **Minimum firmware floor: 2.7.26.** What is on both bench boards
+   today; the handshake's version check (`Meshtastic client` >
+   "Handshake", step 5) declares this the floor rather than trying to
+   support older releases nobody here is running.
+5. **Channel PSK handling: the app never mints one.** M1 imports a
+   channel from a QR/URL and keeps the PSK in the Keychain; it does not
+   gain a "generate a new channel" action in M1–M3. Provisioning a new
+   puck's channel stays CLI territory. If that changes later it is a
+   deliberate scope expansion, not an oversight to paper over here.

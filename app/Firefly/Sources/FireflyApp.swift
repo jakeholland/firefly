@@ -13,10 +13,21 @@ import SwiftUI
 
 @main
 struct FireflyApp: App {
-    /// Milestone 1 wires the stub client. Slice 2 replaces this one line
-    /// with a transport picker; nothing above this line changes, which
-    /// is the point of holding a protocol rather than a class.
-    @State private var connect = ConnectViewModel(client: StubMeshtasticClient())
+    /// `AppDependencies.current()` is `.stub()` in the iOS Simulator and
+    /// `.live()` everywhere else (today, also the stub stack — slice A's
+    /// real BLE client and slice F's real location/heading providers
+    /// replace it there; see `AppDependencies.live()`'s own comment).
+    /// Slice C wires the transport picker on top of this; nothing above
+    /// this line changes when it does, which is the point of holding
+    /// protocols rather than concrete types.
+    let dependencies: AppDependencies
+    @State private var connect: ConnectViewModel
+
+    init() {
+        let dependencies = AppDependencies.current()
+        self.dependencies = dependencies
+        _connect = State(initialValue: ConnectViewModel(client: dependencies.client))
+    }
 
     var body: some Scene {
         WindowGroup {

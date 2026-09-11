@@ -51,13 +51,21 @@ final class CoreSourceLinkTests: XCTestCase {
 
     /// They must be LINKS. A copy would compile just as well and would
     /// be exactly the failure this whole arrangement exists to prevent.
+    /// Covers `src/` (`.c`) AND `include/` (`.h`) — a copied HEADER
+    /// passes silently if only sources are checked, and the header farm
+    /// is the half that also spans `firmware/platform`, so it is the
+    /// more surprising place to have drift (A01_AC2, S8).
     func testLinkedSourcesAreSymlinksNotCopies() throws {
-        let dir = repoRoot.appending(path: "app/FireflyKit/Sources/FireflyCore/src")
-        let items = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".c") }
+        try assertAllSymlinks(dir: repoRoot.appending(path: "app/FireflyKit/Sources/FireflyCore/src"), suffix: ".c")
+        try assertAllSymlinks(dir: repoRoot.appending(path: "app/FireflyKit/Sources/FireflyCore/include"), suffix: ".h")
+    }
+
+    private func assertAllSymlinks(dir: URL, suffix: String) throws {
+        let items = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(suffix) }
         for item in items {
             let attrs = try FileManager.default.attributesOfItem(atPath: dir.appending(path: item).path)
             XCTAssertEqual(attrs[.type] as? FileAttributeType, .typeSymbolicLink,
-                           "\(item) is a COPY of a firmware/core source, not a link to it")
+                           "\(item) is a COPY of a firmware/core or firmware/platform file, not a link to it")
         }
     }
 }

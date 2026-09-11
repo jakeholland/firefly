@@ -33,9 +33,13 @@ public enum TransportEvent: Sendable {
 
 public protocol MeshTransport: AnyObject, Sendable {
     var kind: TransportKind { get }
-    /// Inbound events. Exactly one consumer; the transport finishes the
-    /// stream on permanent failure.
-    var events: AsyncStream<TransportEvent> { get }
+    /// A fresh, independent stream of inbound events for the caller.
+    /// Multicast via `EventHub` (docs/specs/A01-companion-app.md, S1):
+    /// more than one subscriber is expected, and each gets its own
+    /// `.bufferingNewest(4096)` stream rather than competing with the
+    /// others for one shared `AsyncStream`. The transport finishes every
+    /// outstanding stream on permanent failure.
+    func events() -> AsyncStream<TransportEvent>
     func connect() async throws
     func disconnect() async
     /// Write one `ToRadio` message. For `.stream` transports the client
@@ -59,26 +63,26 @@ public enum TransportError: Error, Equatable, Sendable {
 /// traffic push exact bytes in with `inject(_:)`.
 public final class LoopbackTransport: MeshTransport, @unchecked Sendable {
     public let kind: TransportKind
-    public let events: AsyncStream<TransportEvent>
-    private let continuation: AsyncStream<TransportEvent>.Continuation
+    private let hub = EventHub<TransportEvent>()
     private let lock = NSLock()
     private var sent: [Data] = []
 
     public init(kind: TransportKind = .message) {
         self.kind = kind
-        var cont: AsyncStream<TransportEvent>.Continuation!
-        self.events = AsyncStream { cont = $0 }
-        self.continuation = cont
+    }
+
+    public func events() -> AsyncStream<TransportEvent> {
+        hub.subscribe()
     }
 
     public func connect() async throws {
-        continuation.yield(.connecting)
-        continuation.yield(.ready)
+        hub.yield(.connecting)
+        hub.yield(.ready)
     }
 
     public func disconnect() async {
-        continuation.yield(.disconnected(reason: nil))
-        continuation.finish()
+        hub.yield(.disconnected(reason: nil))
+        hub.finish()
     }
 
     public func send(_ data: Data) async throws {
@@ -100,6 +104,6 @@ public final class LoopbackTransport: MeshTransport, @unchecked Sendable {
 
     /// Deliver bytes as if the radio had sent them.
     public func inject(_ data: Data) {
-        continuation.yield(.received(data))
+        hub.yield(.received(data))
     }
 }

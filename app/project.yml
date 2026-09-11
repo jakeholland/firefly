@@ -47,6 +47,15 @@ targets:
         product: FireflyMesh
       - package: FireflyKit
         product: FireflyModel
+    # Config/Firefly.xcconfig is committed and does nothing on its own;
+    # it `#include?`s (optional — no error if absent) a git-ignored
+    # Config/Local.xcconfig for a personal DEVELOPMENT_TEAM. See
+    # Config/Local.xcconfig.example and app/README.md, "On-device
+    # signing". CODE_SIGNING_ALLOWED below still wins for everyone else's
+    # clean checkout.
+    configFiles:
+      Debug: Config/Firefly.xcconfig
+      Release: Config/Firefly.xcconfig
     settings:
       base:
         PRODUCT_NAME: Firefly
@@ -61,17 +70,55 @@ targets:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
 
+  # App-hosted BLE hardware tests (docs/specs/A01-companion-app.md, B1).
+  # macOS aborts (__TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__) any
+  # CoreBluetooth process that is not inside a signed .app bundle
+  # carrying NSBluetoothAlwaysUsageDescription and launched via
+  # LaunchServices — a bare `swift test` xctest binary is none of those
+  # three things. So this is a unit-test bundle HOSTED inside Firefly.app
+  # (macOS only: there is no iOS destination to run it against from a
+  # CI-shaped command line), run with:
+  #
+  #   xcodebuild test -scheme Firefly -destination 'platform=macOS' \
+  #     -only-testing:FireflyHardwareTests
+  #
+  # Serial and TCP hardware tests are unaffected by TCC and stay under
+  # `swift test` (FireflyKit/Tests/HardwareTests, slice F).
+  FireflyHardwareTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: FireflyHardwareTests
+    dependencies:
+      - target: Firefly
+    settings:
+      base:
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        # Set explicitly rather than left to xcodegen's own inference:
+        # against a multiplatform (`supportedDestinations: [iOS, macOS]`)
+        # host target, xcodegen's auto-derived TEST_HOST omits macOS's
+        # Contents/MacOS path component and evaluates to a binary that
+        # does not exist ("Could not find test host"). This is the path
+        # a macOS .app bundle actually uses.
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Firefly.app/Contents/MacOS/Firefly"
+
 schemes:
   Firefly:
     build:
       targets:
         Firefly: all
+        FireflyHardwareTests: [test]
     run:
       config: Debug
     test:
       config: Debug
-      # FireflyKit's own tests run under `swift test`, which is faster
-      # and needs no simulator. The Xcode scheme builds the app.
-      targets: []
+      # FireflyKit's own (non-hardware) tests run under `swift test`,
+      # which is faster and needs no simulator or app host. Only the
+      # app-hosted BLE hardware suite runs through this scheme.
+      targets:
+        - name: FireflyHardwareTests
+          parallelizable: false
     archive:
       config: Release
