@@ -47,6 +47,9 @@ struct RadarView: View {
             }
             .padding()
             .frame(maxWidth: .infinity)
+            // M3: one identifying accessibility identifier per screen —
+            // see `ConnectScreen`'s own comment.
+            .accessibilityIdentifier("Screen.Radar")
         }
         .background(Color.ffBackground)
         // `model.observe()`/`model.stopObserving()` are deliberately NOT

@@ -135,7 +135,7 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
         let outboxID = nextOutbox()
         deliveryHub.yield(.waiting(outboxID: OutboxID(outboxID)))
         let packetID = nextPacket()
-        lock.lock(); sentTexts.append((text, destination, wantAck)); lock.unlock()
+        recordText(text, destination: destination, wantAck: wantAck)
         deliveryHub.yield(.sent(outboxID: OutboxID(outboxID), packetID: PacketID(packetID), wantAck: wantAck))
         if wantAck {
             scheduleAck(packetID: packetID)
@@ -145,14 +145,14 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
 
     @discardableResult
     public func sendPosition(_ fix: ExternalPositionFix, to destination: UInt32) async throws -> UInt32 {
-        lock.lock(); sentPositions.append((fix, destination)); lock.unlock()
+        recordPosition(fix, destination: destination)
         return nextPacket()
     }
 
     @discardableResult
     public func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
         onSendPrivate?(payload, destination, wantAck)
-        lock.lock(); sentPrivate.append((payload, destination, wantAck)); lock.unlock()
+        recordPrivate(payload, destination: destination, wantAck: wantAck)
         let packetID = nextPacket()
         if wantAck {
             scheduleAck(packetID: packetID)
@@ -250,6 +250,25 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     }
 
     // MARK: - Private
+
+    // Non-async on purpose, same rule `StubMeshtasticClient`'s own
+    // `recordPosition`/`recordPrivate`/`nextOutbox` document: `NSLock`'s
+    // `lock()`/`unlock()` are `noasync` (Swift 6 — a locked mutation
+    // lexically inside an `async` function body is a hard error even
+    // when no suspension point falls between the two calls), so every
+    // locked mutation here happens in a synchronous helper called from
+    // the async entry point instead.
+    private func recordText(_ text: String, destination: UInt32, wantAck: Bool) {
+        lock.lock(); sentTexts.append((text, destination, wantAck)); lock.unlock()
+    }
+
+    private func recordPosition(_ fix: ExternalPositionFix, destination: UInt32) {
+        lock.lock(); sentPositions.append((fix, destination)); lock.unlock()
+    }
+
+    private func recordPrivate(_ payload: Data, destination: UInt32, wantAck: Bool) {
+        lock.lock(); sentPrivate.append((payload, destination, wantAck)); lock.unlock()
+    }
 
     private func scheduleAck(packetID: UInt32) {
         let outcome = nextAckOutcome()

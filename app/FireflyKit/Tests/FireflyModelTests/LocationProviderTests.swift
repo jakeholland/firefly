@@ -208,8 +208,16 @@ final class LocationProviderTests: XCTestCase {
         private let lock = NSLock()
         private(set) var pushes: [(fix: LocationFix, destination: UInt32)] = []
 
-        func sendPosition(_ fix: LocationFix, to destination: UInt32) async throws {
+        // M3 / Swift 6: the locked mutation happens in this synchronous
+        // helper, never lexically inside `sendPosition`'s own `async`
+        // body — `NSLock.lock()`/`unlock()` are `noasync`, the same rule
+        // `DemoMeshtasticClient`'s own record helpers document.
+        private func record(_ fix: LocationFix, destination: UInt32) {
             lock.lock(); pushes.append((fix, destination)); lock.unlock()
+        }
+
+        func sendPosition(_ fix: LocationFix, to destination: UInt32) async throws {
+            record(fix, destination: destination)
         }
 
         func snapshot() -> [(fix: LocationFix, destination: UInt32)] {
@@ -225,6 +233,22 @@ final class LocationProviderTests: XCTestCase {
         func requestAlwaysAuthorization() async {}
         func fixes() -> AsyncStream<LocationFix?> { hub.subscribe() }
         func emit(_ fix: LocationFix?) { hub.yield(fix) }
+    }
+
+    /// Test-only, lock-protected clock override for `PhoneGPSUplink`'s
+    /// `now:` closure. `PhoneGPSUplink` is an `actor`; its own isolated
+    /// context calls this closure independently of whenever the test
+    /// method advances the clock between assertions, so a plain
+    /// captured `var Date` (what this used to be) is exactly the real
+    /// race Swift 6 is right to flag — not a false positive to silence.
+    private final class LockedTestClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Date
+        init(_ initial: Date) { value = initial }
+        func get() -> Date { lock.lock(); defer { lock.unlock() }; return value }
+        func advance(by interval: TimeInterval) {
+            lock.lock(); value = value.addingTimeInterval(interval); lock.unlock()
+        }
     }
 
     func testUplinkNeverPushesWhileSharingIsDisabled() async throws {
@@ -249,10 +273,10 @@ final class LocationProviderTests: XCTestCase {
         settings.setDouble(30, .locationSharingIntervalSeconds)
         let sink = RecordingSink()
 
-        var now = Date()
+        let now = LockedTestClock(Date())
         let uplink = PhoneGPSUplink(
             location: location, settings: settings, sink: sink,
-            destinationNodeNum: { 48629424 }, now: { now })
+            destinationNodeNum: { 48629424 }, now: { now.get() })
 
         await uplink.start()
         location.emit(fix(lat: 47.708135, lon: -122.2820993)) // first ever: always pushes
@@ -262,7 +286,7 @@ final class LocationProviderTests: XCTestCase {
 
         // A second fix moments later, no meaningful movement, before the
         // interval: must NOT push again yet.
-        now = now.addingTimeInterval(2)
+        now.advance(by: 2)
         location.emit(fix(lat: 47.708136, lon: -122.2820993))
         try await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertEqual(sink.snapshot().count, 1, "too soon and too little movement: must not push")

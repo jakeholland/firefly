@@ -12,7 +12,12 @@
 import FireflyModel
 import UIKit
 
-final class UIKitHapticSignaling: HapticSignaling, @unchecked Sendable {
+// M3 / Swift 6: `@MainActor`, matching `HapticSignaling`'s own
+// isolation — `UIImpactFeedbackGenerator`/`UINotificationFeedbackGenerator`
+// are main-actor-isolated in the SDK, so their stored-property default
+// values (below) need this type on the main actor to initialize at all.
+@MainActor
+final class UIKitHapticSignaling: HapticSignaling {
     private let warmerGenerator = UIImpactFeedbackGenerator(style: .light)
     private let colderGenerator = UIImpactFeedbackGenerator(style: .rigid)
     private let flareGenerator = UINotificationFeedbackGenerator()

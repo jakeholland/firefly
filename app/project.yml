@@ -23,12 +23,18 @@ packages:
 
 settings:
   base:
-    SWIFT_VERSION: "5.9"
+    # M3 (docs/specs/A01-companion-app.md): "the package builds clean
+    # under SWIFT_STRICT_CONCURRENCY: complete". These two are base
+    # settings, not per-target, so Firefly, FireflyHardwareTests and
+    # FireflyAppTests all build under Swift 6 / complete checking — the
+    # same language mode FireflyKit's own Package.swift now sets via
+    # `swiftLanguageModes: [.v6]`.
+    SWIFT_VERSION: "6.0"
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
-    SWIFT_STRICT_CONCURRENCY: minimal
+    SWIFT_STRICT_CONCURRENCY: complete
 
 targets:
   Firefly:
@@ -170,6 +176,31 @@ targets:
         # requirement, same reason.
         GENERATE_INFOPLIST_FILE: YES
 
+  # M3's XCUITest smoke suite (docs/specs/A01-companion-app.md, "UI").
+  # `supportedDestinations` matches the `Firefly` host so ONE target
+  # builds and runs against either platform xcodegen wires as the UI
+  # test host automatically from `dependencies: - target: Firefly`
+  # below — no TEST_HOST/BUNDLE_LOADER of its own (that is a
+  # unit-test-bundle mechanism, `FireflyHardwareTests`'/`FireflyAppTests`'
+  # own comments; a `bundle.ui-testing` target launches its host as a
+  # separate process instead). See `FireflyUITests.swift`'s own header
+  # comment for why the iOS and macOS tests differ in what they do.
+  FireflyUITests:
+    type: bundle.ui-testing
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - path: FireflyUITests
+    dependencies:
+      - target: Firefly
+    configFiles:
+      Debug: Config/Firefly.xcconfig
+      Release: Config/Firefly.xcconfig
+    settings:
+      base:
+        # Same codesign requirement as every other test bundle here —
+        # see `FireflyHardwareTests`' own comment.
+        GENERATE_INFOPLIST_FILE: YES
+
 schemes:
   Firefly:
     build:
@@ -177,6 +208,7 @@ schemes:
         Firefly: all
         FireflyHardwareTests: [test]
         FireflyAppTests: [test]
+        FireflyUITests: [test]
     run:
       config: Debug
     test:
@@ -189,6 +221,7 @@ schemes:
         - name: FireflyHardwareTests
           parallelizable: false
         - name: FireflyAppTests
+        - name: FireflyUITests
       # macOS launches an app-hosted test's host process via
       # LaunchServices, which does NOT inherit the invoking shell's
       # environment the way a plain child process would — so

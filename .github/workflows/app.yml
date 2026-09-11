@@ -164,3 +164,37 @@ jobs:
             -scheme Firefly \
             -destination 'platform=macOS' \
             -only-testing:FireflyHardwareTests
+
+      # M3's XCUITest smoke suite (docs/specs/A01-companion-app.md, "UI").
+      # `-FireflyDemo` (`AppDependencies.current()`'s own doc comment)
+      # only ever does anything in the iOS Simulator, which is exactly
+      # what this leg drives: launch, tap through Connect -> Radar ->
+      # Inbox -> Thread -> Settings, asserting each screen's own
+      # accessibility identifier. `name=iPhone 17 Pro` matches the
+      # device this repo's own verification runs against — GitHub's
+      # macos-26 runner image ships it as of this workflow's own
+      # "Versions" pin above (Xcode 26.x).
+      - name: FireflyUITests (iOS Simulator)
+        working-directory: app
+        run: |
+          xcodebuild test \
+            -project Firefly.xcodeproj \
+            -scheme Firefly \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+            -only-testing:FireflyUITests
+
+      # The same suite's macOS leg — see `FireflyUITests.swift`'s own
+      # header comment for why this one is launch-only (no
+      # `-FireflyDemo`, no navigation walk): `targetEnvironment
+      # (simulator)` is false for a native macOS build, so demo mode
+      # never activates here regardless of the flag, and the real
+      # `.live()` composition never touches CoreBluetooth merely by
+      # launching (`BLETransport.connect()`'s own doc comment).
+      - name: FireflyUITests (macOS launch smoke)
+        working-directory: app
+        run: |
+          xcodebuild test \
+            -project Firefly.xcodeproj \
+            -scheme Firefly \
+            -destination 'platform=macOS' \
+            -only-testing:FireflyUITests

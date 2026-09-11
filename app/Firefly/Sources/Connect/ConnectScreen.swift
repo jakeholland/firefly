@@ -94,6 +94,11 @@ struct ConnectScreen: View {
                 channelImportSection
             }
             .padding(20)
+            // M3: one identifying accessibility identifier per screen —
+            // `FireflyUITests`' smoke test asserts each destination it
+            // navigates to actually rendered, rather than merely not
+            // crashing.
+            .accessibilityIdentifier("Screen.Connect")
         }
         .background(Color.ffBackground)
         .onAppear {

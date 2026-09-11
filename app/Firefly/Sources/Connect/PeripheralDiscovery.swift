@@ -30,6 +30,17 @@ struct DiscoveredPeripheral: Identifiable, Equatable {
     let rssiDbm: Int
 }
 
+// M3 / Swift 6: `@MainActor` — `ConnectScreen` (the only caller) holds
+// this as `@State`, and `MeshPeripheralDiscovery` (the real
+// conformance) is itself `@MainActor` already. Isolating the protocol
+// lets the compiler prove the confinement instead of leaving
+// `MeshPeripheralDiscovery`'s conformance to cross an (unmarked)
+// isolation boundary. `StubPeripheralDiscovery`'s plain, unsynchronized
+// methods are `nonisolated` and satisfy the isolated requirement
+// unchanged (a `nonisolated` witness is always safely callable) —
+// consistent with it never having been thread-safe in the first place,
+// since it only ever ran on the main actor via this same call site.
+@MainActor
 protocol PeripheralDiscovering: AnyObject {
     func startScanning()
     func stopScanning()
