@@ -116,10 +116,21 @@ typedef struct {
                              common case; ff_sched.c derives an effective end
                              from the next set on the stage), else 0..1439,
                              or >= 1440 when the set's end falls after that
-                             night's midnight (the pack marks this with
-                             `end_day`, or with an `end` numerically below its
-                             own `start` — see ff_sched.c's
-                             sched_effective_end). */
+                             night's midnight. fp_parse_set_daytime() folds
+                             this at parse time whenever the pack marks the
+                             rollover with `end_day` OR the published `end`
+                             is numerically <= its own `start` with no
+                             `end_day` at all (a pack that wraps past
+                             midnight without saying so — 2026-09-11 fix,
+                             was previously only folded via `end_day`, see
+                             fp_pack.c's fp_parse_set_daytime doc comment).
+                             So a value read straight from fp_parse() never
+                             has end_min < start_min when both are known.
+                             ff_sched.c's sched_effective_end still applies
+                             the same end_min < start_min fold defensively,
+                             for an fp_set_t assembled some way other than
+                             fp_parse() (tests build these directly) — see
+                             ff_sched.h. */
     char note[24];
     bool starred;
 } fp_set_t;
