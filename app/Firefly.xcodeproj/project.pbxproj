@@ -21,9 +21,7 @@
 		6174B5CF13B05DAAAB1058D0 /* FieldMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1F42EB3578D2B85C360FF91 /* FieldMapView.swift */; };
 		63F4CB9CD8015973BF2A6A87 /* NearbyNodesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */; };
 		6640FC7A5590E35700C97181 /* DiagnosticsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */; };
-		68B68590D3E784FCD38A672E /* lost-lands-2026.festpack.json in Resources */ = {isa = PBXBuildFile; fileRef = 806AFF48511F3264ACEA5341 /* lost-lands-2026.festpack.json */; };
 		6A9AD720CC190DB306F0F9DA /* BLEReconnectHardwareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05F189342B5B984F2BBDAB8A /* BLEReconnectHardwareTests.swift */; };
-		6E9BA5B504B5887DFF42A09F /* firefly-fields.festpack.json in Resources */ = {isa = PBXBuildFile; fileRef = FC36CEB46CA1E8155351D06F /* firefly-fields.festpack.json */; };
 		6EED1D607A836BC23FCF5D43 /* SettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45BBB6E81333013CC2CE55F2 /* SettingsScreen.swift */; };
 		6F6C3DEEBFEC351E8F1EA93B /* CrewSettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E1D66A6EFF83C09A11DB7FB /* CrewSettingsViewModel.swift */; };
 		71D8EF04CB8A979CD7738201 /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 4982066A256926406E7325EB /* FireflyModel */; };
@@ -52,11 +50,13 @@
 		D7A2904C961D1D75584D0142 /* AdminWriteConfirmationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */; };
 		D7A6BDAFEAE4556C2D49508D /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 52CE41AF9EE8F2A1C1595D75 /* FireflyCore */; };
 		D9AB8B9B25F71BA5B021287C /* MapColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01DE6F44AFB83D4A5399385A /* MapColors.swift */; };
+		DA080D82BF09C603E6CCA622 /* lost-lands-2026.festpack.json in Resources */ = {isa = PBXBuildFile; fileRef = A2B2A769F6FE59B2041F556B /* lost-lands-2026.festpack.json */; };
 		E3CC4E9340C161539EDE9E85 /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1798EBF71029584D9BCBDE5F /* FireflyCore */; };
 		E44CA6E04D280A087AAB74CB /* GPSMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08332227D4D2BE1B28323FD5 /* GPSMapView.swift */; };
 		E466917345D124C8F9F6B557 /* FireflyAutoConnectLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */; };
 		E6551196CD37E34092E3B5D8 /* DemoBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657F1057B225B7D58F60D158 /* DemoBadge.swift */; };
 		EBE7033561E014B40A656D0B /* InboxListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 918AE027165FB4634094A385 /* InboxListView.swift */; };
+		EE39AFFD0C1416E122228CFC /* firefly-fields.festpack.json in Resources */ = {isa = PBXBuildFile; fileRef = D8D4FFA7D320185B90470459 /* firefly-fields.festpack.json */; };
 		EE89762FDADFB461B43E4537 /* LineupGridView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D245C926F1665311864D01C0 /* LineupGridView.swift */; };
 		F06690C87C2BC2F7A3802A3C /* InboxAvatarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E76A5B24A4204914C9C30817 /* InboxAvatarTests.swift */; };
 		F6C0D0DF3F349E930AD52E4C /* ChannelImportViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36054428E7138397E791F1DD /* ChannelImportViewModel.swift */; };
@@ -112,12 +112,12 @@
 		6B88FE658484B40308B28D13 /* LineupGridDemoFestpackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineupGridDemoFestpackTests.swift; sourceTree = "<group>"; };
 		762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
 		7C40E6DFE5C85637929993F5 /* FireflyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyApp.swift; sourceTree = "<group>"; };
-		806AFF48511F3264ACEA5341 /* lost-lands-2026.festpack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "lost-lands-2026.festpack.json"; sourceTree = "<group>"; };
 		829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyAutoConnectLaunch.swift; sourceTree = "<group>"; };
 		899B46141ED5400385D53007 /* PeripheralDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeripheralDiscovery.swift; sourceTree = "<group>"; };
 		918AE027165FB4634094A385 /* InboxListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxListView.swift; sourceTree = "<group>"; };
 		9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEHardwareTests.swift; sourceTree = "<group>"; };
 		A1E30FCFD8A9260E48E8617D /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		A2B2A769F6FE59B2041F556B /* lost-lands-2026.festpack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = "lost-lands-2026.festpack.json"; path = "../../../firmware/assets/field/lost-lands-2026.festpack.json"; sourceTree = "<group>"; };
 		AF57DA895520BCFCFEAE8099 /* MoreScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreScreen.swift; sourceTree = "<group>"; };
 		AF78D752270B8DEF9E445B92 /* FireflyUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FireflyUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B41C74CB306C16EC81337A30 /* ThreadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadView.swift; sourceTree = "<group>"; };
@@ -127,11 +127,11 @@
 		C1B310432CF46CE542A152E9 /* FlareTakeoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlareTakeoverView.swift; sourceTree = "<group>"; };
 		CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsViewModel.swift; sourceTree = "<group>"; };
 		D245C926F1665311864D01C0 /* LineupGridView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineupGridView.swift; sourceTree = "<group>"; };
+		D8D4FFA7D320185B90470459 /* firefly-fields.festpack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = "firefly-fields.festpack.json"; path = "../../../firmware/assets/demo/firefly-fields.festpack.json"; sourceTree = "<group>"; };
 		E56FC0B8574441CB2FD171FD /* FireflyHardwareTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FireflyHardwareTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E76A5B24A4204914C9C30817 /* InboxAvatarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxAvatarTests.swift; sourceTree = "<group>"; };
 		EDC28160EF0A8DD53FB3FFEB /* HapticSignaling+UIKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HapticSignaling+UIKit.swift"; sourceTree = "<group>"; };
 		F1F42EB3578D2B85C360FF91 /* FieldMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FieldMapView.swift; sourceTree = "<group>"; };
-		FC36CEB46CA1E8155351D06F /* firefly-fields.festpack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "firefly-fields.festpack.json"; sourceTree = "<group>"; };
 		FEAE3E2DCB691E1E510ACF57 /* FindPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindPanel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -174,18 +174,9 @@
 			path = Radar;
 			sourceTree = "<group>";
 		};
-		09BEC12D673E3964132F69D1 /* firmware */ = {
-			isa = PBXGroup;
-			children = (
-				176D1F33C233DBD9954F5FD4 /* assets */,
-			);
-			path = firmware;
-			sourceTree = "<group>";
-		};
 		09E7A41B35847DF880B89F6C = {
 			isa = PBXGroup;
 			children = (
-				476C61EDA0FF3EBA4DA60C8F /* app-lineup-grid */,
 				16B4A8ECBDE17B9CEFEFB25B /* Config */,
 				95A1A3DC3288FC10DBD418FD /* Firefly */,
 				C4AE56DE0E12B77768ED63B4 /* FireflyHardwareTests */,
@@ -225,15 +216,6 @@
 			path = Config;
 			sourceTree = "<group>";
 		};
-		176D1F33C233DBD9954F5FD4 /* assets */ = {
-			isa = PBXGroup;
-			children = (
-				6E8F37399111D4F0EC0D22B2 /* demo */,
-				A2CDABA2D13EAD801F567C3E /* field */,
-			);
-			path = assets;
-			sourceTree = "<group>";
-		};
 		1B43B2AE74C8064189181E87 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -265,29 +247,13 @@
 			path = Settings;
 			sourceTree = "<group>";
 		};
-		476C61EDA0FF3EBA4DA60C8F /* app-lineup-grid */ = {
-			isa = PBXGroup;
-			children = (
-				09BEC12D673E3964132F69D1 /* firmware */,
-			);
-			name = "app-lineup-grid";
-			path = ..;
-			sourceTree = "<group>";
-		};
 		5BBE56D5FAE4762AD36380E3 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
 				688226395F6C22BD0D86BEB5 /* Assets.xcassets */,
+				9574E2BC49B8298D4A1C3EF1 /* Festpacks */,
 			);
 			path = Resources;
-			sourceTree = "<group>";
-		};
-		6E8F37399111D4F0EC0D22B2 /* demo */ = {
-			isa = PBXGroup;
-			children = (
-				FC36CEB46CA1E8155351D06F /* firefly-fields.festpack.json */,
-			);
-			path = demo;
 			sourceTree = "<group>";
 		};
 		70564F5A3BB71C0F2C5E508E /* Map */ = {
@@ -320,6 +286,15 @@
 			path = Inbox;
 			sourceTree = "<group>";
 		};
+		9574E2BC49B8298D4A1C3EF1 /* Festpacks */ = {
+			isa = PBXGroup;
+			children = (
+				D8D4FFA7D320185B90470459 /* firefly-fields.festpack.json */,
+				A2B2A769F6FE59B2041F556B /* lost-lands-2026.festpack.json */,
+			);
+			name = Festpacks;
+			sourceTree = "<group>";
+		};
 		95A1A3DC3288FC10DBD418FD /* Firefly */ = {
 			isa = PBXGroup;
 			children = (
@@ -328,14 +303,6 @@
 				7D968AF42091B0CBB04FBE40 /* Tests */,
 			);
 			path = Firefly;
-			sourceTree = "<group>";
-		};
-		A2CDABA2D13EAD801F567C3E /* field */ = {
-			isa = PBXGroup;
-			children = (
-				806AFF48511F3264ACEA5341 /* lost-lands-2026.festpack.json */,
-			);
-			path = field;
 			sourceTree = "<group>";
 		};
 		C4AE56DE0E12B77768ED63B4 /* FireflyHardwareTests */ = {
@@ -516,8 +483,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A799FEADA8E9F7CFA215EDEF /* Assets.xcassets in Resources */,
-				6E9BA5B504B5887DFF42A09F /* firefly-fields.festpack.json in Resources */,
-				68B68590D3E784FCD38A672E /* lost-lands-2026.festpack.json in Resources */,
+				EE39AFFD0C1416E122228CFC /* firefly-fields.festpack.json in Resources */,
+				DA080D82BF09C603E6CCA622 /* lost-lands-2026.festpack.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -649,7 +616,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 302;
+				CURRENT_PROJECT_VERSION = 309;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -839,7 +806,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 302;
+				CURRENT_PROJECT_VERSION = 309;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
