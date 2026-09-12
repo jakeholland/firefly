@@ -17,6 +17,21 @@
 //  it is a value derived from the set's own content, so it survives a
 //  festpack re-fetch that reorders or reformats the same schedule.
 //
+//  MIGRATION: an existing `starredFestivalArtists` value is DELIBERATELY
+//  NOT migrated into `pickedFestivalSetIDs`. The two key spaces answer
+//  different questions — "I want to catch this artist (whenever they
+//  play)" vs "I am going to THIS set" — so an automatic conversion
+//  would have to invent the missing half: starring "Excision" says
+//  nothing about which of his two Lost Lands sets a user meant, and
+//  picking both on their behalf would manufacture a plan they never
+//  made (and, with the conflict banner, a clash they never chose).
+//  Silently dropping stale stars therefore loses strictly less than
+//  silently inventing picks. The old key is left in `SettingsKey`
+//  (never repurposed), so nothing reinterprets an old value under a new
+//  meaning; a user who had stars simply starts with no picks and re-taps
+//  the sets they want. This is a decision, not an oversight — stated
+//  here and in the PR body.
+//
 import Foundation
 
 public protocol PicksStoring: AnyObject, Sendable {
