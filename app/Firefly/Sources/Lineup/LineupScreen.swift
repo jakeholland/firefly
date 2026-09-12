@@ -14,7 +14,7 @@ import SwiftUI
 struct LineupScreen: View {
     @Bindable var model: LineupViewModel
     @State private var isShowingImportSheet = false
-    @State private var importFeedback: String?
+    @State private var importFeedback: ImportPicksFeedback?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -55,10 +55,11 @@ struct LineupScreen: View {
         .sheet(isPresented: $isShowingImportSheet) {
             ImportPicksSheet(model: model, isPresented: $isShowingImportSheet, feedback: $importFeedback)
         }
-        .alert("Picks imported", isPresented: Binding(get: { importFeedback != nil }, set: { if !$0 { importFeedback = nil } })) {
+        .alert(importFeedback?.title ?? "",
+               isPresented: Binding(get: { importFeedback != nil }, set: { if !$0 { importFeedback = nil } })) {
             Button("OK") { importFeedback = nil }
         } message: {
-            Text(importFeedback ?? "")
+            Text(importFeedback?.message ?? "")
         }
     }
 
