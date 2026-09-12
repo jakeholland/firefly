@@ -25,7 +25,21 @@ public final class HistoryStore {
 
     private let context: ModelContext
 
-    public init(container: ModelContainer) {
+    /// `false` when this store's rows will NOT survive a relaunch —
+    /// i.e. `live()` could not open (or recreate) its on-disk store and
+    /// fell back to an in-memory container so the app could still
+    /// launch. Honest data rule: the app must not imply a durable
+    /// history it does not actually have. Always `false` for
+    /// `inMemory()` too, which is in-memory on purpose.
+    ///
+    /// Nothing in the app FAILS on this — history simply does not
+    /// persist for that session — but it is surfaced rather than
+    /// swallowed, and `live()` logs the reason to stderr when it
+    /// happens.
+    public let isPersistent: Bool
+
+    public init(container: ModelContainer, isPersistent: Bool = false) {
+        self.isPersistent = isPersistent
         context = ModelContext(container)
         // Autosave off: every write method below calls `save()` itself,
         // exactly once, at the point its own mutation is actually
@@ -185,14 +199,25 @@ public final class HistoryStore {
     /// dependency stack (never for `.stub()`/`.demo()`, which get
     /// `.inMemory()` instead — M3's demo-isolation rule).
     public static func live() -> HistoryStore {
-        HistoryStore(container: makeContainer(inMemory: false))
+        store(at: storeURL)
+    }
+
+    /// `live()`, with the on-disk location named explicitly. Public for
+    /// one reason, stated so it is not mistaken for a general-purpose
+    /// multi-store API: it is the only seam a test can use to prove the
+    /// launch-path fallback below actually works, by pointing it at a
+    /// path that genuinely cannot be opened. Production has exactly one
+    /// history store and calls `live()`.
+    public static func store(at url: URL) -> HistoryStore {
+        let opened = makeContainer(onDiskAt: url)
+        return HistoryStore(container: opened.container, isPersistent: opened.isPersistent)
     }
 
     /// Never touches disk. `.stub()`/`.demo()`/every unit test get this
     /// — "Demo doesn't persist across launches: in-memory store only"
     /// (docs/specs/A01-companion-app.md M3).
     public static func inMemory() -> HistoryStore {
-        HistoryStore(container: makeContainer(inMemory: true))
+        HistoryStore(container: makeContainer(onDiskAt: nil).container, isPersistent: false)
     }
 
     /// Migration policy (documented, per the M3 task): `HistorySchemaV1`
@@ -200,33 +225,79 @@ public final class HistoryStore {
     /// does not cover — see that type's own doc comment for the full
     /// justification. This is the one place in this app that silently
     /// discards user data on purpose.
-    private static func makeContainer(inMemory: Bool) -> ModelContainer {
+    /// Hardening QA pass — THIS FUNCTION MUST NOT TRAP. It runs inside
+    /// `AppGraph.init`, i.e. on the launch path, so anything it throws
+    /// is a crash on every single launch until the user deletes the app
+    /// — the worst possible failure mode for a phone at a festival with
+    /// no cell service, where reinstalling is not an option.
+    ///
+    /// It used to end in `try!` twice. `HistorySchema.swift`'s own
+    /// header already promised this path fails soft ("never a crash"),
+    /// and for the FIRST failure it did — the drop-and-recreate below.
+    /// But the retry after that deletion was itself `try!`, so any
+    /// reason the store could not be opened that deleting the old files
+    /// does not fix — a full disk (three days of festival video), an
+    /// unwritable/absent Application Support directory, a data-
+    /// protection-locked container — turned into an unrecoverable
+    /// launch crash rather than the disclosed "history was cleared".
+    ///
+    /// Four steps, each one strictly more conservative than the last:
+    /// open on disk; drop the files and reopen; fall back to in-memory
+    /// (the app launches, history simply does not persist this session
+    /// — reported through `isPersistent`, never implied to be durable);
+    /// and, if even THAT fails, an unconfigured in-memory container as
+    /// the last resort. The final `try` is still a `try!` in shape but
+    /// cannot be reached by any on-disk condition, only by a genuine
+    /// schema bug — which `HistoryStoreTests` would fail on long before
+    /// a build ships.
+    private static func makeContainer(onDiskAt url: URL?) -> (container: ModelContainer, isPersistent: Bool) {
         let schema = Schema(versionedSchema: HistorySchemaV1.self)
-        if inMemory {
-            let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-            // No stale file can exist for an in-memory store — a
-            // migration-plan failure here would be a genuine schema bug,
-            // not stale data, so it is allowed to fail loudly rather
-            // than loop into a second attempt that could never help.
-            return try! ModelContainer(for: schema, migrationPlan: HistoryMigrationPlan.self,
-                                        configurations: [configuration])
+
+        if let url {
+            let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
+            if let container = try? ModelContainer(for: schema, migrationPlan: HistoryMigrationPlan.self,
+                                                     configurations: [configuration]) {
+                return (container, true)
+            }
+            // Drop and recreate: delete whatever is on disk at `url`
+            // (and its WAL/SHM siblings) and try exactly once more
+            // against a clean slate. A DIFFERENT mechanism from
+            // `clearAll()` above, not a call to it — this runs before
+            // any `ModelContainer` (and therefore any `ModelContext`/
+            // `HistoryStore` instance) exists at all, so there is no
+            // live context's rows to delete through; this deletes the
+            // files behind a store that failed to open instead (PR #281
+            // review, SHOULD-FIX 3).
+            log("on-disk history store failed to open — dropping it and retrying once")
+            deleteStoreFiles(at: url)
+            if let container = try? ModelContainer(for: schema, migrationPlan: HistoryMigrationPlan.self,
+                                                     configurations: [configuration]) {
+                return (container, true)
+            }
+            log("on-disk history store still would not open after drop-and-recreate — "
+                + "falling back to an in-memory store; message history will NOT survive this launch")
         }
-        let url = storeURL
-        let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
+
+        let memoryConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         if let container = try? ModelContainer(for: schema, migrationPlan: HistoryMigrationPlan.self,
-                                                 configurations: [configuration]) {
-            return container
+                                                 configurations: [memoryConfiguration]) {
+            return (container, false)
         }
-        // Drop and recreate: delete whatever is on disk at `url` (and
-        // its WAL/SHM siblings) and try exactly once more against a
-        // clean slate. A DIFFERENT mechanism from `clearAll()` above,
-        // not a call to it — this runs before any `ModelContainer`
-        // (and therefore any `ModelContext`/`HistoryStore` instance)
-        // exists at all, so there is no live context's rows to delete
-        // through; this deletes the files behind a store that failed to
-        // open instead (PR #281 review, SHOULD-FIX 3).
-        deleteStoreFiles(at: url)
-        return try! ModelContainer(for: schema, migrationPlan: HistoryMigrationPlan.self, configurations: [configuration])
+        // Unreachable except for a genuine schema/migration-plan bug —
+        // no file, no disk and no permission is involved any more. Kept
+        // as a hard failure rather than papered over: a schema that
+        // cannot even be instantiated in memory is a build-time defect
+        // every `HistoryStoreTests` run would catch, not a field
+        // condition to degrade around.
+        log("in-memory history store failed to open — this is a schema bug, not a disk condition")
+        return (try! ModelContainer(for: schema, configurations: [memoryConfiguration]), false)
+    }
+
+    /// Same discipline as `MeshtasticClient.log(_:)` — a raw stderr
+    /// write, not `print()`, so a line is never lost to stdout's block
+    /// buffering under `xcodebuild test` or `open --stderr`.
+    private static func log(_ message: String) {
+        FileHandle.standardError.write(Data("[HistoryStore] \(message)\n".utf8))
     }
 
     private static var storeURL: URL {

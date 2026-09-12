@@ -195,3 +195,68 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertTrue(b.loadAllForRestore().isEmpty, "each in-memory store is its own container")
     }
 }
+
+// MARK: - Launch-path container construction (hardening QA pass)
+
+/// `HistoryStore.live()` runs inside `AppGraph.init`, on the launch
+/// path. Before this suite, `makeContainer` ended in `try!` even AFTER
+/// its drop-and-recreate retry, so any reason the store could not be
+/// opened that deleting the old files does not fix — a full disk, an
+/// unwritable Application Support directory — crashed the app on every
+/// launch, permanently. `HistorySchema.swift`'s own header already
+/// promised this path "never a crash"; this is what makes that true.
+@MainActor
+final class HistoryStoreContainerFallbackTests: XCTestCase {
+
+    /// A path no store can ever be created at: a regular FILE is used as
+    /// a directory component, so every open AND every retry after
+    /// `deleteStoreFiles` fails for a reason deletion cannot fix —
+    /// exactly the shape of the real conditions (full disk, unwritable
+    /// container) this fallback exists for.
+    private func unopenableStoreURL() throws -> URL {
+        let blocker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("firefly-history-blocker-\(UUID().uuidString)")
+        try Data("not a directory".utf8).write(to: blocker)
+        addTeardownBlock { try? FileManager.default.removeItem(at: blocker) }
+        return blocker.appendingPathComponent("History.sqlite")
+    }
+
+    func testAStoreThatCannotBeOpenedFallsBackInsteadOfTrapping() throws {
+        let store = HistoryStore.store(at: try unopenableStoreURL())
+        XCTAssertFalse(store.isPersistent,
+                       "a store that fell back to memory must never claim to be durable")
+    }
+
+    /// The fallback store has to be a WORKING store, not a husk: the
+    /// app's whole inbox write-through path (`PersistingInboxProvider`)
+    /// calls straight into it on every message.
+    func testTheFallbackStoreStillRecordsAndReadsBackWithinTheSession() throws {
+        let store = HistoryStore.store(at: try unopenableStoreURL())
+        let message = FeedMessage(id: 7, kind: .text, direction: .out, text: "still works",
+                                  timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+                                  destination: 42, deliveryState: .waiting)
+        store.record(message, in: .member(42))
+        XCTAssertEqual(store.loadAllForRestore().count, 1)
+        store.raiseWatermark(for: HistoryStore.outboxWatermarkKey, to: 9)
+        XCTAssertEqual(store.watermark(for: HistoryStore.outboxWatermarkKey), 9)
+    }
+
+    /// A real on-disk store, at a path that CAN be opened, must still
+    /// report itself persistent — otherwise the flag above would be
+    /// trivially satisfiable by always answering `false`.
+    func testAStoreThatOpensOnDiskReportsItselfPersistent() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("firefly-history-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+
+        let store = HistoryStore.store(at: dir.appendingPathComponent("History.sqlite"))
+        XCTAssertTrue(store.isPersistent)
+    }
+
+    /// `inMemory()` is in-memory on purpose, and must say so — nothing
+    /// in the app may read it as a durable history.
+    func testInMemoryStoreNeverClaimsToBePersistent() {
+        XCTAssertFalse(HistoryStore.inMemory().isPersistent)
+    }
+}
