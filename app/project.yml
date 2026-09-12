@@ -97,6 +97,7 @@ targets:
       base:
         PRODUCT_NAME: Firefly
         PRODUCT_BUNDLE_IDENTIFIER: com.jakeholland.Firefly
+        TARGETED_DEVICE_FAMILY: "1"   # iPhone-only: the app is a pocket compass; iPad runs it in compatibility mode
         INFOPLIST_FILE: Firefly/Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Firefly/Resources/Firefly.entitlements
         GENERATE_INFOPLIST_FILE: NO
