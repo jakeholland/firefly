@@ -43,6 +43,12 @@ struct SetDetailSheet: View {
                 Text(timeRangeText)
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(Color.ffMuted)
+                if let caveat = endCaveatText {
+                    Text(caveat)
+                        .font(.caption2)
+                        .foregroundStyle(Color.ffStaleAmber)
+                        .multilineTextAlignment(.center)
+                }
                 if !set.note.isEmpty {
                     Text(set.note)
                         .font(.footnote)
@@ -89,11 +95,29 @@ struct SetDetailSheet: View {
         .presentationDetents([.medium])
     }
 
+    /// Only a PUBLISHED end is shown as part of the time range. An
+    /// inferred one (the grid still sizes the block from it) is shown
+    /// separately, labelled — see `endCaveatText` — because "21:00 –
+    /// 22:00" reads as a fact the festpack never stated.
     private var timeRangeText: String {
         let start = LineupViewModel.timeText(set.startMinute) ?? "TBD"
-        guard let end = model.effectiveEndMinute(for: set), let endText = LineupViewModel.timeText(end) else {
+        guard let end = model.effectiveEnd(for: set), let endText = LineupViewModel.timeText(end.minute) else {
             return start
         }
-        return "\(start) – \(endText)"
+        return end.isPublished ? "\(start) – \(endText)" : "\(start) – \(endText)?"
+    }
+
+    /// `nil` when the end time is published (nothing to caveat) or when
+    /// there is no end at all to show.
+    private var endCaveatText: String? {
+        guard let end = model.effectiveEnd(for: set) else { return nil }
+        switch end.source {
+        case .published:
+            return nil
+        case .nextSetOnStage:
+            return "End time not published — assumed to run until the next set on this stage."
+        case .defaultLength:
+            return "End time not published — shown as a \(LineupTimeInference.defaultSetMinutes)-minute block."
+        }
     }
 }

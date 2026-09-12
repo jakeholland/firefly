@@ -145,7 +145,16 @@ struct LineupGridView: View {
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(Color.ffMuted)
                     .padding(.trailing, 4)
-                    .offset(y: CGFloat(line.offsetMinutes) * pointsPerMinute - 6)
+                    // The -6 nudge centres a label on its own gridline,
+                    // but this gutter is `.clipped()` to the axis
+                    // rectangle, so a label at offset 0 (the axis
+                    // starting exactly ON a whole hour — every night in
+                    // the real Lost Lands pack does) was drawn at y=-6
+                    // and clipped to a half-height sliver. Clamping at
+                    // 0 costs the first label 6pt of centring and is
+                    // the only label affected; every other line keeps
+                    // the nudge.
+                    .offset(y: max(0, CGFloat(line.offsetMinutes) * pointsPerMinute - 6))
             }
         }
         .frame(height: CGFloat(layout.axisLengthMinutes) * pointsPerMinute, alignment: .top)
@@ -270,13 +279,16 @@ private struct SetBlockView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
+    /// A duration is printed ONLY when the pack published this set's
+    /// end time. The block's HEIGHT still comes from the inferred end
+    /// (an axis has to place a rectangle somewhere), but a number on
+    /// screen reads as a fact, and "runs until whatever is on next"
+    /// is not one — see `LineupTimeInference.EndSource`.
     private var timeLabel: String {
         guard let time = LineupViewModel.timeText(block.set.startMinute) else { return "" }
-        if block.durationMinutes >= 90 {
-            let hours = block.durationMinutes / 60
-            let minutes = block.durationMinutes % 60
-            return minutes == 0 ? "\(time) · \(hours) hr" : "\(time) · \(hours)h\(minutes)m"
-        }
-        return time
+        guard block.endSource == .published, block.durationMinutes >= 90 else { return time }
+        let hours = block.durationMinutes / 60
+        let minutes = block.durationMinutes % 60
+        return minutes == 0 ? "\(time) · \(hours) hr" : "\(time) · \(hours)h\(minutes)m"
     }
 }

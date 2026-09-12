@@ -37,9 +37,15 @@ public final class LineupViewModel {
         /// Artist names of other CURRENTLY PICKED sets whose time
         /// overlaps this one (same night; both this set and the other
         /// need a known start AND effective end — `LineupTimeInference
-        /// .effectiveEndMinutes`'s own doc comment) — empty when this
-        /// pick conflicts with nothing.
+        /// .effectiveEnds`'s own doc comment) — empty when this pick
+        /// conflicts with nothing.
         public var conflictsWithArtists: [String]
+        /// True when at least one overlap above was decided using an
+        /// INFERRED end time (this set's or the other's). The clash is
+        /// then this app's inference, not something the festpack
+        /// states, and the screen says so rather than asserting a
+        /// collision the pack never published.
+        public var conflictsAreInferred: Bool
     }
 
     /// The "up next for me" footer strip both the Grid and Picks
@@ -170,14 +176,18 @@ public final class LineupViewModel {
     public func selectSet(_ set: FestpackScheduleSet) { selectedSet = set }
     public func dismissSetDetail() { selectedSet = nil }
 
-    /// `set`'s effective end (published, else inferred — `LineupTimeInference
-    /// .effectiveEndMinutes`'s own doc comment) for the detail sheet's
-    /// time range. `nil` for an unknown-start set (nothing to infer an
-    /// end FROM), never a guess.
-    public func effectiveEndMinute(for set: FestpackScheduleSet) -> Int? {
-        guard let festpack else { return set.endMinute }
+    /// `set`'s effective end for the detail sheet's time range, WITH
+    /// its provenance (`LineupTimeInference.EndSource`) — a screen
+    /// showing this must say whether the end was published or inferred,
+    /// which is why this returns the source rather than a bare minute.
+    /// `nil` for an unknown-start set (nothing to infer an end FROM),
+    /// never a guess.
+    public func effectiveEnd(for set: FestpackScheduleSet) -> LineupTimeInference.EffectiveEnd? {
+        guard let festpack else {
+            return set.endMinute.map { .init(minute: $0, source: .published) }
+        }
         let daySets = FestpackSchedule.daySets(in: festpack, night: set.nightDayOfYear)
-        return LineupTimeInference.effectiveEndMinutes(for: daySets)[set.id]
+        return LineupTimeInference.effectiveEnds(for: daySets)[set.id]
     }
 
     /// The "Share picks" URL for the currently selected day — `nil`
@@ -215,18 +225,27 @@ public final class LineupViewModel {
 
         return pickedNights.map { night in
             let daySets = FestpackSchedule.daySets(in: festpack, night: night)
-            let effectiveEnds = LineupTimeInference.effectiveEndMinutes(for: daySets)
+            let effectiveEnds = LineupTimeInference.effectiveEnds(for: daySets)
             let picked = daySets.filter { pickedSetIDs.contains(PicksCodec.setID(for: $0, in: festpack)) }
             let rows = picked
                 .map { set -> PickedRow in
-                    let conflicts = picked.filter { other in
+                    // Half-open `[start, end)` on both sides, so two
+                    // ABUTTING sets (one ends exactly when the next
+                    // begins) do NOT count as a clash — same rule as
+                    // settimes' `overlapsOf`.
+                    let clashes = picked.filter { other in
                         guard other.id != set.id,
                               let otherStart = other.startMinute, let otherEnd = effectiveEnds[other.id],
                               let setStart = set.startMinute, let setEnd = effectiveEnds[set.id] else { return false }
-                        return otherStart < setEnd && setStart < otherEnd
-                    }.map(\.artist)
+                        return otherStart < setEnd.minute && setStart < otherEnd.minute
+                    }
+                    let inferred = clashes.contains { other in
+                        effectiveEnds[other.id]?.isPublished == false
+                    } || effectiveEnds[set.id]?.isPublished == false
                     return PickedRow(set: set, stage: festpack.stage(withID: set.stageID),
-                                      pickID: PicksCodec.setID(for: set, in: festpack), conflictsWithArtists: conflicts)
+                                      pickID: PicksCodec.setID(for: set, in: festpack),
+                                      conflictsWithArtists: clashes.map(\.artist),
+                                      conflictsAreInferred: !clashes.isEmpty && inferred)
                 }
                 .sorted { lhs, rhs in
                     if lhs.set.startMinute == nil { return false }

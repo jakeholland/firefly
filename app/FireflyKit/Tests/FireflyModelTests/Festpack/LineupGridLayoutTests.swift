@@ -85,4 +85,77 @@ final class LineupGridLayoutTests: XCTestCase {
         XCTAssertNil(layout.nowOffsetMinutes(nowMinute: 22 * 60)) // after the axis
         XCTAssertEqual(layout.nowOffsetMinutes(nowMinute: 19 * 60 + 30), 30)
     }
+
+    // MARK: - End-time provenance (honest data)
+
+    func testEveryBlockCarriesWhereItsEndActuallyCameFrom() {
+        let daySets = [
+            set(0, "Published", "a", start: 19 * 60, end: 20 * 60),
+            set(1, "RunsIntoNext", "a", start: 20 * 60, end: nil), // -> 21:00, the next set on A
+            set(2, "LastOnStage", "a", start: 21 * 60, end: nil),  // -> +60 default
+        ]
+        let layout = LineupGridLayout.build(daySets: daySets, stages: [stageA])
+        XCTAssertEqual(layout.columns[0].blocks.map(\.endSource),
+                       [.published, .nextSetOnStage, .defaultLength])
+        // The geometry is unchanged by carrying the provenance.
+        XCTAssertEqual(layout.columns[0].blocks.map(\.durationMinutes), [60, 60, 60])
+    }
+
+    func testEffectiveEndsTagPublishedEndsSeparatelyFromInferredOnes() {
+        let published = set(0, "Published", "a", start: 22 * 60 + 10, end: 24 * 60 + 10)
+        let inferred = set(1, "Inferred", "b", start: 19 * 60, end: nil)
+        let ends = LineupTimeInference.effectiveEnds(for: [published, inferred])
+        XCTAssertEqual(ends[0], .init(minute: 24 * 60 + 10, source: .published))
+        XCTAssertTrue(ends[0]!.isPublished)
+        XCTAssertEqual(ends[1], .init(minute: 20 * 60, source: .defaultLength))
+        XCTAssertFalse(ends[1]!.isPublished)
+        // The minute-only convenience view stays in agreement with it.
+        XCTAssertEqual(LineupTimeInference.effectiveEndMinutes(for: [published, inferred]),
+                       [0: 24 * 60 + 10, 1: 20 * 60])
+    }
+
+    /// A pack that omits `end_day` on a set running past midnight
+    /// reaches Swift with `endMinute < startMinute` (the C parser only
+    /// folds an end forward when `end_day` says to) — the same repair
+    /// settimes' `buildFestival` applies. Real data: the bundled demo
+    /// pack's "LOST + FOUND" runs 23:30 -> 01:00 with no `end_day`.
+    func testAPublishedEndThatWrapsPastMidnightWithoutEndDayIsFoldedForward() {
+        let daySets = [
+            set(0, "Headliner", "a", start: 22 * 60, end: 23 * 60 + 30),
+            set(1, "Closer", "a", start: 23 * 60 + 30, end: 60), // 23:30 -> 01:00, unfolded
+        ]
+        let ends = LineupTimeInference.effectiveEnds(for: daySets)
+        XCTAssertEqual(ends[1], .init(minute: 1440 + 60, source: .published))
+
+        let layout = LineupGridLayout.build(daySets: daySets, stages: [stageA])
+        XCTAssertEqual(layout.columns[0].blocks[1].durationMinutes, 90) // not a 1-minute sliver
+        XCTAssertEqual(layout.axisEndMinute, 1440 + 60)
+    }
+
+    /// The demo festpack itself: every block it produces must have a
+    /// plausible length, never the 1-minute sliver an unfolded
+    /// past-midnight end used to produce.
+    func testNoBlockInTheBundledDemoPackCollapsesToASliver() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Festpack
+            .deletingLastPathComponent() // FireflyModelTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // FireflyKit
+            .deletingLastPathComponent() // app
+            .deletingLastPathComponent() // <repo root>
+        let data = try Data(contentsOf: root.appending(path: "firmware/assets/demo/firefly-fields.festpack.json"))
+        guard case .success(let pack) = FestpackParser.parse(data) else {
+            throw XCTSkip("demo fixture failed to parse")
+        }
+        for night in Set(pack.sets.map(\.nightDayOfYear)).sorted() {
+            let layout = LineupGridLayout.build(daySets: FestpackSchedule.daySets(in: pack, night: night),
+                                                stages: pack.stages)
+            for column in layout.columns {
+                for block in column.blocks {
+                    XCTAssertGreaterThanOrEqual(block.durationMinutes, 15,
+                                                "\(block.set.artist) is \(block.durationMinutes) min long")
+                }
+            }
+        }
+    }
 }

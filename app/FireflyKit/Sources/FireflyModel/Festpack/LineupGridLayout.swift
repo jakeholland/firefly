@@ -31,36 +31,93 @@ public enum LineupTimeInference {
     /// explicit end and there is no following set to infer one from.
     public static let defaultSetMinutes = 60
 
+    /// WHERE an effective end minute came from. Carried alongside the
+    /// minute itself — never collapsed into it — because only
+    /// `.published` is a FACT the festpack actually states; the other
+    /// two are this app's own inference, and a screen that prints an
+    /// inferred end as though the pack published it is exactly the
+    /// "pretty data over honest data" failure CLAUDE.md forbids. The
+    /// grid may still SIZE a block from an inferred end (an axis has
+    /// to put a rectangle somewhere); what it may not do is label that
+    /// rectangle with a duration the pack never claimed.
+    public enum EndSource: Sendable, Equatable {
+        /// The pack published an explicit end time for this set.
+        case published
+        /// Inferred: the set runs until the next known-start set on
+        /// its own stage.
+        case nextSetOnStage
+        /// Inferred: nothing follows it on its stage and no end was
+        /// published, so `defaultSetMinutes` is assumed.
+        case defaultLength
+    }
+
+    /// An effective end minute plus its provenance.
+    public struct EffectiveEnd: Sendable, Equatable {
+        public var minute: Int
+        public var source: EndSource
+        public var isPublished: Bool { source == .published }
+        public init(minute: Int, source: EndSource) {
+            self.minute = minute
+            self.source = source
+        }
+    }
+
     /// Every KNOWN-start set in `daySets`, mapped to its effective end
-    /// minute — published `endMinute` when present, else the next
-    /// known-start set's `startMinute` on the SAME stage, else
-    /// `startMinute + defaultSetMinutes` for the last set on a stage.
+    /// — published `endMinute` when present, else the next known-start
+    /// set's `startMinute` on the SAME stage, else `startMinute +
+    /// defaultSetMinutes` for the last set on a stage — each tagged
+    /// with which of those three it actually was (`EndSource`).
     /// Keyed by `FestpackScheduleSet.id`, which that struct's own doc
     /// comment already limits to "stable only within one loaded
     /// Festpack" — exactly the lifetime this map is ever used over (one
     /// `daySets(...)` call's worth of sets). A set with no known start
     /// has no entry at all: there is no time axis position to infer an
     /// end FOR.
-    public static func effectiveEndMinutes(for daySets: [FestpackScheduleSet]) -> [Int: Int] {
+    public static func effectiveEnds(for daySets: [FestpackScheduleSet]) -> [Int: EffectiveEnd] {
         var byStage: [String: [FestpackScheduleSet]] = [:]
         for set in daySets where set.startMinute != nil {
             byStage[set.stageID ?? "", default: []].append(set)
         }
-        var result: [Int: Int] = [:]
+        var result: [Int: EffectiveEnd] = [:]
         for (_, sets) in byStage {
             let sorted = sets.sorted { $0.startMinute! < $1.startMinute! }
             for (index, set) in sorted.enumerated() {
                 let start = set.startMinute!
                 if let end = set.endMinute {
-                    result[set.id] = end
+                    result[set.id] = EffectiveEnd(minute: publishedEnd(end, after: start), source: .published)
                 } else if let next = sorted[(index + 1)...].first(where: { $0.startMinute! > start }) {
-                    result[set.id] = next.startMinute!
+                    result[set.id] = EffectiveEnd(minute: next.startMinute!, source: .nextSetOnStage)
                 } else {
-                    result[set.id] = start + defaultSetMinutes
+                    result[set.id] = EffectiveEnd(minute: start + defaultSetMinutes, source: .defaultLength)
                 }
             }
         }
         return result
+    }
+
+    /// A published end that lands at or before its own start ran past
+    /// midnight in a pack that did not say so: `fp_parse_set_daytime`
+    /// (firmware/festpack/src/fp_pack.c) only folds `end_min` forward a
+    /// day when the entry carries an explicit `end_day`, so a
+    /// "23:30 -> 01:00" row with no `end_day` reaches Swift as
+    /// `startMinute 1410, endMinute 60`. settimes' `buildFestival`
+    /// repairs exactly this ("A pack may omit end_day for a set that
+    /// wraps past midnight; repair"), and so must this: without it the
+    /// grid drew four of the demo pack's own sets as one-minute
+    /// slivers and, worse, `pickedGroups` could not see them overlap
+    /// anything — a MISSED clash, which is the one direction a schedule
+    /// conflict check must not fail in.
+    private static func publishedEnd(_ end: Int, after start: Int) -> Int {
+        end <= start ? end + 1440 : end
+    }
+
+    /// `effectiveEnds(for:)` with the provenance dropped — for the
+    /// callers that genuinely only need geometry (block heights, axis
+    /// bounds, overlap arithmetic). Anything that puts an end time or a
+    /// duration on SCREEN must use `effectiveEnds(for:)` instead and
+    /// say which source it got.
+    public static func effectiveEndMinutes(for daySets: [FestpackScheduleSet]) -> [Int: Int] {
+        effectiveEnds(for: daySets).mapValues(\.minute)
     }
 }
 
@@ -77,10 +134,16 @@ public struct LineupGridLayout: Sendable, Equatable {
         /// Minutes from `axisStartMinute` to this block's start.
         public var offsetMinutes: Int
         /// This block's effective duration — always >= 1, never zero
-        /// (`LineupTimeInference.effectiveEndMinutes` guarantees
+        /// (`LineupTimeInference.effectiveEnds` guarantees
         /// `end > start` for every set it covers, since the shortest
         /// inferred/derived end is still one minute past the start).
         public var durationMinutes: Int
+        /// Where `durationMinutes` came from. A block whose source is
+        /// not `.published` is drawn at an INFERRED length: its
+        /// rectangle is honest geometry, but its duration is not a
+        /// published fact and must not be rendered as one (see
+        /// `LineupTimeInference.EndSource`).
+        public var endSource: LineupTimeInference.EndSource
     }
 
     public struct Column: Sendable, Equatable, Identifiable {
@@ -121,14 +184,14 @@ public struct LineupGridLayout: Sendable, Equatable {
     }
 
     public static func build(daySets: [FestpackScheduleSet], stages: [FestpackStage]) -> LineupGridLayout {
-        let effectiveEnds = LineupTimeInference.effectiveEndMinutes(for: daySets)
+        let effectiveEnds = LineupTimeInference.effectiveEnds(for: daySets)
         let timedSets = daySets.filter { $0.startMinute != nil && effectiveEnds[$0.id] != nil }
         guard !timedSets.isEmpty else {
             return LineupGridLayout(columns: [], hourLines: [], axisStartMinute: 0, axisEndMinute: 0)
         }
 
         let earliestStart = timedSets.map { $0.startMinute! }.min()!
-        let latestEnd = timedSets.map { effectiveEnds[$0.id]! }.max()!
+        let latestEnd = timedSets.map { effectiveEnds[$0.id]!.minute }.max()!
         let axisStart = floorToQuarterHour(earliestStart)
         let axisEnd = ceilToQuarterHour(latestEnd)
 
@@ -157,9 +220,10 @@ public struct LineupGridLayout: Sendable, Equatable {
                     return !stages.contains { $0.id == set.stageID }
                 }
                 .sorted { $0.startMinute! < $1.startMinute! }
-            let blocks = stageSets.map { set in
-                Block(set: set, offsetMinutes: set.startMinute! - axisStart,
-                      durationMinutes: max(1, effectiveEnds[set.id]! - set.startMinute!))
+            let blocks = stageSets.map { set -> Block in
+                let end = effectiveEnds[set.id]!
+                return Block(set: set, offsetMinutes: set.startMinute! - axisStart,
+                             durationMinutes: max(1, end.minute - set.startMinute!), endSource: end.source)
             }
             return Column(stage: stage, blocks: blocks)
         }

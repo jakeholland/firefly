@@ -90,7 +90,11 @@ private struct PickedRowView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(Color.ffStaleAmber)
-                    Text("overlaps \(row.conflictsWithArtists.joined(separator: ", "))")
+                    // "may overlap" when the clash was decided from an
+                    // end time the pack never published (`PickedRow
+                    // .conflictsAreInferred`) — an inferred collision
+                    // is not a published one.
+                    Text("\(row.conflictsAreInferred ? "may overlap" : "overlaps") \(row.conflictsWithArtists.joined(separator: ", "))")
                         .font(.caption)
                         .foregroundStyle(Color.ffStaleAmber)
                 }

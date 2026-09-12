@@ -128,4 +128,92 @@ final class LineupViewModelTests: XCTestCase {
         XCTAssertEqual(result, .imported(count: 2, dropped: 0))
         for set in picks { XCTAssertTrue(importer.isPicked(set)) }
     }
+
+    // MARK: - Pick conflicts
+
+    /// A hand-built pack (not the demo fixture) so the exact abutting /
+    /// overlapping boundary cases can be stated outright.
+    private func makeConflictPack() -> Festpack {
+        let stages = [FestpackStage(id: "a", name: "Stage A", colorRGB: 0xFFC66B),
+                      FestpackStage(id: "b", name: "Stage B", colorRGB: 0x4FD8C4),
+                      FestpackStage(id: "c", name: "Stage C", colorRGB: 0xB08CFF)]
+        let sets = [
+            FestpackScheduleSet(id: 0, artist: "Early", stageID: "a", nightDayOfYear: 261,
+                                startMinute: 20 * 60, endMinute: 21 * 60, note: ""),
+            // Starts exactly when "Early" ends: abutting, NOT a clash.
+            FestpackScheduleSet(id: 1, artist: "Abutting", stageID: "a", nightDayOfYear: 261,
+                                startMinute: 21 * 60, endMinute: 22 * 60, note: ""),
+            // Straddles the boundary: clashes with BOTH of the above.
+            FestpackScheduleSet(id: 2, artist: "Straddler", stageID: "b", nightDayOfYear: 261,
+                                startMinute: 20 * 60 + 30, endMinute: 21 * 60 + 30, note: ""),
+            // No published end, nothing after it on stage C -> the
+            // 60-minute default, which is what puts it over "Straddler".
+            FestpackScheduleSet(id: 3, artist: "Openended", stageID: "c", nightDayOfYear: 261,
+                                startMinute: 20 * 60, endMinute: nil, note: ""),
+        ]
+        return Festpack(name: "Conflict Test", year: 2026, startDayOfYear: 261, endDayOfYear: 261,
+                        utcOffsetMinutes: -240, utcOffsetAssumed: false, originKnown: false,
+                        originApproximate: false, stages: stages, sets: sets,
+                        features: [], landmarks: [], meta: .empty)
+    }
+
+    private func conflictModel(picking artists: [String]) async -> LineupViewModel {
+        let pack = makeConflictPack()
+        let model = LineupViewModel(festpackProvider: StaticFestpackProvider(pack),
+                                    picksStore: InMemoryPicksStore())
+        model.observe()
+        await eventually("festpack applied") { model.festpack != nil }
+        for set in pack.sets where artists.contains(set.artist) { model.togglePick(set) }
+        return model
+    }
+
+    private func conflicts(_ model: LineupViewModel, of artist: String) -> [String] {
+        model.pickedGroups.flatMap(\.rows).first { $0.set.artist == artist }?.conflictsWithArtists.sorted() ?? []
+    }
+
+    func testAbuttingPicksDoNotCountAsAConflictButOverlappingOnesDo() async {
+        let model = await conflictModel(picking: ["Early", "Abutting", "Straddler"])
+        // Half-open intervals: 20:00-21:00 and 21:00-22:00 touch, they
+        // do not overlap.
+        XCTAssertEqual(conflicts(model, of: "Early"), ["Straddler"])
+        XCTAssertEqual(conflicts(model, of: "Abutting"), ["Straddler"])
+        XCTAssertEqual(conflicts(model, of: "Straddler"), ["Abutting", "Early"])
+    }
+
+    func testTwoAbuttingPicksAloneReportNoConflictAtAll() async {
+        let model = await conflictModel(picking: ["Early", "Abutting"])
+        XCTAssertEqual(conflicts(model, of: "Early"), [])
+        XCTAssertEqual(conflicts(model, of: "Abutting"), [])
+        XCTAssertTrue(model.pickedGroups.flatMap(\.rows).allSatisfy { !$0.conflictsAreInferred })
+    }
+
+    /// A clash that only exists because of an INFERRED end is flagged
+    /// as inferred, so the screen can say "may overlap" rather than
+    /// asserting a collision the festpack never published.
+    func testAConflictDecidedByAnInferredEndIsMarkedInferred() async {
+        let model = await conflictModel(picking: ["Openended", "Straddler"])
+        XCTAssertEqual(conflicts(model, of: "Openended"), ["Straddler"])
+        let openEnded = model.pickedGroups.flatMap(\.rows).first { $0.set.artist == "Openended" }
+        XCTAssertEqual(openEnded?.conflictsAreInferred, true)
+        // The other side of the same pair is inferred too: one unknown
+        // end makes the whole comparison an inference.
+        let straddler = model.pickedGroups.flatMap(\.rows).first { $0.set.artist == "Straddler" }
+        XCTAssertEqual(straddler?.conflictsWithArtists, ["Openended"])
+        XCTAssertEqual(straddler?.conflictsAreInferred, true)
+    }
+
+    func testPublishedOnlyConflictIsNotMarkedInferred() async {
+        let model = await conflictModel(picking: ["Early", "Straddler"])
+        XCTAssertTrue(model.pickedGroups.flatMap(\.rows).allSatisfy { $0.conflictsAreInferred == false })
+    }
+
+    func testEffectiveEndCarriesProvenanceForTheDetailSheet() async {
+        let model = await conflictModel(picking: [])
+        let pack = try? XCTUnwrap(model.festpack)
+        guard let pack else { return XCTFail("no pack") }
+        let published = pack.sets.first { $0.artist == "Early" }!
+        let inferred = pack.sets.first { $0.artist == "Openended" }!
+        XCTAssertEqual(model.effectiveEnd(for: published), .init(minute: 21 * 60, source: .published))
+        XCTAssertEqual(model.effectiveEnd(for: inferred), .init(minute: 21 * 60, source: .defaultLength))
+    }
 }
