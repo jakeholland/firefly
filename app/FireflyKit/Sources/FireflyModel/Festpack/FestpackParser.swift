@@ -70,6 +70,8 @@ public enum FestpackParser {
             utcOffsetAssumed: pack.utc_offset_assumed,
             originKnown: pack.origin_known,
             originApproximate: pack.origin_approx,
+            originLatitude: pack.origin.lat,
+            originLongitude: pack.origin.lon,
             stages: decodedStages,
             sets: decodeSets(pack, stageIDs: stageIDs),
             features: decodeFeatures(pack, stageIDs: stageIDs),

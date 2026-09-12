@@ -11,10 +11,12 @@
 		04CD563093000516B80C6D62 /* FireflyMesh in Frameworks */ = {isa = PBXBuildFile; productRef = 6D80661B0E11F75CD5DBFD53 /* FireflyMesh */; };
 		124E5B4431C5B0C9509B4C85 /* FlareTakeoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1B310432CF46CE542A152E9 /* FlareTakeoverView.swift */; };
 		159595A99A88EA86CF1B6140 /* CrewSettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E1D66A6EFF83C09A11DB7FB /* CrewSettingsViewModel.swift */; };
+		2EDFEA952BC97A0A68C06034 /* MapTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F97FA0CFDE77FDFFA48612D /* MapTabView.swift */; };
 		3B69F83116726CF8C396257C /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 9011CC84111BB0A130A3D3C7 /* FireflyModel */; };
 		452890E34DD01B6CD4D436CA /* ThreadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B41C74CB306C16EC81337A30 /* ThreadView.swift */; };
 		47E0809C008E900451404953 /* ConnectScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */; };
 		59A003F0821E61E9DE8E99F5 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */; };
+		6174B5CF13B05DAAAB1058D0 /* FieldMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1F42EB3578D2B85C360FF91 /* FieldMapView.swift */; };
 		63F4CB9CD8015973BF2A6A87 /* NearbyNodesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */; };
 		6640FC7A5590E35700C97181 /* DiagnosticsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */; };
 		6A9AD720CC190DB306F0F9DA /* BLEReconnectHardwareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05F189342B5B984F2BBDAB8A /* BLEReconnectHardwareTests.swift */; };
@@ -43,7 +45,9 @@
 		D4509A6BF45005057BE62C69 /* PeripheralDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 899B46141ED5400385D53007 /* PeripheralDiscovery.swift */; };
 		D7A2904C961D1D75584D0142 /* AdminWriteConfirmationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */; };
 		D7A6BDAFEAE4556C2D49508D /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 52CE41AF9EE8F2A1C1595D75 /* FireflyCore */; };
+		D9AB8B9B25F71BA5B021287C /* MapColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01DE6F44AFB83D4A5399385A /* MapColors.swift */; };
 		E3CC4E9340C161539EDE9E85 /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1798EBF71029584D9BCBDE5F /* FireflyCore */; };
+		E44CA6E04D280A087AAB74CB /* GPSMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08332227D4D2BE1B28323FD5 /* GPSMapView.swift */; };
 		E466917345D124C8F9F6B557 /* FireflyAutoConnectLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */; };
 		E6551196CD37E34092E3B5D8 /* DemoBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657F1057B225B7D58F60D158 /* DemoBadge.swift */; };
 		EBE7033561E014B40A656D0B /* InboxListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 918AE027165FB4634094A385 /* InboxListView.swift */; };
@@ -72,8 +76,11 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		01DE6F44AFB83D4A5399385A /* MapColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapColors.swift; sourceTree = "<group>"; };
 		05D20D18F962B7E51C03A90B /* FireflyKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FireflyKit; path = FireflyKit; sourceTree = SOURCE_ROOT; };
 		05F189342B5B984F2BBDAB8A /* BLEReconnectHardwareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEReconnectHardwareTests.swift; sourceTree = "<group>"; };
+		08332227D4D2BE1B28323FD5 /* GPSMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPSMapView.swift; sourceTree = "<group>"; };
+		0F97FA0CFDE77FDFFA48612D /* MapTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapTabView.swift; sourceTree = "<group>"; };
 		154087BCAC0E87D7868BF253 /* RadarRingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadarRingView.swift; sourceTree = "<group>"; };
 		19687863E32B4CA54C5752D8 /* DiagnosticsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsScreen.swift; sourceTree = "<group>"; };
 		2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyNodesViewModel.swift; sourceTree = "<group>"; };
@@ -108,6 +115,7 @@
 		E56FC0B8574441CB2FD171FD /* FireflyHardwareTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FireflyHardwareTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E76A5B24A4204914C9C30817 /* InboxAvatarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxAvatarTests.swift; sourceTree = "<group>"; };
 		EDC28160EF0A8DD53FB3FFEB /* HapticSignaling+UIKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HapticSignaling+UIKit.swift"; sourceTree = "<group>"; };
+		F1F42EB3578D2B85C360FF91 /* FieldMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FieldMapView.swift; sourceTree = "<group>"; };
 		FEAE3E2DCB691E1E510ACF57 /* FindPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindPanel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -231,6 +239,17 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
+		70564F5A3BB71C0F2C5E508E /* Map */ = {
+			isa = PBXGroup;
+			children = (
+				F1F42EB3578D2B85C360FF91 /* FieldMapView.swift */,
+				08332227D4D2BE1B28323FD5 /* GPSMapView.swift */,
+				01DE6F44AFB83D4A5399385A /* MapColors.swift */,
+				0F97FA0CFDE77FDFFA48612D /* MapTabView.swift */,
+			);
+			path = Map;
+			sourceTree = "<group>";
+		};
 		7D968AF42091B0CBB04FBE40 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
@@ -278,6 +297,7 @@
 				11421C91FBEAF497D1C0A149 /* Connect */,
 				7E21803D4BAB256C6C194299 /* Inbox */,
 				FF03D4F919007563D571B56D /* Lineup */,
+				70564F5A3BB71C0F2C5E508E /* Map */,
 				04298E47A0AEA46AE6AC544E /* Radar */,
 				30C10335F64F3BEB0DDD3F59 /* Settings */,
 			);
@@ -471,13 +491,17 @@
 				E6551196CD37E34092E3B5D8 /* DemoBadge.swift in Sources */,
 				C669919991622119FE5BA2FA /* DiagnosticsScreen.swift in Sources */,
 				7E079696E764A0A0F9E02426 /* DiagnosticsViewModel.swift in Sources */,
+				6174B5CF13B05DAAAB1058D0 /* FieldMapView.swift in Sources */,
 				AFD1E54EF5873B6717B88291 /* FindPanel.swift in Sources */,
 				FB71020F3A2D6764FDD8FE64 /* FireflyApp.swift in Sources */,
 				E466917345D124C8F9F6B557 /* FireflyAutoConnectLaunch.swift in Sources */,
 				124E5B4431C5B0C9509B4C85 /* FlareTakeoverView.swift in Sources */,
+				E44CA6E04D280A087AAB74CB /* GPSMapView.swift in Sources */,
 				7FA385525E20C469998B9B83 /* HapticSignaling+UIKit.swift in Sources */,
 				EBE7033561E014B40A656D0B /* InboxListView.swift in Sources */,
 				924A1E5F5BB64A7CBC361118 /* LineupScreen.swift in Sources */,
+				D9AB8B9B25F71BA5B021287C /* MapColors.swift in Sources */,
+				2EDFEA952BC97A0A68C06034 /* MapTabView.swift in Sources */,
 				63F4CB9CD8015973BF2A6A87 /* NearbyNodesViewModel.swift in Sources */,
 				736AA63B4C8C5FAD424729FA /* PeripheralDiscovery.swift in Sources */,
 				AC8AFA0CD87BCDBC83DDB4BD /* QRScannerSheet.swift in Sources */,
@@ -552,7 +576,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 302;
+				CURRENT_PROJECT_VERSION = 52;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -742,7 +766,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 302;
+				CURRENT_PROJECT_VERSION = 52;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

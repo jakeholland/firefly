@@ -22,6 +22,11 @@ enum Destination: String, CaseIterable, Identifiable {
     // file's own convention (each slice changes exactly one `switch`
     // line, never reorders another's).
     case lineup = "Lineup"
+    // Map tab slice: appended, not inserted, so Connect/Radar/Inbox/
+    // Settings' own tags/order never move (an append-only hunk, per
+    // this file's own header comment on how slices C/D/E each touch
+    // this switch).
+    case map = "Map"
     case settings = "Settings"
 
     var id: String { rawValue }
@@ -32,6 +37,7 @@ enum Destination: String, CaseIterable, Identifiable {
         case .radar: return "location.north.line"
         case .inbox: return "tray"
         case .lineup: return "music.mic"
+        case .map: return "map"
         case .settings: return "slider.horizontal.3"
         }
     }
@@ -75,6 +81,28 @@ struct RootView: View {
     /// renamed (`AppGraph.crewPairing`'s own doc comment) — handed to
     /// Connect (Nearby's Add/Remove) and Settings (the Crew section).
     let pairing: CrewPairingController
+    /// Map tab slice's hunk: `AppGraph.makeMapViewModel()`'s one view
+    /// model, same "built once by the graph, never by a screen's own
+    /// init" rule every other destination here follows.
+    let map: MapViewModel
+    /// Map tab slice: the selected-crew card's FIND action. PR #283
+    /// review, BLOCKING 2: this closure (`FireflyApp.swift`) calls the
+    /// SAME `RadarViewModel.startFind(targetNodeID:)` Radar's own FIND
+    /// button calls — never the raw `ff_find` bridge directly — so the
+    /// session this starts actually ticks (sends pings) rather than
+    /// sitting "active" and silent until the user manually restarts it
+    /// from Radar. This view switches to Radar afterward (where FIND's
+    /// own UI already lives, `RadarView.swift`) rather than duplicating
+    /// a FIND affordance inside Map.
+    let mapFind: (UInt32) -> Void
+    /// Map tab slice: the selected-crew card's MESSAGE action switches
+    /// to Inbox. KNOWN GAP, flagged rather than silently faked: this
+    /// does not yet deep-link to that member's own thread — doing so
+    /// needs `InboxContainerView`'s demo-only `demoInitialThread` seam
+    /// generalized to a live "open this thread" request, which is a
+    /// separate, larger change than this slice's own scope. Tracked
+    /// here, not hidden.
+    let mapMessage: (UInt32) -> Void
     @State private var selection: Destination = .connect
 
     var body: some View {
@@ -147,6 +175,10 @@ struct RootView: View {
         case .inbox: InboxContainerView(model: inbox, demoInitialThread: demoThreadTarget,
                                          colorblind: settings.colorblindPalette)
         case .lineup: LineupScreen(model: lineup)
+        case .map: MapTabView(model: map, initialSegment: initialMapSegment ?? .field,
+                               colorblind: settings.colorblindPalette,
+                               onFind: { nodeID in mapFind(nodeID); selection = .radar },
+                               onMessage: { nodeID in mapMessage(nodeID); selection = .inbox })
         case .settings: SettingsScreen(model: settings, client: client, pairing: pairing, lineup: lineup,
                                         autoOpenDiagnostics: initialDemoScreen == "diagnostics")
         }
@@ -159,6 +191,17 @@ struct RootView: View {
         // that is where a broadcast RALLY (S04's default addressing)
         // lands.
         case "rally": return .crew
+        default: return nil
+        }
+    }
+
+    /// Map tab slice: `-FireflyDemoScreen map-gps`/`map-field` pick
+    /// which segment `MapTabView` opens on — `nil` (its own default,
+    /// `.field`) for every other launch argument.
+    private var initialMapSegment: MapSegment? {
+        switch initialDemoScreen {
+        case "map-gps": return .gps
+        case "map-field": return .field
         default: return nil
         }
     }
@@ -217,6 +260,8 @@ struct RootView: View {
             selection = .lineup
         case "settings", "diagnostics":
             selection = .settings
+        case "map-gps", "map-field":
+            selection = .map
         default:
             break
         }

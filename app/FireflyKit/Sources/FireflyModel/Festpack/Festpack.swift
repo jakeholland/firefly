@@ -161,6 +161,20 @@ public struct Festpack: Sendable, Equatable {
     public let utcOffsetAssumed: Bool
     public let originKnown: Bool
     public let originApproximate: Bool
+    /// `fp_pack_t.origin` — the festival.venue lat/lon `fp_parse` used
+    /// as the projection origin for every `FestpackPoint` in `features`/
+    /// `landmarks` below. Meaningless (reads as 0,0) unless `originKnown`
+    /// is true, exactly like the C struct's own doc comment warns for
+    /// `origin`/any projected `eastMeters`/`northMeters` — callers MUST
+    /// check `originKnown` before trusting these two fields, same as
+    /// they already must for `FestpackPoint`. Added for the Map tab's
+    /// own adapter (`Map/FestpackProvidingMapAdapter.swift`), which
+    /// needs the real anchor to recover WGS84 points from this pack's
+    /// projected meters — `fp_parse` always computes this value; it was
+    /// simply never read back out into Swift before that adapter needed
+    /// it.
+    public let originLatitude: Double
+    public let originLongitude: Double
     public let stages: [FestpackStage]
     public let sets: [FestpackScheduleSet]
     public let features: [FestpackFeature]
@@ -169,6 +183,7 @@ public struct Festpack: Sendable, Equatable {
 
     public init(name: String, year: Int, startDayOfYear: Int, endDayOfYear: Int,
                 utcOffsetMinutes: Int, utcOffsetAssumed: Bool, originKnown: Bool, originApproximate: Bool,
+                originLatitude: Double = 0, originLongitude: Double = 0,
                 stages: [FestpackStage], sets: [FestpackScheduleSet], features: [FestpackFeature],
                 landmarks: [FestpackLandmark], meta: FestpackMeta) {
         self.name = name
@@ -179,6 +194,8 @@ public struct Festpack: Sendable, Equatable {
         self.utcOffsetAssumed = utcOffsetAssumed
         self.originKnown = originKnown
         self.originApproximate = originApproximate
+        self.originLatitude = originLatitude
+        self.originLongitude = originLongitude
         self.stages = stages
         self.sets = sets
         self.features = features

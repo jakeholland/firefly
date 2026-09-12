@@ -732,4 +732,47 @@ public final class AppGraph {
         model.observe()
         return model
     }
+
+    /// Map tab slice: crew from `core.crew` (the SAME roster Radar
+    /// reads — never a second `CrewStore`), the phone's own fix/heading
+    /// from `dependencies`, and a `MapFestpackSource`. The parallel
+    /// festpack-foundation slice (PR #285) has now landed `FestpackProviding`
+    /// on `main` — this is the "one-line swap" `MapFestpack.swift`'s own
+    /// header comment anticipated: demo builds still get
+    /// `DemoMapFestpackSource` (Firefly Fields must stay independent of
+    /// network/real-pack availability, same call `festpack` above
+    /// makes for Lineup), and every other build gets
+    /// `FestpackProvidingMapAdapter` wrapping the SAME `festpack`
+    /// instance `makeLineupViewModel()` reads — one provider, one
+    /// composition root, never a second independent fetch. Same
+    /// `dependencies.client is DemoMeshtasticClient` downcast `festpack`
+    /// above and `FireflyApp.init` both already use, so there is
+    /// exactly one place this decision is made, not a second flag that
+    /// could drift from it.
+    public func makeMapViewModel() -> MapViewModel {
+        let festpackSource: any MapFestpackSource = dependencies.client is DemoMeshtasticClient
+            ? DemoMapFestpackSource()
+            : FestpackProvidingMapAdapter(provider: festpack)
+        let model = MapViewModel(crew: core.crew, location: dependencies.location, heading: dependencies.heading,
+                                  festpackSource: festpackSource, connectivity: NetworkConnectivityMonitor(),
+                                  imperial: { [dependencies] in dependencies.store.resolvedImperial() })
+        // PR #283 review, BLOCKING 3: deliberately NOT `model.observe()`
+        // here, unlike `makeRadarViewModel`/`makeInboxViewModel`/
+        // `makeConnectViewModel` just above. Those three are each
+        // genuinely process-lifetime state (`makeConnectViewModel()`'s
+        // own doc comment draws the exact line: link state is true/false
+        // for the WHOLE app, not meaningful only while one screen is on
+        // top). `MapViewModel`'s 1 Hz `pinRefreshLoop` plus its
+        // location/heading/connectivity subscriptions exist ONLY to
+        // refresh the Map tab's OWN UI (pin age text, the festpack
+        // projection, the offline chip) — no other screen consumes any
+        // of it — so this is the "genuinely screen-scoped" category
+        // `NearbyNodesViewModel`/`ThreadViewModel`/`DiagnosticsViewModel`
+        // already follow: `MapTabView`'s own `.onAppear { model.observe()
+        // }` / `.onDisappear { model.stopObserving() }` (Map/MapTabView.swift)
+        // starts and stops it, so the loop — and the battery it costs —
+        // stops the moment the Map tab is no longer visible, not just at
+        // app exit.
+        return model
+    }
 }
