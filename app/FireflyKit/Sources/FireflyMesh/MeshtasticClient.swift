@@ -1518,7 +1518,17 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             myNodeNum = info.myNodeNum
 
         case .nodeInfo(let info):
-            let snapshot = nodeDB.apply(nodeInfo: info)
+            // HONEST FRESHNESS (hardening QA pass): a `.nodeInfo` frame
+            // arriving WHILE a want_config phase is outstanding is part
+            // of the radio's nodeDB dump — a summary of what it
+            // remembers, not something that just happened on the air.
+            // The same frame arriving with no phase outstanding is a
+            // live NodeInfo broadcast, which genuinely did just arrive.
+            // This client is the only layer that can tell those two
+            // apart, so it is the layer that says which
+            // (`MeshNodeSnapshot.observedAt`); `NodeDB` never guesses.
+            let snapshot = nodeDB.apply(nodeInfo: info,
+                                        observedAt: pendingConfigPhase == nil ? Date() : nil)
             nodeHub.yield(snapshot)
             // Finding 2: OUR OWN NodeInfo entry (want_config replays
             // every node's, including the connected one's own) is where

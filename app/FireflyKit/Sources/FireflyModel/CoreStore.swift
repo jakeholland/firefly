@@ -141,7 +141,7 @@ public final class CoreStore {
     /// real friends" ceiling `ff_heard_t` exists on the firmware side to
     /// avoid — see #273 before building one.
     public func apply(nodeUpdate: MeshNodeSnapshot) {
-        let now = FireflyClock.nowMillis()
+        let nowDate = Date()
 
         // Identity first: the roster slot has to exist and carry
         // whatever names the mesh actually reported before any of the
@@ -153,12 +153,35 @@ public final class CoreStore {
                               longName: nodeUpdate.longName)
         }
 
-        if let position = nodeUpdate.position {
-            let rxTime = position.time.map(FireflyClock.millis(since:)) ?? now
+        // HONEST FRESHNESS (hardening QA pass). This used to be
+        // `position.time.map(...) ?? now` — i.e. a position whose
+        // measurement time was UNKNOWN was stamped with the phone's
+        // current clock, which made `ff_crew_freshness` return LIVE for
+        // it. That is precisely the failure AGENTS.md's standing brief
+        // names: "a replayed timestamp is a *summary*, not an
+        // observation — never age or latch from a value that defines
+        // the clock it's measured against." The want_config nodeDB
+        // replay is exactly that case (`NodeDB.apply(nodeInfo:
+        // observedAt:)` passes `observedAt: nil` for it, and a node
+        // with no RTC sends `Position.time == 0`), so after every
+        // handshake Radar's chip read LIVE, the map drew a SOLID pin,
+        // and the age read "just now" — for a coordinate that could be
+        // hours or days old.
+        //
+        // Three tiers, most authoritative first, and NO fallback past
+        // the last one:
+        //   1. the sender's own fix time, if they stated one and it is
+        //      plausible;
+        //   2. the moment OUR radio received the packet carrying it;
+        //   3. nothing — the position is not fed at all. A coordinate
+        //      with no honest place on a freshness axis is rendered as
+        //      "no position", never as a fresh one.
+        if let position = nodeUpdate.position,
+           let measuredAt = Self.plausibleTimestamp(position.time, now: nowDate) ?? nodeUpdate.observedAt {
             let meta = CrewStore.PositionMeta(asserted: position.source == .manual,
                                                precisionBits: position.precisionBits)
             crew.onPosition(nodeID: nodeUpdate.num, latitude: position.latitude, longitude: position.longitude,
-                             rxTimeMs: rxTime, meta: meta)
+                             rxTimeMs: FireflyClock.millis(since: measuredAt), meta: meta)
         }
 
         // RSSI/SNR are per-packet and only attributable when the packet
@@ -170,9 +193,56 @@ public final class CoreStore {
             crew.onRSSI(nodeID: nodeUpdate.num, rssiDbm: rssiDbm)
         }
 
-        let heardAt = nodeUpdate.lastHeard.map(FireflyClock.millis(since:)) ?? now
-        crew.onHeard(nodeID: nodeUpdate.num, rxTimeMs: heardAt, direct: direct)
+        // Same three tiers as the position above, for the same reason:
+        // `lastHeard` is the RADIO's own nodeDB record (replayed at
+        // every handshake, and stamped by a clock that may never have
+        // been synced), `observedAt` is when THIS device actually
+        // received something, and an unknown time is left unknown
+        // rather than reported as "heard just now".
+        if let heardAt = Self.plausibleTimestamp(nodeUpdate.lastHeard, now: nowDate) ?? nodeUpdate.observedAt {
+            crew.onHeard(nodeID: nodeUpdate.num, rxTimeMs: FireflyClock.millis(since: heardAt), direct: direct)
+        }
     }
+
+    /// A timestamp that came off the wire is a CLAIM, and claims from a
+    /// foreign clock get the same plausibility gate the client already
+    /// applies to RSSI and SNR (`MeshtasticClient.rxMeta(for:)`: "a
+    /// value outside a radio's physically possible range is not a
+    /// measurement, reported absent rather than clamped or passed
+    /// through"). Returns `nil` — meaning "this is not a measurement" —
+    /// rather than clamping, so the caller falls through to its own
+    /// next tier instead of silently rendering a wrong age.
+    ///
+    /// Two rejections, both observed in the field rather than imagined:
+    ///
+    ///  * **Ahead of our clock.** `CrewMember.decode`'s `now &- pos_age_ms`
+    ///    is unsigned, so a timestamp even slightly in the future wraps
+    ///    to ~49 days — the "heard 1193 HR ago" bug `DemoWorld.swift`
+    ///    documents. Small skew is tolerated (`futureSkewTolerance`)
+    ///    because two clocks are never exactly equal, and within that
+    ///    tolerance the value is clamped to `now` by `ff_crew` itself.
+    ///  * **Before Meshtastic existed.** A node whose RTC never synced
+    ///    reports an epoch near 0. That is not a reading from 1970, it
+    ///    is the absence of a reading.
+    ///
+    /// Deliberately NOT a clamp into range: clamping a future timestamp
+    /// to `now` would fabricate the exact "extra fresh" reading
+    /// `LocationFix.age(now:)`'s own comment refuses to produce.
+    public static func plausibleTimestamp(_ date: Date?, now: Date) -> Date? {
+        guard let date else { return nil }
+        guard date.timeIntervalSince(now) <= futureSkewTolerance else { return nil }
+        guard date >= earliestPlausibleTimestamp else { return nil }
+        return date
+    }
+
+    /// Two clocks are never exactly equal; a reading a minute "ahead"
+    /// is skew, not a reading from the future.
+    public static let futureSkewTolerance: TimeInterval = 60
+
+    /// 2020-01-01 UTC. Meshtastic did not exist before this, so nothing
+    /// on this mesh can honestly claim a reading from earlier — such a
+    /// value is an unsynced RTC reporting its power-on epoch.
+    public static let earliestPlausibleTimestamp = Date(timeIntervalSince1970: 1_577_836_800)
 
     /// Routes one `DeliveryEvent` (FireflyMesh) into `Bridge/
     /// InboxBridge.swift`'s three `ff_feed_*` setters, mirroring
