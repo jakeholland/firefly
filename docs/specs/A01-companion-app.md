@@ -167,6 +167,52 @@ minimal-but-working seams — not claimed by any one slice's file list
 already were not) — so slices C, D, E and F each depend on a symbol that
 already exists instead of inventing their own shape for it (S5).
 
+## Navigation
+
+("app: five-tab bar per design", superseding this doc's older "four
+screens"/"six destinations" language above — Map (S09) and Lineup (S07)
+shipped after M1, and by the time Settings was the sixth destination
+`RootView.Destination` registered, iOS's five-tab cap had already
+pushed it into an unstyled, auto-generated "More" overflow list.)
+
+`RootView`'s tab bar (`TabView` on iOS, a `NavigationSplitView` sidebar
+on macOS) carries exactly five destinations, in this order, matching
+the approved design canvas's own tab bar (`RadarSignal.dc.html`/
+`MapLive.dc.html`):
+
+1. **Radar** — S06/S29's signal/no-GPS view.
+2. **Map** — S09's Field/GPS segmented view.
+3. **Inbox** — S24's conversations, threads and outbox.
+4. **Lineup** — S07's festpack schedule.
+5. **More** — `MoreScreen.swift`, this app's own screen, not an
+   iOS-generated one.
+
+**Connect and Settings are not tabs.** Each is one tap under More: a
+plain list whose rows (CONNECT, SETTINGS, SYSTEM) push the existing
+`ConnectScreen`, `SettingsScreen` and `DiagnosticsScreen` — the same
+view models and state every other entry point to those screens already
+uses, never a second copy. On macOS, the sidebar groups the same way
+(Radar/Map/Inbox/Lineup direct, then a "More" section with Connect/
+Settings/System as their own rows) rather than nesting them behind a
+click into More first — the sidebar has the room; the tab bar does not.
+
+**First launch.** A fresh install (or the iOS Simulator, which has no
+Bluetooth at all) has no radio to already know about, so launch lands
+on More with Connect pre-pushed — zero taps, the same place a plain
+launch always landed before this tab existed. Once a radio has been
+bonded (`SettingsKey.lastPeripheralID`/`.bondedPeripheralIDs`,
+`AppDependencies.live()`) — or a `-FireflyAutoConnect <name>` debug
+launch is already reaching for one — launch instead lands on Radar,
+where there is now something to look at. See `RootView.hasKnownRadio`'s
+own doc comment.
+
+**Known gap, flagged rather than silently added:** the design canvas
+shows a small radio-status chip in Radar's/Map's own top bar (green
+dot + "Mesh", or "No GPS"). Neither screen has a toolbar today, and
+adding one is a real, separate change (title bar layout, what the chip
+reads before a client is even connected) — tracked as follow-up, not
+bundled into this tab-bar rework.
+
 ## Data flow
 
 ```

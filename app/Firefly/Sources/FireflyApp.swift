@@ -51,6 +51,10 @@ struct FireflyApp: App {
     /// is running the demo world at all — this is only ever the
     /// SECOND thing to notice that decision, never the first.
     @State private var demoRunner: DemoRunner?
+    /// "app: five-tab bar per design" — read once at construction; see
+    /// this property's own assignment in `init` for what it means and
+    /// `RootView.hasKnownRadio`'s doc comment for how it is used.
+    let hasKnownRadio: Bool
     /// M2 — read by two independent `.onChange(of: scenePhase)` handlers
     /// below, each owning its own concern: tracks foreground/background
     /// so an inbound FLARE takes over the screen only while the app is
@@ -140,6 +144,18 @@ struct FireflyApp: App {
         _radar = State(initialValue: radarVM)
         _lineup = State(initialValue: graph.makeLineupViewModel())
         _map = State(initialValue: graph.makeMapViewModel())
+        // "app: five-tab bar per design" — read once, here, from the
+        // same persisted state `BLETransport`'s own auto-reconnect
+        // already trusts (`AppDependencies.live()`'s `lastPeripheralID`)
+        // plus the `-FireflyAutoConnect <name>` debug launch arg
+        // (`FireflyAutoConnectLaunch`) — never a fresh read of the
+        // live, still-connecting `ConnectViewModel` (`RootView
+        // .hasKnownRadio`'s own doc comment has the full reasoning).
+        // `.stub()`'s `InMemorySettingsStore` and the demo stack both
+        // report nothing persisted here, which is exactly right: a
+        // fresh simulator run has no radio to already know about.
+        self.hasKnownRadio = graph.dependencies.store.string(.lastPeripheralID) != nil
+            || FireflyAutoConnectLaunch.requestedPeripheralName() != nil
         // M2: the FLARE takeover's own haptic pulse (S10: "3 long,
         // overrides quiet hours") — late-injected for the same reason
         // `makeRadarViewModel(haptics:)` takes it as a parameter rather
@@ -200,7 +216,9 @@ struct FireflyApp: App {
                 // on `.onDisappear`) stops it the same way regardless of
                 // which screen started it.
                 mapFind: { nodeID in radar.startFind(targetNodeID: nodeID) },
-                mapMessage: { _ in }
+                mapMessage: { _ in },
+                // "app: five-tab bar per design".
+                hasKnownRadio: hasKnownRadio
             )
             .preferredColorScheme(.dark)
             // M2: `AppGraph.setForegrounded(_:)` is the one thing that

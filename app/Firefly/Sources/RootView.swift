@@ -1,44 +1,43 @@
 //
-//  RootView.swift — the milestone-1 navigation skeleton (Slice C owns
-//  this file and its destination registry; slices D and E each change
-//  exactly one line in the `switch` below — see docs/specs/
+//  RootView.swift — the app's navigation skeleton (Slice C owns this
+//  file and its destination registry; slices D and E each change
+//  exactly one line in the `detail(for:)` switch below — see docs/specs/
 //  A01-companion-app.md, "Slices", the shared-file table).
 //
-//  Four destinations, matching the screens A01 scopes for M1: Connect,
-//  Radar, Inbox, Settings. Radar and Inbox stay placeholders here —
-//  they state what they will show and, deliberately, show NOTHING
-//  ELSE; a screen that invents data is exactly the failure this whole
-//  product is designed against (docs/ARCHITECTURE.md, "Honest state").
+//  Five tabs on the bar (docs/specs/A01-companion-app.md, "Navigation"):
+//  Radar, Map, Inbox, Lineup, More — matching the approved design
+//  (RadarSignal.dc.html/MapLive.dc.html mocks' own tab bar) and staying
+//  under iOS's five-tab cap before `UITabBarController` starts
+//  auto-generating its own unstyled "More" overflow list. Connect and
+//  Settings, which used to be their own tabs, are now `MoreScreen` rows
+//  — see that file's own header comment for why they PUSH the existing
+//  screens rather than re-implementing them.
 //
 import FireflyMesh
 import FireflyModel
 import SwiftUI
 
 enum Destination: String, CaseIterable, Identifiable {
-    case connect = "Connect"
     case radar = "Radar"
-    case inbox = "Inbox"
-    // "app: festpack from fest-almanac + Lineup" — appended per this
-    // file's own convention (each slice changes exactly one `switch`
-    // line, never reorders another's).
-    case lineup = "Lineup"
-    // Map tab slice: appended, not inserted, so Connect/Radar/Inbox/
-    // Settings' own tags/order never move (an append-only hunk, per
-    // this file's own header comment on how slices C/D/E each touch
-    // this switch).
+    // Map tab slice: appended, not inserted (this file's own
+    // "each slice changes exactly one line" convention).
     case map = "Map"
-    case settings = "Settings"
+    case inbox = "Inbox"
+    // "app: festpack from fest-almanac + Lineup".
+    case lineup = "Lineup"
+    // "app: five-tab bar per design" — replaces the old `.connect`/
+    // `.settings` cases; see `MoreScreen.swift`.
+    case more = "More"
 
     var id: String { rawValue }
 
     var systemImage: String {
         switch self {
-        case .connect: return "antenna.radiowaves.left.and.right"
         case .radar: return "location.north.line"
+        case .map: return "map"
         case .inbox: return "tray"
         case .lineup: return "music.mic"
-        case .map: return "map"
-        case .settings: return "slider.horizontal.3"
+        case .more: return "ellipsis"
         }
     }
 }
@@ -103,7 +102,29 @@ struct RootView: View {
     /// separate, larger change than this slice's own scope. Tracked
     /// here, not hidden.
     let mapMessage: (UInt32) -> Void
-    @State private var selection: Destination = .connect
+    /// "app: five-tab bar per design" — true when a radio is already
+    /// bonded (`SettingsKey.bondedPeripheralIDs`/`.lastPeripheralID`,
+    /// `AppDependencies.live()`) or a `-FireflyAutoConnect <name>` debug
+    /// launch is in flight (`FireflyAutoConnectLaunch`) — i.e. this
+    /// process already knows which radio it is going after. `false`
+    /// on a fresh install/simulator run with nothing paired yet.
+    /// Decides the ONE thing this file otherwise used to hardcode: does
+    /// launch land on Radar (there is somewhere useful to look already)
+    /// or on Connect (there is nothing to show until one is picked)?
+    /// See this type's own `.task` below and the PR body for why this
+    /// reads persisted state once at construction rather than the
+    /// live, still-connecting `ConnectViewModel` (which has nothing
+    /// meaningful to report yet at the exact moment this view's first
+    /// frame renders).
+    let hasKnownRadio: Bool
+    @State private var selection: Destination = .more
+    /// Which row `MoreScreen` should push into the moment it next
+    /// appears (or, on macOS, the moment a sidebar row changes this
+    /// while More is already selected) — `nil` opens on the plain list.
+    /// Set once at launch (below) for "no known radio yet" and for
+    /// `-FireflyDemoScreen connect`/`settings`/`diagnostics`; set again
+    /// on every macOS sidebar tap on one of More's own rows.
+    @State private var moreAutoOpen: MoreScreen.Row?
 
     var body: some View {
         // A ZStack, not a plain VStack, so the FLARE takeover (below) can
@@ -127,6 +148,7 @@ struct RootView: View {
                 }
                 content
             }
+            .task { applyInitialSelection() }
             .task { await runInitialDemoScreen() }
 
             if flareTakeover.isActive {
@@ -142,9 +164,28 @@ struct RootView: View {
     private var content: some View {
         #if os(macOS)
         NavigationSplitView {
-            List(Destination.allCases, selection: $selection) { destination in
-                Label(destination.rawValue, systemImage: destination.systemImage)
-                    .tag(destination)
+            List(selection: $selection) {
+                ForEach([Destination.radar, .map, .inbox, .lineup]) { destination in
+                    Label(destination.rawValue, systemImage: destination.systemImage)
+                        .tag(destination)
+                }
+                // "app: five-tab bar per design" — grouped the same way
+                // the iOS tab bar groups them (Radar/Map/Inbox/Lineup
+                // direct, then a More section), just laid out flat
+                // rather than behind a tap: a Mac sidebar has the room,
+                // so Connect/Settings/System show as their own rows
+                // instead of needing `MoreScreen`'s own list opened
+                // first. Plain buttons, not `.tag()`-bound selection
+                // rows like the four above: each one has to set BOTH
+                // `selection` (so the detail column actually shows
+                // `MoreScreen`) and `moreAutoOpen` (so it knows which of
+                // its rows to push into), which `List(selection:)`'s
+                // own single-value binding cannot express.
+                Section("More") {
+                    moreSidebarRow(.connect, title: "Connect", systemImage: "antenna.radiowaves.left.and.right")
+                    moreSidebarRow(.settings, title: "Settings", systemImage: "slider.horizontal.3")
+                    moreSidebarRow(.system, title: "System", systemImage: "waveform.path.ecg")
+                }
             }
             .navigationSplitViewColumnWidth(min: 160, ideal: 180)
         } detail: {
@@ -166,21 +207,34 @@ struct RootView: View {
         #endif
     }
 
+    #if os(macOS)
+    private func moreSidebarRow(_ row: MoreScreen.Row, title: String, systemImage: String) -> some View {
+        Button {
+            selection = .more
+            moreAutoOpen = row
+        } label: {
+            Label(title, systemImage: systemImage)
+        }
+        .buttonStyle(.plain)
+    }
+    #endif
+
     @ViewBuilder
     private func detail(for destination: Destination) -> some View {
         switch destination {
-        case .connect: ConnectScreen(connect: connect, client: client, channelImport: channelImport,
-                                      scanner: scanner, pairing: pairing, colorblind: settings.colorblindPalette)
         case .radar: RadarView(model: radar, colorblind: settings.colorblindPalette)
-        case .inbox: InboxContainerView(model: inbox, demoInitialThread: demoThreadTarget,
-                                         colorblind: settings.colorblindPalette)
-        case .lineup: LineupScreen(model: lineup)
         case .map: MapTabView(model: map, initialSegment: initialMapSegment ?? .field,
                                colorblind: settings.colorblindPalette,
                                onFind: { nodeID in mapFind(nodeID); selection = .radar },
                                onMessage: { nodeID in mapMessage(nodeID); selection = .inbox })
-        case .settings: SettingsScreen(model: settings, client: client, pairing: pairing, lineup: lineup,
-                                        autoOpenDiagnostics: initialDemoScreen == "diagnostics")
+        case .inbox: InboxContainerView(model: inbox, demoInitialThread: demoThreadTarget,
+                                         colorblind: settings.colorblindPalette)
+        case .lineup: LineupScreen(model: lineup)
+        case .more: MoreScreen(connect: connect, settings: settings, channelImport: channelImport,
+                                client: client, lineup: lineup, scanner: scanner, pairing: pairing,
+                                colorblind: settings.colorblindPalette,
+                                autoOpenDiagnosticsInSettings: initialDemoScreen == "diagnostics",
+                                autoOpen: moreAutoOpen)
         }
     }
 
@@ -206,6 +260,26 @@ struct RootView: View {
         }
     }
 
+    /// "app: five-tab bar per design" — the one place `hasKnownRadio`
+    /// is actually consulted: a radio already known -> land on Radar,
+    /// otherwise land on More with Connect pre-pushed (`MoreScreen`'s
+    /// own `autoOpen`), so a fresh install still reaches Connect with
+    /// zero taps, exactly as a plain launch always has. Runs in its own
+    /// `.task`, separate from `runInitialDemoScreen()`: that one awaits
+    /// `demoRunner.waitUntilStarted()` before touching `selection` at
+    /// all, so on any launch that also passes `-FireflyDemoScreen`,
+    /// THIS synchronous assignment always lands first and the demo
+    /// screen's own choice (once it resolves) always wins — never a
+    /// race between the two.
+    private func applyInitialSelection() {
+        if hasKnownRadio {
+            selection = .radar
+        } else {
+            selection = .more
+            moreAutoOpen = .connect
+        }
+    }
+
     /// Maps `-FireflyDemoScreen <name>` to a tab selection plus, for
     /// the handful of names that need more than a tab (a no-GPS fix, a
     /// running FIND session), the one extra `DemoRunner` call that gets
@@ -225,7 +299,8 @@ struct RootView: View {
         await demoRunner.waitUntilStarted()
         switch initialDemoScreen {
         case "connect":
-            selection = .connect
+            selection = .more
+            moreAutoOpen = .connect
         case "radar":
             selection = .radar
         case "radar-signal":
@@ -259,7 +334,8 @@ struct RootView: View {
         case "lineup":
             selection = .lineup
         case "settings", "diagnostics":
-            selection = .settings
+            selection = .more
+            moreAutoOpen = .settings
         case "map-gps", "map-field":
             selection = .map
         default:

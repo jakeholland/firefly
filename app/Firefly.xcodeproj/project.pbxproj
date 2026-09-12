@@ -55,6 +55,7 @@
 		F6C0D0DF3F349E930AD52E4C /* ChannelImportViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36054428E7138397E791F1DD /* ChannelImportViewModel.swift */; };
 		F743AE393385BA397AC457C9 /* NearbyNodesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */; };
 		FB71020F3A2D6764FDD8FE64 /* FireflyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C40E6DFE5C85637929993F5 /* FireflyApp.swift */; };
+		FD497E731EE22B6647C64FC1 /* MoreScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF57DA895520BCFCFEAE8099 /* MoreScreen.swift */; };
 		FDA4D7E8A140B83CAEBB792F /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */; };
 /* End PBXBuildFile section */
 
@@ -105,6 +106,7 @@
 		918AE027165FB4634094A385 /* InboxListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxListView.swift; sourceTree = "<group>"; };
 		9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEHardwareTests.swift; sourceTree = "<group>"; };
 		A1E30FCFD8A9260E48E8617D /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		AF57DA895520BCFCFEAE8099 /* MoreScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreScreen.swift; sourceTree = "<group>"; };
 		AF78D752270B8DEF9E445B92 /* FireflyUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FireflyUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B41C74CB306C16EC81337A30 /* ThreadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadView.swift; sourceTree = "<group>"; };
 		B5AE4486A9AE4EFDBC5455E6 /* ConnectSettingsViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectSettingsViewModelTests.swift; sourceTree = "<group>"; };
@@ -292,6 +294,7 @@
 			children = (
 				657F1057B225B7D58F60D158 /* DemoBadge.swift */,
 				7C40E6DFE5C85637929993F5 /* FireflyApp.swift */,
+				AF57DA895520BCFCFEAE8099 /* MoreScreen.swift */,
 				A1E30FCFD8A9260E48E8617D /* RootView.swift */,
 				543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */,
 				11421C91FBEAF497D1C0A149 /* Connect */,
@@ -502,6 +505,7 @@
 				924A1E5F5BB64A7CBC361118 /* LineupScreen.swift in Sources */,
 				D9AB8B9B25F71BA5B021287C /* MapColors.swift in Sources */,
 				2EDFEA952BC97A0A68C06034 /* MapTabView.swift in Sources */,
+				FD497E731EE22B6647C64FC1 /* MoreScreen.swift in Sources */,
 				63F4CB9CD8015973BF2A6A87 /* NearbyNodesViewModel.swift in Sources */,
 				736AA63B4C8C5FAD424729FA /* PeripheralDiscovery.swift in Sources */,
 				AC8AFA0CD87BCDBC83DDB4BD /* QRScannerSheet.swift in Sources */,
@@ -576,7 +580,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 52;
+				CURRENT_PROJECT_VERSION = 302;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -766,7 +770,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 52;
+				CURRENT_PROJECT_VERSION = 302;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
