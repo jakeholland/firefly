@@ -48,7 +48,29 @@ struct LineupGridView: View {
                 // for this PR: "Lineup" and the festival name were
                 // missing entirely, cropped off the left edge).
                 GeometryReader { proxy in
-                    VStack(spacing: 0) {
+                    // `alignment: .leading` here is load-bearing, not
+                    // cosmetic: `stageHeaderRow` is deliberately left at
+                    // its own oversized natural width (every stage
+                    // column, unclipped past the screen — the sticky
+                    // header needs its FULL width available to scroll
+                    // into view via the `-scrollOffset.width` mirror
+                    // below), so this VStack's own natural width is that
+                    // header row's width, NOT `proxy.size.width`. The
+                    // gutter+body row below, by contrast, genuinely IS
+                    // `proxy.size.width` wide (its `ScrollView` is
+                    // correctly constrained to the available space). A
+                    // `VStack`'s default (`.center`) alignment centers
+                    // EACH child within the stack's own (widest-child)
+                    // width — so the narrower gutter+body row would sit
+                    // centered under the wide header row, shifted right
+                    // by half the difference (one stage column's worth,
+                    // in practice) instead of sharing the header's
+                    // left edge. `.leading` pins every row's leading
+                    // edge together regardless of how much wider the
+                    // header row's own (deliberately unclipped) content
+                    // is — this is the actual by-stage-column alignment
+                    // bug from this PR's first screenshot pass.
+                    VStack(alignment: .leading, spacing: 0) {
                         HStack(spacing: 0) {
                             Color.clear.frame(width: gutterWidth, height: headerHeight)
                             stageHeaderRow(layout)
@@ -56,7 +78,18 @@ struct LineupGridView: View {
                                 .offset(x: -scrollOffset.width)
                                 .clipped()
                         }
-                        HStack(spacing: 0) {
+                        // `alignment: .top` here is the vertical twin of
+                        // the `.leading` fix above: `timeGutter`'s own
+                        // height is the axis length (often shorter than
+                        // the space this row actually gets, since
+                        // `scrollableBody`'s `ScrollView` fills whatever
+                        // height is available). `HStack`'s default
+                        // (`.center`) alignment would then center the
+                        // SHORTER gutter within the TALLER row, sliding
+                        // its hour labels down by half the leftover
+                        // height instead of starting them at the same
+                        // top edge as the scrollable grid lines/blocks.
+                        HStack(alignment: .top, spacing: 0) {
                             timeGutter(layout)
                                 .frame(width: gutterWidth)
                                 .offset(y: -scrollOffset.height)
@@ -121,29 +154,57 @@ struct LineupGridView: View {
     // MARK: - Scrollable body
 
     private func scrollableBody(_ layout: LineupGridLayout) -> some View {
-        ScrollView([.horizontal, .vertical], showsIndicators: true) {
-            ZStack(alignment: .topLeading) {
-                gridLines(layout)
-                HStack(spacing: 0) {
-                    ForEach(layout.columns) { column in
-                        columnBody(column, layout: layout)
+        // The outer `GeometryReader` exists ONLY to learn how much
+        // room this `ScrollView` actually has (`outerProxy.size`) —
+        // needed below because a short night (few stages and/or an
+        // early close) routinely produces grid content NARROWER/
+        // SHORTER than that. `ScrollView` CENTERS undersized content
+        // within its own viewport by default, on both axes — found by
+        // comparing this festpack's actual earliest set (21:00, i.e.
+        // the very first row on the time axis) against the demo
+        // screenshot's first visible block, which was floating well
+        // below the grid's top edge, vertically centered in the empty
+        // space beneath it instead of sharing the header/gutter's top
+        // edge. `.frame(maxWidth: .infinity, maxHeight: .infinity)` on
+        // the content does NOT fix this — proposed a nil/unbounded
+        // size along a scrolling axis (which is what `ScrollView` asks
+        // its content for), `.infinity` doesn't resolve to "the
+        // viewport's size" the way it would outside a `ScrollView`, so
+        // the centering still happens. Only `minWidth`/`minHeight`,
+        // set to the ACTUAL measured viewport size, reliably wins:
+        // content narrower/shorter than that gets stretched up to it
+        // (topLeading-aligned, so the extra space lands after the
+        // content, not straddling it) while content already bigger
+        // (the common case — this is a horizontally- AND vertically-
+        // scrolling grid precisely because most nights overflow the
+        // screen) is completely unaffected, since its own size already
+        // exceeds the minimum.
+        GeometryReader { outerProxy in
+            ScrollView([.horizontal, .vertical], showsIndicators: true) {
+                ZStack(alignment: .topLeading) {
+                    gridLines(layout)
+                    HStack(spacing: 0) {
+                        ForEach(layout.columns) { column in
+                            columnBody(column, layout: layout)
+                        }
                     }
+                    if let nowOffset = model.gridNowOffsetMinutes {
+                        nowLine(atOffsetMinutes: nowOffset, width: columnWidth * CGFloat(layout.columns.count))
+                    }
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: GridScrollOffsetKey.self,
+                                                value: proxy.frame(in: .named("lineupGridScroll")).origin)
+                    }
+                    .frame(width: 0, height: 0)
                 }
-                if let nowOffset = model.gridNowOffsetMinutes {
-                    nowLine(atOffsetMinutes: nowOffset, width: columnWidth * CGFloat(layout.columns.count))
-                }
-                GeometryReader { proxy in
-                    Color.clear.preference(key: GridScrollOffsetKey.self,
-                                            value: proxy.frame(in: .named("lineupGridScroll")).origin)
-                }
-                .frame(width: 0, height: 0)
+                .frame(width: columnWidth * CGFloat(layout.columns.count),
+                       height: CGFloat(layout.axisLengthMinutes) * pointsPerMinute, alignment: .topLeading)
+                .frame(minWidth: outerProxy.size.width, minHeight: outerProxy.size.height, alignment: .topLeading)
             }
-            .frame(width: columnWidth * CGFloat(layout.columns.count),
-                   height: CGFloat(layout.axisLengthMinutes) * pointsPerMinute, alignment: .topLeading)
-        }
-        .coordinateSpace(name: "lineupGridScroll")
-        .onPreferenceChange(GridScrollOffsetKey.self) { origin in
-            scrollOffset = CGSize(width: -origin.x, height: -origin.y)
+            .coordinateSpace(name: "lineupGridScroll")
+            .onPreferenceChange(GridScrollOffsetKey.self) { origin in
+                scrollOffset = CGSize(width: -origin.x, height: -origin.y)
+            }
         }
     }
 
