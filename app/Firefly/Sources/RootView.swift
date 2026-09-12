@@ -280,6 +280,20 @@ struct RootView: View {
         }
     }
 
+    /// Polls (rather than sleeping a fixed budget) until the Lineup
+    /// view model has a pack to seed picks/a detail sheet from — the
+    /// same "no fixed sleeps" rule the test suite's own `eventually`
+    /// helper follows, applied here because a fixed 300 ms silently
+    /// produced an EMPTY screenshot whenever the bundled pack happened
+    /// to parse slower than that. Bounded so a genuinely broken load
+    /// still falls through to the screen's own honest empty state.
+    private func waitForLineupFestpack(timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while lineup.festpack == nil, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+
     /// Maps `-FireflyDemoScreen <name>` to a tab selection plus, for
     /// the handful of names that need more than a tab (a no-GPS fix, a
     /// running FIND session), the one extra `DemoRunner` call that gets
@@ -343,7 +357,7 @@ struct RootView: View {
             // content instead of the empty state.
             selection = .lineup
             lineup.selectedTab = .picks
-            if lineup.festpack == nil { try? await Task.sleep(nanoseconds: 300_000_000) }
+            await waitForLineupFestpack()
             if let festpack = lineup.festpack, let night = lineup.selectedNightDayOfYear {
                 for set in festpack.sets.filter({ $0.nightDayOfYear == night && $0.startMinute != nil }).prefix(2) {
                     lineup.togglePick(set)
@@ -355,7 +369,7 @@ struct RootView: View {
             // a screenshot script never has to simulate a tap on a
             // specific block's screen position.
             selection = .lineup
-            if lineup.festpack == nil { try? await Task.sleep(nanoseconds: 300_000_000) }
+            await waitForLineupFestpack()
             if let festpack = lineup.festpack, let night = lineup.selectedNightDayOfYear,
                let set = festpack.sets.first(where: { $0.nightDayOfYear == night && $0.startMinute != nil }) {
                 lineup.selectSet(set)
