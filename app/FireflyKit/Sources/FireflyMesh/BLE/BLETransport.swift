@@ -302,6 +302,33 @@ public actor BLETransport: MeshTransport, NodeScanning {
     /// as a reconnect.
     private var isFallbackScanning = false
 
+    /// The ONE place `isFallbackScanning` is ever cleared — and the
+    /// reason it has to be a method rather than three assignments is a
+    /// real, measured-by-inspection battery bug found in the hardening
+    /// QA pass: `completeConnect(throwing:)` cleared the FLAG without
+    /// ever calling `central.stopScan()`, while the other two sites
+    /// (`disconnect()`, `handleDiscovered`) correctly paired the two. So
+    /// whenever the original pending `central.connect()` resolved AFTER
+    /// `armReconnectFallback(for:)` had already started its rediscovery
+    /// scan — a slow reconnect, exactly the case the fallback exists for
+    /// — CoreBluetooth kept scanning for the rest of the process. A
+    /// continuous BLE scan is one of the most expensive things an iPhone
+    /// can be asked to do, and this app's whole premise is a phone that
+    /// lasts three days in a field.
+    ///
+    /// Guarded on the flag so it only ever stops a scan THIS transport
+    /// started: the ordinary node-picker scan (`scan()`/`NodeScanning`,
+    /// the Connect screen) can be running concurrently, and
+    /// `CBCentralManager.stopScan()` is global — stopping it out from
+    /// under the picker would be a different bug. `disconnect()` keeps
+    /// its own unconditional `stopScan()` on purpose (its own comment:
+    /// a user who asked to disconnect gets everything stopped).
+    private func endFallbackScan() {
+        guard isFallbackScanning else { return }
+        isFallbackScanning = false
+        central?.stopScan()
+    }
+
     private func armReconnectFallback(for target: UUID) {
         reconnectFallbackTask?.cancel()
         reconnectFallbackTask = Task { [weak self, reconnectFallbackDelay] in
@@ -589,7 +616,7 @@ public actor BLETransport: MeshTransport, NodeScanning {
         // away from.
         reconnectFallbackTask?.cancel()
         reconnectFallbackTask = nil
-        isFallbackScanning = false
+        endFallbackScan()
         central?.stopScan()
         if let peripheral {
             central?.cancelPeripheralConnection(peripheral)
@@ -911,8 +938,7 @@ public actor BLETransport: MeshTransport, NodeScanning {
         // inside an explicit `connect()`'s own `performConnectSequence()`)
         // and must not be cross-wired with this one.
         if isFallbackScanning, peripheral.identifier == pendingConnectPeripheralID {
-            isFallbackScanning = false
-            central?.stopScan()
+            endFallbackScan()
             BLETransport.log("reconnect fallback: rediscovered \(peripheral.identifier) — reissuing central.connect")
             self.peripheral = peripheral
             peripheral.delegate = bridge
@@ -1132,7 +1158,10 @@ public actor BLETransport: MeshTransport, NodeScanning {
         // instant this runs.
         reconnectFallbackTask?.cancel()
         reconnectFallbackTask = nil
-        isFallbackScanning = false
+        // THE FIX (hardening QA pass): this used to be a bare
+        // `isFallbackScanning = false`, leaving the radio scanning
+        // forever — see `endFallbackScan()`'s own doc comment.
+        endFallbackScan()
         if let error {
             guard let cont = connectContinuation else { return }
             connectContinuation = nil
