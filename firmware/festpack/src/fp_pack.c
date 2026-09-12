@@ -562,7 +562,20 @@ static fp_result_t fp_parse_stages(fp_ctx_t const *c, int arr_i, fp_pack_t *out)
  * night; anything else belongs to its own `day`. This is a documented
  * best guess for packs predating the `night` field, not a substitute
  * for it — fest-almanac emits `night` on every entry, and
- * tools/festpack_lint.py requires night == day or day - 1. */
+ * tools/festpack_lint.py requires night == day or day - 1.
+ *
+ * FALLBACK when `end_day` is absent but `end` still needs one: a
+ * published `end` <= its own `start` (in the same night's minute space,
+ * after the fold above) ran past midnight without the pack saying so via
+ * `end_day` — folded forward one day here too, same as the `night`
+ * fallback above is to `end_day`'s explicit fold. `end_day` is always
+ * authoritative when present; this only fires in its absence, and only
+ * when both start_min and end_min are already known (an unknown end
+ * stays unknown; an unknown start leaves nothing to compare against).
+ * 2026-09-11 fix — was previously folded only when `end_day` was
+ * present, which left e.g. "23:30" -> "01:00" with no `end_day` as
+ * start_min=1410, end_min=60 (end one minute after start) rather than
+ * end_min=1500. See fp_pack.h's fp_set_t.end_min doc comment. */
 static void fp_parse_set_daytime(fp_ctx_t const *c, int obj_i, fp_set_t *s)
 {
     int t;
@@ -635,8 +648,10 @@ static void fp_parse_set_daytime(fp_ctx_t const *c, int obj_i, fp_set_t *s)
      * whose end is more than one calendar day after its start is not a
      * set, it is bad data (lint rejects it), and letting it through would
      * push end_min past int16_t. */
+    bool end_day_present = false;
     int32_t end_extra_days = 0;
     if (fp_obj_get(c, obj_i, "end_day", &t) && !fp_is_null(c, t)) {
+        end_day_present = true;
         jsmntok_t const *tt = &c->toks[t];
         int ey, em, ed;
         if (fp_ymd_from_iso_date(c->js + tt->start, (size_t)(tt->end - tt->start), &ey, &em, &ed)) {
@@ -649,6 +664,35 @@ static void fp_parse_set_daytime(fp_ctx_t const *c, int obj_i, fp_set_t *s)
                                    : (int16_t)(start_raw + fold_days * 1440);
     s->end_min = (end_raw < 0) ? (int16_t)-1
                                : (int16_t)(end_raw + (fold_days + end_extra_days) * 1440);
+
+    /* 2026-09-11 fix (was: only end_day folded a midnight-crossing end).
+     * A published end that lands at or before its own start, with no
+     * `end_day` to explain the rollover, ran past midnight in a pack
+     * that simply didn't bother stamping the date change — a real shape
+     * (fest-almanac has emitted it) that this parser used to leave
+     * un-folded: "23:30" -> "01:00" with no `end_day` produced
+     * start_min=1410, end_min=60, i.e. an end one minute after the
+     * start rather than 90 minutes later. Every consumer of the RAW
+     * parsed field — not just ff_sched.c, which happens to carry its
+     * own defensive end_min<start_min fold in sched_effective_end for
+     * fp_set_t values built outside fp_parse() (see ff_sched.h) — must
+     * see the corrected value, so the fold belongs here, once, at parse
+     * time. Mirrors the companion app's identical fix (PR #291:
+     * LineupGridLayout.publishedEnd / settimes' buildFestival: "A pack
+     * may omit end_day for a set that wraps past midnight; repair").
+     *
+     * `end_day` stays authoritative whenever the pack supplies it —
+     * this guard only fires in its absence. Both start_min and end_min
+     * must already be known: an unknown end stays unknown (-1), never
+     * guessed at, and an unknown start leaves nothing to compare
+     * against, so end_min is left exactly as authored. `<=`, not `<`,
+     * so an end published as exactly the same clock time as the start
+     * (including "00:00", i.e. minute 0, which is always <= a nonzero
+     * start) is treated as a full day later rather than a zero-length
+     * set — see fp_set_t.end_min's doc comment. */
+    if (!end_day_present && s->start_min >= 0 && s->end_min >= 0 && s->end_min <= s->start_min) {
+        s->end_min = (int16_t)(s->end_min + 1440);
+    }
 }
 
 static fp_result_t fp_parse_schedule(fp_ctx_t const *c, int arr_i, fp_pack_t *out)

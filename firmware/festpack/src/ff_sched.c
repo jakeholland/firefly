@@ -12,7 +12,17 @@
 /* Effective end-of-set minute, folding a midnight-crossing set (end_min
  * < start_min) forward by one day so all comparisons against `now_min`
  * (which may itself exceed 1440 for late-night queries) are plain
- * integer comparisons. */
+ * integer comparisons.
+ *
+ * 2026-09-11: fp_parse() now performs this same fold at parse time
+ * (fp_pack.c's fp_parse_set_daytime, for a published end with no
+ * `end_day` — see fp_pack.h's fp_set_t.end_min doc comment), so a
+ * pack that came from fp_parse() never actually has end_min <
+ * start_min here any more. This check is kept as defense in depth for
+ * an fp_set_t assembled some other way (this file's own unit tests
+ * build one directly with mk_set(), deliberately passing an unfolded
+ * end_min, to exercise this exact fold without going through the
+ * parser) — not because a parsed pack still needs it. */
 static int16_t sched_effective_end(fp_set_t const *s)
 {
     if (s->end_min < s->start_min) {
