@@ -70,6 +70,23 @@ targets:
       # Info.plist/entitlements, which are wired via their own settings
       # keys below rather than compiled as sources.
       - path: Firefly/Resources/Assets.xcassets
+      # "app: Lineup by-stage grid, day pills, My picks" — `AlmanacFestpackProvider`'s
+      # bundled fallback (`lost-lands-2026.festpack.json`, "bundled
+      # copy") and `DemoFestpackProvider`'s scripted world
+      # (`firefly-fields.festpack.json`) both read these by name via
+      # `Bundle.main.url(forResource:withExtension:)`
+      # (`MainBundleFestpackLoader`) — but neither file was actually
+      # wired into a Copy Bundle Resources phase before this feature,
+      # so a real device/simulator launch with no cached pack (or any
+      # `-FireflyDemo` launch at all) silently got "no festival pack
+      # loaded yet" forever. Referenced straight from `firmware/assets/`
+      # (like `firmware/core` is compiled in place via
+      # `tools/link_core_sources.sh`) rather than copied into `app/`, so
+      # there is exactly one copy of each fixture in the tree. Plain
+      # `.json` files under `sources:` become resources automatically,
+      # same as `Assets.xcassets` just above.
+      - path: ../firmware/assets/demo/firefly-fields.festpack.json
+      - path: ../firmware/assets/field/lost-lands-2026.festpack.json
     dependencies:
       - package: FireflyKit
         product: FireflyCore

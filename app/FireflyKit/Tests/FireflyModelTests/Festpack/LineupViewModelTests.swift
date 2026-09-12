@@ -47,6 +47,23 @@ final class LineupViewModelTests: XCTestCase {
         func refresh() async {}
     }
 
+    /// Never a fixed sleep or a fixed-iteration poll budget (the house
+    /// rule `ConnectSettingsViewModelTests.swift`'s own `eventually`
+    /// documents at length) — polls until `condition` is true or
+    /// `timeout` genuinely elapses.
+    private func eventually(_ description: String = "condition", timeout: TimeInterval = 5,
+                             file: StaticString = #filePath, line: UInt = #line,
+                             _ condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() >= deadline {
+                XCTFail("timed out after \(timeout)s waiting for \(description)", file: file, line: line)
+                return
+            }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
     func testWallClockOutsideEveryPackNightFallsBackToTheFirstNightNotAnInvalidOne() async throws {
         let pack = try loadDemoPack()
         let provider = StaticFestpackProvider(pack)
@@ -58,13 +75,10 @@ final class LineupViewModelTests: XCTestCase {
             components.year = 2027; components.month = 1; components.day = 1
             return Calendar(identifier: .gregorian).date(from: components) ?? Date()
         }()
-        let model = LineupViewModel(festpackProvider: provider, starredStore: InMemoryStarredArtistsStore(), now: { farFutureNow })
+        let model = LineupViewModel(festpackProvider: provider, picksStore: InMemoryPicksStore(), now: { farFutureNow })
         model.observe()
-        // `observe()` kicks off two Tasks (the stream subscriber and
-        // an initial refresh()); yield to let them run.
-        try await Task.sleep(nanoseconds: 200_000_000)
+        await eventually("a selected night") { model.selectedNightDayOfYear != nil }
 
-        XCTAssertNotNil(model.selectedNightDayOfYear)
         XCTAssertEqual(model.selectedNightDayOfYear, model.nights.first)
         XCTAssertTrue(model.nights.contains(model.selectedNightDayOfYear!))
         // The honest consequence: a valid selected night, not a
@@ -72,19 +86,46 @@ final class LineupViewModelTests: XCTestCase {
         XCTAssertNotNil(model.dayLabel)
     }
 
-    func testTogglingStarUpdatesStarredRows() async throws {
+    func testTogglingPickUpdatesPickedGroups() async throws {
         let pack = try loadDemoPack()
-        guard let firstArtist = pack.sets.first?.artist else {
+        guard let firstSet = pack.sets.first else {
             throw XCTSkip("demo pack has no sets")
         }
         let provider = StaticFestpackProvider(pack)
-        let model = LineupViewModel(festpackProvider: provider, starredStore: InMemoryStarredArtistsStore())
+        let model = LineupViewModel(festpackProvider: provider, picksStore: InMemoryPicksStore())
         model.observe()
-        try await Task.sleep(nanoseconds: 200_000_000)
+        await eventually("festpack applied") { model.festpack != nil }
 
-        XCTAssertFalse(model.isStarred(firstArtist))
-        model.toggleStar(firstArtist)
-        XCTAssertTrue(model.isStarred(firstArtist))
-        XCTAssertTrue(model.starredRows.contains { $0.set.artist == firstArtist })
+        XCTAssertFalse(model.isPicked(firstSet))
+        model.togglePick(firstSet)
+        XCTAssertTrue(model.isPicked(firstSet))
+        XCTAssertTrue(model.pickedGroups.contains { $0.rows.contains { $0.set.id == firstSet.id } })
+
+        model.togglePick(firstSet)
+        XCTAssertFalse(model.isPicked(firstSet))
+        XCTAssertFalse(model.pickedGroups.contains { $0.rows.contains { $0.set.id == firstSet.id } })
+    }
+
+    func testShareURLRoundTripsThroughImportOnTheSamePack() async throws {
+        let pack = try loadDemoPack()
+        guard pack.sets.count >= 2 else { throw XCTSkip("demo pack needs at least 2 sets") }
+        let provider = StaticFestpackProvider(pack)
+        let model = LineupViewModel(festpackProvider: provider, picksStore: InMemoryPicksStore())
+        model.observe()
+        await eventually("a selected night") { model.selectedNightDayOfYear != nil }
+
+        let picks = Array(pack.sets.prefix(2))
+        for set in picks { model.togglePick(set) }
+        guard let url = model.shareURL else { return XCTFail("expected a share URL once picks exist") }
+
+        // A second, independent view model — simulating a different
+        // phone/session importing the link.
+        let importer = LineupViewModel(festpackProvider: StaticFestpackProvider(pack), picksStore: InMemoryPicksStore())
+        importer.observe()
+        await eventually("importer festpack applied") { importer.festpack != nil }
+
+        let result = importer.importPicks(from: url.absoluteString)
+        XCTAssertEqual(result, .imported(count: 2, dropped: 0))
+        for set in picks { XCTAssertTrue(importer.isPicked(set)) }
     }
 }

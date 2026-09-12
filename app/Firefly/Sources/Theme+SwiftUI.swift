@@ -24,6 +24,11 @@ extension Color {
     static let ffAmber = Color(fireflyHex: FireflyTheme.amber)
     static let ffLiveGreen = Color(fireflyHex: FireflyTheme.liveGreen)
     static let ffMuted = Color(fireflyHex: FireflyTheme.muted)
+    /// "app: Lineup by-stage grid, day pills, My picks" — the unselected
+    /// day pill's border colour (`ff_theme.h`'s `dim`, 0x55545F);
+    /// nothing before this feature needed a plain border token of its
+    /// own.
+    static let ffDim = Color(fireflyHex: FireflyTheme.dim)
     static let ffInk = Color(fireflyHex: FireflyTheme.ink)
     static let ffAlert = Color(fireflyHex: FireflyTheme.alert)
     /// The DEMO badge's own color (`DemoBadge.swift`) — `staleAmber`,

@@ -333,6 +333,33 @@ struct RootView: View {
             selection = .inbox
         case "lineup":
             selection = .lineup
+        case "lineup-picks":
+            // "app: Lineup by-stage grid, day pills, My picks" — a
+            // screenshot-only seam, same shape as "map-gps"/"map-field"
+            // just below: pre-seed a couple of picks on the day the
+            // grid itself opens on (rather than trying to synthesize a
+            // tap on a specific grid block from a launch argument) so
+            // the My picks screenshot shows real conflict-marker/star
+            // content instead of the empty state.
+            selection = .lineup
+            lineup.selectedTab = .picks
+            if lineup.festpack == nil { try? await Task.sleep(nanoseconds: 300_000_000) }
+            if let festpack = lineup.festpack, let night = lineup.selectedNightDayOfYear {
+                for set in festpack.sets.filter({ $0.nightDayOfYear == night && $0.startMinute != nil }).prefix(2) {
+                    lineup.togglePick(set)
+                }
+            }
+        case "lineup-detail":
+            // Same idea as "lineup-picks": opens the Grid with the
+            // first known-start set's detail sheet already showing, so
+            // a screenshot script never has to simulate a tap on a
+            // specific block's screen position.
+            selection = .lineup
+            if lineup.festpack == nil { try? await Task.sleep(nanoseconds: 300_000_000) }
+            if let festpack = lineup.festpack, let night = lineup.selectedNightDayOfYear,
+               let set = festpack.sets.first(where: { $0.nightDayOfYear == night && $0.startMinute != nil }) {
+                lineup.selectSet(set)
+            }
         case "settings", "diagnostics":
             selection = .more
             moreAutoOpen = .settings

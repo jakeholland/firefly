@@ -28,7 +28,8 @@ public struct FestpackScheduleSet: Sendable, Equatable, Identifiable {
     /// This set's index into the parsed `fp_pack_t.sets[]` — stable
     /// only within ONE loaded `Festpack`, never across a re-fetch (a
     /// refreshed pack can reorder/add/remove sets). Starring therefore
-    /// keys off `artist`, not `id` — see `StarredArtistsStore`.
+    /// keys off `PicksCodec.setID(for:in:)` — a value derived from a
+    /// set's own content — not `id`, see `PicksStore`.
     public let id: Int
     public let artist: String
     public let stageID: String?
