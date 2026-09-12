@@ -9,8 +9,10 @@
 /* Begin PBXBuildFile section */
 		0318ED28B405C25C7661E064 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E30FCFD8A9260E48E8617D /* RootView.swift */; };
 		04CD563093000516B80C6D62 /* FireflyMesh in Frameworks */ = {isa = PBXBuildFile; productRef = 6D80661B0E11F75CD5DBFD53 /* FireflyMesh */; };
+		0985E28E3385EBA26AD6DE65 /* ImportPicksSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E88E40B311FEE9B2F1B4382 /* ImportPicksSheet.swift */; };
 		124E5B4431C5B0C9509B4C85 /* FlareTakeoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1B310432CF46CE542A152E9 /* FlareTakeoverView.swift */; };
 		159595A99A88EA86CF1B6140 /* CrewSettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E1D66A6EFF83C09A11DB7FB /* CrewSettingsViewModel.swift */; };
+		17AE531969F0CDE913B44133 /* LineupPicksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EA34C071EFD0793A619E9A6 /* LineupPicksView.swift */; };
 		2EDFEA952BC97A0A68C06034 /* MapTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F97FA0CFDE77FDFFA48612D /* MapTabView.swift */; };
 		3B69F83116726CF8C396257C /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 9011CC84111BB0A130A3D3C7 /* FireflyModel */; };
 		452890E34DD01B6CD4D436CA /* ThreadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B41C74CB306C16EC81337A30 /* ThreadView.swift */; };
@@ -40,17 +42,22 @@
 		AFD1E54EF5873B6717B88291 /* FindPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEAE3E2DCB691E1E510ACF57 /* FindPanel.swift */; };
 		B11B507435D69A999AC9DD1E /* ChannelImportViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36054428E7138397E791F1DD /* ChannelImportViewModel.swift */; };
 		B770F947CF8B1EDB0E8FDBD5 /* FireflyMesh in Frameworks */ = {isa = PBXBuildFile; productRef = B4C3D1CEE6287442EA267E68 /* FireflyMesh */; };
+		BD2120937E1168EB260D1750 /* SetDetailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45B28DBCD5175DF8DA45C5B9 /* SetDetailSheet.swift */; };
 		C03641377EDB721D4C81DE9D /* BLEHardwareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */; };
 		C669919991622119FE5BA2FA /* DiagnosticsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19687863E32B4CA54C5752D8 /* DiagnosticsScreen.swift */; };
+		CFF3E1EBE59116C8A0544EA2 /* LineupGridDemoFestpackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B88FE658484B40308B28D13 /* LineupGridDemoFestpackTests.swift */; };
 		D4509A6BF45005057BE62C69 /* PeripheralDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 899B46141ED5400385D53007 /* PeripheralDiscovery.swift */; };
 		D7A2904C961D1D75584D0142 /* AdminWriteConfirmationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */; };
 		D7A6BDAFEAE4556C2D49508D /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 52CE41AF9EE8F2A1C1595D75 /* FireflyCore */; };
 		D9AB8B9B25F71BA5B021287C /* MapColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01DE6F44AFB83D4A5399385A /* MapColors.swift */; };
+		DA080D82BF09C603E6CCA622 /* lost-lands-2026.festpack.json in Resources */ = {isa = PBXBuildFile; fileRef = A2B2A769F6FE59B2041F556B /* lost-lands-2026.festpack.json */; };
 		E3CC4E9340C161539EDE9E85 /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1798EBF71029584D9BCBDE5F /* FireflyCore */; };
 		E44CA6E04D280A087AAB74CB /* GPSMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08332227D4D2BE1B28323FD5 /* GPSMapView.swift */; };
 		E466917345D124C8F9F6B557 /* FireflyAutoConnectLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */; };
 		E6551196CD37E34092E3B5D8 /* DemoBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657F1057B225B7D58F60D158 /* DemoBadge.swift */; };
 		EBE7033561E014B40A656D0B /* InboxListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 918AE027165FB4634094A385 /* InboxListView.swift */; };
+		EE39AFFD0C1416E122228CFC /* firefly-fields.festpack.json in Resources */ = {isa = PBXBuildFile; fileRef = D8D4FFA7D320185B90470459 /* firefly-fields.festpack.json */; };
+		EE89762FDADFB461B43E4537 /* LineupGridView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D245C926F1665311864D01C0 /* LineupGridView.swift */; };
 		F06690C87C2BC2F7A3802A3C /* InboxAvatarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E76A5B24A4204914C9C30817 /* InboxAvatarTests.swift */; };
 		F6C0D0DF3F349E930AD52E4C /* ChannelImportViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36054428E7138397E791F1DD /* ChannelImportViewModel.swift */; };
 		F743AE393385BA397AC457C9 /* NearbyNodesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */; };
@@ -90,15 +97,19 @@
 		378BC076CD59300BFAE0D0AD /* RadarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadarView.swift; sourceTree = "<group>"; };
 		3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdminWriteConfirmationSheet.swift; sourceTree = "<group>"; };
 		3E99266CE9867C281FAC9513 /* RadarColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadarColors.swift; sourceTree = "<group>"; };
+		3EA34C071EFD0793A619E9A6 /* LineupPicksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineupPicksView.swift; sourceTree = "<group>"; };
 		3FF340B133498D33D74D3976 /* QRScannerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerSheet.swift; sourceTree = "<group>"; };
+		45B28DBCD5175DF8DA45C5B9 /* SetDetailSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetDetailSheet.swift; sourceTree = "<group>"; };
 		45BBB6E81333013CC2CE55F2 /* SettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsScreen.swift; sourceTree = "<group>"; };
 		4E1D66A6EFF83C09A11DB7FB /* CrewSettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewSettingsViewModel.swift; sourceTree = "<group>"; };
 		500341CFF93F2572F5EABA8C /* FireflyUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyUITests.swift; sourceTree = "<group>"; };
 		543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Theme+SwiftUI.swift"; sourceTree = "<group>"; };
+		5E88E40B311FEE9B2F1B4382 /* ImportPicksSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportPicksSheet.swift; sourceTree = "<group>"; };
 		657F1057B225B7D58F60D158 /* DemoBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoBadge.swift; sourceTree = "<group>"; };
 		668B4901B03CB440509CA401 /* Firefly.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Firefly.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		686F2EF2441AE3FF6FC88B41 /* LineupScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineupScreen.swift; sourceTree = "<group>"; };
 		688226395F6C22BD0D86BEB5 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		6B88FE658484B40308B28D13 /* LineupGridDemoFestpackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineupGridDemoFestpackTests.swift; sourceTree = "<group>"; };
 		762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
 		7C40E6DFE5C85637929993F5 /* FireflyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyApp.swift; sourceTree = "<group>"; };
 		829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyAutoConnectLaunch.swift; sourceTree = "<group>"; };
@@ -106,6 +117,7 @@
 		918AE027165FB4634094A385 /* InboxListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxListView.swift; sourceTree = "<group>"; };
 		9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEHardwareTests.swift; sourceTree = "<group>"; };
 		A1E30FCFD8A9260E48E8617D /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		A2B2A769F6FE59B2041F556B /* lost-lands-2026.festpack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = "lost-lands-2026.festpack.json"; path = "../../../firmware/assets/field/lost-lands-2026.festpack.json"; sourceTree = "<group>"; };
 		AF57DA895520BCFCFEAE8099 /* MoreScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreScreen.swift; sourceTree = "<group>"; };
 		AF78D752270B8DEF9E445B92 /* FireflyUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FireflyUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B41C74CB306C16EC81337A30 /* ThreadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadView.swift; sourceTree = "<group>"; };
@@ -114,6 +126,8 @@
 		C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Firefly.xcconfig; sourceTree = "<group>"; };
 		C1B310432CF46CE542A152E9 /* FlareTakeoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlareTakeoverView.swift; sourceTree = "<group>"; };
 		CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsViewModel.swift; sourceTree = "<group>"; };
+		D245C926F1665311864D01C0 /* LineupGridView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineupGridView.swift; sourceTree = "<group>"; };
+		D8D4FFA7D320185B90470459 /* firefly-fields.festpack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = "firefly-fields.festpack.json"; path = "../../../firmware/assets/demo/firefly-fields.festpack.json"; sourceTree = "<group>"; };
 		E56FC0B8574441CB2FD171FD /* FireflyHardwareTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FireflyHardwareTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E76A5B24A4204914C9C30817 /* InboxAvatarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxAvatarTests.swift; sourceTree = "<group>"; };
 		EDC28160EF0A8DD53FB3FFEB /* HapticSignaling+UIKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HapticSignaling+UIKit.swift"; sourceTree = "<group>"; };
@@ -237,6 +251,7 @@
 			isa = PBXGroup;
 			children = (
 				688226395F6C22BD0D86BEB5 /* Assets.xcassets */,
+				9574E2BC49B8298D4A1C3EF1 /* Festpacks */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -257,6 +272,7 @@
 			children = (
 				B5AE4486A9AE4EFDBC5455E6 /* ConnectSettingsViewModelTests.swift */,
 				E76A5B24A4204914C9C30817 /* InboxAvatarTests.swift */,
+				6B88FE658484B40308B28D13 /* LineupGridDemoFestpackTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -268,6 +284,15 @@
 				B41C74CB306C16EC81337A30 /* ThreadView.swift */,
 			);
 			path = Inbox;
+			sourceTree = "<group>";
+		};
+		9574E2BC49B8298D4A1C3EF1 /* Festpacks */ = {
+			isa = PBXGroup;
+			children = (
+				D8D4FFA7D320185B90470459 /* firefly-fields.festpack.json */,
+				A2B2A769F6FE59B2041F556B /* lost-lands-2026.festpack.json */,
+			);
+			name = Festpacks;
 			sourceTree = "<group>";
 		};
 		95A1A3DC3288FC10DBD418FD /* Firefly */ = {
@@ -310,7 +335,11 @@
 		FF03D4F919007563D571B56D /* Lineup */ = {
 			isa = PBXGroup;
 			children = (
+				5E88E40B311FEE9B2F1B4382 /* ImportPicksSheet.swift */,
+				D245C926F1665311864D01C0 /* LineupGridView.swift */,
+				3EA34C071EFD0793A619E9A6 /* LineupPicksView.swift */,
 				686F2EF2441AE3FF6FC88B41 /* LineupScreen.swift */,
+				45B28DBCD5175DF8DA45C5B9 /* SetDetailSheet.swift */,
 			);
 			path = Lineup;
 			sourceTree = "<group>";
@@ -454,6 +483,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A799FEADA8E9F7CFA215EDEF /* Assets.xcassets in Resources */,
+				EE39AFFD0C1416E122228CFC /* firefly-fields.festpack.json in Resources */,
+				DA080D82BF09C603E6CCA622 /* lost-lands-2026.festpack.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -469,6 +500,7 @@
 				159595A99A88EA86CF1B6140 /* CrewSettingsViewModel.swift in Sources */,
 				6640FC7A5590E35700C97181 /* DiagnosticsViewModel.swift in Sources */,
 				F06690C87C2BC2F7A3802A3C /* InboxAvatarTests.swift in Sources */,
+				CFF3E1EBE59116C8A0544EA2 /* LineupGridDemoFestpackTests.swift in Sources */,
 				F743AE393385BA397AC457C9 /* NearbyNodesViewModel.swift in Sources */,
 				D4509A6BF45005057BE62C69 /* PeripheralDiscovery.swift in Sources */,
 				FDA4D7E8A140B83CAEBB792F /* SettingsViewModel.swift in Sources */,
@@ -501,7 +533,10 @@
 				124E5B4431C5B0C9509B4C85 /* FlareTakeoverView.swift in Sources */,
 				E44CA6E04D280A087AAB74CB /* GPSMapView.swift in Sources */,
 				7FA385525E20C469998B9B83 /* HapticSignaling+UIKit.swift in Sources */,
+				0985E28E3385EBA26AD6DE65 /* ImportPicksSheet.swift in Sources */,
 				EBE7033561E014B40A656D0B /* InboxListView.swift in Sources */,
+				EE89762FDADFB461B43E4537 /* LineupGridView.swift in Sources */,
+				17AE531969F0CDE913B44133 /* LineupPicksView.swift in Sources */,
 				924A1E5F5BB64A7CBC361118 /* LineupScreen.swift in Sources */,
 				D9AB8B9B25F71BA5B021287C /* MapColors.swift in Sources */,
 				2EDFEA952BC97A0A68C06034 /* MapTabView.swift in Sources */,
@@ -513,6 +548,7 @@
 				79D200DF169D9565E09C7EF4 /* RadarRingView.swift in Sources */,
 				A17AFA6D2194A215E8B2C3F7 /* RadarView.swift in Sources */,
 				0318ED28B405C25C7661E064 /* RootView.swift in Sources */,
+				BD2120937E1168EB260D1750 /* SetDetailSheet.swift in Sources */,
 				6EED1D607A836BC23FCF5D43 /* SettingsScreen.swift in Sources */,
 				59A003F0821E61E9DE8E99F5 /* SettingsViewModel.swift in Sources */,
 				76BA2F3212D5F595105F68D0 /* Theme+SwiftUI.swift in Sources */,
@@ -580,7 +616,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 302;
+				CURRENT_PROJECT_VERSION = 309;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -770,7 +806,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 302;
+				CURRENT_PROJECT_VERSION = 309;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

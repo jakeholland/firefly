@@ -37,7 +37,19 @@ public enum SettingsKey: String, Sendable, CaseIterable {
     case festpackSourceURLOverride
     /// `StarredArtistsStore`'s persisted set — comma-joined, each artist
     /// name base64-encoded (that file's own doc comment explains why).
+    /// SUPERSEDED by `pickedFestivalSetIDs` (the Lineup grid/picks
+    /// rework keys a pick to a specific SET, not an artist name, so the
+    /// same artist playing twice can be picked independently) — kept
+    /// rather than removed, per this enum's own append-only convention,
+    /// so an old build's stored value is never silently reinterpreted
+    /// under a repurposed case.
     case starredFestivalArtists
+    /// "app: Lineup by-stage grid, day pills, My picks" — `PicksStore`'s
+    /// persisted set, keyed by `PicksCodec.setID(for:in:)` rather than
+    /// artist name (see that store's own doc comment for why a pick is
+    /// per-SET). Same comma-joined/base64-per-token encoding as
+    /// `starredFestivalArtists` above.
+    case pickedFestivalSetIDs
 }
 
 /// Small and typed rather than a raw `UserDefaults` pass-through, so a

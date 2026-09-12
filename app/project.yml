@@ -70,6 +70,34 @@ targets:
       # Info.plist/entitlements, which are wired via their own settings
       # keys below rather than compiled as sources.
       - path: Firefly/Resources/Assets.xcassets
+      # "app: Lineup by-stage grid, day pills, My picks" — `AlmanacFestpackProvider`'s
+      # bundled fallback (`lost-lands-2026.festpack.json`, "bundled
+      # copy") and `DemoFestpackProvider`'s scripted world
+      # (`firefly-fields.festpack.json`) both read these by name via
+      # `Bundle.main.url(forResource:withExtension:)`
+      # (`MainBundleFestpackLoader`) — but neither file was actually
+      # wired into a Copy Bundle Resources phase before this feature,
+      # so a real device/simulator launch with no cached pack (or any
+      # `-FireflyDemo` launch at all) silently got "no festival pack
+      # loaded yet" forever. Referenced straight from `firmware/assets/`
+      # (like `firmware/core` is compiled in place via
+      # `tools/link_core_sources.sh`) rather than copied into `app/`, so
+      # there is exactly one copy of each fixture in the tree. Plain
+      # `.json` files under `sources:` become resources automatically,
+      # same as `Assets.xcassets` just above.
+      # `group:` is load-bearing, not cosmetic: without it XcodeGen
+      # materialises the `..` hop as a real PBXGroup whose display NAME
+      # is whatever the repo's checkout directory happens to be called
+      # (a worktree named `app-lineup-grid` put `name = "app-lineup-grid"`
+      # straight into the committed pbxproj), so regenerating the
+      # project from a differently-named checkout produced a spurious
+      # diff. Pinning the group makes `xcodegen generate` byte-stable
+      # wherever the repo is cloned — which `app/tools/testflight.sh`
+      # relies on, since it regenerates before every archive.
+      - path: ../firmware/assets/demo/firefly-fields.festpack.json
+        group: Firefly/Resources/Festpacks
+      - path: ../firmware/assets/field/lost-lands-2026.festpack.json
+        group: Firefly/Resources/Festpacks
     dependencies:
       - package: FireflyKit
         product: FireflyCore

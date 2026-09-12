@@ -74,7 +74,10 @@ public final class AppGraph {
     /// with whether there is a radio to talk to — gets the real
     /// `AlmanacFestpackProvider`.
     public let festpack: any FestpackProviding
-    public let starredArtists: any StarredArtistsStoring
+    /// "app: Lineup by-stage grid, day pills, My picks" — superseded
+    /// `starredArtists` (`StarredArtistsStoring`, artist-keyed); picks
+    /// are per-SET now, see `PicksStore`'s own doc comment.
+    public let picks: any PicksStoring
     private let uplink: PhoneGPSUplink
 
     private var privateObservation: Task<Void, Never>?
@@ -200,7 +203,7 @@ public final class AppGraph {
         self.festpack = dependencies.client is DemoMeshtasticClient
             ? DemoFestpackProvider()
             : AlmanacFestpackProvider(settings: dependencies.store)
-        self.starredArtists = StarredArtistsStore(store: dependencies.store)
+        self.picks = PicksStore(store: dependencies.store)
         let client = dependencies.client
         self.uplink = PhoneGPSUplink(
             location: dependencies.location,
@@ -674,7 +677,7 @@ public final class AppGraph {
     /// own `festpackUpdates()` subscription lives with the graph, not
     /// with whichever `detail(for:)` remount happens to show it next.
     public func makeLineupViewModel() -> LineupViewModel {
-        let model = LineupViewModel(festpackProvider: festpack, starredStore: starredArtists)
+        let model = LineupViewModel(festpackProvider: festpack, picksStore: picks)
         model.observe()
         return model
     }
