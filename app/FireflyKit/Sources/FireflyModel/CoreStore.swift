@@ -215,29 +215,47 @@ public final class CoreStore {
     ///
     /// Two rejections, both observed in the field rather than imagined:
     ///
-    ///  * **Ahead of our clock.** `CrewMember.decode`'s `now &- pos_age_ms`
-    ///    is unsigned, so a timestamp even slightly in the future wraps
-    ///    to ~49 days — the "heard 1193 HR ago" bug `DemoWorld.swift`
-    ///    documents. Small skew is tolerated (`futureSkewTolerance`)
-    ///    because two clocks are never exactly equal, and within that
-    ///    tolerance the value is clamped to `now` by `ff_crew` itself.
+    ///  * **Ahead of our clock — by ANY amount.** `CrewMember.decode`'s
+    ///    `now &- pos_age_ms` is unsigned, and so is
+    ///    `ff_crew_freshness`'s own `now_ms - m->pos_age_ms`, so a
+    ///    timestamp even slightly in the future wraps to ~49 days — the
+    ///    "heard 1193 HR ago" bug `DemoWorld.swift` documents.
+    ///
+    ///    This gate originally kept a 60-second `futureSkewTolerance`
+    ///    on the reasoning that "two clocks are never exactly equal"
+    ///    and that `ff_crew` clamps a value inside it back to `now`.
+    ///    MEASURED (PR #294 review), `ff_crew` does no such thing: a
+    ///    position stated just 5 seconds ahead came back through the
+    ///    bridge as `ageMs = 4_294_962_297` — 49.7 days, rendered
+    ///    "1193 HR" by `ff_fmt_age` — with `freshness == .lost`. The
+    ///    tolerance did not absorb skew, it admitted skew into the
+    ///    wrap, which is the exact string it cites as the bug. A crew
+    ///    member standing next to you, on a node whose clock runs a few
+    ///    seconds fast, read LOST.
+    ///
+    ///    So: nothing ahead of our clock is a measurement we can date.
+    ///    Refused, and the caller falls through to `observedAt` — the
+    ///    moment OUR radio received the packet, which is a real local
+    ///    measurement rather than a clamp, and which renders a fast
+    ///    node's live fix as live. On a want_config replay there is no
+    ///    `observedAt`, and the position is dropped as "no position",
+    ///    which is the same rule the rest of this method follows.
     ///  * **Before Meshtastic existed.** A node whose RTC never synced
     ///    reports an epoch near 0. That is not a reading from 1970, it
     ///    is the absence of a reading.
     ///
     /// Deliberately NOT a clamp into range: clamping a future timestamp
     /// to `now` would fabricate the exact "extra fresh" reading
-    /// `LocationFix.age(now:)`'s own comment refuses to produce.
+    /// `LocationFix.age(now:)`'s own comment refuses to produce — and on
+    /// a replay, where `observedAt` is `nil` precisely because nothing
+    /// was observed, it would re-introduce the "just now" lie this
+    /// whole three-tier resolution exists to remove.
     public static func plausibleTimestamp(_ date: Date?, now: Date) -> Date? {
         guard let date else { return nil }
-        guard date.timeIntervalSince(now) <= futureSkewTolerance else { return nil }
+        guard date <= now else { return nil }
         guard date >= earliestPlausibleTimestamp else { return nil }
         return date
     }
-
-    /// Two clocks are never exactly equal; a reading a minute "ahead"
-    /// is skew, not a reading from the future.
-    public static let futureSkewTolerance: TimeInterval = 60
 
     /// 2020-01-01 UTC. Meshtastic did not exist before this, so nothing
     /// on this mesh can honestly claim a reading from earlier — such a

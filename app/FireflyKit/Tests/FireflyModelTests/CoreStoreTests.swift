@@ -325,10 +325,46 @@ final class CoreStoreHonestFreshnessTests: XCTestCase {
                      "a reading from the future is not a reading — unsigned age math wraps it to ~49 days")
     }
 
-    func testSmallClockSkewIsToleratedRatherThanRejected() {
+    /// PR #294 review. This case used to assert the OPPOSITE — that a
+    /// 5-second-ahead timestamp was "tolerated" — on the reasoning that
+    /// two clocks are never exactly equal and that `ff_crew` clamps a
+    /// small skew back to `now`. The assertion was `XCTAssertNotNil`,
+    /// which is a textbook proxy: it measured that the value survived
+    /// the gate, never what it then RENDERED.
+    ///
+    /// Measured, the rendering was the bug the gate's own comment cites:
+    /// a position stated 5 seconds ahead came back as
+    /// `ageMs = 4_294_962_297` (49.7 days, "1193 HR") with
+    /// `freshness == .lost`, because both `CrewMember.decode`'s
+    /// `now &- pos_age_ms` and `ff_crew_freshness`'s
+    /// `now_ms - m->pos_age_ms` are unsigned. A friend standing next to
+    /// you, on a node whose clock runs a few seconds fast, read LOST.
+    func testATimestampAheadOfOurClockByAnyAmountIsRefused() {
         let now = Date()
-        XCTAssertNotNil(CoreStore.plausibleTimestamp(now.addingTimeInterval(5), now: now),
-                        "two clocks are never exactly equal; a few seconds ahead is skew, not a future reading")
+        XCTAssertNil(CoreStore.plausibleTimestamp(now.addingTimeInterval(5), now: now),
+                     "unsigned age math wraps ANY future timestamp to ~49 days — there is no safe tolerance")
+        XCTAssertNil(CoreStore.plausibleTimestamp(now.addingTimeInterval(0.5), now: now))
+        XCTAssertEqual(CoreStore.plausibleTimestamp(now, now: now), now,
+                       "exactly now is age zero, not the future")
+    }
+
+    /// And the consequence, which is the half the old proxy missed: a
+    /// live packet from a node whose clock runs fast is dated by OUR
+    /// receive time and renders LIVE — not dropped, and certainly not
+    /// LOST. The fall-through tier is a real local measurement, so
+    /// nothing is fabricated to get there.
+    func testAFastNodesLivePositionRendersLiveNotFiftyDaysOld() {
+        let store = CoreStore()
+        let now = Date()
+        store.apply(nodeUpdate: snapshot(positionTime: now.addingTimeInterval(5), observedAt: now))
+
+        let member = store.crew.member(nodeID: 1, now: FireflyClock.nowMillis())
+        let position = try? XCTUnwrap(member?.position)
+        XCTAssertNotNil(position, "a fast clock must not cost us the fix — we know when WE received it")
+        XCTAssertEqual(member?.freshness, .live,
+                       "a friend on a node five seconds fast is not 49 days LOST")
+        XCTAssertLessThan(member?.position?.ageMs ?? .max, 60_000,
+                          "the age must come from our own receive time, not from an unsigned wrap")
     }
 
     func testAnUnsyncedRTCEpochIsNotAMeasurement() {
