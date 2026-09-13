@@ -577,12 +577,13 @@ static void dbgconsole_name_set(ff_shell_t *sh, char const *text, ff_dbgconsole_
  * page renders (`ff_shell_diag_debug`, ff_shell.h — one projection, two
  * presentations, per that function's own doc comment), printed as one
  * line per section (link/position/mesh/time/compass/device) — Mesh
- * split across TWO lines (roster+RF, then airtime) rather than one,
- * purely to stay inside DBGCONSOLE_LINE_BUF under GCC's
+ * split across TWO lines (roster+RF, then airtime) — and Link likewise
+ * (identity, then counters, debt/S15c-handshake-stall) — rather than one
+ * each, purely to stay inside DBGCONSOLE_LINE_BUF under GCC's
  * `-Wformat-truncation` (its worst-case estimate for eight `%s` fields
  * in one line exceeded the budget even though no real value ever comes
- * close — see that split's own comment) — so a bench operator gets the
- * whole page in seven reply lines without opening it on the touchscreen.
+ * close — see those splits' own comments) — so a bench operator gets the
+ * whole page in eight reply lines without opening it on the touchscreen.
  * Every "?" below is this fact's own `has_*`-flag (or enum-UNKNOWN
  * member) reading false — never a fabricated value, same honest-data
  * discipline as every other command in this file. */
@@ -594,10 +595,21 @@ static void dbgconsole_diag(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *
 
     /* 1. Link */
     diag_u32_or_q(buf1, sizeof(buf1), d.has_last_frame_age, d.last_frame_age_ms);
-    snprintf(line, sizeof(line), "dbg: diag link=%s node=!%08x name=%s/%s last_frame_ms=%s frames_ok=%u decode_err=%u reconnects=%u",
+    snprintf(line, sizeof(line), "dbg: diag link=%s node=!%08x name=%s/%s last_frame_ms=%s",
              diag_link_name(d.link), (unsigned)d.my_node_id, d.has_short_name ? d.short_name : "?",
-             d.has_long_name ? d.long_name : "?", buf1, (unsigned)d.frames_ok, (unsigned)d.decode_errors,
-             (unsigned)d.reconnects);
+             d.has_long_name ? d.long_name : "?", buf1);
+    reply_line(reply, user, line);
+
+    /* Link counters on their OWN line — the same -Wformat-truncation
+     * budget reason the Mesh section below is split in two: the identity
+     * half above already carries four %s fields whose GCC worst case
+     * nearly fills DBGCONSOLE_LINE_BUF on its own, and
+     * debt/S15c-handshake-stall's `hs_retries` is the counter that pushed
+     * it over. Splitting is also the more readable presentation: one line
+     * of "who are we talking to", one line of "how has that gone". */
+    snprintf(line, sizeof(line), "dbg: diag frames_ok=%u decode_err=%u reconnects=%u hs_retries=%u",
+             (unsigned)d.frames_ok, (unsigned)d.decode_errors, (unsigned)d.reconnects,
+             (unsigned)d.handshake_retries);
     reply_line(reply, user, line);
 
     /* 2. Position (mine) */

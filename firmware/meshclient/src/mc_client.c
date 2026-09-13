@@ -290,6 +290,26 @@ static void mc_fail_and_schedule_reconnect(mc_client_t *c, uint32_t now_ms)
     c->reconnect_at_ms = now_ms + 2000u;
 }
 
+/* Encode and write ONE want_config frame carrying the client's current
+ * `want_config_id`, and stamp the handshake deadline from it. Shared by
+ * mc_begin_handshake() (fresh nonce) and mc_retry_want_config() (same
+ * nonce) so the two can never drift on what goes on the wire or on when
+ * the watchdog starts counting. Returns false if the frame did not go
+ * out at all — a hard transport failure, escalated by the caller. */
+static bool mc_write_want_config(mc_client_t *c, uint32_t now_ms)
+{
+    c->want_config_sent_ms = now_ms;
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    tr.which_payload_variant = meshtastic_ToRadio_want_config_id_tag;
+    tr.payload_variant.want_config_id = c->want_config_id;
+
+    uint8_t buf[32];
+    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+    return pb_encode(&os, meshtastic_ToRadio_fields, &tr) &&
+            mc_send_frame(c, buf, (uint16_t)os.bytes_written);
+}
+
 static void mc_begin_handshake(mc_client_t *c, uint32_t now_ms)
 {
     mc_framer_init(&c->framer);
@@ -300,17 +320,39 @@ static void mc_begin_handshake(mc_client_t *c, uint32_t now_ms)
     c->last_rx_ms = now_ms;
     c->last_heartbeat_ms = now_ms;
     c->reconnect_pending = false;
+    c->handshake_retry_count = 0u; /* a fresh handshake gets the full retry budget */
 
     mc_set_state(c, MC_STATE_HANDSHAKE);
 
-    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
-    tr.which_payload_variant = meshtastic_ToRadio_want_config_id_tag;
-    tr.payload_variant.want_config_id = c->want_config_id;
+    if (!mc_write_want_config(c, now_ms)) {
+        mc_fail_and_schedule_reconnect(c, now_ms);
+    }
+}
 
-    uint8_t buf[32];
-    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
-    if (!pb_encode(&os, meshtastic_ToRadio_fields, &tr) ||
-        !mc_send_frame(c, buf, (uint16_t)os.bytes_written)) {
+/* debt/S15c-handshake-stall — the handshake has gone MC_HANDSHAKE_TIMEOUT_MS
+ * without a config_complete. Ask again.
+ *
+ * The re-send deliberately reuses the SAME `want_config_id` rather than
+ * rotating to a fresh nonce, and that choice is load-bearing for
+ * convergence. Meshtastic's PhoneAPI simply echoes back whatever nonce it
+ * was given, so with the nonce held still, BOTH possible answers complete
+ * this handshake: a reply to the re-send, and a reply to the ORIGINAL
+ * request that was merely slow rather than lost (which a rotated nonce
+ * would throw away at the `config_complete_id == want_config_id` gate,
+ * counting it decode_skipped and buying another full timeout of stall).
+ * Rotating is only necessary when the SESSION is known to be gone — a
+ * reboot, or a full reconnect — and both of those paths go through
+ * mc_begin_handshake(), which does rotate.
+ *
+ * Framer state is deliberately left alone too: frames are, by
+ * construction of the bug being fixed here, arriving and parsing fine, so
+ * re-initing the framer could only discard a legitimate frame currently
+ * mid-flight. Framing is not what is broken. */
+static void mc_retry_want_config(mc_client_t *c, uint32_t now_ms)
+{
+    c->handshake_retry_count++;
+    c->stats.handshake_retries++;
+    if (!mc_write_want_config(c, now_ms)) {
         mc_fail_and_schedule_reconnect(c, now_ms);
     }
 }
@@ -713,6 +755,29 @@ void mc_tick(mc_client_t *c, uint32_t now_ms)
 
     if (c->state != MC_STATE_DISCONNECTED && (now_ms - c->last_rx_ms) >= 30000u) {
         mc_fail_and_schedule_reconnect(c, now_ms);
+    }
+
+    /* debt/S15c-handshake-stall: the silence watchdog above cannot see an
+     * unanswered handshake, because unrelated inbound traffic keeps
+     * feeding it (see MC_HANDSHAKE_TIMEOUT_MS in mc_client.h for the full
+     * bench finding). This is the deadline on the handshake itself.
+     *
+     * Runs AFTER the silence check on purpose: if that check just moved
+     * us out of HANDSHAKE, the link is already being re-dialled from
+     * scratch and there is nothing here left to retry. */
+    if (c->state == MC_STATE_HANDSHAKE &&
+        (uint32_t)(now_ms - c->want_config_sent_ms) >= MC_HANDSHAKE_TIMEOUT_MS) {
+        if (c->handshake_retry_count >= MC_HANDSHAKE_MAX_RETRIES) {
+            /* Budget spent. Escalate to the ordinary drop path — a full
+             * reconnect with a fresh nonce and a fresh budget — rather
+             * than either giving up (the link would stay stuck, which is
+             * the bug) or retrying forever with the same nonce (which
+             * could never recover from a session the radio has genuinely
+             * forgotten). */
+            mc_fail_and_schedule_reconnect(c, now_ms);
+        } else {
+            mc_retry_want_config(c, now_ms);
+        }
     }
 
     if (c->state == MC_STATE_DISCONNECTED && c->reconnect_pending &&

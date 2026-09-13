@@ -196,7 +196,7 @@ line replies `dbg: ? try help`):
 | `cal clear` | drop the STORED calibration back to identity/uncalibrated |
 | `name` | NAME in Settings: stored puck name, mesh-reported name (if any), confirmed/pending, and whether the name was silently adopted from the mesh at boot |
 | `name <text>` | commit `<text>` through the EXACT SAME path the Settings NAME row's DONE button uses — sanitize (letters/digits/space), persist, push the Meshtastic owner update — so the mesh push can be bench-tested against real nodes over USB |
-| `diag` | DIAGNOSTICS: the SAME facts the Settings DIAGNOSTICS page shows — link, my position, mesh link-quality, wall clock, compass, device — as seven `dbg: diag ...` lines |
+| `diag` | DIAGNOSTICS: the SAME facts the Settings DIAGNOSTICS page shows — link, my position, mesh link-quality, wall clock, compass, device — as eight `dbg: diag ...` lines (Link split identity/counters, Mesh split roster-RF/airtime) |
 | `mic` | S30: one-shot mic status + level (present/running/rate/frames/errors/age, RMS/peak/envelope dBFS) — honest `present=0` when absent |
 | `mic on` / `mic off` | S30: start/stop the onboard I2S1 mic reader (off by default) |
 | `mic watch <secs>` | S30: print RMS/peak/envelope once per 250ms for `<secs>` (1-30) seconds, then stop — see `docs/specs/S30-audio-input.md` for the full command reference and the bench acceptance protocol |

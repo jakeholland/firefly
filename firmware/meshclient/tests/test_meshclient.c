@@ -1683,6 +1683,338 @@ static void S03_debt_reboot_then_matching_config_complete_reaches_ready_again(vo
     TEST_ASSERT_EQUAL(MC_STATE_READY, cap.states[1]);
 }
 
+
+/* -------------------------------------------------------------------- */
+/* debt/S15c-handshake-stall — bench finding, 2026-09-13, real puck +    */
+/* XIAO comms brain (Meshtastic 2.7.26) over UART1 GPIO43/44.           */
+/*                                                                      */
+/* Symptom: ~7 minutes after boot the link dropped once and then sat in */
+/* RECONNECTING for 20+ minutes. Throughout, `diag` showed frames_ok    */
+/* climbing steadily (84 -> 92 -> 138), decode_err 0, last_frame_ms     */
+/* 0.4-11 s, reconnects STUCK at 1, and the heard list still gaining    */
+/* new nodes — so FromRadio frames were arriving, framing, decoding and */
+/* dispatching the whole time. Only `send`/`dm` never transmitted       */
+/* ("queued"), because the shell gates sends on READY. A reset restored */
+/* CONNECTED in 20 ms.                                                  */
+/*                                                                      */
+/* Root cause: mc_tick()'s only liveness watchdog was "no bytes read    */
+/* for 30 s", and `last_rx_ms` is refreshed by ANY inbound byte in ANY  */
+/* state. A handshake whose want_config went unanswered therefore kept  */
+/* its own watchdog fed by the radio's unrelated traffic, and nothing   */
+/* ever re-issued want_config — the client only sent one per handshake. */
+/* Same blind spot FromRadio.rebooted handling was added for, reached   */
+/* without a reboot to announce.                                        */
+/*                                                                      */
+/* These tests drive the client with a scripted FromRadio stream:       */
+/* handshake OK -> drop -> frames RESUME without a config_complete, and */
+/* pin that the client re-asks and converges to READY once the stream   */
+/* answers. The load-bearing assertion in each is that `reconnects`     */
+/* does NOT move during the stall: the recovery must come from the      */
+/* handshake watchdog, not from the 30 s silence watchdog quietly       */
+/* re-dialling (which the flowing traffic must keep suppressed — if it  */
+/* fired, these tests would pass while the real bug stood).             */
+/* -------------------------------------------------------------------- */
+
+/* An ordinary nodeDB frame — the "frames are flowing" traffic. Chosen
+ * because it is what the bench actually saw keeping the heard list
+ * updating, and because mc_process_from_radio dispatches it regardless of
+ * state, so it exercises the real path rather than a decode_skipped stub. */
+static uint16_t build_nodeinfo_frame(uint32_t num, uint8_t *out, size_t out_cap)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_node_info_tag;
+    fr.payload_variant.node_info.num = num;
+
+    uint8_t payload[128];
+    pb_ostream_t os = pb_ostream_from_buffer(payload, sizeof(payload));
+    if (!pb_encode(&os, meshtastic_FromRadio_fields, &fr)) {
+        return 0;
+    }
+    return mc_frame_encode(out, out_cap, payload, (uint16_t)os.bytes_written);
+}
+
+/* Walk every complete frame the client has written and count the
+ * want_config ones, recording the last nonce seen. Counting on the WIRE
+ * (rather than trusting mc_stats_t.handshake_retries, which the code
+ * under test also maintains) is deliberate: a retry that bumps a counter
+ * without actually re-asking the radio would fix nothing, and is exactly
+ * the mutation a stats-only assertion would wave through. */
+static uint32_t tx_want_config_count(mock_io_t const *io, uint32_t *out_last_nonce)
+{
+    uint32_t count = 0;
+    size_t pos = 0;
+    while (pos + 4u <= io->tx_len) {
+        TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC1, io->tx_buf[pos]);
+        TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC2, io->tx_buf[pos + 1u]);
+        uint16_t const flen = (uint16_t)((io->tx_buf[pos + 2u] << 8) | io->tx_buf[pos + 3u]);
+        TEST_ASSERT_LESS_OR_EQUAL_size_t(io->tx_len - pos - 4u, (size_t)flen);
+
+        meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+        pb_istream_t is = pb_istream_from_buffer(io->tx_buf + pos + 4u, flen);
+        TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+        if (tr.which_payload_variant == meshtastic_ToRadio_want_config_id_tag) {
+            count++;
+            if (out_last_nonce != NULL) {
+                *out_last_nonce = tr.payload_variant.want_config_id;
+            }
+        }
+        pos += 4u + (size_t)flen;
+    }
+    return count;
+}
+
+/* Hand the client exactly one frame and tick it at `t_ms`. */
+static void feed_frame(mc_client_t *c, mock_io_t *io, uint8_t const *frame, uint16_t len, uint32_t t_ms)
+{
+    io->rx_data = frame;
+    io->rx_len = len;
+    io->rx_pos = 0;
+    mc_tick(c, t_ms);
+}
+
+/* THE REPRO. Handshake completes; the link drops; frames resume with no
+ * config_complete in them. Before the fix this hung in HANDSHAKE for as
+ * long as the traffic kept flowing (20+ minutes on the bench, unbounded
+ * in principle). After it, the client re-asks on a deadline and reaches
+ * READY the moment the stream answers. */
+static void S03_debt_handshake_stall_reissues_want_config_and_reaches_ready(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+
+    uint8_t node_frame[200];
+    uint16_t const node_len = build_nodeinfo_frame(0x0D0D0D0Du, node_frame, sizeof(node_frame));
+    TEST_ASSERT_TRUE(node_len > 0);
+
+    /* --- 1. A healthy handshake, exactly as on a fresh boot. --- */
+    mc_connect(&c);
+    uint8_t cc[32];
+    uint16_t cc_len = build_config_complete_frame(c.want_config_id, cc, sizeof(cc));
+    TEST_ASSERT_TRUE(cc_len > 0);
+    feed_frame(&c, &io, cc, cc_len, 100u);
+    TEST_ASSERT_EQUAL(MC_STATE_READY, mc_state(&c));
+    TEST_ASSERT_EQUAL_UINT32(1u, tx_want_config_count(&io, NULL));
+
+    /* --- 2. The drop: the radio goes quiet long enough for the 30 s
+     * silence watchdog, then the client re-dials (reconnects -> 1) and a
+     * SECOND want_config goes out. This is the bench's `reconnects=1`. */
+    io.rx_data = NULL;
+    io.rx_len = 0;
+    io.rx_pos = 0;
+    mc_tick(&c, 30200u); /* -> DISCONNECTED, retry armed 2 s out */
+    TEST_ASSERT_EQUAL(MC_STATE_DISCONNECTED, mc_state(&c));
+    mc_tick(&c, 32300u); /* -> HANDSHAKE, want_config #2 */
+    TEST_ASSERT_EQUAL(MC_STATE_HANDSHAKE, mc_state(&c));
+    TEST_ASSERT_EQUAL_UINT32(1u, mc_get_stats(&c).reconnects);
+    TEST_ASSERT_EQUAL_UINT32(2u, tx_want_config_count(&io, NULL));
+
+    uint32_t const frames_at_stall_start = mc_get_stats(&c).frames_ok;
+
+    /* --- 3. Frames RESUME — but the handshake is never answered. One
+     * NodeInfo per second for 37 s — the bench's "heard list still
+     * updating" while `link=RECONNECTING`. The window deliberately stops
+     * just short of the retry budget running out (which would escalate to
+     * a second re-dial, a different path pinned by its own test below), so
+     * what recovers the link here is unambiguously the handshake retry. --- */
+    for (uint32_t t = 33000u; t <= 70000u; t += 1000u) {
+        feed_frame(&c, &io, node_frame, node_len, t);
+    }
+
+    mc_stats_t const during = mc_get_stats(&c);
+
+    /* The premise the whole test rests on: traffic really was flowing and
+     * really was decoding, so the 30 s silence watchdog stayed asleep.
+     * If `reconnects` had moved, recovery below would prove nothing about
+     * the handshake watchdog — it would just be the old re-dial path. */
+    TEST_ASSERT_GREATER_THAN_UINT32_MESSAGE(frames_at_stall_start + 30u, during.frames_ok,
+                                             "the scripted stream must actually be framing");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0u, during.decode_errors, "the scripted stream must decode cleanly");
+    TEST_ASSERT_GREATER_OR_EQUAL_INT_MESSAGE(1, cap.node_count, "NodeInfo must still dispatch mid-handshake");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1u, during.reconnects,
+                                      "flowing traffic must keep the 30 s silence watchdog asleep — "
+                                      "recovery has to come from the handshake watchdog, not a re-dial");
+
+    /* The fix: want_config was actually RE-ASKED on the wire, bounded. */
+    uint32_t last_nonce = 0u;
+    uint32_t const want_configs = tx_want_config_count(&io, &last_nonce);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(2u + MC_HANDSHAKE_MAX_RETRIES, want_configs,
+                                      "a stalled handshake must re-issue want_config, and stop at the budget");
+    TEST_ASSERT_EQUAL_UINT32(MC_HANDSHAKE_MAX_RETRIES, during.handshake_retries);
+    TEST_ASSERT_EQUAL_MESSAGE(MC_STATE_HANDSHAKE, mc_state(&c),
+                              "still handshaking — nothing has answered yet");
+
+    /* --- 4. The stream finally answers the request that is actually
+     * outstanding. The link must converge to READY. --- */
+    cc_len = build_config_complete_frame(last_nonce, cc, sizeof(cc));
+    TEST_ASSERT_TRUE(cc_len > 0);
+    feed_frame(&c, &io, cc, cc_len, 71000u);
+
+    TEST_ASSERT_EQUAL_MESSAGE(MC_STATE_READY, mc_state(&c),
+                              "a drop must converge back to READY while the radio is alive");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1u, mc_get_stats(&c).reconnects,
+                                      "and it must get there without a single extra re-dial");
+}
+
+/* The retry deliberately reuses the CURRENT nonce rather than rotating to
+ * a fresh one, so an answer to the ORIGINAL request — merely slow, not
+ * lost — still completes the handshake instead of being discarded at the
+ * nonce gate and costing another full timeout. This pins that choice:
+ * the nonce the client asked with first is still the nonce it accepts
+ * after a retry. */
+static void S03_debt_handshake_retry_keeps_nonce_so_a_late_answer_still_lands(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+
+    mc_connect(&c);
+    uint32_t const original_nonce = c.want_config_id;
+
+    uint8_t node_frame[200];
+    uint16_t const node_len = build_nodeinfo_frame(0x0E0E0E0Eu, node_frame, sizeof(node_frame));
+    TEST_ASSERT_TRUE(node_len > 0);
+
+    /* Traffic flows; no config_complete. Cross one timeout so exactly one
+     * retry goes out. */
+    for (uint32_t t = 1000u; t <= 11000u; t += 1000u) {
+        feed_frame(&c, &io, node_frame, node_len, t);
+    }
+    TEST_ASSERT_EQUAL_UINT32(1u, mc_get_stats(&c).handshake_retries);
+
+    uint32_t retry_nonce = 0u;
+    TEST_ASSERT_EQUAL_UINT32(2u, tx_want_config_count(&io, &retry_nonce));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(original_nonce, retry_nonce,
+                                      "a retry re-asks with the SAME nonce — rotating would throw away a "
+                                      "slow answer to the original request");
+
+    /* The original request's answer, arriving late. It must still land. */
+    uint8_t cc[32];
+    uint16_t const cc_len = build_config_complete_frame(original_nonce, cc, sizeof(cc));
+    TEST_ASSERT_TRUE(cc_len > 0);
+    feed_frame(&c, &io, cc, cc_len, 11500u);
+
+    TEST_ASSERT_EQUAL(MC_STATE_READY, mc_state(&c));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0u, mc_get_stats(&c).reconnects,
+                                      "a late answer is not a link failure");
+}
+
+/* Bounded, and still converging: a handshake nobody ever answers must
+ * spend its retry budget and then escalate to the ordinary reconnect path
+ * — a fresh nonce, a fresh budget — rather than retrying the same dead
+ * session forever. The retry budget bounds one ATTEMPT; the reconnect
+ * loop outside it is what never gives up. */
+static void S03_debt_handshake_retry_budget_escalates_to_a_fresh_reconnect(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+
+    mc_connect(&c);
+    uint32_t const first_nonce = c.want_config_id;
+
+    uint8_t node_frame[200];
+    uint16_t const node_len = build_nodeinfo_frame(0x0F0F0F0Fu, node_frame, sizeof(node_frame));
+    TEST_ASSERT_TRUE(node_len > 0);
+
+    /* Never answered, but never silent either — one frame per second past
+     * the whole budget (4 x 10 s) and the 2 s reconnect backoff. */
+    for (uint32_t t = 1000u; t <= 45000u; t += 1000u) {
+        feed_frame(&c, &io, node_frame, node_len, t);
+    }
+
+    mc_stats_t const s = mc_get_stats(&c);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(MC_HANDSHAKE_MAX_RETRIES, s.handshake_retries,
+                                      "retries are bounded per handshake");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1u, s.reconnects,
+                                      "a spent budget escalates to a full reconnect, so the link keeps trying");
+    TEST_ASSERT_EQUAL_MESSAGE(MC_STATE_HANDSHAKE, mc_state(&c), "and lands in a brand new handshake");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(first_nonce, c.want_config_id,
+                                  "a full reconnect rotates the nonce — the old session is presumed gone");
+
+    /* Budget reset with the new handshake: this one can retry again. */
+    TEST_ASSERT_EQUAL_UINT32(0u, c.handshake_retry_count);
+
+    /* And the new handshake completes normally when answered. */
+    uint8_t cc[32];
+    uint16_t const cc_len = build_config_complete_frame(c.want_config_id, cc, sizeof(cc));
+    TEST_ASSERT_TRUE(cc_len > 0);
+    feed_frame(&c, &io, cc, cc_len, 46000u);
+    TEST_ASSERT_EQUAL(MC_STATE_READY, mc_state(&c));
+}
+
+/* The watchdog must not fire on a handshake that is simply BUSY. A
+ * whole-mesh NodeInfo dump can take several ticks to drain
+ * (MC_TICK_MAX_FRAMES); nothing about that is a stall, and a client that
+ * re-asked mid-dump would restart the dump forever. */
+static void S03_debt_handshake_answered_within_timeout_never_retries(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+
+    mc_connect(&c);
+
+    uint8_t node_frame[200];
+    uint16_t const node_len = build_nodeinfo_frame(0x11111111u, node_frame, sizeof(node_frame));
+    TEST_ASSERT_TRUE(node_len > 0);
+
+    /* A dump that runs right up to — but not past — the deadline. */
+    for (uint32_t t = 500u; t < MC_HANDSHAKE_TIMEOUT_MS; t += 500u) {
+        feed_frame(&c, &io, node_frame, node_len, t);
+    }
+    TEST_ASSERT_EQUAL(MC_STATE_HANDSHAKE, mc_state(&c));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0u, mc_get_stats(&c).handshake_retries,
+                                      "a busy handshake is not a stalled one");
+    TEST_ASSERT_EQUAL_UINT32(1u, tx_want_config_count(&io, NULL));
+
+    uint8_t cc[32];
+    uint16_t const cc_len = build_config_complete_frame(c.want_config_id, cc, sizeof(cc));
+    TEST_ASSERT_TRUE(cc_len > 0);
+    feed_frame(&c, &io, cc, cc_len, MC_HANDSHAKE_TIMEOUT_MS - 100u);
+
+    TEST_ASSERT_EQUAL(MC_STATE_READY, mc_state(&c));
+    TEST_ASSERT_EQUAL_UINT32(0u, mc_get_stats(&c).handshake_retries);
+
+    /* And READY is not subject to the handshake deadline at all: long
+     * past it, with traffic flowing, nothing re-asks. */
+    for (uint32_t t = MC_HANDSHAKE_TIMEOUT_MS; t <= 3u * MC_HANDSHAKE_TIMEOUT_MS; t += 1000u) {
+        feed_frame(&c, &io, node_frame, node_len, t);
+    }
+    TEST_ASSERT_EQUAL(MC_STATE_READY, mc_state(&c));
+    TEST_ASSERT_EQUAL_UINT32(0u, mc_get_stats(&c).handshake_retries);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1u, tx_want_config_count(&io, NULL),
+                                      "a READY link must never re-issue want_config");
+}
+
 /* -------------------------------------------------------------------- */
 /* debt/meshclient-contracts — write() backpressure contract             */
 /*                                                                       */
@@ -3714,6 +4046,11 @@ int main(void)
     RUN_TEST(S03_debt_reboot_frame_after_ready_drops_state_and_reissues_want_config);
     RUN_TEST(S03_debt_reboot_stale_config_complete_is_ignored_per_handshake_rules);
     RUN_TEST(S03_debt_reboot_then_matching_config_complete_reaches_ready_again);
+
+    RUN_TEST(S03_debt_handshake_stall_reissues_want_config_and_reaches_ready);
+    RUN_TEST(S03_debt_handshake_retry_keeps_nonce_so_a_late_answer_still_lands);
+    RUN_TEST(S03_debt_handshake_retry_budget_escalates_to_a_fresh_reconnect);
+    RUN_TEST(S03_debt_handshake_answered_within_timeout_never_retries);
 
     RUN_TEST(S03_debt_write_backpressure_below_budget_sends_frame_no_reconnect);
     RUN_TEST(S03_debt_write_backpressure_budget_exhausted_triggers_reconnect);

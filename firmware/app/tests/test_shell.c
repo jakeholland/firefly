@@ -7217,6 +7217,69 @@ static void feat_outbox_flushes_on_ready_edge_and_marks_sent(void)
     TEST_ASSERT_EQUAL_UINT32(1u, it->packet_id); /* the spy's first handed-out id */
 }
 
+/* debt/S15c-handshake-stall (bench finding, 2026-09-13) — the shell half
+ * of the stuck-RECONNECTING report: with the link stalled mid-handshake,
+ * `send`/`dm` only ever reported "queued" and never transmitted. That
+ * part was working as designed (a send with no READY link queues), but
+ * nothing proved the queue actually DRAINS once READY returns from a
+ * handshake that stalled and recovered — as opposed to from a cold NONE
+ * -> READY, which is the only path the ready-edge test above walks.
+ *
+ * This walks the bench sequence: CONNECTED, a drop, a long stall with
+ * texts piling up, then READY again. The two assertions that matter are
+ * that NOTHING flushes while the link is still reconnecting (a tick is
+ * not a ready edge), and that EVERYTHING flushes on the edge when it
+ * finally comes — in order, oldest first. */
+static void feat_outbox_flushes_after_a_stalled_handshake_recovers(void)
+{
+    harness_init(100000u, false);
+    outbox_wire_spy_install(/*accept=*/true);
+
+    /* A healthy link, then the drop. */
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    advance(1000u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SHELL_LINK_CONNECTED, ff_shell_link(&H.shell));
+
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE); /* the drop — RECONNECTING */
+    TEST_ASSERT_EQUAL_INT(FF_SHELL_LINK_RECONNECTING, ff_shell_link(&H.shell));
+
+    /* Sends during the stall queue, even though the SENDER would accept:
+     * mc_send_text refuses when the client is not READY, which is what
+     * the spy is standing in for here. */
+    OBS.accept = false;
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_debug_send_text(&H.shell, 0xDA1Au, "first"));
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_debug_send_text(&H.shell, 0xDA1Au, "second"));
+    TEST_ASSERT_EQUAL_UINT8(2, ff_shell_outbox_pending_count(&H.shell));
+
+    /* The stall itself: many ticks, link never ready. Nothing may flush —
+     * a tick is not an edge, and retrying into a dead link would burn the
+     * outbox against a sender that cannot take it. */
+    OBS.n_calls = 0;
+    for (int i = 0; i < 50; i++) {
+        advance(1000u);
+        ff_shell_tick(&H.shell, H.clk.t);
+    }
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, OBS.n_calls, "a reconnecting link must not be retried into");
+    TEST_ASSERT_EQUAL_UINT8(2, ff_shell_outbox_pending_count(&H.shell));
+
+    /* mc_client converges (the handshake watchdog re-asked and got an
+     * answer): READY returns, and the queue drains on that edge. */
+    OBS.accept = true;
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    advance(1000u);
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, OBS.n_calls, "both queued texts must be retried on the ready edge");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("second", OBS.last_text, "oldest first — 'second' is the last attempt");
+    TEST_ASSERT_EQUAL_UINT8(0, ff_shell_outbox_pending_count(&H.shell));
+
+    ff_feed_t const *feed = ff_shell_feed(&H.shell);
+    TEST_ASSERT_EQUAL(FF_SEND_SENT, ff_feed_at(feed, 0)->send_status);
+    TEST_ASSERT_EQUAL(FF_SEND_SENT, ff_feed_at(feed, 1)->send_status);
+}
+
 /* A DIRECT send (non-broadcast dest) marks want_ack true when SENT — a
  * BROADCAST send marks it false. Both matter: only the direct one is
  * eligible for the ACK-timeout sweep / a routing ack at all. */
@@ -10346,6 +10409,12 @@ static void S_diag_all_unknown_when_nothing_observed(void)
     TEST_ASSERT_EQUAL_UINT32(0u, d->frames_ok);
     TEST_ASSERT_EQUAL_UINT32(0u, d->decode_errors);
     TEST_ASSERT_EQUAL_UINT32(0u, d->reconnects);
+    /* debt/S15c-handshake-stall — a shell that has never handshaked has
+     * never retried one either. Projected from mc_stats_t.handshake_retries
+     * like every other counter on this line, and reachable on its own via
+     * ff_shell_handshake_retries (the device target's per-frame read). */
+    TEST_ASSERT_EQUAL_UINT32(0u, d->handshake_retries);
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_shell_handshake_retries(&H.shell));
 
     TEST_ASSERT_FALSE(d->pos_ok);
     TEST_ASSERT_EQUAL_INT(FF_APP_POS_SRC_UNKNOWN, d->pos_src);
@@ -11322,6 +11391,7 @@ int main(void)
 
     RUN_TEST(feat_outbox_queues_when_link_down_shows_waiting);
     RUN_TEST(feat_outbox_flushes_on_ready_edge_and_marks_sent);
+    RUN_TEST(feat_outbox_flushes_after_a_stalled_handshake_recovers);
     RUN_TEST(feat_outbox_direct_send_wants_ack_broadcast_does_not);
     RUN_TEST(feat_outbox_queue_full_drops_oldest_and_marks_dropped);
     RUN_TEST(feat_outbox_routing_ack_ok_marks_delivered);

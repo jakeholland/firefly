@@ -76,6 +76,12 @@
 #include "ff_debug_console.h" /* bench/debug console dispatch — docs/hardware/comms-brain.md */
 #endif
 
+/* debt/S15c-handshake-stall — MC_HANDSHAKE_TIMEOUT_MS/MC_HANDSHAKE_MAX_RETRIES
+ * for the retry log line below. Unconditional (unlike mc_transport_uart.h):
+ * the retry counter is read on every target, and ff_meshclient is already a
+ * REQUIRES of this component either way. */
+#include "mc_client.h"
+
 #if CONFIG_FF_LINK_UART
 #include "mc_transport_uart.h" /* S15c — the real mesh transport, comms brain over GPIO43/44 */
 #endif
@@ -1718,6 +1724,15 @@ static void dbgconsole_poll(ff_shell_t *sh, uint32_t now_ms)
  * pre-ff_shell_init reality — nothing has connected to anything yet. */
 static ff_shell_link_t s_link_logged = FF_SHELL_LINK_NONE;
 
+/* debt/S15c-handshake-stall (bench finding 2026-09-13) — same
+ * sample-and-log-the-change shape as `s_link_logged` above, for the
+ * want_config retry counter (`ff_shell_handshake_retries`, monotonic
+ * since boot). Logged at WARN, not INFO: a retry means the comms brain
+ * did not answer a handshake within MC_HANDSHAKE_TIMEOUT_MS, which is
+ * never normal on a healthy link, and it is the line that would have
+ * explained a 20-minute RECONNECTING stall at a glance. */
+static uint32_t s_handshake_retries_logged = 0u;
+
 static char const *ff_link_state_name(ff_shell_link_t link)
 {
     switch (link) {
@@ -2870,6 +2885,21 @@ void app_main(void)
             ESP_LOGI(TAG, "S15c link state: %s -> %s", ff_link_state_name(s_link_logged),
                      ff_link_state_name(link_now));
             s_link_logged = link_now;
+        }
+
+        /* debt/S15c-handshake-stall — log EVERY want_config re-send, once
+         * each (the counter only ever grows, so a change is exactly one
+         * retry having just gone out). Cheap enough for the frame loop:
+         * ff_shell_handshake_retries() is a struct-field read, not the
+         * whole ff_app_diag_t projection `diag` builds. */
+        uint32_t const hs_retries_now = ff_shell_handshake_retries(&s_shell);
+        if (hs_retries_now != s_handshake_retries_logged) {
+            ESP_LOGW(TAG,
+                     "S15c want_config retry #%u since boot — no config_complete within %u ms, "
+                     "re-asking with the same nonce (%u retries per handshake, then a full reconnect)",
+                     (unsigned)hs_retries_now, (unsigned)MC_HANDSHAKE_TIMEOUT_MS,
+                     (unsigned)MC_HANDSHAKE_MAX_RETRIES);
+            s_handshake_retries_logged = hs_retries_now;
         }
 
         /* S25 slice c — sample the battery ADC every FF_BATT_SAMPLE_PERIOD_MS
