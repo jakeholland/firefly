@@ -422,14 +422,24 @@ public final class AppGraph {
         FileHandle.standardError.write(Data(line.utf8))
     }
 
-    /// True when THIS process is an XCTest host. `XCTestConfigurationFilePath`
-    /// is the same environment key XCTest itself sets on every test run,
-    /// app-hosted or not (Apple's own documented mechanism, not a
-    /// heuristic this repo invented) — true just as much for `swift
-    /// test`'s own `AppGraphTests` (a completely different process, never
-    /// hosted by `Firefly.app`) as for `xcodebuild test`. Deliberately
-    /// NOT gated on by itself — `autoConnectToLastKnownPeripheral()`'s
-    /// own doc comment on `skipLaunchAutoConnectUnderXCTest` says why.
+    /// True when `XCTestConfigurationFilePath` is set — Xcode's own test
+    /// runner sets this for `xcodebuild test` (both an app-hosted UI
+    /// test and a logic-test bundle), which is the ONLY case this
+    /// property is actually used to gate (`autoConnectToLastKnownPeripheral()`'s
+    /// own doc comment on `skipLaunchAutoConnectUnderXCTest` says why it
+    /// has to be an explicit opt-in rather than a bare check on this).
+    ///
+    /// CORRECTION (app: Map subscribes to festpack updates, 2026-09-13
+    /// review — this doc comment previously claimed the opposite):
+    /// measured on this toolchain, a bare `swift test` process does NOT
+    /// set this variable at all — `shouldAutoRefreshFestpack(isRunningUnderXCTest:)`'s
+    /// own doc comment states this correctly and is the reason
+    /// `isXCTestRuntimeLoaded` (below) exists as a SEPARATE, wider
+    /// check: it is the one signal that also catches `swift test`'s own
+    /// `AppGraphTests` host process. Do not widen THIS property to
+    /// match — it is deliberately narrower, and `isXCTestRuntimeLoaded`'s
+    /// own doc comment explains why the two are kept apart rather than
+    /// unified into one.
     static var isRunningUnderXCTest: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }

@@ -151,12 +151,34 @@ public struct MapFestpack: Sendable, Equatable, Codable {
 
 /// The Map tab's OWN narrow seam onto "whatever festpack is currently
 /// loaded" — see this file's header comment for why it exists
-/// independently of the parallel `FestpackProviding` slice. A single
-/// async accessor rather than a stream: the Map tab re-reads this on
-/// appear / on pull-to-refresh, it does not need push updates for v1
-/// (matching S09's own "fixed-fit v1" framing for the geometry itself).
+/// independently of the parallel `FestpackProviding` slice.
 public protocol MapFestpackSource: Sendable {
+    /// A single, point-in-time read — still here for whatever wants a
+    /// one-shot answer (`FestpackProvidingMapAdapterTests`'s own direct
+    /// calls). No longer what `MapViewModel.observe()` itself drives
+    /// off of — see `festpackUpdates()` below.
     func currentFestpack() async -> MapFestpack?
+    /// "app: Map subscribes to festpack updates" (2026-09-13): a v1
+    /// single-read (this protocol's original "it does not need push
+    /// updates for v1" framing) meant `MapViewModel.observe()` read
+    /// `currentFestpack()` exactly ONCE, at whatever instant the Map tab
+    /// happened to appear. `AlmanacFestpackProvider` loads its
+    /// cache/bundled pack lazily inside its OWN `refresh()`/
+    /// `refreshIfNeeded()`, which `AppGraph.start()` fires as a detached
+    /// `Task` — so a Map tab opened before that task finished read
+    /// `nil` and had no way to ever learn otherwise: `FieldMapView`'s
+    /// spinner ran forever, and a later Settings festival-picker switch
+    /// (which does not re-run `MapViewModel.observe()`) never reached
+    /// Map either.
+    ///
+    /// A stream closes both gaps the same way `LineupViewModel.observe()`
+    /// already closes them for the Lineup tab: subscribe once, apply
+    /// whatever loads whenever it loads. `nil` is a real element — see
+    /// `FestpackProvidingMapAdapter.festpackUpdates()`'s own doc comment
+    /// for the two honest reasons one is ever sent. `DemoMapFestpackSource`
+    /// (Firefly Fields never changes mid-session) still only ever needs
+    /// to emit once.
+    func festpackUpdates() -> AsyncStream<MapFestpack?>
 }
 
 // PR #283 review, SHOULD-FIX 7, resolved: the risk this note originally

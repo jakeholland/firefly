@@ -124,6 +124,67 @@ final class FestpackProvidingMapAdapterTests: XCTestCase {
         let mapped = await adapter.currentFestpack()
         XCTAssertEqual(mapped?.stages.count, 7)
     }
+
+    // MARK: - festpackUpdates() ("app: Map subscribes to festpack updates", 2026-09-13)
+
+    /// The mapping half: each real `Festpack` the provider publishes
+    /// must come through as `map(_:)` would produce it, one element per
+    /// upstream yield.
+    func testFestpackUpdatesMapsEachRealPackThroughMap() async throws {
+        let real = try loadLostLands()
+        let provider = PushableFestpackProviding()
+        let adapter = FestpackProvidingMapAdapter(provider: provider)
+        var iterator = adapter.festpackUpdates().makeAsyncIterator()
+
+        provider.push(real)
+        let firstElement = await iterator.next()
+        let first = try XCTUnwrap(firstElement)
+        XCTAssertEqual(first, FestpackProvidingMapAdapter.map(real))
+    }
+
+    /// The honest-clear half: a `nil` from the real provider (a festival
+    /// switch landing on nothing cached, `AlmanacFestpackProvider
+    /// .reloadIfFestivalChanged()`'s own `hub.yield(nil)`) must come
+    /// through as `nil` here too — never silently dropped, never the
+    /// previous pack held over.
+    func testFestpackUpdatesForwardsAnHonestNilWhenTheProviderClears() async throws {
+        let real = try loadLostLands()
+        let provider = PushableFestpackProviding()
+        let adapter = FestpackProvidingMapAdapter(provider: provider)
+        var iterator = adapter.festpackUpdates().makeAsyncIterator()
+
+        provider.push(real)
+        let loadedElement = await iterator.next()
+        let loaded = try XCTUnwrap(loadedElement)
+        XCTAssertNotNil(loaded)
+
+        provider.push(nil)
+        let cleared = await iterator.next()
+        XCTAssertEqual(cleared, .some(nil), "a provider clear must forward as an honest nil element, not be dropped")
+    }
+
+    /// A `Festpack` that parses fine but has no known origin
+    /// (`originKnown == false`) must map to `nil` on the stream too —
+    /// same rule `currentFestpack()`/`map(_:)` already enforce for a
+    /// one-shot read.
+    func testFestpackUpdatesMapsAnUnknownOriginPackToNil() async throws {
+        let noOriginJSON = Data("""
+        {"festpack":"0.1","festival":{"name":"No Origin Fest","year":2027,"start":"2027-07-01","end":"2027-07-02"},
+         "stages":[],"schedule":[]}
+        """.utf8)
+        guard case .success(let noOrigin) = FestpackParser.parse(noOriginJSON) else {
+            return XCTFail("fixture must parse")
+        }
+        XCTAssertFalse(noOrigin.originKnown, "precondition: this fixture must have no known origin")
+
+        let provider = PushableFestpackProviding()
+        let adapter = FestpackProvidingMapAdapter(provider: provider)
+        var iterator = adapter.festpackUpdates().makeAsyncIterator()
+
+        provider.push(noOrigin)
+        let mapped = await iterator.next()
+        XCTAssertEqual(mapped, .some(nil))
+    }
 }
 
 /// A minimal `FestpackProviding` test double — `currentFestpack()`'s own
@@ -135,9 +196,50 @@ private actor StubFestpackProviding: FestpackProviding {
     init(pack: Festpack?) { self.pack = pack }
     func current() async -> Festpack? { pack }
     func sourceState() async -> FestpackSourceState { pack == nil ? .none : .fetched() }
-    nonisolated func festpackUpdates() -> AsyncStream<Festpack> {
+    nonisolated func festpackUpdates() -> AsyncStream<Festpack?> {
         AsyncStream { $0.finish() }
     }
     func refresh() async {}
     func refreshIfNeeded() async {}
+}
+
+/// A `FestpackProviding` test double whose `festpackUpdates()` stream is
+/// driven by explicit `push(_:)` calls, including `nil` — proving
+/// `FestpackProvidingMapAdapter.festpackUpdates()` forwards exactly what
+/// the real provider publishes, `nil` included, rather than only ever
+/// relaying a non-optional pack.
+private final class PushableFestpackProviding: FestpackProviding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: AsyncStream<Festpack?>.Continuation?
+    private var latest: Festpack?
+
+    /// A plain, non-`async` accessor — `NSLock.lock()`/`unlock()` are
+    /// unavailable directly inside an `async` function body on this
+    /// toolchain, so the locking itself has to happen in a synchronous
+    /// helper that `current()` (below) merely calls, never `await`s.
+    private func readLatest() -> Festpack? {
+        lock.lock()
+        defer { lock.unlock() }
+        return latest
+    }
+
+    func current() async -> Festpack? { readLatest() }
+    func sourceState() async -> FestpackSourceState { .none }
+    func festpackUpdates() -> AsyncStream<Festpack?> {
+        AsyncStream { continuation in
+            lock.lock()
+            self.continuation = continuation
+            lock.unlock()
+        }
+    }
+    func refresh() async {}
+    func refreshIfNeeded() async {}
+
+    func push(_ pack: Festpack?) {
+        lock.lock()
+        latest = pack
+        let continuation = self.continuation
+        lock.unlock()
+        continuation?.yield(pack)
+    }
 }

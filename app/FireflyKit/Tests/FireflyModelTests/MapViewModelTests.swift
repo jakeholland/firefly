@@ -17,6 +17,61 @@ private final class FixedConnectivity: NetworkConnectivityObserving, @unchecked 
     }
 }
 
+/// A `MapFestpackSource` test double whose `festpackUpdates()` stream is
+/// driven entirely by `push(_:)` calls made AFTER `observe()` has already
+/// subscribed — the exact shape of the real race
+/// (`AlmanacFestpackProviderTests`' fetches, `FestivalPickerViewModel
+/// .select(_:)`'s switches) this file's own new tests below prove
+/// `MapViewModel` now survives. `currentFestpack()` is never called by
+/// `MapViewModel` any more (`observe()`'s own doc comment) — it stays
+/// implemented here only because `MapFestpackSource` still requires it.
+private final class ControllableMapFestpackSource: MapFestpackSource, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: AsyncStream<MapFestpack?>.Continuation?
+
+    func currentFestpack() async -> MapFestpack? { nil }
+
+    func festpackUpdates() -> AsyncStream<MapFestpack?> {
+        AsyncStream { continuation in
+            lock.lock()
+            self.continuation = continuation
+            lock.unlock()
+        }
+    }
+
+    /// Delivered on a detached `Task` with a short delay — never
+    /// synchronously from the calling test — so a test can prove
+    /// `MapViewModel` picks this up whenever it actually arrives,
+    /// rather than merely because it happened to already be buffered
+    /// before `observe()` subscribed.
+    func push(_ pack: MapFestpack?, afterMillis: UInt64 = 0) {
+        lock.lock()
+        let continuation = self.continuation
+        lock.unlock()
+        guard let continuation else { return }
+        if afterMillis == 0 {
+            continuation.yield(pack)
+        } else {
+            Task.detached {
+                try? await Task.sleep(nanoseconds: afterMillis * 1_000_000)
+                continuation.yield(pack)
+            }
+        }
+    }
+
+    func finish() {
+        lock.lock()
+        let continuation = self.continuation
+        lock.unlock()
+        continuation?.finish()
+    }
+}
+
+private func samplePack(name: String) -> MapFestpack {
+    MapFestpack(meta: MapFestpackMeta(name: name, venue: FestpackLatLon(latitude: 43.7, longitude: -121.5)),
+                stages: [], features: [], schedule: [])
+}
+
 @MainActor
 final class MapViewModelTests: XCTestCase {
     private func pin(treatment: CrewMapPinTreatment, ageText: String = "3 MIN",
@@ -204,5 +259,125 @@ final class MapPinChurnTests: XCTestCase {
         XCTAssertNotEqual(model.pins, before, "ten minutes later this member is not as fresh")
         XCTAssertNotEqual(storageIdentity(model.pins), storageIdentity(before),
                           "a map that really changed must still be republished")
+    }
+}
+
+// MARK: - "app: Map subscribes to festpack updates" (2026-09-13)
+
+/// The Field forever-spinner / stale-festival-switch fix: `observe()`
+/// used to read `festpackSource.currentFestpack()` exactly once. These
+/// tests prove the replacement — a live subscription to
+/// `festpackSource.festpackUpdates()` — actually behaves like one: a
+/// late-arriving pack is still picked up, a festival switch reaches
+/// `festpack`, a provider clear honestly nils it back out, and
+/// `stopObserving()` genuinely cancels the subscription rather than
+/// merely stopping the periodic loop.
+@MainActor
+final class MapViewModelFestpackObservationTests: XCTestCase {
+    /// Never a fixed sleep or a fixed-iteration poll budget (the house
+    /// rule `ConnectSettingsViewModelTests.swift`'s own `eventually`
+    /// documents) — polls until `condition` is true or `timeout`
+    /// genuinely elapses.
+    private func eventually(_ description: String = "condition", timeout: TimeInterval = 5,
+                             file: StaticString = #filePath, line: UInt = #line,
+                             _ condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() >= deadline {
+                XCTFail("timed out after \(timeout)s waiting for \(description)", file: file, line: line)
+                return
+            }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
+    private func makeModel(_ source: ControllableMapFestpackSource) -> MapViewModel {
+        MapViewModel(crew: CrewStore(now: { 0 }), location: UnavailableLocationProvider(),
+                     heading: NoHeadingProvider(), festpackSource: source,
+                     connectivity: FixedConnectivity(.online))
+    }
+
+    /// The exact real-world race `AlmanacFestpackProvider`'s eager cache/
+    /// bundle load and `AppGraph.start()`'s detached `refreshIfNeeded()`
+    /// task create: the pack is not ready the instant `observe()` runs,
+    /// only shortly after. The OLD one-shot `currentFestpack()` read
+    /// would have captured `nil` here and never looked again —
+    /// `FieldMapView`'s forever spinner. Mutation check: reverting
+    /// `observe()` to the old one-shot read fails this test outright
+    /// (`festpack` never becomes non-nil).
+    func testFestpackBecomingAvailableAfterObserveStillReachesTheViewModel() async {
+        let source = ControllableMapFestpackSource()
+        let vm = makeModel(source)
+        vm.observe()
+        XCTAssertNil(vm.festpack, "nothing has loaded yet — must stay honestly nil, never a placeholder")
+
+        source.push(samplePack(name: "Lost Lands"), afterMillis: 200)
+
+        await eventually("festpack to load 200ms after observe()", timeout: 2) { vm.festpack != nil }
+        XCTAssertEqual(vm.festpack?.meta.name, "Lost Lands")
+    }
+
+    /// A Settings festival-picker switch: the provider moves from one
+    /// real pack straight to another, with Map never having called
+    /// `observe()` again. Mirrors `LineupViewModel`'s own stream-driven
+    /// update for the identical `FestpackProviding` seam.
+    func testFestivalSwitchReplacesTheFestpackWithoutARestart() async {
+        let source = ControllableMapFestpackSource()
+        let vm = makeModel(source)
+        vm.observe()
+
+        source.push(samplePack(name: "Lost Lands"))
+        await eventually("first festival to load") { vm.festpack?.meta.name == "Lost Lands" }
+
+        source.push(samplePack(name: "Wakaan"))
+        await eventually("switched festival to load") { vm.festpack?.meta.name == "Wakaan" }
+    }
+
+    /// `CurrentValueEventHub.clearCurrent()`'s honest counterpart
+    /// (`AlmanacFestpackProvider.reloadIfFestivalChanged()`'s own
+    /// `hub.yield(nil)`, `FestpackProvidingMapAdapterTests` proves the
+    /// adapter half of this): a `nil` element must clear `festpack` back
+    /// to nil, not leave the previous festival showing. This is the
+    /// view-model half of "Field shows the honest empty state" —
+    /// `fieldMapProjection(radiusPx:marginPx:)` already returns `nil`
+    /// whenever `festpack` is `nil` (its own `guard let festpack else`),
+    /// which is what `FieldMapView` renders its honest text for.
+    func testProviderClearingItsPackNilsOutTheFestpack() async {
+        let source = ControllableMapFestpackSource()
+        let vm = makeModel(source)
+        vm.observe()
+
+        source.push(samplePack(name: "Lost Lands"))
+        await eventually("pack to load") { vm.festpack != nil }
+
+        source.push(nil)
+        await eventually("cleared pack to reach the view model") { vm.festpack == nil }
+        XCTAssertNil(vm.fieldMapProjection(radiusPx: 100, marginPx: 16),
+                     "no pack means no honest projection to draw")
+    }
+
+    /// The leak half, same measured convention as
+    /// `testPinRefreshLoopStopsTickingOnceStopObservingIsCalled` above:
+    /// a value pushed AFTER `stopObserving()` must never reach
+    /// `festpack` — proof the subscribing `Task` was actually cancelled,
+    /// not merely that the view model stopped asking for new values on
+    /// its own.
+    func testStopObservingCancelsTheFestpackSubscription() async {
+        let source = ControllableMapFestpackSource()
+        let vm = makeModel(source)
+        vm.observe()
+
+        source.push(samplePack(name: "Lost Lands"))
+        await eventually("initial pack to load") { vm.festpack != nil }
+
+        vm.stopObserving()
+        source.push(samplePack(name: "Wakaan"))
+        // No fixed-length proof of a negative is airtight, but this
+        // window is generous next to the 5ms poll `eventually` itself
+        // uses, and the same convention already accepted for the
+        // pin-refresh-loop leak test above.
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(vm.festpack?.meta.name, "Lost Lands",
+                       "a value pushed after stopObserving() must never reach a cancelled subscription")
     }
 }

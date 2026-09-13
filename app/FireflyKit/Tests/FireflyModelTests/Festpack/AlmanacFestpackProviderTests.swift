@@ -200,16 +200,29 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         XCTAssertEqual(state.source, .fetched)
 
         // A second provider instance, same disk directory (simulating a
-        // relaunch), must load THIS pack from cache first, before any
-        // network call happens.
+        // relaunch), must load THIS pack from cache — eagerly, on the
+        // very FIRST `current()` read, with no network call at all
+        // (`fetcher2` fails outright) and no `refresh()`/`refreshIfNeeded()`
+        // call of its own.
+        //
+        // "app: Map subscribes to festpack updates" (2026-09-13):
+        // `current()` used to be a passive read of whatever
+        // `refresh()`/`refreshIfNeeded()` had last loaded into `pack` —
+        // `nil` here otherwise, even with a perfectly good disk cache
+        // sitting unread. That gap is exactly the shape of the Map
+        // forever-spinner bug (`MapViewModel.observe()` read `current()`
+        // exactly once, before `AppGraph.start()`'s detached
+        // `refreshIfNeeded()` task had necessarily run). Mutation check:
+        // reverting `current()` to a bare `pack` read (no
+        // `ensureCacheOrBundleLoaded()` call) fails this test — `current2`
+        // comes back `nil` instead of the cached pack.
         let fetcher2 = MockFestpackFetcher(.fail)
         let provider2 = AlmanacFestpackProvider(
             settings: InMemorySettingsStore(), fetcher: fetcher2,
             cache: FestpackDiskCache(directory: tempDir), bundleLoader: MockBundleLoader())
-        // Seed provider2's "no network" world before calling refresh(), so
-        // the ONLY way it can have a pack afterward is the disk cache.
         let current2 = await provider2.current()
-        XCTAssertNil(current2) // honest: nothing loaded yet, pre-refresh
+        XCTAssertEqual(current2?.name, "Minimal Fest",
+                       "current() must eagerly load the disk cache, never stay nil merely because no refresh() has run yet")
     }
 
     // MARK: - Settings URL override
@@ -548,8 +561,12 @@ final class AlmanacFestpackProviderTests: XCTestCase {
     /// Same finding, the stream half: `festpackUpdates()` is a
     /// current-value hub, so a subscriber arriving after the switch was
     /// replayed the old festival's pack even though `current()` was
-    /// `nil`. Mutation check: removing `hub.clearCurrent()` from
-    /// `reloadIfFestivalChanged()` fails this test.
+    /// `nil`. Mutation check: replacing `hub.yield(nil)` with a no-op
+    /// (or with `hub.clearCurrent()`, the OLD fix — the whole point of
+    /// this test's own update, app: Map subscribes to festpack updates,
+    /// 2026-09-13) fails this test, either by re-asserting "Lost Lands"
+    /// as the honest current value or by never delivering the honest
+    /// `nil` at all.
     func testFestpackUpdatesStopsReplayingThePreviousFestivalOncePackIsUnknown() async {
         let store = InMemorySettingsStore()
         let fetcher = MockFestpackFetcher(.respond(festivalPackJSON(name: "Lost Lands", artist: "Excision"), etag: nil))
@@ -564,19 +581,25 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         await provider.refresh()
 
         // Subscribe NOW — while the provider honestly has no pack —
-        // then let the next successful fetch publish. The first element
-        // this subscriber sees must be the NEW festival, never a
-        // replayed Lost Lands. No sleep: the `for await` returns as
-        // soon as the real yield lands.
+        // then let the next successful fetch publish. The FIRST element
+        // this subscriber sees must be the honest `nil` (never a
+        // replayed Lost Lands); the first NON-nil element must be the
+        // NEW festival. No sleep: the `for await` returns as soon as
+        // each real yield lands.
         let stream = provider.festpackUpdates()
         fetcher.setBehavior(.respond(festivalPackJSON(name: "Wakaan", artist: "Liquid Stranger"), etag: nil))
         await provider.refresh()
-        var first: String?
+        var sawHonestNilFirst = false
+        var firstRealName: String?
         for await pack in stream {
-            first = pack.name
-            break
+            if let pack {
+                firstRealName = pack.name
+                break
+            }
+            sawHonestNilFirst = true
         }
-        XCTAssertEqual(first, "Wakaan", "the hub must not re-assert a pack the provider no longer has")
+        XCTAssertTrue(sawHonestNilFirst, "the hub must actively tell an already-subscribed reader the pack is gone")
+        XCTAssertEqual(firstRealName, "Wakaan", "the hub must not re-assert a pack the provider no longer has")
     }
 
     /// Review finding (BLOCKING, measured): picks are namespaced per

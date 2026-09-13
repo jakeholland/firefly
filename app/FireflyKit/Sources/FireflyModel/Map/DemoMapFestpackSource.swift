@@ -25,6 +25,18 @@ public final class DemoMapFestpackSource: MapFestpackSource {
         DemoMapFestpackSource.fireflyFields
     }
 
+    /// Demo mode's festival never changes mid-session (no picker, no
+    /// network) — a single element, exactly like `currentFestpack()`
+    /// itself, matching `MapFestpackSource.festpackUpdates()`'s own
+    /// doc comment ("`DemoMapFestpackSource`... still only ever needs
+    /// to emit once").
+    public func festpackUpdates() -> AsyncStream<MapFestpack?> {
+        AsyncStream { continuation in
+            continuation.yield(DemoMapFestpackSource.fireflyFields)
+            continuation.finish()
+        }
+    }
+
     /// Firefly Fields, Firefly's own fictional demo festival — see this
     /// file's header comment for provenance. `stages[].colorHex` are the
     /// pack's own hex strings ("#ffc66b" etc.), parsed once here rather

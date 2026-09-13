@@ -62,7 +62,7 @@ struct FieldMapView: View {
                             .accessibilityIdentifier("Map.Field.You")
                     }
                 } else {
-                    ProgressView().tint(.ffAmber)
+                    noMapAvailableText
                 }
 
                 VStack {
@@ -79,6 +79,27 @@ struct FieldMapView: View {
         }
         .background(Color.ffBackground)
         .accessibilityIdentifier("Screen.Map.Field")
+    }
+
+    /// "app: Map subscribes to festpack updates" (2026-09-13) — this
+    /// used to be a `ProgressView` that ran forever whenever
+    /// `MapViewModel.observe()`'s one-shot festpack read happened to
+    /// land before `AlmanacFestpackProvider`'s own cache/bundle load
+    /// finished (the reviewer's real-build repro against a live Lost
+    /// Lands pack: the spinner never once resolved). Now that
+    /// `MapViewModel` stays subscribed to the festpack stream for as
+    /// long as this screen is open, a load that is genuinely in flight
+    /// resolves itself the moment it lands — this view never has to
+    /// tell "still loading" apart from "nothing to show", so it never
+    /// claims the former: honest text, always, whenever there is no
+    /// projection to draw.
+    private var noMapAvailableText: some View {
+        Text("No map for this festival yet")
+            .font(.system(.footnote, design: .monospaced))
+            .foregroundStyle(Color.ffMuted)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 24)
+            .accessibilityIdentifier("Map.Field.NoMap")
     }
 
     private var schematicChip: some View {

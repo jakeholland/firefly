@@ -181,10 +181,30 @@ public protocol FestpackProviding: Sendable {
     func sourceState() async -> FestpackSourceState
     /// Multicast (`EventHub`/`CurrentValueEventHub` pattern, see
     /// `FireflyMesh/EventHub.swift`) — a late subscriber is replayed the
-    /// current pack (if any) immediately, then every pack this provider
-    /// successfully loads after that, in order. A failed fetch or a pack
-    /// that failed to parse never yields here — see `refresh()`.
-    func festpackUpdates() -> AsyncStream<Festpack>
+    /// current value (if any is already known) immediately, then every
+    /// value this provider publishes after that, in order. A failed
+    /// fetch or a pack that failed to parse never yields here — see
+    /// `refresh()`.
+    ///
+    /// `Festpack?`, not `Festpack` (app: Map subscribes to festpack
+    /// updates, 2026-09-13 — the Map forever-spinner/festival-switch
+    /// fix): a `nil` element is a REAL, honest publish — "the pack this
+    /// provider was showing is no longer known" — the exact moment
+    /// `reloadIfFestivalChanged()` calls `hub.yield(nil)` after a
+    /// Settings festival-picker switch lands on a festival with no disk
+    /// cache. Before this, that transition only ever reached `current()`
+    /// (a one-shot read `LineupViewModel.refresh()` already re-polls
+    /// explicitly) — a subscriber that reads this stream ONCE and never
+    /// again (the exact shape `MapViewModel.observe()` used to take) had
+    /// no way to ever learn the old pack it read was gone, and a
+    /// subscriber that stays subscribed for the picked's whole life (the
+    /// actual fix, `FestpackProvidingMapAdapter.festpackUpdates()`) now
+    /// does. `LineupViewModel.observe()`'s own stream loop is
+    /// unaffected: it still drives its state from an explicit
+    /// `refresh()`/`current()` round trip, and simply ignores a `nil`
+    /// element from this stream rather than needing to act on it a
+    /// second way.
+    func festpackUpdates() -> AsyncStream<Festpack?>
     /// Fetches (if this provider has a network source) and/or loads
     /// whatever is available. On first call, this is also "start":
     /// cache-first, then a background fetch attempt. A parse failure or
