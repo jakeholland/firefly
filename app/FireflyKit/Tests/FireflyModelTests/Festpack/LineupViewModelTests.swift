@@ -38,7 +38,7 @@ final class LineupViewModelTests: XCTestCase {
         init(_ pack: Festpack) { self.pack = pack }
         func current() async -> Festpack? { pack }
         func sourceState() async -> FestpackSourceState { .bundled }
-        func festpackUpdates() -> AsyncStream<Festpack> {
+        func festpackUpdates() -> AsyncStream<Festpack?> {
             AsyncStream { continuation in
                 continuation.yield(pack)
                 continuation.finish()

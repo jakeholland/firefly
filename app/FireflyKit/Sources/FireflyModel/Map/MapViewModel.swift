@@ -77,6 +77,7 @@ public final class MapViewModel {
     private var locationObservation: Task<Void, Never>?
     private var headingObservation: Task<Void, Never>?
     private var connectivityObservation: Task<Void, Never>?
+    private var festpackObservation: Task<Void, Never>?
     private var pinRefreshLoop: Task<Void, Never>?
 
     public init(crew: CrewStore, location: any LocationProviding, heading: any HeadingProviding,
@@ -117,10 +118,36 @@ public final class MapViewModel {
                 self.connectivityState = state
             }
         }
-        Task { [weak self] in
-            guard let self else { return }
-            let pack = await self.festpackSource.currentFestpack()
-            self.festpack = pack
+        // "app: Map subscribes to festpack updates" (2026-09-13, fixes
+        // the Field forever-spinner race + festival switch): this used
+        // to be a single `await festpackSource.currentFestpack()` read,
+        // taken once at the instant `observe()` ran. `AlmanacFestpackProvider`
+        // loads its cache/bundled pack lazily inside `refresh()`/
+        // `refreshIfNeeded()`, which `AppGraph.start()` fires as a
+        // detached `Task` — so a Map tab opened before that task
+        // finished captured `nil` here and NEVER re-read, leaving
+        // `FieldMapView`'s spinner running forever even once the pack
+        // had, in fact, loaded a moment later. A later Settings
+        // festival-picker switch had the identical problem: nothing
+        // here ever re-ran to notice it.
+        //
+        // Subscribing to the ongoing stream instead — same convention
+        // `LineupViewModel.observe()` already uses for the identical
+        // `FestpackProviding` seam — means whatever loads, whenever it
+        // loads (a slow cache read, a network fetch, a manual
+        // Settings/pull-to-refresh, or a festival switch), reaches this
+        // property. `nil` is a real, honest element here too — see
+        // `FestpackProvidingMapAdapter.festpackUpdates()`'s own doc
+        // comment — and is applied exactly like any other value: the
+        // Field map has no pack to draw right now, which is what
+        // `fieldMapProjection(radiusPx:marginPx:)` already treats a
+        // `nil` `festpack` as meaning.
+        let festpackUpdates = festpackSource.festpackUpdates()
+        festpackObservation = Task { [weak self] in
+            for await pack in festpackUpdates {
+                guard let self else { return }
+                self.festpack = pack
+            }
         }
         // A 1s recompute loop, same convention `RadarViewModel.observe()`
         // already uses (`recomputeLoop`) — crew updates arrive on
@@ -145,6 +172,7 @@ public final class MapViewModel {
         locationObservation?.cancel(); locationObservation = nil
         headingObservation?.cancel(); headingObservation = nil
         connectivityObservation?.cancel(); connectivityObservation = nil
+        festpackObservation?.cancel(); festpackObservation = nil
         pinRefreshLoop?.cancel(); pinRefreshLoop = nil
     }
 

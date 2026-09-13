@@ -88,7 +88,14 @@ public actor AlmanacFestpackProvider: FestpackProviding {
     /// so `festpackUpdates()` below can hand out a subscription
     /// synchronously, matching `FestpackProviding`'s non-`async`
     /// requirement, without needing actor isolation on this property.
-    private nonisolated let hub = CurrentValueEventHub<Festpack>()
+    ///
+    /// `CurrentValueEventHub<Festpack?>`, not `<Festpack>` — see
+    /// `FestpackProviding.festpackUpdates()`'s own doc comment: a `nil`
+    /// yield is how `reloadIfFestivalChanged()` now tells an ALREADY-
+    /// SUBSCRIBED reader (not just a future one) that the pack it was
+    /// showing is gone, closing the Map forever-spinner/stale-festival
+    /// gap `hub.clearCurrent()` alone left open.
+    private nonisolated let hub = CurrentValueEventHub<Festpack?>()
     private var pack: Festpack?
     /// Raw provenance fields — `sourceState()` composes these, PLUS a
     /// freshly measured `ageSeconds` (never baked in at write time),
@@ -204,8 +211,24 @@ public actor AlmanacFestpackProvider: FestpackProviding {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    public func current() -> Festpack? { pack }
-    public nonisolated func festpackUpdates() -> AsyncStream<Festpack> { hub.subscribe() }
+    /// `nil` only when nothing has EVER loaded for the current festival
+    /// — never merely because no `refresh()`/`refreshIfNeeded()` call
+    /// has run yet. "app: Map subscribes to festpack updates" (2026-09-13):
+    /// `ensureCacheOrBundleLoaded()` used to run only from inside
+    /// `refresh()`/`refreshIfNeeded()`, both fired as their own
+    /// detached `Task` from `AppGraph.start()` — so a caller that read
+    /// `current()` before that task happened to complete (measured: the
+    /// Map tab's own `MapViewModel.observe()`, which read this exactly
+    /// ONCE and never again) saw `nil` and had no way to ever learn
+    /// otherwise. Making the load itself eager here means `current()`
+    /// is honestly answerable — cache, bundle, or genuinely nothing —
+    /// the instant ANYTHING asks, not only after some other code path
+    /// has happened to call refresh first.
+    public func current() -> Festpack? {
+        ensureCacheOrBundleLoaded()
+        return pack
+    }
+    public nonisolated func festpackUpdates() -> AsyncStream<Festpack?> { hub.subscribe() }
 
     public func sourceState() -> FestpackSourceState {
         FestpackSourceState(source: currentSource,
@@ -222,10 +245,7 @@ public actor AlmanacFestpackProvider: FestpackProviding {
     /// trigger. Never throttled — see `refreshIfNeeded()` for the
     /// throttled, automatic counterpart.
     public func refresh() async {
-        reloadIfFestivalChanged()
-        if pack == nil {
-            loadFromCacheOrBundle()
-        }
+        ensureCacheOrBundleLoaded()
         await fetchAndPublish()
     }
 
@@ -238,12 +258,24 @@ public actor AlmanacFestpackProvider: FestpackProviding {
     /// has passed since the last attempt (whether that attempt
     /// succeeded, 304'd, or failed).
     public func refreshIfNeeded() async {
+        ensureCacheOrBundleLoaded()
+        guard shouldAttemptAutoRefresh() else { return }
+        await fetchAndPublish()
+    }
+
+    /// The shared preamble `current()`, `refresh()`, and
+    /// `refreshIfNeeded()` all run before doing anything else of their
+    /// own: pick up a festival switch, then load whatever is available
+    /// (cache, else the bundled fallback) if nothing is loaded yet.
+    /// Idempotent — `reloadIfFestivalChanged()` no-ops once the
+    /// festival key has already been picked up, and `loadFromCacheOrBundle()`
+    /// only runs `if pack == nil`, so calling this from `current()` on
+    /// every read costs nothing once a pack is actually loaded.
+    private func ensureCacheOrBundleLoaded() {
         reloadIfFestivalChanged()
         if pack == nil {
             loadFromCacheOrBundle()
         }
-        guard shouldAttemptAutoRefresh() else { return }
-        await fetchAndPublish()
     }
 
     private func shouldAttemptAutoRefresh() -> Bool {
@@ -281,7 +313,20 @@ public actor AlmanacFestpackProvider: FestpackProviding {
         // screen CLAUDE.md's honest-data rule forbids. A later
         // `loadFromCacheOrBundle()`/`fetchAndPublish()` re-yields as
         // soon as there is something true to say.
-        hub.clearCurrent()
+        //
+        // "app: Map subscribes to festpack updates" (2026-09-13):
+        // `hub.yield(nil)`, not `hub.clearCurrent()` — `clearCurrent()`
+        // only forgets the REPLAY value for a future subscriber; it
+        // never notifies one already listening. A reader that stays
+        // subscribed for its whole life (`FestpackProvidingMapAdapter
+        // .festpackUpdates()`, the Map tab's own fix for the forever-
+        // spinner this exact transition caused) needs the live push,
+        // not just a clean slate for whoever asks next — `yield(nil)`
+        // gives both: it publishes the honest "no pack now" to every
+        // current subscriber AND becomes the value a future one is
+        // replayed, which is a strictly more informative reset than
+        // `clearCurrent()`'s "replay nothing" ever was.
+        hub.yield(nil)
     }
 
     private func loadFromCacheOrBundle() {

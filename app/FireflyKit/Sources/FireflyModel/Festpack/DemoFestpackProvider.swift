@@ -15,8 +15,13 @@ import Foundation
 
 public actor DemoFestpackProvider: FestpackProviding {
     /// `nonisolated` — see `AlmanacFestpackProvider`'s identical property
-    /// for why this is safe.
-    private nonisolated let hub = CurrentValueEventHub<Festpack>()
+    /// for why this is safe. `<Festpack?>`, matching `FestpackProviding
+    /// .festpackUpdates()`'s widened signature — demo mode never clears
+    /// a loaded pack (there is no festival picker, no network, and
+    /// `refresh()` is a no-op once `pack` is set), so this provider
+    /// simply never yields `nil`; the type only has to agree with the
+    /// protocol.
+    private nonisolated let hub = CurrentValueEventHub<Festpack?>()
     private var pack: Festpack?
     private let bundleLoader: any FestpackBundleLoading
 
@@ -26,7 +31,7 @@ public actor DemoFestpackProvider: FestpackProviding {
 
     public func current() -> Festpack? { pack }
     public func sourceState() -> FestpackSourceState { pack == nil ? .none : .bundled }
-    public nonisolated func festpackUpdates() -> AsyncStream<Festpack> { hub.subscribe() }
+    public nonisolated func festpackUpdates() -> AsyncStream<Festpack?> { hub.subscribe() }
 
     /// Loads the bundled Firefly Fields pack exactly once; later calls
     /// are no-ops — there is nothing to "refresh" against, on purpose.

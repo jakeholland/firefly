@@ -110,6 +110,17 @@ public final class LineupViewModel {
         observationTask = Task { [weak self] in
             for await pack in stream {
                 guard let self else { return }
+                // `Festpack?` (app: Map subscribes to festpack updates,
+                // 2026-09-13 — `FestpackProviding.festpackUpdates()`'s
+                // own doc comment): a `nil` element means the provider's
+                // pack just became unknown (a festival switch that
+                // lands on nothing cached). This screen already handles
+                // that transition explicitly — `refresh()`'s own `else`
+                // branch, driven by `FestivalPickerViewModel.select(_:)`
+                // calling `lineup.refresh()` directly — so a `nil` here
+                // is intentionally a no-op rather than a second,
+                // competing path to the same state.
+                guard let pack else { continue }
                 await self.apply(pack)
             }
         }

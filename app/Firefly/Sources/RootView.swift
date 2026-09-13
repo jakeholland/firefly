@@ -408,6 +408,27 @@ struct RootView: View {
             selection = .more
             moreAutoOpen = .connect
         }
+        // "app: Map subscribes to festpack updates" (2026-09-13) —
+        // `-FireflyStartTab`/`-FireflyFindSegment`, debug-only
+        // (`FireflyDebugStartDestinationLaunch`'s own header comment):
+        // lands on a specific tab/segment against the REAL composition
+        // graph, for proving the Field forever-spinner fix against a
+        // live `AlmanacFestpackProvider` on a fresh simulator install
+        // where `hasKnownRadio` is honestly `false`. `nil` (and this
+        // whole block a no-op) outside `DEBUG` and on every ordinary
+        // launch that does not pass either argument. The name -> enum
+        // match happens HERE, not in `FireflyDebugStartDestinationLaunch`
+        // itself — see that file's own header comment for why it hands
+        // back a bare `String?` rather than `Destination`/`FindSegment`
+        // directly.
+        if let tabName = FireflyDebugStartDestinationLaunch.requestedTabName(),
+           let tab = Destination.allCases.first(where: { $0.rawValue.caseInsensitiveCompare(tabName) == .orderedSame }) {
+            selection = tab
+        }
+        if let segmentName = FireflyDebugStartDestinationLaunch.requestedFindSegmentName(),
+           let segment = FindSegment.allCases.first(where: { $0.rawValue.caseInsensitiveCompare(segmentName) == .orderedSame }) {
+            findSegment = segment
+        }
     }
 
     /// Polls (rather than sleeping a fixed budget) until the Lineup

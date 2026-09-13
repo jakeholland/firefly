@@ -60,6 +60,50 @@ public final class FestpackProvidingMapAdapter: MapFestpackSource {
         return Self.map(real)
     }
 
+    /// The fix for the Map forever-spinner / stale-festival race (app:
+    /// Map subscribes to festpack updates, 2026-09-13): forwards the
+    /// real provider's `festpackUpdates()` — subscribed to SYNCHRONOUSLY
+    /// here, before this method returns, same convention as
+    /// `LineupViewModel.observe()` — through `map(_:)`, one element at a
+    /// time, for as long as the caller keeps consuming this stream.
+    ///
+    /// Two honestly distinct reasons a `nil` element ever arrives, both
+    /// real, neither fabricated:
+    ///   - The underlying `real: Festpack` parsed fine but its own
+    ///     origin is unknown (`map(_:)`'s own `guard real.originKnown`) —
+    ///     nothing in it can be honestly placed on a map.
+    ///   - The real provider itself has no pack at all right now
+    ///     (`Festpack?` element is `nil`) — `FestpackProviding
+    ///     .festpackUpdates()`'s own doc comment: a Settings festival-
+    ///     picker switch that lands on nothing cached, published via
+    ///     `hub.yield(nil)`.
+    /// A caller cannot and does not need to tell these apart — either
+    /// way there is honestly no map to draw right now, which is exactly
+    /// what `FieldMapView` needs to know.
+    public func festpackUpdates() -> AsyncStream<MapFestpack?> {
+        // Subscribed NOW, not inside the `Task` below — a value the
+        // real provider yields between this call returning and the
+        // `Task` actually starting must not be missed (`EventHub`'s own
+        // "arrives after this call does not see it" rule, the same
+        // reasoning `LineupViewModel.observe()`'s doc comment states).
+        let upstream = provider.festpackUpdates()
+        return AsyncStream { continuation in
+            let task = Task {
+                for await real in upstream {
+                    continuation.yield(real.flatMap { Self.map($0) })
+                }
+                continuation.finish()
+            }
+            // Mirrors `EventHub.subscribe()`'s own `onTermination`
+            // convention: the caller cancelling its consuming `Task`
+            // (`MapViewModel.stopObserving()`) or simply letting this
+            // stream's last reference go must stop the forwarding loop
+            // above — otherwise it would sit parked on `upstream`
+            // forever, one leaked `Task` per Map tab visit.
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     /// A pure value transform — independently testable without a real
     /// `FestpackProviding` (`FestpackProvidingMapAdapterTests`, off a
     /// real pack parsed straight from `firmware/assets/field/
