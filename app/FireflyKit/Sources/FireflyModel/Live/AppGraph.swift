@@ -634,7 +634,15 @@ public final class AppGraph {
         // screen takes effect on the next launch, not live — a narrower
         // gap than the bug this replaces, and tracked here rather than
         // silent.
+        // Seeded once so the very first `compute()` (before any
+        // recompute tick) is already right...
         model.imperial = dependencies.store.resolvedImperial()
+        // ...and then re-read on every recompute, so a Units change made
+        // mid-session on the Settings screen takes effect immediately
+        // rather than on the next launch. `MapViewModel` already
+        // resolved this live (`makeMapViewModel()` below); Radar did
+        // not, so the two screens disagreed about units until relaunch.
+        model.imperialResolver = { [dependencies] in dependencies.store.resolvedImperial() }
         radar = model
         // `makeConnectViewModel()`'s own doc comment below has the full
         // story (the NavigationSplitView detail-column remount that

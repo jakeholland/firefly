@@ -584,6 +584,25 @@ public final class RadarViewModel {
     public private(set) var lastHeading: HeadingReading?
     public private(set) var lastFix: LocationFix?
     public var imperial: Bool = false
+
+    /// Where `imperial` is re-read from on every recompute, when the
+    /// composition root supplies one (`AppGraph.makeRadarViewModel()`).
+    ///
+    /// Hardening QA pass: `imperial` used to be assigned exactly ONCE,
+    /// at graph construction, and every view model in this app is built
+    /// once at launch — so changing Units in Settings did not take
+    /// effect on Radar until the next launch, while `MapViewModel`
+    /// (which already resolved it live) switched immediately. The two
+    /// screens therefore disagreed about units mid-session, which
+    /// `GPSMapView`'s own comment explicitly claims cannot happen ("so
+    /// this card agrees with Radar about which unit system it's in").
+    ///
+    /// A closure rather than a stored `SettingsStoring` for the same
+    /// reason `MapViewModel` uses one: this type must stay constructible
+    /// in a test with no settings store at all. `nil` keeps the old
+    /// behaviour (whatever `imperial` was last set to), which is what
+    /// every existing test relies on.
+    public var imperialResolver: (@Sendable () -> Bool)?
     /// Crew-ring color palette selector (S17: colorblind-safe alternate
     /// 8-colour set). A Radar-local toggle in M1 — Settings (slice C)
     /// does not exist yet to drive this from a persisted value; wiring
@@ -592,6 +611,15 @@ public final class RadarViewModel {
     public var colorblind: Bool = false
 
     // FIND
+    /// Bounded, drop-oldest (hardening QA pass). `handlePong` appends
+    /// one entry per inbound PONG and only `startFind()` ever cleared
+    /// the list, so on a busy mesh — or simply after a FIND session
+    /// ended — this grew for the rest of the session. Same "bounded,
+    /// drop-oldest" policy `ThreadViewModel.outbox` (cap 8) and
+    /// `ff_feed_t`'s own ring already follow; 32 is far more replies
+    /// than a 5-minute FIND session with a 30-ping cap can usefully
+    /// show, so nothing a user would look at is lost.
+    public static let findRepliesCap = 32
     public private(set) var findReplies: [FindReply] = []
     public private(set) var findHaptic: FindHaptic = .none
     private var findReplyCounter = 0
@@ -694,6 +722,10 @@ public final class RadarViewModel {
     }
 
     private func recompute() {
+        // Re-read the units preference every recompute (1 Hz, plus every
+        // heading/fix update) rather than once at construction — see
+        // `imperialResolver`.
+        if let imperialResolver { imperial = imperialResolver() }
         let headingDegrees: Double? = (lastHeading?.isValid == true) ? lastHeading?.headingDegrees : nil
         snapshot = radar.compute(headingDegrees: headingDegrees, myFix: lastFix, imperial: imperial, now: clock())
     }
@@ -764,6 +796,9 @@ public final class RadarViewModel {
         findReplies.append(FindReply(
             id: findReplyCounter, rssiOfUs: Int(rssiDbm), hasSNR: hasSNR, snrOfUs: snrDb,
             tier: SignalTierPresentation.tier(rssiDbm: rssiDbm), ageText: "0 SEC", receivedAt: now))
+        if findReplies.count > Self.findRepliesCap {
+            findReplies.removeFirst(findReplies.count - Self.findRepliesCap)
+        }
         findHaptic = verdict
         switch verdict {
         case .warmer: haptics.warmer()
