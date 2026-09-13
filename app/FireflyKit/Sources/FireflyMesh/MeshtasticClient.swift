@@ -51,6 +51,20 @@ public enum MeshtasticClientError: Error, Equatable, Sendable {
     /// timestamp outside the wire format's `uint32` epoch seconds.
     /// Refused rather than clamped: see `MeshtasticClient.encodePosition`.
     case invalidPositionFix
+    /// The `DataMessage.payload` exceeds Meshtastic's own
+    /// `Constants.DATA_PAYLOAD_LEN` (233 bytes), so the mesh cannot
+    /// carry it. Associated values are the actual and maximum byte
+    /// counts, for a message the UI can show a person.
+    ///
+    /// Refused locally rather than handed to the radio, because handing
+    /// it over is the dishonest option: an oversized `ToRadio` is either
+    /// dropped by the firmware or — over BLE, past the negotiated ATT
+    /// MTU with a `.withoutResponse` write — fails with NO delegate
+    /// callback at all. Either way the app had already published
+    /// `.sent`, so a broadcast (the CREW conversation, where nothing
+    /// acks) sat claiming SENT forever for a message that never left the
+    /// phone.
+    case payloadTooLarge(bytes: Int, max: Int)
 }
 
 /// The seam between the handshake-retry loop
@@ -447,6 +461,20 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         publish(.disconnected)
     }
 
+    /// Meshtastic's own `Constants.DATA_PAYLOAD_LEN` — the wire's limit
+    /// on one `DataMessage.payload`, read from the pinned protobufs
+    /// rather than retyped, so a firmware bump that changes it changes
+    /// here too.
+    public static let maxDataPayloadBytes = Int(Constants.dataPayloadLen.rawValue)
+
+    /// `nil` if `payload` fits the wire, else the error describing why
+    /// it does not. Pure and `static` so it is testable with no actor,
+    /// no transport and no radio.
+    static func payloadSizeError(_ payload: Data) -> MeshtasticClientError? {
+        guard payload.count > maxDataPayloadBytes else { return nil }
+        return .payloadTooLarge(bytes: payload.count, max: maxDataPayloadBytes)
+    }
+
     @discardableResult
     public func sendText(_ text: String, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
         let isBroadcast = destination == meshBroadcastAddress
@@ -467,6 +495,20 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         var data = DataMessage()
         data.portnum = .textMessageApp
         data.payload = Data(text.utf8)
+
+        // Refused BEFORE a packet id is minted, and resolved as
+        // `.dropped` against the outbox id this method already
+        // published `.waiting` for — never left as an orphaned WAITING,
+        // the same rule the encode/write failures below follow. A
+        // message the mesh cannot carry has not been sent, and this app
+        // does not get to say otherwise.
+        //
+        // `text.utf8` is what matters, not `text.count`: the limit is
+        // bytes, and one emoji is four of them.
+        if let error = Self.payloadSizeError(data.payload) {
+            deliveryHub.yield(.dropped(outboxID: OutboxID(outboxID)))
+            throw error
+        }
 
         let id = nextPacketID()
         var packet = MeshPacket()
@@ -603,6 +645,13 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         var data = DataMessage()
         data.portnum = portnum
         data.payload = payload
+
+        // Same wire limit as `sendText`'s (no delivery bookkeeping to
+        // resolve here — see this method's own doc comment). Firefly's
+        // own portnum-269 frames and a `Position` are both far smaller
+        // than this in practice; the guard is here so that stays a
+        // measured fact rather than an assumption.
+        if let error = Self.payloadSizeError(payload) { throw error }
 
         let id = nextPacketID()
         var packet = MeshPacket()

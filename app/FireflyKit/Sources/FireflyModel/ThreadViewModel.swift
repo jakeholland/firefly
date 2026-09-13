@@ -571,11 +571,34 @@ public final class ThreadViewModel {
             let packetID = try await client.sendText(text, to: dest, wantAck: wantAck)
             provider.markSent(outboxID: outboxID, packetID: packetID, at: Date())
             refresh()
+        } catch let error as MeshtasticClientError where Self.isPermanent(error) {
+            // A failure retrying cannot fix. Queueing this would put a
+            // message that can NEVER succeed into a bounded (cap 8),
+            // drop-oldest outbox, where it would be retried on every
+            // reconnect for the rest of the session and evict real
+            // messages behind it. DROPPED is both the honest state and
+            // the only one the user can act on — it is visible in the
+            // thread, so they can shorten the message and send again.
+            provider.setStatus(outboxID: outboxID, state: .dropped, at: Date())
+            refresh()
         } catch {
             // A genuine transport error, not just "link not ready" (that
             // path never reaches here — see `send(text:kind:)`): queue it
             // the same way, rather than silently dropping it.
             enqueue(fallback)
+        }
+    }
+
+    /// Whether a client error means "this message can never be sent",
+    /// as opposed to "not right now". Only the two LOCAL failures
+    /// qualify: the message is too big for the wire, or it would not
+    /// serialize. Everything else — a dropped link, a BLE write error,
+    /// a handshake still in flight — is transient by nature and belongs
+    /// in the outbox.
+    static func isPermanent(_ error: MeshtasticClientError) -> Bool {
+        switch error {
+        case .payloadTooLarge, .encodingFailed: return true
+        case .handshakeTimeout, .alreadyConnecting, .invalidPositionFix: return false
         }
     }
 
