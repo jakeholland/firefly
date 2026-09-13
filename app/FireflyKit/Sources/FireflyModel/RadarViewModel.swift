@@ -714,6 +714,14 @@ public final class RadarViewModel {
         recompute()
     }
 
+    /// Whether `observe()`'s loops are currently running — in
+    /// particular the 1 Hz `recomputeLoop`. Read-only, and it exists
+    /// for one reason: `AppGraph`'s background/foreground lifecycle
+    /// (`stop()`/`start()`) is now responsible for stopping and
+    /// restarting this pump, and "is the pump running" is otherwise
+    /// unobservable without waiting a real second for a tick.
+    public var isObserving: Bool { headingObservation != nil }
+
     public func stopObserving() {
         headingObservation?.cancel(); headingObservation = nil
         locationObservation?.cancel(); locationObservation = nil
