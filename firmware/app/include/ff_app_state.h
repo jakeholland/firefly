@@ -865,6 +865,13 @@ typedef struct {
     uint32_t      frames_ok;         /* mc_stats_t.frames_ok, since boot */
     uint32_t      decode_errors;     /* mc_stats_t.decode_errors, since boot */
     uint32_t      reconnects;        /* mc_stats_t.reconnects, since boot */
+    /* debt/S15c-handshake-stall (2026-09-13): mc_stats_t.handshake_retries,
+     * since boot — want_config re-sends spent on handshakes that stalled
+     * without a config_complete. Read it against `reconnects`: frames_ok
+     * climbing + decode_errors 0 + reconnects flat + THIS climbing is
+     * "the radio is alive but the session handshake is not", the failure
+     * mode that used to present as a permanently RECONNECTING link. */
+    uint32_t      handshake_retries;
 
     /* --- 2. Position (mine) --- */
     ff_app_pos_src_t pos_src;

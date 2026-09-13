@@ -270,3 +270,121 @@ The app-level consequence (NAME confirmation polling must not waste a
 the reconnect's own `want_config` dump is a first-class confirmation) is
 `ff_shell.c`'s concern, documented in `docs/specs/S11-settings.md`'s
 "Confirmation fix round 4" amendment and `docs/hardware/comms-brain.md`.
+
+### A handshake needs its own deadline — the silence watchdog cannot see a stalled one (debt/S15c-handshake-stall, bench finding 2026-09-13)
+
+Bench finding, real puck (Waveshare ESP32-S3 UI brain) + XIAO comms
+brain running Meshtastic 2.7.26 over UART1 GPIO43/44. A fresh boot
+handshaked normally (`NONE → RECONNECTING` at 2.86 s, `→ CONNECTED` at
+2.88 s). About 7 minutes later, with no USB console attached and the
+display dimmed to idle, the link dropped once and then sat in
+`RECONNECTING` for 20+ minutes. Throughout that window `diag` reported
+`frames_ok` climbing steadily (84 → 92 → 138), `decode_err=0`,
+`last_frame_ms` 0.4–11 s, `reconnects=1`, and the `heard` list still
+gaining new nodes — so `FromRadio` frames were arriving, framing,
+decoding and dispatching the entire time. Only `send`/`dm` were affected,
+reporting "queued" and never transmitting, because the shell gates sends
+on READY. A reset returned to CONNECTED in 20 ms.
+
+**Root cause** (`mc_client.c`, `mc_tick()`): the client's only liveness
+watchdog was "no bytes read for 30 s", measured against `last_rx_ms` —
+and `last_rx_ms` is refreshed by ANY inbound byte, in ANY state. A
+handshake whose `want_config` went unanswered (the request lost on the
+wire, or the `config_complete` reply lost — the drop coincided with S26f
+light-sleep/idle dimming, and with a saved owner change on the XIAO)
+therefore kept its own watchdog permanently fed by the radio's ordinary
+traffic, which `mc_process_from_radio()` happily dispatches regardless of
+state. Nothing re-issued `want_config`, and nothing could: the client
+only ever sent one per handshake. This is the same blind spot the
+`FromRadio.rebooted` amendment above was written for, reached without any
+reboot to announce — so no explicit tell exists to key off, and a
+deadline is the only honest answer.
+
+**Fix**: a second watchdog, on the handshake itself, measured from when
+the `want_config` frame actually went out (`mc_client_t.want_config_sent_ms`)
+rather than from the last byte in. After `MC_HANDSHAKE_TIMEOUT_MS`
+(10 s — ~11x the SLOWEST answer actually observed, the 0.9 s deliberate
+re-handshake, and ~500x the 20 ms cold-boot one) with no `config_complete`,
+the client re-sends `want_config`, up to `MC_HANDSHAKE_MAX_RETRIES` (3)
+times per handshake; a spent budget escalates to the ordinary
+`mc_fail_and_schedule_reconnect()` path, which re-dials with a fresh
+nonce and a fresh budget. The retry budget bounds one ATTEMPT; the
+reconnect loop outside it is what never gives up, so a drop always
+converges to READY while the radio is alive.
+
+Two deliberate choices inside the retry:
+- **The nonce is held still, not rotated.** Meshtastic's PhoneAPI echoes
+  back whatever `want_config_id` it was given, so keeping it means BOTH
+  possible answers complete the handshake: a reply to the re-send, and a
+  reply to the original request that was merely slow rather than lost. A
+  rotated nonce would discard the latter at the
+  `config_complete_id == want_config_id` gate (counting it
+  `decode_skipped`) and buy another full timeout of stall. Rotation is
+  only correct when the session is KNOWN to be gone — a reboot or a full
+  reconnect — and both of those go through `mc_begin_handshake()`, which
+  does rotate.
+- **The framer is not re-initialized.** By construction of this bug,
+  framing is working; re-initing could only discard a legitimate frame
+  currently mid-flight.
+
+**`[api]`**: `mc_stats_t` gains `handshake_retries` (monotonic since
+boot, re-sends across every handshake), surfaced through
+`ff_app_diag_t.handshake_retries`, the bench console's `diag` (a new
+`frames_ok/decode_err/reconnects/hs_retries` counters line — the Link
+section is now split identity/counters for the same `-Wformat-truncation`
+budget reason the Mesh section already is), and
+`ff_shell_handshake_retries()` (a cheap accessor the esp32s3 target reads
+once per frame to log each retry as it happens, since `meshclient` and
+`app` stay target-agnostic and cannot log for themselves). The
+distinction from `reconnects` is the diagnostic value: `reconnects`
+counts times the link was declared dead and re-dialled; this counts times
+the link was ALIVE but the session handshake on top of it went
+unanswered — precisely the shape that used to be invisible.
+
+Tests (`test_meshclient.c`), all driving a scripted `FromRadio` stream:
+- `S03_debt_handshake_stall_reissues_want_config_and_reaches_ready` — the
+  repro. Handshake OK → drop → frames RESUME with no `config_complete` in
+  them → the client re-asks on the wire and reaches READY once the stream
+  finally answers. The load-bearing assertion is that `reconnects` stays
+  at 1 across the whole stall: the flowing traffic must keep the 30 s
+  silence watchdog asleep, or the test would pass on the old re-dial path
+  while the real bug stood.
+- `S03_debt_handshake_retry_keeps_nonce_so_a_late_answer_still_lands` —
+  pins the nonce decision: a late answer to the ORIGINAL request still
+  reaches READY, with `reconnects` at 0.
+- `S03_debt_handshake_retry_budget_escalates_to_a_fresh_reconnect` — a
+  handshake nobody ever answers spends exactly `MC_HANDSHAKE_MAX_RETRIES`
+  and then escalates to a full reconnect (new nonce, budget reset), which
+  completes normally when answered.
+- `S03_debt_handshake_answered_within_timeout_never_retries` — the
+  negative: a busy handshake (a multi-tick NodeInfo dump) is not a
+  stalled one, and a READY link never re-issues `want_config` however
+  long it runs.
+
+Retry counts are asserted by decoding every `ToRadio` frame back off
+`mock_io_t.tx_buf` and counting the `want_config` ones, not by trusting
+`mc_stats_t.handshake_retries` — a retry that bumps a counter without
+actually re-asking the radio would fix nothing, and is exactly the
+mutation a stats-only assertion would wave through.
+
+The shell half (`test_shell.c`,
+`feat_outbox_flushes_after_a_stalled_handshake_recovers`) pins the other
+symptom: texts queued during the stall stay queued while the link is
+reconnecting — a tick is not a ready edge — and all of them flush, oldest
+first, on the not-ready → ready edge when the link converges.
+
+Mutation checks (fresh rebuilds each time; `mc_client.c.o` hashed rather
+than the executable, and reverted with targeted edits — both per
+`AGENTS.md`'s standing brief):
+1. Handshake watchdog disabled outright → the repro plus the nonce and
+   budget tests fail (3/4); the negative test correctly still passes.
+2. Deadline measured against `last_rx_ms` instead of `want_config_sent_ms`
+   — i.e. the original defect reintroduced → identical 3/4 failure. This
+   is the proxy check that matters: it proves the scripted stream really
+   does keep `last_rx_ms` alive, so a traffic-fed deadline can never fire
+   and the tests are not passing for the wrong reason.
+3. Nonce rotated on retry → only
+   `S03_debt_handshake_retry_keeps_nonce_so_a_late_answer_still_lands`
+   fails, exactly the property it exists for.
+After reverting, `mc_client.c.o` hashed back to the pre-mutation value
+and all 107 `test_meshclient` cases passed.

@@ -411,6 +411,24 @@ typedef struct {
     uint32_t decode_errors;     /* frame parsed as protobuf but malformed */
     uint32_t decode_skipped;    /* out-of-decode-scope FromRadio/portnum */
     uint32_t reconnects;        /* auto-reconnect attempts started */
+
+    /* [api] debt/S15c-handshake-stall (bench finding, 2026-09-13): how
+     * many times a want_config request has been RE-SENT because the
+     * handshake it belongs to stalled without a config_complete
+     * (MC_HANDSHAKE_TIMEOUT_MS, below). Since boot, across every
+     * handshake — not a per-handshake gauge (that counter is private and
+     * resets each handshake; this one only ever grows, like every other
+     * member here).
+     *
+     * Distinct from `reconnects`, and the distinction is the whole
+     * diagnostic value: `reconnects` counts times the link was declared
+     * DEAD and re-dialled from scratch; this counts times the link was
+     * ALIVE (frames arriving, framer happy) but the session handshake on
+     * top of it went unanswered. A bench session showing frames_ok
+     * climbing, decode_errors 0, reconnects flat and THIS climbing is
+     * precisely the "radio is fine, PhoneAPI session is not" shape that
+     * used to be invisible. */
+    uint32_t handshake_retries;
 } mc_stats_t;
 
 /* -------------------------------------------------------------------- */
@@ -557,6 +575,61 @@ typedef struct {
  * so nothing is lost and frame order is preserved across calls. */
 #define MC_TICK_MAX_FRAMES 32u
 
+/* Handshake watchdog — debt/S15c-handshake-stall (bench finding,
+ * 2026-09-13: the link sat in RECONNECTING for 20+ minutes with
+ * frames_ok climbing, decode_errors 0 and reconnects stuck at 1; only a
+ * reset recovered it).
+ *
+ * Why a SECOND watchdog was needed. mc_tick()'s only liveness check used
+ * to be "no bytes read for 30 s" (`last_rx_ms`), and `last_rx_ms` is
+ * refreshed by ANY inbound byte regardless of state. So a handshake that
+ * never gets answered — the want_config request lost on the wire, or the
+ * config_complete reply lost, while the comms brain keeps emitting
+ * ordinary NodeInfo/packet traffic the client happily decodes and
+ * dispatches — kept its own watchdog fed forever. Nothing re-sent
+ * want_config, and nothing could: the client only ever issued one per
+ * handshake. It is the exact same blind spot `FromRadio.rebooted`
+ * handling was added for (see mc_tick()'s doc comment), but reached
+ * without any reboot to announce, so no explicit tell exists to key off.
+ *
+ * The fix is a deadline on the handshake itself, measured from when the
+ * want_config went out rather than from the last byte in. Bench numbers
+ * for scale: a cold-boot handshake completes in ~20 ms and a deliberate
+ * re-handshake in ~0.9 s, so 10 s is ~11x the SLOWEST answer actually
+ * observed (and ~500x the fastest) — enough headroom that it can only
+ * fire on a genuinely unanswered request, never on a slow one (even a
+ * whole-mesh NodeInfo dump drains in a handful of ticks, see
+ * MC_TICK_MAX_FRAMES).
+ *
+ * Review note (PR #296) — where that headroom is THINNEST, so a future
+ * change to either constant knows what it is spending. The deadline is
+ * wall-clock, but the drain is per-tick-capped (MC_TICK_MAX_FRAMES
+ * frames per mc_tick), so the real budget is "frames the caller can
+ * drain in 10 s", which depends on the caller's tick cadence. Awake, the
+ * esp32s3 target ticks at its ~50 Hz frame cadence and the budget is
+ * thousands of frames. Asleep it is not: S26f light sleep wakes on a
+ * 1500 ms timer and runs ONE ff_shell_tick per wake, so the budget falls
+ * to 32 frames/1.5 s ~= 213 frames in 10 s. A want_config replay is
+ * roughly 30 frames of my_info/config/moduleConfig/channels plus one
+ * NodeInfo per known node, so a reconnect that lands while the puck is
+ * asleep still clears with ~1.6x margin against Meshtastic's default
+ * 100-node ESP32 nodeDB — arithmetic from these constants, not a bench
+ * measurement, and the tightest case found in review. If either the
+ * nodeDB cap or the sleep wake period grows, re-do this sum before
+ * assuming 10 s is still generous: a deadline that fires mid-dump would
+ * restart the dump rather than rescue it. */
+#define MC_HANDSHAKE_TIMEOUT_MS 10000u
+
+/* Re-sends of want_config before a stalled handshake is escalated to a
+ * full DISCONNECTED + backoff reconnect (which then starts a brand new
+ * handshake, with a fresh nonce and this budget reset). Bounded, per the
+ * house rule that every retry loop must be — but the ESCALATION is not,
+ * so the link still never gives up while the radio is alive: the outer
+ * reconnect loop is what "never gives up" means here (see
+ * ff_shell.c's shell_ev_state comment), and this budget only bounds how
+ * long one handshake attempt is given before that outer loop takes over. */
+#define MC_HANDSHAKE_MAX_RETRIES 3u
+
 /* -------------------------------------------------------------------- */
 /* Client                                                                */
 /* -------------------------------------------------------------------- */
@@ -587,6 +660,17 @@ typedef struct mc_client {
     uint32_t last_heartbeat_ms;
     uint32_t reconnect_at_ms;
     bool reconnect_pending;
+
+    /* Handshake watchdog state (see MC_HANDSHAKE_TIMEOUT_MS above).
+     * `want_config_sent_ms` is when the CURRENT want_config frame went
+     * onto the wire — deliberately not `last_rx_ms`, which unrelated
+     * inbound traffic keeps refreshing and which is exactly why the
+     * stall was invisible. `handshake_retry_count` is how many re-sends
+     * this ONE handshake has spent out of MC_HANDSHAKE_MAX_RETRIES; it
+     * resets on every fresh handshake, unlike the monotonic
+     * mc_stats_t.handshake_retries a caller reads. */
+    uint32_t want_config_sent_ms;
+    uint32_t handshake_retry_count;
 
     mc_stats_t stats;
 
@@ -667,7 +751,20 @@ void mc_seed_packet_ids(mc_client_t *c, uint32_t seed);
  * through the reboot even though the session on the other end is gone.
  * A caller that only watches `mc_state()`/`on_state` sees the ordinary
  * READY -> HANDSHAKE -> READY sequence around a reboot with no separate
- * event to handle. */
+ * event to handle.
+ *
+ * Handshake-stall handling (bench finding, 2026-09-13 — see
+ * MC_HANDSHAKE_TIMEOUT_MS above for the full mechanism): the 30s
+ * no-RX-bytes watchdog is likewise blind to a handshake that is never
+ * ANSWERED, for the same reason — unrelated inbound traffic keeps
+ * `last_rx_ms` advancing while no `config_complete` ever arrives, and
+ * the link would sit in HANDSHAKE indefinitely. mc_tick() therefore also
+ * enforces a deadline on the handshake itself, re-sending want_config
+ * (same nonce) up to MC_HANDSHAKE_MAX_RETRIES times before escalating to
+ * the ordinary reconnect path. Again nothing new to handle: a caller
+ * watching `on_state` sees only the eventual HANDSHAKE -> READY, and
+ * `mc_get_stats().handshake_retries` is there for a caller that wants to
+ * log or display the re-asks. */
 void mc_tick(mc_client_t *c, uint32_t now_ms);
 
 /** Start (or restart) the want_config handshake. */

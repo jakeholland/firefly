@@ -3103,6 +3103,7 @@ static void shell_compute_diag(shell_t const *sh, uint32_t now_ms, ff_app_diag_t
         d->frames_ok = stats.frames_ok;
         d->decode_errors = stats.decode_errors;
         d->reconnects = stats.reconnects;
+        d->handshake_retries = stats.handshake_retries;
     }
 
     /* 2. Position (mine) */
@@ -7343,6 +7344,12 @@ void ff_shell_set_music_seed(ff_shell_t *sh_pub, uint32_t seed)
 ff_shell_link_t ff_shell_link(ff_shell_t const *sh_pub)
 {
     return (sh_pub == NULL) ? FF_SHELL_LINK_NONE : shell_of_const(sh_pub)->link;
+}
+
+uint32_t ff_shell_handshake_retries(ff_shell_t const *sh_pub)
+{
+    if (sh_pub == NULL) return 0u;
+    return mc_get_stats(&shell_of_const(sh_pub)->mc).handshake_retries;
 }
 
 uint32_t ff_shell_my_node_id(ff_shell_t const *sh_pub)

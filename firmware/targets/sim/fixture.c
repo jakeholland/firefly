@@ -1324,6 +1324,7 @@ static ff_fixture_result_t fx_parse_diag(fx_ctx_t const *c, int obj_i, ff_app_di
     if (fx_obj_get(c, obj_i, "frames_ok", &t)) d->frames_ok = (uint32_t)fx_num(c, t, 0.0);
     if (fx_obj_get(c, obj_i, "decode_errors", &t)) d->decode_errors = (uint32_t)fx_num(c, t, 0.0);
     if (fx_obj_get(c, obj_i, "reconnects", &t)) d->reconnects = (uint32_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "handshake_retries", &t)) d->handshake_retries = (uint32_t)fx_num(c, t, 0.0);
 
     /* 2. Position (mine) */
     if (fx_obj_get(c, obj_i, "pos_src", &t)) {

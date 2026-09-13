@@ -1572,6 +1572,23 @@ void ff_shell_set_music_seed(ff_shell_t *sh, uint32_t seed);
 /** ff_shell_link — current link state. FF_SHELL_LINK_NONE if `sh` is NULL. */
 ff_shell_link_t ff_shell_link(ff_shell_t const *sh);
 
+/**
+ * ff_shell_handshake_retries — [api] debt/S15c-handshake-stall
+ * (2026-09-13): `mc_stats_t.handshake_retries`, i.e. how many
+ * want_config requests have been RE-SENT since boot because the
+ * handshake they belong to stalled without a config_complete. 0 if `sh`
+ * is NULL.
+ *
+ * Exists as its own cheap accessor — rather than making the caller build
+ * a whole `ff_app_diag_t` (`ff_shell_diag_debug`, which also projects
+ * position/mesh/time/compass/device) — because the device target reads
+ * it once per frame to log each retry as it happens, the same
+ * log-only-on-change shape `ff_shell_link` is already read for in
+ * `app_main.c`. Monotonic since boot: a change means "a retry just went
+ * out", never "the counter reset".
+ */
+uint32_t ff_shell_handshake_retries(ff_shell_t const *sh);
+
 /** ff_shell_my_node_id — this node's id as reported by
  *  `mc_events_t.on_my_info`, or 0 if the handshake has not got that far.
  *  The shell uses it to avoid treating its own traffic as inbound. */

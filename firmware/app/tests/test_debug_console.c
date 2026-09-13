@@ -1453,8 +1453,17 @@ static void dbgconsole_diag_reports_unknowns_when_nothing_known(void)
     capture_t cap;
     dispatch("diag", &cap);
 
-    TEST_ASSERT_EQUAL_INT(7, cap.n); /* one line per section, Mesh split across two (roster/RF + airtime) */
+    /* One line per section, with Mesh split across two (roster/RF +
+     * airtime) and Link split across two (identity + counters,
+     * debt/S15c-handshake-stall) — see dbgconsole_diag's own comment for
+     * the -Wformat-truncation budget those splits exist for. */
+    TEST_ASSERT_EQUAL_INT(8, cap.n);
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag link=NONE node=!00000000 name=?/?"));
+    /* debt/S15c-handshake-stall — the counter that makes a stalled
+     * handshake visible on the bench console. `reconnects` flat while
+     * this climbs is "radio alive, session handshake not". */
+    TEST_ASSERT_TRUE(capture_has_line_containing(
+        &cap, "dbg: diag frames_ok=0 decode_err=0 reconnects=0 hs_retries=0"));
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag pos src=unknown ok=0"));
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag mesh crew=0 heard=0 rssi_dbm=? snr_db=?"));
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag time latched=0 trust=? src_node=? offset_min=?"));
