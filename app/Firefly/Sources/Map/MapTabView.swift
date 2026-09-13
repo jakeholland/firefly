@@ -24,6 +24,7 @@ struct MapTabView: View {
     let colorblind: Bool
     let onFind: (UInt32) -> Void
     let onMessage: (UInt32) -> Void
+    @Environment(\.scenePhase) private var scenePhase
 
     init(model: MapViewModel, initialSegment: MapSegment = .field, colorblind: Bool,
          onFind: @escaping (UInt32) -> Void, onMessage: @escaping (UInt32) -> Void) {
@@ -66,6 +67,37 @@ struct MapTabView: View {
         // screen-scoped `nearby` view model already follows.
         .onAppear { model.observe() }
         .onDisappear { model.stopObserving() }
+        // Hardening QA pass: `.onDisappear` does NOT fire when the app
+        // is backgrounded, and this app declares `UIBackgroundModes`
+        // `bluetooth-central` + `location` — so with location sharing
+        // on it genuinely keeps running rather than being suspended.
+        // Backgrounding with the Map tab on screen therefore left the
+        // 1 Hz `pinRefreshLoop` (plus the location/heading/connectivity
+        // subscriptions and an `NWPathMonitor`) running against a map
+        // nobody can see, for as long as the phone stayed in a pocket.
+        // That is the same defect `AppGraph.stop()` now fixes for
+        // Radar; it cannot fix it here, because the graph deliberately
+        // keeps no reference to this screen-scoped view model
+        // (`makeMapViewModel()`'s own doc comment).
+        //
+        // Foreground restarts it unconditionally, which is correct
+        // precisely BECAUSE this modifier only exists while the Map tab
+        // is on screen: if the tab is not showing, this view is not in
+        // the hierarchy and nothing here runs at all.
+        //
+        // `.background` only, never `.inactive`: the latter also fires
+        // for an app-switcher peek, a pulled-down Control Center and a
+        // system alert, and tearing down three subscriptions plus an
+        // `NWPathMonitor` for a half-second glance is its own churn.
+        // This is the same edge `FireflyApp`'s own
+        // `handleScenePhaseChange` uses, for the same reason.
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .background: model.stopObserving()
+            case .active: model.observe()
+            default: break
+            }
+        }
         .accessibilityIdentifier("Screen.Map")
     }
 }

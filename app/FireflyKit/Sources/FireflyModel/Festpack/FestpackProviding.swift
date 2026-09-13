@@ -23,9 +23,47 @@ public enum FestpackSourceState: Sendable, Equatable {
     /// clock time since it was saved — never invented, always measured
     /// against the same clock `now:` (the provider's injected clock)
     /// reports.
-    case cached(ageSeconds: TimeInterval)
+    ///
+    /// `nil` means the age is genuinely UNKNOWN, and is the honest
+    /// answer to two real situations (hardening QA pass):
+    ///
+    /// 1. The cache's metadata sidecar is missing or corrupt, so there
+    ///    is no saved-at time to measure against at all.
+    /// 2. The saved-at time is in the FUTURE. This app's premise is a
+    ///    phone with no cell service for three days: its clock drifts,
+    ///    and iOS corrects it — sometimes BACKWARDS — the moment it sees
+    ///    a tower again. A cache written before that correction then
+    ///    looks like it was written in the future.
+    ///
+    /// Both used to be papered over: (1) read as `.distantPast` and (2)
+    /// was clamped by a `max(0, …)`, which rendered as **"cached (just
+    /// now)"** — a pack of unknown vintage presented as freshly
+    /// fetched, which is exactly the fabricated-freshness claim this
+    /// project exists not to make.
+    case cached(ageSeconds: TimeInterval?)
     /// Fetched and parsed successfully just now.
     case fresh
+
+    /// The Settings "Festival data" row's and the Lineup header's
+    /// shared wording. In the model, not in either view, so the string
+    /// is testable and the two screens cannot drift apart — the same
+    /// rule `ConnectViewModel.statusLabel` follows (A01, "MVVM
+    /// conventions" item 5).
+    public var statusText: String {
+        switch self {
+        case .none: return "no pack"
+        case .bundled: return "bundled copy"
+        case .fresh: return "fresh"
+        case .cached(nil): return "cached (age unknown)"
+        case .cached(.some(let age)):
+            let minutes = Int(age / 60)
+            if minutes < 1 { return "cached (just now)" }
+            if minutes < 60 { return "cached (\(minutes) min ago)" }
+            let hours = minutes / 60
+            if hours < 48 { return "cached (\(hours) hr ago)" }
+            return "cached (\(hours / 24) days ago)"
+        }
+    }
 }
 
 /// `FestpackProviding`'s one seam onto "the app bundle" — real callers
