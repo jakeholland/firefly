@@ -119,12 +119,49 @@ struct RootView: View {
     let hasKnownRadio: Bool
     @State private var selection: Destination = .more
     /// Which row `MoreScreen` should push into the moment it next
-    /// appears (or, on macOS, the moment a sidebar row changes this
+    /// processes it (or, on macOS, the moment a sidebar row changes this
     /// while More is already selected) — `nil` opens on the plain list.
     /// Set once at launch (below) for "no known radio yet" and for
     /// `-FireflyDemoScreen connect`/`settings`/`diagnostics`; set again
-    /// on every macOS sidebar tap on one of More's own rows.
+    /// on every macOS sidebar tap on one of More's own rows. ONE-SHOT:
+    /// `MoreScreen` calls `onAutoOpenHandled` (below, `detail(for:)`'s
+    /// `.more` case) the instant it acts on a value here, which clears
+    /// it straight back to `nil` — see `MoreScreen`'s own header
+    /// comment for the "tapping More re-pushes Connect" bug a sticky
+    /// version of this flag used to cause.
     @State private var moreAutoOpen: MoreScreen.Row?
+    /// `MoreScreen`'s own push stack, lifted up here (rather than kept
+    /// as that screen's private `@State`) so a genuine tab-reselect —
+    /// detected by `selectionBinding` below — can reset it to `[]` from
+    /// OUTSIDE that view: the standard iOS "tap the active tab pops its
+    /// nav stack to root" behaviour, implemented explicitly rather than
+    /// relied on, since this app's own `autoOpen` re-push bug (see
+    /// `MoreScreen`'s header comment) is exactly what happens when that
+    /// system gesture's result gets silently undone a moment later.
+    @State private var morePath: [MoreScreen.Row] = []
+
+    /// iOS's `TabView(selection:)` binding, wrapping `$selection` so a
+    /// tap on the ALREADY-selected More tab — which changes nothing
+    /// about `selection` itself — is still observable here: pop
+    /// `morePath` back to `[]` in that one case, exactly the "re-tap the
+    /// active tab" behaviour standard iOS tab bars give a plain
+    /// `NavigationStack`-per-tab for free, made explicit here so it does
+    /// not depend on that system gesture actually firing (see
+    /// `MoreScreen`'s header comment on why relying on it silently
+    /// wasn't enough). Every other tab keeps ordinary `$selection`
+    /// semantics — reselecting Radar/Map/Inbox/Lineup does nothing
+    /// beyond what always happened.
+    private var selectionBinding: Binding<Destination> {
+        Binding(
+            get: { selection },
+            set: { newValue in
+                if newValue == .more, selection == .more {
+                    morePath = []
+                }
+                selection = newValue
+            }
+        )
+    }
 
     var body: some View {
         // A ZStack, not a plain VStack, so the FLARE takeover (below) can
@@ -189,15 +226,34 @@ struct RootView: View {
             }
             .navigationSplitViewColumnWidth(min: 160, ideal: 180)
         } detail: {
-            NavigationStack {
+            // `path: $morePath` here for the SAME reason the iOS `.more`
+            // tab's own `NavigationStack` gets it (see `morePath`'s doc
+            // comment): `MoreScreen`'s `.navigationDestination(for:
+            // Row.self)` needs a real, externally-readable/-writable
+            // path to push into, not this container's own private,
+            // opaque one. Harmless for every OTHER selection — nothing
+            // but `MoreScreen` ever pushes a `Row` value onto it, so it
+            // just stays empty while Radar/Map/Inbox/Lineup are showing.
+            NavigationStack(path: $morePath) {
                 detail(for: selection)
             }
         }
         #else
-        TabView(selection: $selection) {
+        TabView(selection: selectionBinding) {
             ForEach(Destination.allCases) { destination in
-                NavigationStack {
-                    detail(for: destination)
+                Group {
+                    if destination == .more {
+                        // The only tab with an explicit, externally
+                        // resettable path — see `morePath`'s own doc
+                        // comment on why More alone needs this.
+                        NavigationStack(path: $morePath) {
+                            detail(for: destination)
+                        }
+                    } else {
+                        NavigationStack {
+                            detail(for: destination)
+                        }
+                    }
                 }
                 .tabItem { Label(destination.rawValue, systemImage: destination.systemImage) }
                 .tag(destination)
@@ -228,13 +284,22 @@ struct RootView: View {
                                onFind: { nodeID in mapFind(nodeID); selection = .radar },
                                onMessage: { nodeID in mapMessage(nodeID); selection = .inbox })
         case .inbox: InboxContainerView(model: inbox, demoInitialThread: demoThreadTarget,
-                                         colorblind: settings.colorblindPalette)
+                                         colorblind: settings.colorblindPalette,
+                                         // Owner note (build 304, item 3): Inbox's own
+                                         // "no crew paired" empty state used to just SAY
+                                         // "pair crew from the Crew screen" with nothing
+                                         // to tap — this switches to More and lands on
+                                         // Connect's Nearby section, the one place
+                                         // pairing actually happens.
+                                         onPairCrew: { selection = .more; moreAutoOpen = .connect })
         case .lineup: LineupScreen(model: lineup)
         case .more: MoreScreen(connect: connect, settings: settings, channelImport: channelImport,
                                 client: client, lineup: lineup, scanner: scanner, pairing: pairing,
                                 colorblind: settings.colorblindPalette,
                                 autoOpenDiagnosticsInSettings: initialDemoScreen == "diagnostics",
-                                autoOpen: moreAutoOpen)
+                                autoOpen: moreAutoOpen,
+                                onAutoOpenHandled: { moreAutoOpen = nil },
+                                path: $morePath)
         }
     }
 

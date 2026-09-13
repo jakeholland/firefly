@@ -13,6 +13,26 @@
 //  `DiagnosticsScreen`) rather than forking its state into a second copy
 //  that could disagree with the tab it used to be.
 //
+//  Owner note (build 304) — "tapping More while Connect is already
+//  pushed pushes another Connect": the OLD `PushRequest`/fresh-`UUID`
+//  wrapper (kept below only in this comment, for the record) combined
+//  badly with `autoOpen` never being consumed: `autoOpen` stayed
+//  `.connect` forever after the very first launch-time push, so ANY
+//  later reappearance of this screen's root list (in particular the
+//  system's own "tap the already-selected tab pops its NavigationStack
+//  to root" gesture re-revealing the root list out from under a pushed
+//  Connect) re-ran this file's `.task`/`.onChange` and silently pushed
+//  Connect right back — from the owner's seat, retapping More while on
+//  Connect looked like it "pushed another Connect" instead of popping.
+//  Fixed two ways, together: (1) `path` is now an explicit `[Row]`
+//  owned by `RootView` (`RootView`'s own `morePath`), so a genuine
+//  tab-reselect can reset it to `[]` from OUTSIDE this view — see
+//  `RootView.selectionBinding` — without depending on that system
+//  gesture actually firing; (2) `autoOpen` is consumed exactly once:
+//  `onAutoOpenHandled` tells `RootView` to clear it the instant this
+//  screen acts on it, so the SAME request can never replay itself just
+//  because this screen reappears.
+//
 import FireflyMesh
 import FireflyModel
 import SwiftUI
@@ -31,43 +51,41 @@ struct MoreScreen: View {
     /// Settings was its own top-level tab; `false` on every non-demo
     /// build.
     var autoOpenDiagnosticsInSettings: Bool = false
-    /// Which row (if any) to push into the moment this screen first
-    /// appears: `RootView`'s own "no bonded radio yet -> land on
-    /// Connect with zero taps" first-launch rule, `-FireflyDemoScreen
-    /// connect`/`settings`/`diagnostics`, and — on macOS — a sidebar
-    /// click on one of this screen's own rows while `More` is already
-    /// selected (`RootView`'s `content` doc comment on why this needs
-    /// to react to a CHANGE, not just a one-shot value). `nil` opens on
-    /// the plain list, same as a manual tap on the More tab always did.
+    /// One-shot: which row (if any) `RootView` wants pushed the next
+    /// time this screen processes it — `RootView`'s own "no bonded
+    /// radio yet -> land on Connect with zero taps" first-launch rule,
+    /// `-FireflyDemoScreen connect`/`settings`/`diagnostics`, and — on
+    /// macOS — a sidebar click on one of this screen's own rows.
+    /// `nil` opens on the plain list, same as a manual tap on the More
+    /// tab always did. NEVER a sticky flag: this screen calls
+    /// `onAutoOpenHandled()` the instant it acts on a non-`nil` value,
+    /// which is `RootView`'s cue to set its own copy back to `nil` —
+    /// see this file's header comment for the bug that shape replaces.
     var autoOpen: Row?
+    /// Tells `RootView` the just-seen `autoOpen` value has been
+    /// consumed (whether that meant a fresh push or recognizing the
+    /// requested row was already on top) — `RootView` clears its own
+    /// `moreAutoOpen` in response. Defaults to a no-op so previews/tests
+    /// that never set `autoOpen` need not supply this.
+    var onAutoOpenHandled: () -> Void = {}
+    /// This tab's own push stack — owned by `RootView` (`@State
+    /// private var morePath`), not locally, precisely so a tab
+    /// reselect can reset it to `[]` from outside this view (see this
+    /// file's header comment). At most one element deep today: Connect/
+    /// Settings/System are leaf destinations with nothing further to
+    /// push from here.
+    @Binding var path: [Row]
 
-    enum Row: Hashable {
-        case connect, settings, system
+    /// `MoreScreenRow`, under the name every call site already uses
+    /// (`MoreScreen.Row`) — the real declaration and its `pushed(_:
+    /// onto:)` push rule live in `MoreScreenNavigation.swift` (no
+    /// SwiftUI import), not here. See that file's own header comment
+    /// for why: it is the seam `FireflyAppTests` exercises directly.
+    typealias Row = MoreScreenRow
+
+    private static func pushed(_ row: Row, onto path: [Row]) -> [Row] {
+        MoreScreenNavigation.pushed(row, onto: path)
     }
-
-    /// A single `navigationDestination(item:)` push, identified by a
-    /// fresh `UUID` on every request rather than by `Row` alone. `Row`
-    /// carries no identity beyond its own case, and TWO earlier
-    /// attempts each broke on that in a different way: keying
-    /// `navigationDestination(item:)` directly on `Row?` pushed
-    /// `.connect` fine the first time, but pushing `.connect` again
-    /// later (same, already-seen value) silently no-opped — confirmed
-    /// empirically, reproduced 3/3 runs of the UI test's final
-    /// "back to Connect" step, while `.settings`, pushed for the first
-    /// time in the same run, never showed it. Splitting into three
-    /// independent `navigationDestination(isPresented:)` flags (one per
-    /// row, `SettingsScreen.showDiagnostics`'s own shape) traded that
-    /// bug for a worse one: three such modifiers stacked on the same
-    /// view intermittently left the stack unable to push OR pop at all.
-    /// Wrapping the row in a per-request `UUID` keeps ONE
-    /// `navigationDestination(item:)` (the reliable shape) while making
-    /// every push a genuinely new value, even a same-row repeat.
-    private struct PushRequest: Hashable {
-        let id = UUID()
-        let row: Row
-    }
-
-    @State private var pushed: PushRequest?
 
     var body: some View {
         ScrollView {
@@ -97,8 +115,8 @@ struct MoreScreen: View {
         // signal that a visit to More has landed back on the plain
         // list rather than still being pushed into one of its rows.
         .accessibilityIdentifier("Screen.More")
-        .navigationDestination(item: $pushed) { request in
-            destination(for: request.row)
+        .navigationDestination(for: Row.self) { row in
+            destination(for: row)
         }
         .task {
             if let autoOpen { open(autoOpen) }
@@ -108,15 +126,17 @@ struct MoreScreen: View {
         // changes `autoOpen` without ever tearing this view down (no
         // `selection` change to remount it), so the one-shot `.task`
         // above would never see the new value. iOS never changes
-        // `autoOpen` after this screen's first appearance, so this is a
-        // no-op there.
+        // `autoOpen` after this screen's first appearance (it is
+        // cleared back to `nil` the instant it is consumed), so this is
+        // a no-op there.
         .onChange(of: autoOpen) { _, newValue in
             if let newValue { open(newValue) }
         }
     }
 
     private func open(_ row: Row) {
-        pushed = PushRequest(row: row)
+        path = Self.pushed(row, onto: path)
+        onAutoOpenHandled()
     }
 
     @ViewBuilder
@@ -126,8 +146,18 @@ struct MoreScreen: View {
             ConnectScreen(connect: connect, client: client, channelImport: channelImport,
                           scanner: scanner, pairing: pairing, colorblind: colorblind)
         case .settings:
+            // Owner note (build 304, item 3): Settings' own Crew section
+            // has rename/remove but no way to PAIR — that only exists on
+            // Connect's Nearby section (`NearbyNodesViewModel.addToCrew
+            // (_:)`). `onOpenConnect` gives its "ADD CREW" button a real
+            // destination instead of leaving the owner to find Connect
+            // on their own. Reuses this same `open(_:)` — a tap here
+            // REPLACES Settings with Connect in `path` (this tab never
+            // nests more than one level deep), never a second, parallel
+            // push mechanism.
             SettingsScreen(model: settings, client: client, pairing: pairing, lineup: lineup,
-                            autoOpenDiagnostics: autoOpenDiagnosticsInSettings)
+                            autoOpenDiagnostics: autoOpenDiagnosticsInSettings,
+                            onOpenConnect: { open(.connect) })
         case .system:
             DiagnosticsScreen(model: DiagnosticsViewModel(client: client))
         }

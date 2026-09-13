@@ -215,6 +215,13 @@ targets:
       # this stays a pure addition to the list the other four already
       # occupy.
       - path: Firefly/Sources/Settings/CrewSettingsViewModel.swift
+      # Owner note (build 304, item 2): `MoreScreen`'s own push-state
+      # rule (`Row`/`pushed(_:onto:)`), split into its own SwiftUI-free
+      # file specifically so it can sit in this list without dragging in
+      # `MoreScreen.swift` itself (which would pull in ConnectScreen/
+      # SettingsScreen/DiagnosticsScreen and the SwiftUI/Theme
+      # dependency this target's own comment above says to avoid).
+      - path: Firefly/Sources/MoreScreenNavigation.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit
