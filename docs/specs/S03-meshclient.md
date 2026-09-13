@@ -303,8 +303,8 @@ deadline is the only honest answer.
 **Fix**: a second watchdog, on the handshake itself, measured from when
 the `want_config` frame actually went out (`mc_client_t.want_config_sent_ms`)
 rather than from the last byte in. After `MC_HANDSHAKE_TIMEOUT_MS`
-(10 s — four orders of magnitude of headroom over the observed 20 ms
-cold-boot and 0.9 s re-handshake answer times) with no `config_complete`,
+(10 s — ~11x the SLOWEST answer actually observed, the 0.9 s deliberate
+re-handshake, and ~500x the 20 ms cold-boot one) with no `config_complete`,
 the client re-sends `want_config`, up to `MC_HANDSHAKE_MAX_RETRIES` (3)
 times per handshake; a spent budget escalates to the ordinary
 `mc_fail_and_schedule_reconnect()` path, which re-dials with a fresh

@@ -599,7 +599,25 @@ typedef struct {
  * observed (and ~500x the fastest) — enough headroom that it can only
  * fire on a genuinely unanswered request, never on a slow one (even a
  * whole-mesh NodeInfo dump drains in a handful of ticks, see
- * MC_TICK_MAX_FRAMES). */
+ * MC_TICK_MAX_FRAMES).
+ *
+ * Review note (PR #296) — where that headroom is THINNEST, so a future
+ * change to either constant knows what it is spending. The deadline is
+ * wall-clock, but the drain is per-tick-capped (MC_TICK_MAX_FRAMES
+ * frames per mc_tick), so the real budget is "frames the caller can
+ * drain in 10 s", which depends on the caller's tick cadence. Awake, the
+ * esp32s3 target ticks at its ~50 Hz frame cadence and the budget is
+ * thousands of frames. Asleep it is not: S26f light sleep wakes on a
+ * 1500 ms timer and runs ONE ff_shell_tick per wake, so the budget falls
+ * to 32 frames/1.5 s ~= 213 frames in 10 s. A want_config replay is
+ * roughly 30 frames of my_info/config/moduleConfig/channels plus one
+ * NodeInfo per known node, so a reconnect that lands while the puck is
+ * asleep still clears with ~1.6x margin against Meshtastic's default
+ * 100-node ESP32 nodeDB — arithmetic from these constants, not a bench
+ * measurement, and the tightest case found in review. If either the
+ * nodeDB cap or the sleep wake period grows, re-do this sum before
+ * assuming 10 s is still generous: a deadline that fires mid-dump would
+ * restart the dump rather than rescue it. */
 #define MC_HANDSHAKE_TIMEOUT_MS 10000u
 
 /* Re-sends of want_config before a stalled handshake is escalated to a
