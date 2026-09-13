@@ -19,15 +19,22 @@
 //  `segment` there is now a plain external parameter this file drives
 //  from the ONE segmented control below.
 //
-//  This file's own `onAppear`/`onDisappear`/`.onChange(of: segment)`
-//  (not each segment's own view appearing/disappearing) is what drives
-//  `FindLifecycle.apply`/`.stopAll` — deliberately, so the only mount/
-//  unmount pairing this depends on is a plain `@State` change while
-//  ALREADY mounted (a completely ordinary SwiftUI mechanism, unrelated
-//  to view identity), not a second `NavigationSplitView` detail-column
-//  transition. `RadarView` itself is untouched — it still has no
-//  `.onAppear`/`.onDisappear` of its own, same as before this tab
-//  existed.
+//  This view drives NO lifecycle of its own. `FindLifecycle.apply`/
+//  `.stopAll` are called by `RootView.applyFindLifecycle()`, off
+//  `RootView`'s own `selection`/`findSegment` state, NOT off this
+//  view's `onAppear`/`onDisappear` — measured, not assumed (review of
+//  this PR): instrumented macOS launch with Find as the detail
+//  destination logs `onAppear`, `onAppear`, `onDisappear`, in that
+//  order, because `NavigationSplitView` remounts its detail column
+//  once at launch. With the start/stop rule wired to those events, the
+//  trailing `onDisappear` ran `stopAll()` LAST and left Radar AND Map
+//  stopped while Find was on screen — the same permanent-orphan bug
+//  `ConnectScreen.swift`/`RadarView.swift` document, on the app's own
+//  landing destination. `RootView`'s `selection`/`findSegment` are
+//  plain `@State` on a view that is never remounted, so they cannot
+//  produce that interleaving. `RadarView` itself is untouched — it
+//  still has no `.onAppear`/`.onDisappear` of its own, same as before
+//  this tab existed.
 //
 import FireflyModel
 import SwiftUI
@@ -110,11 +117,15 @@ struct FindScreen: View {
         // element carrying this identifier for its whole subtree.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("Screen.Find")
-        .onAppear { FindLifecycle.apply(segment: segment, radar: radar, map: map) }
-        .onDisappear { FindLifecycle.stopAll(radar: radar, map: map) }
-        .onChange(of: segment) { _, newValue in
-            FindLifecycle.apply(segment: newValue, radar: radar, map: map)
-        }
+        // NO `.onAppear`/`.onDisappear`/`.onChange(of: segment)` here
+        // driving `FindLifecycle` — `RootView.applyFindLifecycle()`
+        // owns that, off its OWN `selection`/`findSegment` state. See
+        // that method's comment for the measured launch trace that
+        // moved it there (review of this PR): this view is one of
+        // `RootView.detail(for:)`'s destinations, so it is exposed to
+        // the same NavigationSplitView detail-column remount
+        // `ConnectScreen`/`RadarView`/`InboxListView`/`SettingsScreen`
+        // were each moved off appear/disappear for.
     }
 
     @ViewBuilder
@@ -159,6 +170,12 @@ struct FindScreen: View {
                         .clipShape(RoundedRectangle(cornerRadius: 11))
                 }
                 .buttonStyle(.plain)
+                // Which segment is CURRENT is carried by colour alone
+                // otherwise — the amber chip — which VoiceOver cannot
+                // see. `.isSelected` is how a segmented control says
+                // it, and this is one (plain buttons, for the tap-target
+                // reason above, do not get it for free).
+                .accessibilityAddTraits(selected ? [.isSelected] : [])
                 .accessibilityIdentifier("Find.Segment.\(candidate.rawValue)")
             }
         }

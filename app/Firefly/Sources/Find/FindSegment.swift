@@ -57,13 +57,20 @@ protocol FindSegmentObserving: AnyObject {
 /// (`MapTabView`'s `.onChange(of: scenePhase)`, PR #294) is untouched
 /// and still applies whenever Map/Field is the active segment — this
 /// type only answers "which segment is on screen right now", called
-/// from `FindScreen`'s `onAppear`/`onDisappear`/segment-change. See
-/// that file's own header comment for why driving this from
-/// `.onChange(of: segment)` rather than each segment's own view
-/// appearing/disappearing sidesteps the `NavigationSplitView`
-/// detail-column remount hazard `ConnectScreen.swift`/`RadarView.swift`
-/// document (Find, not Radar, is the `RootView.Destination` case
-/// exposed to it now).
+/// from `RootView.applyFindLifecycle()`, off `RootView`'s own
+/// `selection`/`findSegment` state. NOT from `FindScreen`'s own
+/// `onAppear`/`onDisappear`: that view is a `RootView.detail(for:)`
+/// destination and is hit by the `NavigationSplitView` detail-column
+/// remount `ConnectScreen.swift`/`RadarView.swift` document — measured
+/// on this branch, it fires `onAppear`, `onAppear`, `onDisappear` at
+/// launch, which ran `stopAll()` last and left both view models
+/// stopped on the screen the app had just landed on. See
+/// `RootView.applyFindLifecycle()`'s own comment for that trace.
+///
+/// The FOREGROUND half of the same rule lives in `AppGraph.start()`,
+/// which restores Radar's pump only if it was actually running when
+/// `stop()` tore the graph down (PR #298 review) — a view-level
+/// `scenePhase` handler could not do it without racing that `Task`.
 @MainActor
 enum FindLifecycle {
     static func apply(segment: FindSegment, radar: any FindSegmentObserving, map: any FindSegmentObserving) {

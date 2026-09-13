@@ -203,13 +203,21 @@ explicit start/stop wiring the owner's decision calls for: "only the
 visible segment's view model observes/pumps," with Radar's 1 Hz
 recompute pump and Map's pin-refresh loop starting/stopping on segment
 change the same way `MapTabView`'s own `isOnScreen` guard already did
-for backgrounding/foregrounding (PR #294). Radar's own background/
-foreground lifecycle stays owned by `AppGraph.start()`/`.stop()` (gated
-on `SettingsKey.backgroundConnectEnabled` — a real, already-tested
-product decision, `AppGraphViewModelLifecycleTests`), not duplicated at
-the Find/segment level — an interpretation call, not a spec gap: adding
-a second, UI-level background handler for Radar would fight that
-setting rather than respect it. The selected segment is remembered for
+for backgrounding/foregrounding (PR #294). That rule is applied by
+`RootView.applyFindLifecycle()`, off `RootView`'s own `selection`/
+`findSegment` state — never off `FindScreen`'s own `onAppear`/
+`onDisappear`, which the `NavigationSplitView` detail-column remount
+orphans (measured at launch; that method's own comment carries the
+trace, and `FindLifecycleWiringGuardTests` pins it). Radar's own
+background/foreground lifecycle stays owned by `AppGraph.start()`/
+`.stop()` (gated on `SettingsKey.backgroundConnectEnabled` — a real,
+already-tested product decision, `AppGraphViewModelLifecycleTests`),
+not duplicated at the Find/segment level — an interpretation call, not
+a spec gap: adding a second, UI-level background handler for Radar
+would fight that setting rather than respect it. `start()` RESTORES
+that pump only when it was running at `stop()` time, so a foreground
+resume onto Map/Field, Inbox or Lineup no longer wakes a Radar pump
+nothing off-screen would stop again. The selected segment is remembered for
 the session (not persisted) — see `RootView.findSegment`'s own doc
 comment for why that state is hoisted up to `RootView` rather than kept
 local to `FindScreen`.

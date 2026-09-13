@@ -205,6 +205,13 @@ struct RootView: View {
             }
             .task { applyInitialSelection() }
             .task { await runInitialDemoScreen() }
+            // The Find tab's start/stop rule is driven from HERE, off
+            // this view's own `selection`/`findSegment` state, rather
+            // than from `FindScreen`'s `onAppear`/`onDisappear` — see
+            // `applyFindLifecycle()`'s own comment for the measured
+            // launch trace that requires it.
+            .onChange(of: selection, initial: true) { _, _ in applyFindLifecycle() }
+            .onChange(of: findSegment) { _, _ in applyFindLifecycle() }
 
             if flareTakeover.isActive {
                 FlareTakeoverView(model: flareTakeover)
@@ -349,6 +356,37 @@ struct RootView: View {
         case "map", "map-gps": return .map
         case "field", "map-field": return .field
         default: return nil
+        }
+    }
+
+    /// "Only the visible segment's view model observes/pumps" (owner
+    /// decision, 2026-09-13) — applied from `selection`/`findSegment`,
+    /// the two pieces of state that actually define which segment is on
+    /// screen, on a view that is never remounted.
+    ///
+    /// MEASURED, not reasoned (review of this PR). Wiring this to
+    /// `FindScreen`'s own `onAppear`/`onDisappear` — the obvious place
+    /// — reproduces the `NavigationSplitView` detail-column remount
+    /// `ConnectScreen.swift`'s own `.onAppear` comment documents.
+    /// Instrumented macOS launch, Find as the detail destination:
+    ///
+    ///     onAppear segment=radar
+    ///     onAppear segment=radar
+    ///     onDisappear
+    ///
+    /// — two mounts, and the FIRST instance's `onDisappear` arriving
+    /// after the second's `onAppear`. `stopAll()` therefore ran last
+    /// and left BOTH `RadarViewModel` and `MapViewModel` stopped while
+    /// Find was on screen: a frozen Radar on the app's own landing
+    /// destination, for the rest of the process or until the user
+    /// happened to tap a segment. `selection`/`findSegment` are plain
+    /// `@State` on this view, which that remount does not touch, so the
+    /// same rule applied from here cannot be orphaned by it.
+    private func applyFindLifecycle() {
+        if selection == .find {
+            FindLifecycle.apply(segment: findSegment, radar: radar, map: map)
+        } else {
+            FindLifecycle.stopAll(radar: radar, map: map)
         }
     }
 
