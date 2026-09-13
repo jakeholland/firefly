@@ -56,6 +56,41 @@ struct FindScreen: View {
             content
         }
         .background(Color.ffBackground)
+        // BUG FIX (this PR): the Map segment's `Map` (MapKit) is a
+        // scrollable-content view, and the instant one of THOSE
+        // appears anywhere under `RootView`'s `NavigationStack { Find }`,
+        // iOS commits to reserving a REAL navigation-bar frame for that
+        // stack — even though nothing here ever sets a title — where it
+        // previously rendered it at zero height. Radar/Field have no
+        // such content, so they never trigger this; Map does, every
+        // time. That extra bar renders ABOVE this VStack, so the
+        // segmented control — this VStack's own FIRST child, laid out
+        // identically in all three cases — visibly lands lower only
+        // when Map is the segment on screen, with the reserved bar's
+        // own (black) background showing through above it.
+        //
+        // Measured, not guessed: swapping `GPSMapView`'s `Map` for a
+        // plain `Color` made the control land at the SAME y as Radar/
+        // Field's; restoring `Map` reproduced the ~64pt drop every
+        // time — isolating the trigger to `Map`'s mere presence, not
+        // this file's own layout (unchanged across all three cases) or
+        // any safe-area/`ignoresSafeArea` handling on the map content
+        // itself (tried first; no effect, because the extra space is a
+        // real navigation-bar frame, not a safe-area accounting quirk).
+        //
+        // `.toolbar(.hidden, for: .navigationBar)` forces that bar to
+        // zero height regardless of what any segment's content wants,
+        // which is what Radar/Field already got "for free" from having
+        // nothing scrollable — this just makes the SAME thing true when
+        // Map is showing, so the control's position stops depending on
+        // which segment is selected. iOS-only (`.navigationBar` is
+        // unavailable as a `ToolbarPlacement` on macOS, which has no
+        // such bar to hide) — same guard `LineupScreen.swift` already
+        // uses for its own, unrelated instance of this exact
+        // "scrollable content quietly grows a navigation bar" bug.
+        #if os(iOS)
+        .toolbar(.hidden, for: .navigationBar)
+        #endif
         // M3 convention: one identifying accessibility identifier per
         // screen (`ConnectScreen`'s own comment) — this is Find's own,
         // alongside the per-segment ones each child view already
