@@ -669,6 +669,63 @@ static void S07_AC2_0600_boundary_both_sides(void)
     TEST_ASSERT_EQUAL_UINT8(0, rows[0].pct_done);
 }
 
+/* 2026-09-11 review: the OTHER S07_AC2_midnight_crossing_* cases above
+ * build their fp_set_t directly with mk_set(), passing an already
+ * end_min=60/start_min=1410 pair by hand — which exercises this file's
+ * OWN defensive fold (sched_effective_end) but says nothing about
+ * whether fp_parse() actually produces that pair from a real pack. This
+ * case goes through fp_parse() end to end (a "23:30"/"01:00" schedule
+ * entry with no `end_day` — the exact shape firmware/assets/demo/
+ * firefly-fields.festpack.json ships four of) so it would have caught
+ * the fp_pack.c parse-time bug (fp_parse_set_daytime only folded
+ * end_min forward when `end_day` was present) even though that
+ * particular bug was invisible from ff_sched_now_playing's own output —
+ * ff_sched.c's sched_effective_end folds any end_min < start_min
+ * regardless of how it got that way, so this exact query already
+ * returned the right row before the fp_pack.c fix. What the fix changes
+ * is the RAW pack.sets[0].end_min a caller reads directly (see
+ * fp_pack.h's fp_set_t.end_min and the FireflyKit Swift binding, which
+ * has no equivalent of sched_effective_end and reads this field as-is)
+ * — asserted below alongside the now_playing behavior. */
+static void S07_AC2_parsed_end_before_start_without_end_day_folds_at_0030(void)
+{
+    static char const json[] =
+        "{\"festpack\":\"0.1\","
+        "\"festival\":{\"name\":\"Midnight\",\"year\":2026,"
+        "\"venue\":{\"lat\":0.0,\"lon\":0.0}},"
+        "\"stages\":[{\"id\":\"main\",\"name\":\"Main\",\"color\":\"#ffffff\"}],"
+        "\"schedule\":["
+        "{\"artist\":\"Late Night B2B\",\"stage\":\"main\",\"day\":\"2026-09-19\","
+        "\"start\":\"23:30\",\"end\":\"01:00\"}"
+        "]}";
+
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(json, sizeof(json) - 1, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_UINT16(1, pack.n_sets);
+
+    /* The raw parsed field itself: end_min must already be folded past
+     * midnight (1500 = 60 + 1440), not the pre-fix 60. */
+    TEST_ASSERT_EQUAL_INT16(23 * 60 + 30, pack.sets[0].start_min); /* 1410 */
+    TEST_ASSERT_EQUAL_INT16(24 * 60 + 60, pack.sets[0].end_min);   /* 1500 */
+    TEST_ASSERT_TRUE(pack.sets[0].end_min > pack.sets[0].start_min);
+
+    uint16_t const night = pack.sets[0].day_doy;
+
+    /* 00:30 the following calendar morning, still the same festival
+     * night: now_min = 30 + 1440 = 1470. */
+    ff_now_row_t rows[4];
+    uint8_t n = ff_sched_now_playing(&pack, night, 1470, rows, 4);
+    TEST_ASSERT_EQUAL_UINT8(1, n);
+    TEST_ASSERT_EQUAL_STRING("Late Night B2B", rows[0].set->artist);
+    TEST_ASSERT_TRUE(rows[0].pct_valid);
+    TEST_ASSERT_EQUAL_INT16(30, rows[0].mins_left); /* 1500 - 1470 */
+
+    /* One tick later than the published end: gone. */
+    n = ff_sched_now_playing(&pack, night, 1500, rows, 4);
+    TEST_ASSERT_EQUAL_UINT8(0, n);
+}
+
 /* ======================================================================
  * AC3 — next_starred
  * ==================================================================== */
@@ -1350,6 +1407,7 @@ int main(void)
     RUN_TEST(S07_AC2_midnight_crossing_pct_done_across_midnight);
     RUN_TEST(S07_AC2_midnight_crossing_set_not_visible_on_next_day_doy);
     RUN_TEST(S07_AC2_0600_boundary_both_sides);
+    RUN_TEST(S07_AC2_parsed_end_before_start_without_end_day_folds_at_0030);
 
     RUN_TEST(S07_AC3_picks_earliest_future_starred);
     RUN_TEST(S07_AC3_false_when_none_starred);

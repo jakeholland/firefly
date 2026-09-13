@@ -90,10 +90,43 @@ static void test_S20_firefly_starred_and_timed(void)
     TEST_ASSERT_EQUAL_INT(2, n_starred); /* FIREFLY + one Sunrise Grove set */
 }
 
+/* 2026-09-11 review fixup: this pack is real, shipped evidence for the
+ * fp_parse_set_daytime midnight-fold bug — four authored sets publish a
+ * clock-past-midnight "end" (e.g. LOST + FOUND's "23:30" -> "01:00")
+ * with no `end_day`, the exact shape the fix targets (see
+ * test_festpack.c's S05_review_published_end_before_start_without_end_day_folds_past_midnight
+ * for the isolated case). Assert it against the actual shipped asset so
+ * a future change to this fixture can't silently regress it. */
+static void test_S20_midnight_crossing_sets_fold_without_end_day(void)
+{
+    static char buf[BUF_SZ];
+    size_t len = load(buf, sizeof(buf));
+    fp_pack_t pack;
+    TEST_ASSERT_EQUAL_INT(FP_OK, fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS));
+
+    static char const *const midnight_crossers[] = {
+        "LOST + FOUND", "VOLTAGE", "PHOTON", "TWILIGHT FUNCTION",
+    };
+    int found = 0;
+    for (uint16_t i = 0; i < pack.n_sets; i++) {
+        fp_set_t const *s = &pack.sets[i];
+        for (size_t k = 0; k < sizeof(midnight_crossers) / sizeof(midnight_crossers[0]); k++) {
+            if (strcmp(s->artist, midnight_crossers[k]) != 0) continue;
+            found++;
+            TEST_ASSERT_GREATER_OR_EQUAL_INT16(0, s->start_min);
+            TEST_ASSERT_GREATER_OR_EQUAL_INT16(0, s->end_min);
+            TEST_ASSERT_TRUE_MESSAGE(s->end_min > s->start_min, s->artist);
+            TEST_ASSERT_TRUE_MESSAGE(s->end_min >= 1440, s->artist); /* actually past midnight */
+        }
+    }
+    TEST_ASSERT_EQUAL_INT(4, found);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_S20_demo_pack_parses);
     RUN_TEST(test_S20_firefly_starred_and_timed);
+    RUN_TEST(test_S20_midnight_crossing_sets_fold_without_end_day);
     return UNITY_END();
 }

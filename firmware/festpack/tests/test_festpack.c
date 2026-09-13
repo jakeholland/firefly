@@ -270,6 +270,82 @@ static void S05_AC1_explicit_night_overrides_fallback(void)
     TEST_ASSERT_EQUAL_INT16(60, pack.sets[3].start_min);        /* clock unshifted, not 60+3*1440 */
 }
 
+/* 2026-09-11 review fixup: fp_parse_set_daytime used to fold `end_min`
+ * forward past midnight ONLY when the entry carried an explicit
+ * `end_day` — a published "end" numerically <= its own "start" with no
+ * `end_day` (a real shape: firmware/assets/demo/
+ * firefly-fields.festpack.json ships four sets like this, e.g. "23:30"
+ * -> "01:00") was left un-folded (start_min=1410, end_min=60), one
+ * minute short of "over" from the moment it started, for any consumer
+ * reading fp_set_t.end_min directly rather than through ff_sched.c's
+ * own independent end_min<start_min fold (sched_effective_end — see
+ * ff_sched.h and its "kept as defense in depth" note in ff_sched.c).
+ * Fixed at parse time, mirroring the companion app's identical fix (PR
+ * #291: LineupGridLayout.publishedEnd / settimes' buildFestival).
+ *
+ * Five shapes, one schedule array:
+ *   [0] published end, same calendar day — must NOT be touched.
+ *   [1] end past midnight WITH end_day — already correctly folded
+ *       before this fix; must still be.
+ *   [2] end past midnight WITHOUT end_day — the bug itself.
+ *   [3] end exactly "00:00" with no end_day — `<=`, not `<`: 00:00
+ *       always counts as the next day, never a zero-length set.
+ *   [4] end unknown (null) — must stay -1, never guessed at. */
+static void S05_review_published_end_before_start_without_end_day_folds_past_midnight(void)
+{
+    static char const json[] =
+        "{\"festpack\":\"0.1\","
+        "\"festival\":{\"name\":\"Midnight\",\"year\":2026,"
+        "\"venue\":{\"lat\":0.0,\"lon\":0.0}},"
+        "\"stages\":[{\"id\":\"main\",\"name\":\"Main\",\"color\":\"#ffffff\"}],"
+        "\"schedule\":["
+        /* [0] published end, same day: 14:00 -> 15:30, no fold. */
+        "{\"artist\":\"Afternoon\",\"stage\":\"main\",\"day\":\"2026-09-19\","
+        "\"start\":\"14:00\",\"end\":\"15:30\"},"
+        /* [1] end past midnight, end_day present: 22:10 -> 00:10. */
+        "{\"artist\":\"WithEndDay\",\"stage\":\"main\",\"day\":\"2026-09-19\","
+        "\"start\":\"22:10\",\"end\":\"00:10\",\"end_day\":\"2026-09-20\"},"
+        /* [2] end past midnight, NO end_day: the bug — 23:30 -> 01:00. */
+        "{\"artist\":\"Late Night B2B\",\"stage\":\"main\",\"day\":\"2026-09-19\","
+        "\"start\":\"23:30\",\"end\":\"01:00\"},"
+        /* [3] end exactly 00:00, no end_day: 23:00 -> 00:00. */
+        "{\"artist\":\"Closer\",\"stage\":\"main\",\"day\":\"2026-09-19\","
+        "\"start\":\"23:00\",\"end\":\"00:00\"},"
+        /* [4] end unknown. */
+        "{\"artist\":\"NoEndPublished\",\"stage\":\"main\",\"day\":\"2026-09-19\","
+        "\"start\":\"20:00\",\"end\":null}"
+        "]}";
+
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(json, sizeof(json) - 1, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_UINT16(5, pack.n_sets);
+
+    /* [0] published end same day: untouched. */
+    TEST_ASSERT_EQUAL_INT16(14 * 60, pack.sets[0].start_min);
+    TEST_ASSERT_EQUAL_INT16(15 * 60 + 30, pack.sets[0].end_min);
+
+    /* [1] end_day already resolved this; the fix must not double-fold
+     * it into a second extra day. */
+    TEST_ASSERT_EQUAL_INT16(22 * 60 + 10, pack.sets[1].start_min);   /* 1330 */
+    TEST_ASSERT_EQUAL_INT16(24 * 60 + 10, pack.sets[1].end_min);     /* 1450 */
+    TEST_ASSERT_TRUE(pack.sets[1].end_min > pack.sets[1].start_min);
+
+    /* [2] the bug: no end_day, end <= start -> fold forward one day. */
+    TEST_ASSERT_EQUAL_INT16(23 * 60 + 30, pack.sets[2].start_min);   /* 1410 */
+    TEST_ASSERT_EQUAL_INT16(24 * 60 + 60, pack.sets[2].end_min);     /* 1500, not 60 */
+    TEST_ASSERT_TRUE(pack.sets[2].end_min > pack.sets[2].start_min);
+
+    /* [3] end exactly 00:00 counts as next day, not a 0-length set. */
+    TEST_ASSERT_EQUAL_INT16(23 * 60, pack.sets[3].start_min);        /* 1380 */
+    TEST_ASSERT_EQUAL_INT16(24 * 60, pack.sets[3].end_min);          /* 1440 */
+    TEST_ASSERT_TRUE(pack.sets[3].end_min > pack.sets[3].start_min);
+
+    /* [4] unknown end stays unknown — never fabricated. */
+    TEST_ASSERT_EQUAL_INT16(20 * 60, pack.sets[4].start_min);
+    TEST_ASSERT_EQUAL_INT16(-1, pack.sets[4].end_min);
+}
+
 static void S05_AC1_lost_lands_festival_meta_and_utc_offset_default(void)
 {
     char buf[FIXTURE_BUF_SZ];
@@ -961,6 +1037,7 @@ int main(void)
     RUN_TEST(S05_AC1_lost_lands_after_midnight_sets_fold_onto_festival_night);
     RUN_TEST(S05_AC1_night_fold_fallback_when_night_absent);
     RUN_TEST(S05_AC1_explicit_night_overrides_fallback);
+    RUN_TEST(S05_review_published_end_before_start_without_end_day_folds_past_midnight);
     RUN_TEST(S05_AC1_lost_lands_festival_meta_and_utc_offset_default);
     RUN_TEST(S05_AC1_lost_lands_meta_updated_sources_and_complete_flags);
     RUN_TEST(S05_review_absent_meta_reads_as_not_present);
