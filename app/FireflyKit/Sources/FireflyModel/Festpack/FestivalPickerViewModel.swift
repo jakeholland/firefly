@@ -67,8 +67,7 @@ public final class FestivalPickerViewModel {
         let nowDate = now()
         let selected = selectedID
         packsByID = Dictionary(uniqueKeysWithValues: index.packs.map { ($0.id, $0) })
-        rows = index.packs
-            .sorted { $0.start < $1.start }
+        rows = Self.ordered(index.packs, now: nowDate)
             .map { pack in
                 Row(id: pack.id, name: pack.name, year: pack.year, start: pack.start,
                     isCurrent: pack.start <= nowDate && nowDate <= pack.end,
@@ -76,6 +75,23 @@ public final class FestivalPickerViewModel {
             }
         loadError = index.packs.isEmpty ? "No festivals available — check your connection." : nil
         isLoading = false
+    }
+
+    /// Review fix — the owner ask is "pick the festival you are going
+    /// to", so the list leads with the ones that are still ahead:
+    /// anything not yet over (current first, then upcoming, soonest
+    /// first), and only then the ones already finished, most recent
+    /// first. A plain ascending sort by `start` put Bass Canyon
+    /// (August) at the top of a list opened at Lost Lands in
+    /// September, and pushed every festival the user could actually
+    /// still attend below the fold. Past festivals are still SHOWN —
+    /// last year's picks and lineup are real data, not something to
+    /// hide — just not first. Pure and `static` so the ordering is
+    /// testable with no index provider, settings or lineup.
+    static func ordered(_ packs: [AlmanacIndexPack], now: Date) -> [AlmanacIndexPack] {
+        let upcoming = packs.filter { $0.end >= now }.sorted { $0.start < $1.start }
+        let past = packs.filter { $0.end < now }.sorted { $0.start > $1.start }
+        return upcoming + past
     }
 
     /// Writes the selection to settings (URL, slug, year, checksum —

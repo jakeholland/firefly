@@ -487,7 +487,135 @@ final class AlmanacFestpackProviderTests: XCTestCase {
     private func sha256Hex(_ data: Data) -> String {
         AlmanacFestpackProvider.sha256Hex(data)
     }
+    // MARK: - Festival switching (review findings)
+
+    /// Two different festivals behind two different URLs, so a switch
+    /// is a genuine change of pack rather than the same bytes twice.
+    private func festivalPackJSON(name: String, artist: String) -> Data {
+        Data("""
+        {"festpack":"0.1","festival":{"name":"\(name)","year":2026,"start":"2026-07-01","end":"2026-07-02"},
+         "stages":[{"id":"a","name":"A Stage","color":"#00ff00"}],
+         "schedule":[{"artist":"\(artist)","stage":"a","day":"2026-07-01","start":"20:00","end":"21:00"}]}
+        """.utf8)
+    }
+
+    private static let lostLandsURL =
+        "https://raw.githubusercontent.com/jakeholland/fest-almanac/main/packs/lost-lands/2026/festpack.json"
+    private static let wakaanURL =
+        "https://raw.githubusercontent.com/jakeholland/fest-almanac/main/packs/wakaan/2026/festpack.json"
+
+    private func select(_ slug: String, url: String, in store: InMemorySettingsStore) {
+        store.setString(slug, .festivalSelectedSlug)
+        store.setString("2026", .festivalSelectedYear)
+        store.setString(url, .festpackSourceURLOverride)
+    }
+
+    /// Review finding (BLOCKING, measured): switching the Settings
+    /// picker to a festival with no disk cache while offline left
+    /// `LineupViewModel.festpack` holding the PREVIOUS festival's pack
+    /// — a full schedule, now/next strip and settimes share URL for
+    /// Lost Lands rendered under a Settings screen saying Wakaan is
+    /// selected and `sourceState` saying "refresh failed: offline · no
+    /// pack cached". Mutation check: reverting the `festpack = nil`
+    /// branch in `LineupViewModel.refresh()` fails this test on the
+    /// `XCTAssertNil` below.
+    func testSwitchingToAnUncachedFestivalWhileOfflineClearsTheLineupRatherThanShowingTheOldPack() async {
+        let store = InMemorySettingsStore()
+        let fetcher = MockFestpackFetcher(.respond(festivalPackJSON(name: "Lost Lands", artist: "Excision"), etag: nil))
+        let provider = AlmanacFestpackProvider(settings: store, fetcher: fetcher,
+                                                cache: FestpackDiskCache(directory: tempDir),
+                                                bundleLoader: MockBundleLoader())
+        let lineup = await LineupViewModel(festpackProvider: provider, picksStore: InMemoryPicksStore())
+        select("lost-lands", url: Self.lostLandsURL, in: store)
+        await lineup.refresh()
+        let loadedName = await lineup.festpack?.name
+        XCTAssertEqual(loadedName, "Lost Lands")
+
+        select("wakaan", url: Self.wakaanURL, in: store)
+        fetcher.setBehavior(.fail)
+        await lineup.refresh()
+
+        let providerPack = await provider.current()
+        XCTAssertNil(providerPack, "the provider itself honestly has no pack for the newly selected festival")
+        let shownPack = await lineup.festpack
+        XCTAssertNil(shownPack, "the Lineup must not keep rendering the previous festival's schedule")
+        let night = await lineup.selectedNightDayOfYear
+        XCTAssertNil(night)
+        let state = await lineup.sourceState
+        XCTAssertEqual(state.statusText, "refresh failed: offline · no pack cached")
+    }
+
+    /// Same finding, the stream half: `festpackUpdates()` is a
+    /// current-value hub, so a subscriber arriving after the switch was
+    /// replayed the old festival's pack even though `current()` was
+    /// `nil`. Mutation check: removing `hub.clearCurrent()` from
+    /// `reloadIfFestivalChanged()` fails this test.
+    func testFestpackUpdatesStopsReplayingThePreviousFestivalOncePackIsUnknown() async {
+        let store = InMemorySettingsStore()
+        let fetcher = MockFestpackFetcher(.respond(festivalPackJSON(name: "Lost Lands", artist: "Excision"), etag: nil))
+        let provider = AlmanacFestpackProvider(settings: store, fetcher: fetcher,
+                                                cache: FestpackDiskCache(directory: tempDir),
+                                                bundleLoader: MockBundleLoader())
+        select("lost-lands", url: Self.lostLandsURL, in: store)
+        await provider.refresh()
+
+        select("wakaan", url: Self.wakaanURL, in: store)
+        fetcher.setBehavior(.fail)
+        await provider.refresh()
+
+        // Subscribe NOW — while the provider honestly has no pack —
+        // then let the next successful fetch publish. The first element
+        // this subscriber sees must be the NEW festival, never a
+        // replayed Lost Lands. No sleep: the `for await` returns as
+        // soon as the real yield lands.
+        let stream = provider.festpackUpdates()
+        fetcher.setBehavior(.respond(festivalPackJSON(name: "Wakaan", artist: "Liquid Stranger"), etag: nil))
+        await provider.refresh()
+        var first: String?
+        for await pack in stream {
+            first = pack.name
+            break
+        }
+        XCTAssertEqual(first, "Wakaan", "the hub must not re-assert a pack the provider no longer has")
+    }
+
+    /// Review finding (BLOCKING, measured): picks are namespaced per
+    /// festival in the STORE correctly, but `LineupViewModel` cached
+    /// `pickedSetIDs` at `init` and only re-read it after a local
+    /// toggle — so Lost Lands -> Wakaan -> Lost Lands showed the wrong
+    /// pick set on both switches. Mutation check: removing the
+    /// `pickedSetIDs = picksStore.pickedSetIDs()` line from
+    /// `LineupViewModel.apply(_:)` fails this test on the Wakaan leg.
+    func testSwitchingFestivalsShowsEachFestivalsOwnPicks() async {
+        let store = InMemorySettingsStore()
+        let fetcher = MockFestpackFetcher(.respond(festivalPackJSON(name: "Lost Lands", artist: "Excision"), etag: nil))
+        let provider = AlmanacFestpackProvider(settings: store, fetcher: fetcher,
+                                                cache: FestpackDiskCache(directory: tempDir),
+                                                bundleLoader: MockBundleLoader())
+        let picks = PicksStore(store: store, namespace: { store.festivalNamespace() })
+        let lineup = await LineupViewModel(festpackProvider: provider, picksStore: picks)
+
+        select("lost-lands", url: Self.lostLandsURL, in: store)
+        await lineup.refresh()
+        let lostLandsSet = await lineup.festpack!.sets[0]
+        await lineup.togglePick(lostLandsSet)
+        let lostLandsPicks = await lineup.pickedSetIDs
+        XCTAssertEqual(lostLandsPicks.count, 1)
+
+        select("wakaan", url: Self.wakaanURL, in: store)
+        fetcher.setBehavior(.respond(festivalPackJSON(name: "Wakaan", artist: "Liquid Stranger"), etag: nil))
+        await lineup.refresh()
+        let onWakaan = await lineup.pickedSetIDs
+        XCTAssertEqual(onWakaan, [], "Wakaan has its own, empty picks namespace")
+
+        select("lost-lands", url: Self.lostLandsURL, in: store)
+        fetcher.setBehavior(.respond(festivalPackJSON(name: "Lost Lands", artist: "Excision"), etag: nil))
+        await lineup.refresh()
+        let backOnLostLands = await lineup.pickedSetIDs
+        XCTAssertEqual(backOnLostLands, lostLandsPicks, "the Lost Lands pick comes back on the way back")
+    }
 }
+
 
 // MARK: - Hardening QA pass: cache freshness must not be invented
 
@@ -579,4 +707,5 @@ final class FestpackCacheFreshnessTests: XCTestCase {
         let state = FestpackSourceState(source: .cached, savedAt: nil, ageSeconds: 3600 * 6, lastAttempt: Date(), lastError: "offline")
         XCTAssertEqual(state.statusText, "refresh failed: offline · using cache from 6 h ago")
     }
+
 }

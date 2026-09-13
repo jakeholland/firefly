@@ -272,6 +272,16 @@ public actor AlmanacFestpackProvider: FestpackProviding {
         currentSavedAt = nil
         lastAttemptAt = nil
         lastErrorMessage = nil
+        // Review fix: the replay buffer has to go back to "unknown"
+        // too. Dropping `pack` alone left `festpackUpdates()` still
+        // handing the PREVIOUS festival's pack to the next subscriber
+        // while `current()`/`sourceState()` honestly reported `.none` —
+        // two surfaces of this one provider disagreeing about which
+        // festival is loaded, which is exactly the confidently-wrong
+        // screen CLAUDE.md's honest-data rule forbids. A later
+        // `loadFromCacheOrBundle()`/`fetchAndPublish()` re-yields as
+        // soon as there is something true to say.
+        hub.clearCurrent()
     }
 
     private func loadFromCacheOrBundle() {

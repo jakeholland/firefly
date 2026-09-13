@@ -291,6 +291,25 @@ extension SettingsStoring {
               let yearString = string(.festivalSelectedYear), let year = Int(yearString) else {
             return PicksStore.legacyNamespace
         }
-        return "\(slug)-\(year)"
+        return Self.sanitizeNamespace("\(slug)-\(year)")
+    }
+
+    /// Review fix — this string is not just a label: it is a disk-cache
+    /// FILENAME component and a field inside `PicksStore`'s own
+    /// comma-joined, `"|"`-separated tokens, and the slug half of it is
+    /// authored by fest-almanac, not by this app. `FestpackDiskCache`
+    /// already sanitized on its side; `PicksStore` did not, so a slug
+    /// carrying a `","` or a `"|"` silently destroyed picks — measured:
+    /// slug "a,b" wrote the token `a,b-2026|<base64>`, which splits on
+    /// the comma and reads back as NO picks at all, every time, with no
+    /// error anywhere. Sanitizing here (the ONE place the namespace is
+    /// resolved, per this method's own doc comment) fixes both readers
+    /// at once and keeps them agreeing. Letters, digits, `-` and `_`
+    /// pass through unchanged, so every real slug — and the
+    /// `legacyNamespace` default — is untouched.
+    static func sanitizeNamespace(_ raw: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let cleaned = String(raw.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
+        return cleaned.isEmpty ? PicksStore.legacyNamespace : cleaned
     }
 }

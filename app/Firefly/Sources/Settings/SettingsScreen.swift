@@ -415,6 +415,12 @@ struct SettingsScreen: View {
                 }
                 .buttonStyle(.plain)
                 .frame(minHeight: 36)
+                // Same "OUR identifier, not a localized label" rule the
+                // More list's `MoreRow.<name>` rows follow — a festival
+                // NAME comes from fest-almanac and can change under us,
+                // so the UI smoke test addresses rows by the stable
+                // "<slug>-<year>" id instead.
+                .accessibilityIdentifier("FestivalRow.\(row.id)")
             }
             if model.festivalPicker.isLoading, model.festivalPicker.rows.isEmpty {
                 Text("Loading festivals…")

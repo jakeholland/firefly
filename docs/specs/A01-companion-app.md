@@ -992,10 +992,26 @@ index (`firmware/assets/field/fest-almanac-index.json`) containing only
 Lost Lands 2026, so the picker is never empty.
 
 Settings → Festival Data gains a picker above the existing "Pack URL"
-field (which stays, relabelled "Advanced" — a manual override):
-festivals sorted by start date, the one happening right now marked
-"HAPPENING NOW", the currently selected one checked. Selecting a row
-(`FestivalPickerViewModel.select(_:)`):
+field (which stays, relabelled "Advanced" — a manual override). Order
+(`FestivalPickerViewModel.ordered(_:now:)`): everything not yet over
+first — the one happening right now, then upcoming, soonest first —
+and already-finished festivals after that, most recent first. Past
+festivals are still listed (a finished festival's lineup and picks are
+real data, not something to hide); they are just never above the one
+the user is about to attend. The current festival is marked "HAPPENING
+NOW" and the selected one is checked.
+
+A festival's `start`/`end` in the index are normally bare calendar
+dates ("2026-09-18"). A bare `end` covers the WHOLE of that day, not
+midnight at its start — otherwise a festival stops being marked
+"HAPPENING NOW" for the entirety of its final day. A full ISO 8601
+timestamp is taken exactly as published. The index's `timezone` is a
+free-text display label only (the festpack itself is the authority on
+UTC offset), so the "happening now" window is UTC-based and may be off
+by a timezone's width at the very edges — honest imprecision in a
+marker, not a fabricated instant.
+
+Selecting a row (`FestivalPickerViewModel.select(_:)`):
 
 1. Writes `SettingsKey.festivalSelectedSlug`/`.festivalSelectedYear`
    (together, `SettingsStoring.festivalNamespace()`'s "<slug>-<year>").
@@ -1020,6 +1036,16 @@ necessarily a different one.
 
 ### Per-pack cache and picks
 
+The namespace itself (`SettingsStoring.festivalNamespace()`) is
+sanitized at the ONE place it is resolved — letters, digits, `-` and
+`_` survive, anything else becomes `_`. The slug half of it is authored
+by fest-almanac, and the namespace is both a cache FILENAME component
+and a field inside `PicksStore`'s own delimited tokens, so an
+unsanitized slug carrying a `,` or `|` would silently destroy picks
+(measured, before the fix: a pick written under slug "a,b" read back as
+no picks at all, with no error anywhere). Every real slug — and the
+`lost-lands-2026` default — is unchanged by the sanitization.
+
 `FestpackDiskCache` is keyed by festival namespace (`load(key:)`/
 `save(…key:)`/`touch(…key:)` — the sanitized "<slug>-<year>"), so
 switching the picker back to a previously-loaded festival is instant:
@@ -1032,6 +1058,30 @@ still holds every pick ever made, across every festival, while
 `pickedSetIDs()`/`setPicked(_:setID:)` filter to the current namespace.
 A pick made under Lost Lands 2026 never shows up under a different
 festival, and vice versa.
+
+**Switching is a real reset, on every surface.** `AlmanacFestpackProvider`
+re-reads the namespace on every `refresh()`/`refreshIfNeeded()`, drops
+the in-memory pack when it changed, AND clears its update stream's
+replay value — so a subscriber arriving after the switch is never
+handed the previous festival's pack while `current()` honestly reports
+`nil`. `LineupViewModel` mirrors that: when the provider has no pack it
+clears `festpack`, the selected night and any open set sheet rather
+than leaving the old festival's schedule on screen, and it re-reads
+`pickedSetIDs` from the store on every pack change so each festival
+shows its OWN picks. Without both halves, switching to a festival with
+no cache while offline left a full Lost Lands grid — and a
+`settimes.kandiwooks.com/lost-lands/...` share link — under a Settings
+screen saying a different festival was selected and no pack was cached.
+
+**Tests never fetch.** `.stub()` — the stack every unit test composes —
+builds the real `AlmanacFestpackProvider` over a real URLSession
+fetcher (it is also what the iOS Simulator gets, where live fetching is
+correct), so `AppGraph` gates its automatic refresh on
+`isXCTestRuntimeLoaded` and skips it whenever the XCTest runtime is in
+the process. The policy itself is covered directly against a stub
+fetcher in `AlmanacFestpackProviderTests`. A UI test or a plain
+Simulator run is unaffected — the app under test is its own process
+with no XCTest runtime in it.
 
 **Migration.** Every pick persisted before this feature is a bare,
 un-namespaced base64 token. The first read after upgrading migrates

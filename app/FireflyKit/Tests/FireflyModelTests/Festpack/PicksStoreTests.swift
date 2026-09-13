@@ -126,4 +126,45 @@ final class PicksStoreTests: XCTestCase {
         let otherFest = PicksStore(store: backing, namespace: { "other-fest-2027" })
         XCTAssertEqual(otherFest.pickedSetIDs(), ["new-set"])
     }
+
+    /// Review finding (measured): the festival namespace is not just a
+    /// label — it is a field inside this store's own comma-joined,
+    /// `"|"`-separated tokens, and its slug half is authored by
+    /// fest-almanac, not by this app. Before `SettingsStoring
+    /// .sanitizeNamespace`, a slug carrying a `","` wrote the token
+    /// `a,b-2026|<base64>`, which splits on that comma and reads back
+    /// as NO picks at all — a pick silently destroyed the moment it was
+    /// made, with no error on any surface. Mutation check: dropping the
+    /// `sanitizeNamespace` call from `festivalNamespace()` fails this
+    /// test's round trip.
+    func testPicksSurviveAFestivalSlugCarryingATokenSeparator() {
+        for hostileSlug in ["a,b", "x|y", "with space", "../escape"] {
+            let store = InMemorySettingsStore()
+            store.setString(hostileSlug, .festivalSelectedSlug)
+            store.setString("2026", .festivalSelectedYear)
+            let picks = PicksStore(store: store, namespace: { store.festivalNamespace() })
+
+            picks.setPicked(true, setID: "main-2026-09-18-21:00-excision")
+
+            XCTAssertEqual(picks.pickedSetIDs(), ["main-2026-09-18-21:00-excision"],
+                           "slug \(hostileSlug) must round-trip")
+            let blob = store.string(.pickedFestivalSetIDs) ?? ""
+            XCTAssertEqual(blob.filter { $0 == "|" }.count, 1, "exactly one separator in the token")
+            XCTAssertFalse(blob.contains(","), "and no stray token boundary inside the namespace")
+        }
+    }
+
+    /// The same sanitization has to leave every REAL slug — and the
+    /// legacy default — byte-identical, or it would silently
+    /// re-namespace existing users' picks.
+    func testSanitizationLeavesRealSlugsAndTheLegacyDefaultUnchanged() {
+        let store = InMemorySettingsStore()
+        XCTAssertEqual(store.festivalNamespace(), PicksStore.legacyNamespace)
+        for (slug, expected) in [("lost-lands", "lost-lands-2026"), ("wakaan", "wakaan-2026"),
+                                  ("boo-seattle", "boo-seattle-2026"), ("edc-orlando", "edc-orlando-2026")] {
+            store.setString(slug, .festivalSelectedSlug)
+            store.setString("2026", .festivalSelectedYear)
+            XCTAssertEqual(store.festivalNamespace(), expected)
+        }
+    }
 }

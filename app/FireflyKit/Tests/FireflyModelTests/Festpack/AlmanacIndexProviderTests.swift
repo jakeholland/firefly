@@ -112,6 +112,41 @@ final class AlmanacIndexProviderTests: XCTestCase {
         XCTAssertTrue(index.packs.isEmpty)
     }
 
+    /// Review finding: every entry in the LIVE index publishes bare
+    /// dates ("2026-09-13"), and reading `end` as midnight made a
+    /// festival un-current for the whole of its final day — measured
+    /// against the live index on 2026-09-13, Sacred Acre 2026 (running
+    /// that day) came back unmarked. Mutation check: dropping the
+    /// `endOfDaySeconds` extension in `decodePack` fails this test.
+    func testDateOnlyEndCoversTheWholeOfTheFestivalsFinalDay() throws {
+        let data = Data(#"""
+        {"schema":"fest-almanac-index/1","packs":[
+          {"slug":"sacred-acre","year":2026,"name":"Sacred Acre","start":"2026-09-11","end":"2026-09-13",
+           "timezone":"America/Anchorage","path":"packs/sacred-acre/2026/festpack.json"}]}
+        """#.utf8)
+        let index = try XCTUnwrap(AlmanacIndexProvider.decode(data))
+        let pack = try XCTUnwrap(index.packs.first)
+        let middayOnFinalDay = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-13T12:00:00Z"))
+        XCTAssertTrue(pack.start <= middayOnFinalDay && middayOnFinalDay <= pack.end,
+                      "a festival is still happening on its own last day")
+        let dayAfter = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-14T00:30:00Z"))
+        XCTAssertFalse(pack.start <= dayAfter && dayAfter <= pack.end,
+                       "and is over the day after — the window is extended, not made open-ended")
+    }
+
+    /// A FULL timestamp is taken at its word — the end-of-day extension
+    /// applies only to the date-only form.
+    func testFullTimestampEndIsNotExtended() throws {
+        let data = Data(#"""
+        {"schema":"fest-almanac-index/1","packs":[
+          {"slug":"precise","year":2026,"name":"Precise","start":"2026-09-11T18:00:00Z","end":"2026-09-13T04:00:00Z",
+           "path":"packs/precise/2026/festpack.json"}]}
+        """#.utf8)
+        let index = try XCTUnwrap(AlmanacIndexProvider.decode(data))
+        let pack = try XCTUnwrap(index.packs.first)
+        XCTAssertEqual(pack.end, ISO8601DateFormatter().date(from: "2026-09-13T04:00:00Z"))
+    }
+
     func testTheRealBundledIndexDecodesAndContainsLostLands2026() throws {
         // .../app/FireflyKit/Tests/FireflyModelTests/Festpack/<this file>
         // — same traversal `PicksCodecRealPackTests.repoRoot` uses.

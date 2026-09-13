@@ -165,6 +165,17 @@ public actor AlmanacIndexProvider: AlmanacIndexProviding {
         return AlmanacIndex(generatedAt: generated, packs: packs)
     }
 
+    /// One day minus a second — what a date-only `end` covers. The
+    /// almanac's dates are calendar days in the festival's own local
+    /// time, but the index carries no offset with them (only a
+    /// free-text `timezone` label, which `AlmanacIndexPack.timezone`'s
+    /// own doc comment says is display-only), so this stays UTC-based:
+    /// "current" can be off by up to a timezone's worth at the edges,
+    /// which is honest imprecision in a MARKER, not a fabricated
+    /// instant — and is a day better than being wrong for the whole
+    /// final day.
+    static let endOfDaySeconds: TimeInterval = 24 * 60 * 60 - 1
+
     private static func decodePack(_ raw: [String: Any]) -> AlmanacIndexPack? {
         guard let slug = raw["slug"] as? String, !slug.isEmpty,
               let year = raw["year"] as? Int,
@@ -179,8 +190,23 @@ public actor AlmanacIndexProvider: AlmanacIndexProviding {
         // less precise than a full ISO 8601 instant.
         let dateOnlyFormatter = ISO8601DateFormatter()
         dateOnlyFormatter.formatOptions = [.withFullDate]
-        guard let start = formatter.date(from: startString) ?? dateOnlyFormatter.date(from: startString),
-              let end = formatter.date(from: endString) ?? dateOnlyFormatter.date(from: endString) else { return nil }
+        guard let start = formatter.date(from: startString) ?? dateOnlyFormatter.date(from: startString) else { return nil }
+        // Review fix: a bare `end` date is the festival's LAST DAY, not
+        // the instant it began. Reading "2026-09-13" as midnight made
+        // `isCurrent` false for the whole of a festival's final day —
+        // on the live index today (2026-09-13) Sacred Acre 2026, which
+        // is running right now, came back unmarked. Every real entry in
+        // the live index publishes bare dates, so this was the normal
+        // case, not an edge one. A full timestamp is taken at its word;
+        // only the date-only form is extended to the end of that day.
+        let end: Date
+        if let precise = formatter.date(from: endString) {
+            end = precise
+        } else if let dayOnly = dateOnlyFormatter.date(from: endString) {
+            end = dayOnly.addingTimeInterval(endOfDaySeconds)
+        } else {
+            return nil
+        }
         return AlmanacIndexPack(
             slug: slug, year: year, name: name, start: start, end: end,
             timezone: raw["timezone"] as? String, path: path,

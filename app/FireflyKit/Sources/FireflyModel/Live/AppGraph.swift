@@ -354,9 +354,60 @@ public final class AppGraph {
     /// reader), and `refreshIfNeeded()`'s own throttle/staleness policy
     /// already makes most calls a same-actor no-op.
     private func triggerFestpackAutoRefresh() {
+        guard Self.shouldAutoRefreshFestpack(isRunningUnderXCTest: Self.isXCTestRuntimeLoaded) else {
+            Self.log("triggerFestpackAutoRefresh(): running under XCTest — not fetching")
+            return
+        }
         Task { [festpack] in
             await festpack.refreshIfNeeded()
         }
+    }
+
+    /// The one rule behind the guard above, pure so both branches are
+    /// testable without a graph, a network or a clock.
+    ///
+    /// Review fix: `.stub()` — the stack EVERY unit test composes, and
+    /// the one `.current()` hands the iOS Simulator — carries
+    /// `StubMeshtasticClient`, not `DemoMeshtasticClient`, so `init`
+    /// above builds a real `AlmanacFestpackProvider` over a real
+    /// `URLSessionFestpackFetcher` for it. Firing `refreshIfNeeded()`
+    /// from `start()` therefore put a live HTTPS GET to
+    /// raw.githubusercontent.com inside `swift test`/`xcodebuild test`
+    /// on any machine with no warm disk cache — i.e. every CI runner
+    /// (measured: it does not reproduce locally precisely BECAUSE the
+    /// dev machine's Application Support cache is warm and under the
+    /// 6-hour staleness threshold). Unit tests must not depend on the
+    /// network; the refresh policy itself stays fully covered by
+    /// `AlmanacFestpackProviderTests`, which drives `refreshIfNeeded()`
+    /// directly against a stub fetcher.
+    ///
+    /// Detected via `isXCTestRuntimeLoaded`, NOT the
+    /// `XCTestConfigurationFilePath` environment variable
+    /// `isRunningUnderXCTest` reads: measured on this toolchain, a bare
+    /// `swift test` run does not set that variable at all (the whole
+    /// test process environment carries only `SWIFT_TESTING_ENABLED`),
+    /// so the existing check reports false in exactly the suite this
+    /// gate has to cover. Like the launch auto-connect, this suppresses
+    /// nothing in a UI test or a plain Simulator run — the app under
+    /// test is its own process with no XCTest runtime in it.
+    nonisolated static func shouldAutoRefreshFestpack(isRunningUnderXCTest: Bool) -> Bool {
+        !isRunningUnderXCTest
+    }
+
+    /// True when the XCTest runtime is loaded into THIS process — the
+    /// one signal that holds for both `swift test` (an `xctest` host
+    /// process) and `xcodebuild test` (XCTest injected into
+    /// `Firefly.app`), and false for a plain app launch, a Simulator
+    /// run, and the app-under-test of a UI test, none of which link it.
+    ///
+    /// Deliberately separate from `isRunningUnderXCTest` above rather
+    /// than a fix to it: that property gates
+    /// `skipLaunchAutoConnectUnderXCTest`, whose behaviour on the BLE
+    /// bench was tuned against exactly what that variable does today,
+    /// so widening it changes a different, already-shipped decision and
+    /// belongs in its own PR.
+    nonisolated static var isXCTestRuntimeLoaded: Bool {
+        NSClassFromString("XCTestCase") != nil
     }
 
     /// Same discipline as `BLETransport.log(_:)`/`MeshtasticClient.log(_:)`:

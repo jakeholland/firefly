@@ -42,6 +42,38 @@ final class FestivalPickerViewModelTests: XCTestCase {
         XCTAssertEqual(model.rows.map(\.id), ["lost-lands-2026", "later-fest-2028"])
     }
 
+    /// Review finding: a plain ascending sort by `start` put every
+    /// already-finished festival at the TOP of a list opened during
+    /// festival season — on the live index today that is Bass Canyon
+    /// (August) above Lost Lands. Still ahead comes first; finished
+    /// ones stay in the list, most recent first.
+    func testRowsLeadWithCurrentAndUpcomingAndPutPastFestivalsLast() async {
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        let longPast = pack(slug: "long-past", year: 2024, name: "Long Past",
+                             start: now.addingTimeInterval(-86_400 * 400), end: now.addingTimeInterval(-86_400 * 398),
+                             path: "packs/long-past/2024/festpack.json")
+        let recentPast = pack(slug: "recent-past", year: 2026, name: "Recent Past",
+                               start: now.addingTimeInterval(-86_400 * 30), end: now.addingTimeInterval(-86_400 * 28),
+                               path: "packs/recent-past/2026/festpack.json")
+        let happeningNow = pack(slug: "right-now", year: 2026, name: "Right Now",
+                                 start: now.addingTimeInterval(-3600), end: now.addingTimeInterval(3600),
+                                 path: "packs/right-now/2026/festpack.json")
+        let soon = pack(slug: "soon", year: 2026, name: "Soon",
+                         start: now.addingTimeInterval(86_400 * 5), end: now.addingTimeInterval(86_400 * 7),
+                         path: "packs/soon/2026/festpack.json")
+        let later = pack(slug: "later", year: 2027, name: "Later",
+                          start: now.addingTimeInterval(86_400 * 300), end: now.addingTimeInterval(86_400 * 302),
+                          path: "packs/later/2027/festpack.json")
+        let index = AlmanacIndex(generatedAt: nil, packs: [longPast, later, recentPast, soon, happeningNow])
+        let model = FestivalPickerViewModel(indexProvider: StubIndexProvider(index: index), settings: InMemorySettingsStore(),
+                                             lineup: makeLineup(), now: { now })
+
+        await model.load()
+
+        XCTAssertEqual(model.rows.map(\.id),
+                       ["right-now-2026", "soon-2026", "later-2027", "recent-past-2026", "long-past-2024"])
+    }
+
     func testCurrentFestivalIsMarkedWhenNowFallsInsideItsRange() async {
         let now = Date(timeIntervalSince1970: 1_790_000_000)
         let happeningNow = pack(slug: "lost-lands", year: 2026, name: "Lost Lands",
