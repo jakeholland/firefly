@@ -101,16 +101,11 @@ struct LineupScreen: View {
         return parts.joined(separator: " · ")
     }
 
-    private var sourceStateText: String {
-        switch model.sourceState {
-        case .none: return "no pack"
-        case .bundled: return "bundled copy"
-        case .fresh: return "fresh"
-        case .cached(let age):
-            let minutes = max(0, Int(age / 60))
-            return minutes < 1 ? "cached (just now)" : "cached (\(minutes) min ago)"
-        }
-    }
+    /// `FestpackSourceState.statusText` — the wording lives in the
+    /// model so this header and Settings' "Festival data" row cannot
+    /// drift apart, and so the "cached (age unknown)" case is testable
+    /// (hardening QA pass).
+    private var sourceStateText: String { model.sourceState.statusText }
 
     // MARK: - Day pills
 

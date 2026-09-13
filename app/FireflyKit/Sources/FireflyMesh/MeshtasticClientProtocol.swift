@@ -63,9 +63,27 @@ public struct MeshNodeSnapshot: Sendable, Equatable, Identifiable {
     public let rssiDbm: Int16?
     public let snrDb: Float?
     public let hopsAway: UInt32?
+    /// The local moment OUR OWN radio actually received something from
+    /// this node — i.e. "this is an observation, and it happened now".
+    ///
+    /// `nil` for a want_config nodeDB REPLAY, which is not an
+    /// observation at all: the radio is summarising what it remembers,
+    /// and every timestamp in that summary comes from a clock the
+    /// summary itself defines. AGENTS.md's standing brief states the
+    /// rule this field exists to enforce — "a replayed timestamp is a
+    /// *summary*, not an observation — never age or latch from a value
+    /// that defines the clock it's measured against."
+    ///
+    /// Deliberately NOT the same thing as `lastHeard` (the radio's own
+    /// nodeDB record, which a replay carries) or `NodePosition.time`
+    /// (the SENDER's claimed fix time). Those two are claims; this is
+    /// the one timestamp in this struct measured by the device the user
+    /// is holding.
+    public let observedAt: Date?
 
     public init(num: UInt32, shortName: String?, longName: String?, position: NodePosition?,
-                lastHeard: Date?, rssiDbm: Int16?, snrDb: Float?, hopsAway: UInt32?) {
+                lastHeard: Date?, rssiDbm: Int16?, snrDb: Float?, hopsAway: UInt32?,
+                observedAt: Date? = nil) {
         self.num = num
         self.shortName = shortName
         self.longName = longName
@@ -74,6 +92,7 @@ public struct MeshNodeSnapshot: Sendable, Equatable, Identifiable {
         self.rssiDbm = rssiDbm
         self.snrDb = snrDb
         self.hopsAway = hopsAway
+        self.observedAt = observedAt
     }
 }
 

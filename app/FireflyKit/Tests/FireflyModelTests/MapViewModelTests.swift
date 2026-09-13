@@ -129,3 +129,80 @@ final class MapViewModelTests: XCTestCase {
         XCTAssertTrue(vm.imperial)
     }
 }
+
+// MARK: - Hardening QA pass
+
+/// `refreshPins()` rebuilt and REASSIGNED `pins` unconditionally, and it
+/// runs at 1 Hz for as long as the Map tab is open — so a crew standing
+/// still still handed SwiftUI a brand-new array once a second, for the
+/// twelve hours this app is supposed to survive on a battery. What that
+/// costs downstream is the whole `Map { }` body: every pin, every
+/// festpack polygon, the accuracy circle, and on the Field map a full
+/// `ff_map`/`ff_geo` reprojection plus a `Canvas` redraw.
+///
+/// **Measured, not assumed** (the repo's own proxy-check rule): on the
+/// toolchain this builds with today (Swift 6.3.3), `@Observable`
+/// ALREADY suppresses an equal-valued assignment to an `Equatable`
+/// property, so a `withObservationTracking` test passes with or without
+/// the guard — a textbook proxy. That suppression is a property of the
+/// Observation RUNTIME, not of this code, and this package's deployment
+/// floor is iOS 17 / macOS 14, whose Observation predates it. So the
+/// test below measures the thing this code actually controls and every
+/// runtime shares: whether the array was rebuilt at all.
+@MainActor
+final class MapPinChurnTests: XCTestCase {
+
+    private func makeModel(crew: CrewStore) -> MapViewModel {
+        MapViewModel(crew: crew, location: UnavailableLocationProvider(),
+                     heading: NoHeadingProvider(), festpackSource: DemoMapFestpackSource(),
+                     connectivity: FixedConnectivity(.online))
+    }
+
+    private func standingStillCrew() -> CrewStore {
+        let crew = CrewStore(now: { 60_000 })
+        _ = crew.upsert(nodeID: 7)
+        _ = crew.setPaired(nodeID: 7, paired: true)
+        _ = crew.setIdentity(nodeID: 7, shortName: "TAY", longName: "Taylor")
+        crew.onHeard(nodeID: 7, rxTimeMs: 60_000, direct: true)
+        crew.onPosition(nodeID: 7, latitude: 43.7, longitude: -121.5, rxTimeMs: 60_000)
+        return crew
+    }
+
+    /// Array storage identity: holding `before` keeps the old buffer
+    /// alive, so a reassignment is guaranteed to land on a DIFFERENT
+    /// allocation. Same address ⇒ `pins` was never written.
+    private func storageIdentity(_ pins: [CrewMapPin]) -> UnsafeRawPointer? {
+        pins.withUnsafeBufferPointer { UnsafeRawPointer($0.baseAddress) }
+    }
+
+    func testARefreshThatChangesNothingDoesNotRebuildThePinArray() {
+        let model = makeModel(crew: standingStillCrew())
+        model.refreshPins(now: 60_000)
+        let before = model.pins
+        XCTAssertFalse(before.isEmpty, "the fixture must actually produce a pin to be worth anything")
+        let beforeStorage = storageIdentity(before)
+
+        model.refreshPins(now: 60_000)
+
+        XCTAssertEqual(model.pins, before, "same inputs, same pins")
+        XCTAssertEqual(storageIdentity(model.pins), beforeStorage,
+                       "a 1 Hz rebuild of an unchanged map is 43,200 needless invalidations over a festival day")
+    }
+
+    /// The other half, so the guard above cannot be satisfied by simply
+    /// never updating `pins` at all: a refresh whose result genuinely
+    /// differs must still publish it. Driven by advancing the clock far
+    /// enough to move the member into a different age bucket — the same
+    /// path the live 1 Hz loop takes.
+    func testARefreshThatChangesSomethingStillPublishes() {
+        let model = makeModel(crew: standingStillCrew())
+        model.refreshPins(now: 60_000)
+        let before = model.pins
+
+        model.refreshPins(now: 60_000 + 10 * 60_000)
+
+        XCTAssertNotEqual(model.pins, before, "ten minutes later this member is not as fresh")
+        XCTAssertNotEqual(storageIdentity(model.pins), storageIdentity(before),
+                          "a map that really changed must still be republished")
+    }
+}

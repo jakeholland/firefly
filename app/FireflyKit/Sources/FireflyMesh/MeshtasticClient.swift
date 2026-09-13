@@ -46,6 +46,25 @@ public enum MeshtasticClientError: Error, Equatable, Sendable {
     /// double-consuming `transport.events()`. Thrown by the SECOND
     /// overlapping call; the first runs to completion normally.
     case alreadyConnecting
+    /// A `LocationFix` that cannot be honestly encoded as a Meshtastic
+    /// `Position` — a non-finite or out-of-range coordinate, or a
+    /// timestamp outside the wire format's `uint32` epoch seconds.
+    /// Refused rather than clamped: see `MeshtasticClient.encodePosition`.
+    case invalidPositionFix
+    /// The `DataMessage.payload` exceeds Meshtastic's own
+    /// `Constants.DATA_PAYLOAD_LEN` (233 bytes), so the mesh cannot
+    /// carry it. Associated values are the actual and maximum byte
+    /// counts, for a message the UI can show a person.
+    ///
+    /// Refused locally rather than handed to the radio, because handing
+    /// it over is the dishonest option: an oversized `ToRadio` is either
+    /// dropped by the firmware or — over BLE, past the negotiated ATT
+    /// MTU with a `.withoutResponse` write — fails with NO delegate
+    /// callback at all. Either way the app had already published
+    /// `.sent`, so a broadcast (the CREW conversation, where nothing
+    /// acks) sat claiming SENT forever for a message that never left the
+    /// phone.
+    case payloadTooLarge(bytes: Int, max: Int)
 }
 
 /// The seam between the handshake-retry loop
@@ -442,6 +461,20 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         publish(.disconnected)
     }
 
+    /// Meshtastic's own `Constants.DATA_PAYLOAD_LEN` — the wire's limit
+    /// on one `DataMessage.payload`, read from the pinned protobufs
+    /// rather than retyped, so a firmware bump that changes it changes
+    /// here too.
+    public static let maxDataPayloadBytes = Int(Constants.dataPayloadLen.rawValue)
+
+    /// `nil` if `payload` fits the wire, else the error describing why
+    /// it does not. Pure and `static` so it is testable with no actor,
+    /// no transport and no radio.
+    static func payloadSizeError(_ payload: Data) -> MeshtasticClientError? {
+        guard payload.count > maxDataPayloadBytes else { return nil }
+        return .payloadTooLarge(bytes: payload.count, max: maxDataPayloadBytes)
+    }
+
     @discardableResult
     public func sendText(_ text: String, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
         let isBroadcast = destination == meshBroadcastAddress
@@ -462,6 +495,20 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         var data = DataMessage()
         data.portnum = .textMessageApp
         data.payload = Data(text.utf8)
+
+        // Refused BEFORE a packet id is minted, and resolved as
+        // `.dropped` against the outbox id this method already
+        // published `.waiting` for — never left as an orphaned WAITING,
+        // the same rule the encode/write failures below follow. A
+        // message the mesh cannot carry has not been sent, and this app
+        // does not get to say otherwise.
+        //
+        // `text.utf8` is what matters, not `text.count`: the limit is
+        // bytes, and one emoji is four of them.
+        if let error = Self.payloadSizeError(data.payload) {
+            deliveryHub.yield(.dropped(outboxID: OutboxID(outboxID)))
+            throw error
+        }
 
         let id = nextPacketID()
         var packet = MeshPacket()
@@ -507,18 +554,59 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// rows nothing renders.
     @discardableResult
     public func sendPosition(_ fix: ExternalPositionFix, to destination: UInt32) async throws -> UInt32 {
+        // Every conversion below is a TRAPPING one: `Int32(Double.nan)`
+        // and `UInt32(someHugeDouble)` are runtime crashes, not errors,
+        // and this method's input comes from CoreLocation via
+        // `MeshPositionSink` — i.e. from outside this module. A fix that
+        // cannot be honestly encoded is refused, never clamped into a
+        // plausible-looking coordinate: clamping a NaN latitude to 0
+        // would transmit the Gulf of Guinea as this phone's position,
+        // which is exactly the fabrication this app exists not to do.
+        guard let position = Self.encodePosition(fix) else {
+            throw MeshtasticClientError.invalidPositionFix
+        }
+        guard let payload = try? position.serializedData() else {
+            throw MeshtasticClientError.encodingFailed
+        }
+        return try await sendData(payload, portnum: .positionApp, to: destination, wantAck: false)
+    }
+
+    /// Pure, and `static` so it is testable with no actor, no transport
+    /// and no radio. `nil` means "this fix cannot be honestly put on the
+    /// wire" — see `sendPosition`.
+    ///
+    /// Meshtastic's `Position` is fixed-width: `latitude_i`/`longitude_i`
+    /// are degrees x 1e7 in an `int32`, `time` is a `uint32` epoch
+    /// second. Real values fit comfortably (±90° is ±9e8, well inside
+    /// int32), so every rejection below is a value that was never a
+    /// position in the first place.
+    static func encodePosition(_ fix: ExternalPositionFix) -> Position? {
+        guard fix.latitude.isFinite, fix.longitude.isFinite,
+              fix.latitude >= -90, fix.latitude <= 90,
+              fix.longitude >= -180, fix.longitude <= 180 else { return nil }
+        let seconds = fix.time.timeIntervalSince1970
+        // `uint32` epoch seconds run out in 2106; anything outside that
+        // is a phone whose clock is wrong, not a fix from the future.
+        guard seconds.isFinite, seconds >= 0, seconds <= Double(UInt32.max) else { return nil }
+
         var position = Position()
         position.latitudeI = Int32((fix.latitude * 1e7).rounded())
         position.longitudeI = Int32((fix.longitude * 1e7).rounded())
-        position.time = UInt32(max(0, fix.time.timeIntervalSince1970))
+        position.time = UInt32(seconds)
         position.locationSource = .locExternal
-        if let altitude = fix.altitudeMeters {
+        // Altitude is optional on the wire AND optional in truth: a
+        // value that will not fit an int32 metre is dropped rather than
+        // dragging the whole (otherwise perfectly good) fix down with
+        // it — the lat/lon is still worth sending.
+        if let altitude = fix.altitudeMeters, altitude.isFinite,
+           altitude >= Double(Int32.min), altitude <= Double(Int32.max) {
             position.altitude = Int32(altitude.rounded())
         }
         // Both are "only when the value means something" fields, per the
         // spec's payload rule — an absent speed is not 0 m/s, and an
-        // absent course is not due north.
-        if let speed = fix.groundSpeedMetersPerSecond, speed > 0 {
+        // absent course is not due north. The range checks double as the
+        // NaN guard (`NaN > 0` is false).
+        if let speed = fix.groundSpeedMetersPerSecond, speed > 0, speed <= Double(UInt32.max) {
             position.groundSpeed = UInt32(speed.rounded())
         }
         if let track = fix.groundTrackDegrees, track > 0, track <= 360 {
@@ -528,11 +616,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         // CoreLocation reports no satellite count, and precision is the
         // CHANNEL's setting (`position_precision`), asserted by the node
         // itself — claiming either here would be inventing wire data.
-
-        guard let payload = try? position.serializedData() else {
-            throw MeshtasticClientError.encodingFailed
-        }
-        return try await sendData(payload, portnum: .positionApp, to: destination, wantAck: false)
+        return position
     }
 
     /// Portnum 269, Firefly's own (S04) — `payload` is an already
@@ -561,6 +645,13 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         var data = DataMessage()
         data.portnum = portnum
         data.payload = payload
+
+        // Same wire limit as `sendText`'s (no delivery bookkeeping to
+        // resolve here — see this method's own doc comment). Firefly's
+        // own portnum-269 frames and a `Position` are both far smaller
+        // than this in practice; the guard is here so that stays a
+        // measured fact rather than an assumption.
+        if let error = Self.payloadSizeError(payload) { throw error }
 
         let id = nextPacketID()
         var packet = MeshPacket()
@@ -1518,7 +1609,17 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             myNodeNum = info.myNodeNum
 
         case .nodeInfo(let info):
-            let snapshot = nodeDB.apply(nodeInfo: info)
+            // HONEST FRESHNESS (hardening QA pass): a `.nodeInfo` frame
+            // arriving WHILE a want_config phase is outstanding is part
+            // of the radio's nodeDB dump — a summary of what it
+            // remembers, not something that just happened on the air.
+            // The same frame arriving with no phase outstanding is a
+            // live NodeInfo broadcast, which genuinely did just arrive.
+            // This client is the only layer that can tell those two
+            // apart, so it is the layer that says which
+            // (`MeshNodeSnapshot.observedAt`); `NodeDB` never guesses.
+            let snapshot = nodeDB.apply(nodeInfo: info,
+                                        observedAt: pendingConfigPhase == nil ? Date() : nil)
             nodeHub.yield(snapshot)
             // Finding 2: OUR OWN NodeInfo entry (want_config replays
             // every node's, including the connected one's own) is where

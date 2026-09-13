@@ -267,6 +267,13 @@ public final class AppGraph {
         // feed's outbox id space here. See
         // `CoreStore.observe(client:routeDeliveriesToInbox:)`.
         core.observe(client: dependencies.client, routeDeliveriesToInbox: false)
+        // Paired with `stop()`'s `radar?.stopObserving()` — without this,
+        // backgrounding with background-connect off would stop Radar's
+        // recompute loop permanently and coming back to the foreground
+        // would show a frozen Radar. `observe()` is idempotent
+        // (its own doc comment), so this is a no-op on the first
+        // `start()`, where `makeRadarViewModel()` already called it.
+        radar?.observe()
         observePrivatePackets()
         observeMyLocation()
         observeIncomingTextsForNotifications()
@@ -428,6 +435,25 @@ public final class AppGraph {
         stopObservingIncomingTextsForNotifications()
         historyOutboxFlushObservation?.cancel(); historyOutboxFlushObservation = nil
         tickLoop?.cancel(); tickLoop = nil
+        // Hardening QA pass: `stop()` used to cancel only the graph's
+        // OWN subscriptions, leaving every view-model loop this graph
+        // started in `makeRadarViewModel()`/`makeInboxViewModel()`/
+        // `makeConnectViewModel()`/`makeLineupViewModel()` running. The
+        // costly one is Radar's `recomputeLoop`: a 1 Hz `ff_radar_compute`
+        // pump that nothing anywhere ever stopped, because `RadarView`
+        // deliberately has no `.onDisappear` (those view models are
+        // process-lifetime singletons — `makeConnectViewModel()`'s own
+        // doc comment). So "off = disconnect when backgrounded" left the
+        // app recomputing radar geometry once a second in the
+        // background, forever, for a link it had just torn down.
+        //
+        // Only `radar` is reachable from here (`AppGraph` holds a weak
+        // reference to it for `handlePong`; the other three view models
+        // are owned by `FireflyApp` and this graph keeps no reference).
+        // Radar is also the expensive one — the other three have no
+        // repeating loop at all. The remaining gap is filed rather than
+        // half-closed here.
+        radar?.stopObserving()
         await uplink.stop()
         // The graph's own subscriptions stopping is not enough on its
         // own — the client (and BLETransport's own reconnect-on-loss
@@ -634,7 +660,15 @@ public final class AppGraph {
         // screen takes effect on the next launch, not live — a narrower
         // gap than the bug this replaces, and tracked here rather than
         // silent.
+        // Seeded once so the very first `compute()` (before any
+        // recompute tick) is already right...
         model.imperial = dependencies.store.resolvedImperial()
+        // ...and then re-read on every recompute, so a Units change made
+        // mid-session on the Settings screen takes effect immediately
+        // rather than on the next launch. `MapViewModel` already
+        // resolved this live (`makeMapViewModel()` below); Radar did
+        // not, so the two screens disagreed about units until relaunch.
+        model.imperialResolver = { [dependencies] in dependencies.store.resolvedImperial() }
         radar = model
         // `makeConnectViewModel()`'s own doc comment below has the full
         // story (the NavigationSplitView detail-column remount that

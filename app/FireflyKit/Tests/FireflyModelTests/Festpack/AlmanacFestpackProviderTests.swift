@@ -3,8 +3,8 @@
 //  cache-first, a fetch failure keeps whatever pack is already showing,
 //  and a pack that fails to parse never replaces a good one.
 //
-import FireflyModel
 import XCTest
+@testable import FireflyModel
 
 private final class MockFestpackFetcher: FestpackHTTPFetching, @unchecked Sendable {
     enum Behavior {
@@ -90,7 +90,7 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         XCTAssertEqual(state, .bundled)
     }
 
-    func testCacheFirstThenNotModifiedStaysOnCachedPack() async {
+    func testCacheFirstThenNotModifiedStaysOnCachedPack() async throws {
         let cache = FestpackDiskCache(directory: tempDir)
         cache.save(json: minimalPackJSON, etag: "\"abc123\"", savedAt: Date(timeIntervalSinceNow: -3600))
         let fetcher = MockFestpackFetcher(.notModified)
@@ -104,7 +104,7 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         XCTAssertEqual(current?.name, "Minimal Fest")
         let state = await provider.sourceState()
         guard case .cached(let age) = state else { return XCTFail("expected .cached, got \(state)") }
-        XCTAssertGreaterThan(age, 0)
+        XCTAssertGreaterThan(try XCTUnwrap(age), 0)
         XCTAssertEqual(fetcher.fetchCount, 1) // it DID try — 304 just means "nothing changed"
     }
 
@@ -214,5 +214,93 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         let provider = AlmanacFestpackProvider(settings: settings)
         let url = await provider.sourceURL()
         XCTAssertEqual(url, AlmanacFestpackProvider.defaultURL)
+    }
+}
+
+// MARK: - Hardening QA pass: cache freshness must not be invented
+
+/// The festival premise is a phone with no cell service for three days.
+/// Its clock drifts, and iOS corrects it — sometimes BACKWARDS — the
+/// moment it sees a tower again, which makes a cache written before the
+/// correction look like it was written in the future.
+///
+/// That case used to be clamped by a `max(0, …)` and rendered as
+/// **"cached (just now)"**: a pack of entirely unknown vintage
+/// presented as freshly fetched. The missing-metadata case was papered
+/// over the same way, as `.distantPast`.
+final class FestpackCacheFreshnessTests: XCTestCase {
+
+    private func age(savedAt: Date?, now: Date = Date(timeIntervalSince1970: 1_790_000_000)) -> TimeInterval? {
+        AlmanacFestpackProvider.cacheAge(savedAt: savedAt, now: now)
+    }
+
+    func testANormalCacheAgeIsMeasuredNormally() throws {
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        XCTAssertEqual(try XCTUnwrap(age(savedAt: now.addingTimeInterval(-3600))), 3600, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(age(savedAt: now)), 0, accuracy: 0.001)
+    }
+
+    func testAFutureSavedAtIsUnknownAgeNotZero() {
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        XCTAssertNil(age(savedAt: now.addingTimeInterval(1)),
+                     "one second into the future is already a clock this app cannot measure against")
+        XCTAssertNil(age(savedAt: now.addingTimeInterval(86_400 * 3)),
+                     "a three-day clock correction must never render as 'just now'")
+    }
+
+    func testAMissingSavedAtIsUnknownAgeNotAncient() {
+        XCTAssertNil(age(savedAt: nil))
+    }
+
+    func testANonFiniteSavedAtIsUnknownAgeNotATrap() {
+        XCTAssertNil(age(savedAt: Date(timeIntervalSince1970: .nan)))
+        XCTAssertNil(age(savedAt: .distantFuture))
+    }
+
+    /// A cache whose metadata sidecar was never written (or was
+    /// corrupted) still yields its JSON — losing the age must not lose
+    /// the pack.
+    func testACacheWithNoMetadataStillLoadsItsJSONButWithNoSavedAt() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("festpack-freshness-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let cache = FestpackDiskCache(directory: directory)
+        cache.save(json: Data(#"{"festpack":"0.1"}"#.utf8), etag: nil, savedAt: Date())
+        // Corrupt the sidecar the way a half-written file or a schema
+        // change would.
+        try Data("not json at all".utf8)
+            .write(to: directory.appendingPathComponent("festpack-cache-meta.json"))
+
+        let entry = try XCTUnwrap(cache.load())
+        XCTAssertFalse(entry.json.isEmpty, "the pack itself is still perfectly usable")
+        XCTAssertNil(entry.savedAt, "but when it was written is genuinely unknown, not `.distantPast`")
+        XCTAssertNil(age(savedAt: entry.savedAt))
+    }
+
+    // MARK: - The words a person actually reads
+
+    func testTheUnknownAgeSaysSoRatherThanClaimingFreshness() {
+        XCTAssertEqual(FestpackSourceState.cached(ageSeconds: nil).statusText, "cached (age unknown)")
+        for text in [FestpackSourceState.cached(ageSeconds: nil).statusText] {
+            XCTAssertFalse(text.contains("just now"),
+                           "an unknown age must never be worded as a fresh one")
+        }
+    }
+
+    /// The whole ladder, so a three-day-old pack does not read as
+    /// "cached (4320 min ago)" — a number nobody parses at a festival.
+    func testCachedAgeReadsInUnitsAPersonCanUse() {
+        XCTAssertEqual(FestpackSourceState.cached(ageSeconds: 30).statusText, "cached (just now)")
+        XCTAssertEqual(FestpackSourceState.cached(ageSeconds: 600).statusText, "cached (10 min ago)")
+        XCTAssertEqual(FestpackSourceState.cached(ageSeconds: 3600 * 5).statusText, "cached (5 hr ago)")
+        XCTAssertEqual(FestpackSourceState.cached(ageSeconds: 3600 * 24 * 3).statusText, "cached (3 days ago)")
+    }
+
+    func testTheOtherStatesAreUnchanged() {
+        XCTAssertEqual(FestpackSourceState.none.statusText, "no pack")
+        XCTAssertEqual(FestpackSourceState.bundled.statusText, "bundled copy")
+        XCTAssertEqual(FestpackSourceState.fresh.statusText, "fresh")
     }
 }

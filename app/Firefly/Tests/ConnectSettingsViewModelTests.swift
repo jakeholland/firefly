@@ -861,10 +861,25 @@ final class DiagnosticsViewModelTests: XCTestCase {
         connect.observe()
         await connect.connect()
 
+        // Both subscribers are waited on INDEPENDENTLY, because that is
+        // exactly what they are: two separate `linkState()` streams, each
+        // drained by its own `Task`. `EventHub.yield(_:)` hands the value
+        // to every current continuation, but nothing orders the two
+        // consuming tasks against each other — so `diagnostics` reaching
+        // `.ready` says nothing at all about whether `connect`'s task has
+        // been scheduled yet. Asserting `connect.link` straight off the
+        // back of the diagnostics wait (which is what this test used to
+        // do) is a race that passes on an idle machine and fails on a
+        // loaded CI runner, and the failure reads as a fan-out bug that
+        // is not there.
         await eventually("diagnostics.link to reach .ready") { diagnostics.link == .ready }
         XCTAssertEqual(diagnostics.linkStateLabel, "CONNECTED")
+        await eventually("connect.link to reach .ready") { connect.link == .ready }
         XCTAssertEqual(connect.link, .ready)
         diagnostics.stopObserving()
+        // Leaked otherwise: `connect.observe()`'s drain task outlives the
+        // test, and every later test in this class shares the process.
+        connect.stopObserving()
     }
 
     func testEveryUnmodeledFieldReadsUnknownNotAPlaceholderNumber() {

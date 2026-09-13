@@ -53,7 +53,13 @@ final class CoreStoreTests: XCTestCase {
             num: 1, shortName: "TAYL", longName: "Taylor",
             position: NodePosition(latitude: 47.705785, longitude: -122.2820993, time: nil,
                                     source: .externalGPS, precisionBits: 32),
-            lastHeard: nil, rssiDbm: nil, snrDb: nil, hopsAway: nil)
+            // `observedAt` = this arrived off the air just now, which is
+            // the honest shape of a live POSITION_APP packet whose
+            // sender stated no `Position.time` of its own. Without it
+            // the position has no honest place on a freshness axis and
+            // is deliberately not fed at all — see
+            // `CoreStoreHonestFreshnessTests`.
+            lastHeard: nil, rssiDbm: nil, snrDb: nil, hopsAway: nil, observedAt: Date())
 
         store.apply(nodeUpdate: snapshot)
 
@@ -72,7 +78,7 @@ final class CoreStoreTests: XCTestCase {
             num: 2, shortName: nil, longName: nil,
             position: NodePosition(latitude: 47.708135, longitude: -122.2820993, time: nil,
                                     source: .manual, precisionBits: nil),
-            lastHeard: nil, rssiDbm: nil, snrDb: nil, hopsAway: nil)
+            lastHeard: nil, rssiDbm: nil, snrDb: nil, hopsAway: nil, observedAt: Date())
 
         store.apply(nodeUpdate: snapshot)
 
@@ -246,5 +252,145 @@ final class CoreStoreTests: XCTestCase {
 
         store.tick(nowMs: base + CoreStore.outboxAckTimeoutMs + 5_000)
         XCTAssertEqual(store.inbox.thread(.member(1), crew: store.crew, now: 0).first?.sendStatus, .noAck)
+    }
+}
+
+// MARK: - Honest freshness (hardening QA pass)
+
+/// `CoreStore.apply(nodeUpdate:)` used to stamp an UNKNOWN measurement
+/// time with the phone's current clock (`position.time.map(...) ?? now`,
+/// and the same for `lastHeard`). That made `ff_crew_freshness` return
+/// LIVE for a coordinate of genuinely unknown age — so after every
+/// want_config handshake, Radar's chip read LIVE, the map drew a SOLID
+/// pin, and the age read "just now", for data the radio was merely
+/// summarising from its own nodeDB.
+///
+/// AGENTS.md's standing brief names this exact failure: "a replayed
+/// timestamp is a *summary*, not an observation — never age or latch
+/// from a value that defines the clock it's measured against."
+@MainActor
+final class CoreStoreHonestFreshnessTests: XCTestCase {
+
+    private func snapshot(num: UInt32 = 1, positionTime: Date?, lastHeard: Date? = nil,
+                          observedAt: Date?) -> MeshNodeSnapshot {
+        MeshNodeSnapshot(
+            num: num, shortName: "TAYL", longName: "Taylor",
+            position: NodePosition(latitude: 47.705785, longitude: -122.2820993, time: positionTime,
+                                    source: .externalGPS, precisionBits: 32),
+            lastHeard: lastHeard, rssiDbm: nil, snrDb: nil, hopsAway: nil, observedAt: observedAt)
+    }
+
+    /// THE regression: a want_config replay (`observedAt == nil`) whose
+    /// sender stated no fix time is not an observation at all.
+    func testAReplayedPositionWithNoTimeIsNotFedAtAllRatherThanStampedNow() {
+        let store = CoreStore()
+        store.apply(nodeUpdate: snapshot(positionTime: nil, observedAt: nil))
+
+        let member = store.crew.member(nodeID: 1, now: FireflyClock.nowMillis())
+        XCTAssertNil(member?.position,
+                     "a coordinate with no honest measurement time must render as NO POSITION, never as a fresh one")
+    }
+
+    /// The other half of the same rule: a live packet IS an
+    /// observation, and must still land — otherwise the fix above would
+    /// be satisfiable by simply never recording a position.
+    func testALivePacketWithNoSenderTimeStillLandsUsingOurOwnReceiveTime() {
+        let store = CoreStore()
+        store.apply(nodeUpdate: snapshot(positionTime: nil, observedAt: Date()))
+
+        let member = store.crew.member(nodeID: 1, now: FireflyClock.nowMillis())
+        XCTAssertNotNil(member?.position)
+        XCTAssertEqual(member?.freshness, .live, "a packet received just now is honestly LIVE")
+    }
+
+    /// The sender's own stated fix time outranks our receive time — it
+    /// is the more authoritative claim about when the coordinate was
+    /// measured, and it is what makes an old fix read old.
+    func testTheSendersOwnFixTimeWinsOverOurReceiveTimeAndCanReadStale() {
+        let store = CoreStore()
+        let old = Date().addingTimeInterval(-600)
+        store.apply(nodeUpdate: snapshot(positionTime: old, observedAt: Date()))
+
+        let member = store.crew.member(nodeID: 1, now: FireflyClock.nowMillis())
+        XCTAssertNotNil(member?.position)
+        XCTAssertNotEqual(member?.freshness, .live,
+                          "a ten-minute-old fix delivered in a fresh packet is a ten-minute-old fix")
+    }
+
+    // MARK: - Foreign-clock plausibility
+
+    func testATimestampFromTheFutureIsNotAMeasurement() {
+        let now = Date()
+        XCTAssertNil(CoreStore.plausibleTimestamp(now.addingTimeInterval(3600), now: now),
+                     "a reading from the future is not a reading — unsigned age math wraps it to ~49 days")
+    }
+
+    /// PR #294 review. This case used to assert the OPPOSITE — that a
+    /// 5-second-ahead timestamp was "tolerated" — on the reasoning that
+    /// two clocks are never exactly equal and that `ff_crew` clamps a
+    /// small skew back to `now`. The assertion was `XCTAssertNotNil`,
+    /// which is a textbook proxy: it measured that the value survived
+    /// the gate, never what it then RENDERED.
+    ///
+    /// Measured, the rendering was the bug the gate's own comment cites:
+    /// a position stated 5 seconds ahead came back as
+    /// `ageMs = 4_294_962_297` (49.7 days, "1193 HR") with
+    /// `freshness == .lost`, because both `CrewMember.decode`'s
+    /// `now &- pos_age_ms` and `ff_crew_freshness`'s
+    /// `now_ms - m->pos_age_ms` are unsigned. A friend standing next to
+    /// you, on a node whose clock runs a few seconds fast, read LOST.
+    func testATimestampAheadOfOurClockByAnyAmountIsRefused() {
+        let now = Date()
+        XCTAssertNil(CoreStore.plausibleTimestamp(now.addingTimeInterval(5), now: now),
+                     "unsigned age math wraps ANY future timestamp to ~49 days — there is no safe tolerance")
+        XCTAssertNil(CoreStore.plausibleTimestamp(now.addingTimeInterval(0.5), now: now))
+        XCTAssertEqual(CoreStore.plausibleTimestamp(now, now: now), now,
+                       "exactly now is age zero, not the future")
+    }
+
+    /// And the consequence, which is the half the old proxy missed: a
+    /// live packet from a node whose clock runs fast is dated by OUR
+    /// receive time and renders LIVE — not dropped, and certainly not
+    /// LOST. The fall-through tier is a real local measurement, so
+    /// nothing is fabricated to get there.
+    func testAFastNodesLivePositionRendersLiveNotFiftyDaysOld() {
+        let store = CoreStore()
+        let now = Date()
+        store.apply(nodeUpdate: snapshot(positionTime: now.addingTimeInterval(5), observedAt: now))
+
+        let member = store.crew.member(nodeID: 1, now: FireflyClock.nowMillis())
+        let position = try? XCTUnwrap(member?.position)
+        XCTAssertNotNil(position, "a fast clock must not cost us the fix — we know when WE received it")
+        XCTAssertEqual(member?.freshness, .live,
+                       "a friend on a node five seconds fast is not 49 days LOST")
+        XCTAssertLessThan(member?.position?.ageMs ?? .max, 60_000,
+                          "the age must come from our own receive time, not from an unsigned wrap")
+    }
+
+    func testAnUnsyncedRTCEpochIsNotAMeasurement() {
+        let now = Date()
+        XCTAssertNil(CoreStore.plausibleTimestamp(Date(timeIntervalSince1970: 0), now: now))
+        XCTAssertNil(CoreStore.plausibleTimestamp(Date(timeIntervalSince1970: 100_000), now: now),
+                     "Meshtastic did not exist in 1970 — this is a node whose RTC never synced")
+    }
+
+    func testAnOrdinaryRecentTimestampIsAccepted() {
+        let now = Date()
+        let recent = now.addingTimeInterval(-45)
+        XCTAssertEqual(CoreStore.plausibleTimestamp(recent, now: now), recent)
+    }
+
+    /// A future `lastHeard` must not become "heard just now" either —
+    /// it falls through to our own observation time instead.
+    func testAFutureLastHeardFallsThroughToOurOwnObservationTime() {
+        let store = CoreStore()
+        let observed = Date().addingTimeInterval(-300)
+        store.apply(nodeUpdate: snapshot(positionTime: nil,
+                                          lastHeard: Date().addingTimeInterval(86_400),
+                                          observedAt: observed))
+
+        let member = store.crew.member(nodeID: 1, now: FireflyClock.nowMillis())
+        XCTAssertNotEqual(member?.heardPresence, .heard,
+                          "a node last heard five minutes ago is not HERE just because its clock claims tomorrow")
     }
 }

@@ -360,15 +360,10 @@ struct SettingsScreen: View {
     }
 
     private var festivalDataStatusText: String {
-        let sourceText: String
-        switch lineup.sourceState {
-        case .none: sourceText = "no pack loaded"
-        case .bundled: sourceText = "bundled copy"
-        case .fresh: sourceText = "fresh"
-        case .cached(let age):
-            let minutes = max(0, Int(age / 60))
-            sourceText = minutes < 1 ? "cached (just now)" : "cached (\(minutes) min ago)"
-        }
+        // `FestpackSourceState.statusText` — shared with Lineup's own
+        // header so the two cannot drift, and so the honest
+        // "cached (age unknown)" case is testable (hardening QA pass).
+        let sourceText = lineup.sourceState.statusText
         guard let updated = lineup.festpack?.meta.updated else { return sourceText }
         return "pack updated \(updated) · from fest-almanac · \(sourceText)"
     }

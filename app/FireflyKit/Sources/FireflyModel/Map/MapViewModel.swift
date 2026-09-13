@@ -151,7 +151,29 @@ public final class MapViewModel {
     public func refreshPins(now: UInt32 = FireflyClock.nowMillis()) {
         refreshTickCount += 1
         let myPosition = myFix.map { GeoCoordinate(latitude: $0.latitude, longitude: $0.longitude) }
-        pins = CrewMapPinBuilder.build(from: crew.members(now: now), myPosition: myPosition)
+        let rebuilt = CrewMapPinBuilder.build(from: crew.members(now: now), myPosition: myPosition)
+        // Hardening QA pass: assign only on an actual change. This runs
+        // at 1 Hz for as long as the Map tab is open, so an
+        // unconditional assignment handed SwiftUI a brand-new array
+        // once a second whether or not anything had moved —
+        // invalidating the whole `Map { }` body (every pin, every
+        // festpack polygon, the accuracy circle, and on the Field map a
+        // full `ff_map`/`ff_geo` reprojection plus a `Canvas` redraw).
+        // `CrewMapPin` is `Equatable` and its `ageText` is bucketed
+        // ("~3 MIN"), so a crew standing still now settles to no
+        // redraws at all between bucket changes.
+        //
+        // MEASURED, because the obvious justification for this is
+        // wrong: on Swift 6.3's Observation runtime `@Observable`
+        // ALREADY suppresses an equal-valued assignment to an
+        // `Equatable` property, so on a current OS this guard changes
+        // nothing observable. It is load-bearing on this package's
+        // DEPLOYMENT FLOOR (iOS 17 / macOS 14), whose Observation
+        // predates that suppression and notifies on every write.
+        // `MapPinChurnTests` tests the rebuild itself for exactly this
+        // reason — an observation-tracking test passes here either way.
+        guard rebuilt != pins else { return }
+        pins = rebuilt
     }
 
     /// The resolved units preference (`SettingsStoring.resolvedImperial()`,

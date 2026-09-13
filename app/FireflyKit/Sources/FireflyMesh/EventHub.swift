@@ -45,21 +45,50 @@ public final class EventHub<Element: Sendable>: @unchecked Sendable {
         lock.lock()
         let id = nextID
         nextID += 1
-        let alreadyFinished = finished
         lock.unlock()
 
         return AsyncStream(bufferingPolicy: .bufferingNewest(4096)) { continuation in
-            if alreadyFinished {
-                continuation.finish()
-                return
-            }
-            lock.lock()
-            continuations[id] = continuation
-            lock.unlock()
+            // `onTermination` FIRST, then the `finished` check and the
+            // registration in ONE critical section — see
+            // `registerIfNotFinished(id:continuation:)`'s own doc comment
+            // for why sampling `finished` before this closure runs was a
+            // real, measured leak rather than a theoretical one.
             continuation.onTermination = { [weak self] _ in
                 self?.remove(id)
             }
+            if !registerIfNotFinished(id: id, continuation: continuation) {
+                continuation.finish()
+            }
         }
+    }
+
+    /// Hardening QA pass: checks `finished` and registers `continuation`
+    /// in ONE critical section, returning `false` (caller finishes the
+    /// stream) if this hub is already done.
+    ///
+    /// `subscribe()` used to sample `finished` under the lock, drop the
+    /// lock, and only then register — so a `finish()` landing in that
+    /// window latched `finished`, cleared `continuations`, and finished
+    /// every continuation that existed AT THAT MOMENT, after which this
+    /// subscriber inserted itself into the now-"closed" hub. The result
+    /// was a stream nothing would ever finish: its `for await` never
+    /// returns, so the task parked on it leaks for the life of the
+    /// process, and — worse for a codebase whose whole premise is honest
+    /// state — a hub that has been finished kept DELIVERING values to
+    /// it.
+    ///
+    /// Measured, not reasoned: 5000 `concurrentPerform` subscribe/finish
+    /// races produced 8 such orphans before this fix
+    /// (`EventHubTerminationTests`), and zero after.
+    ///
+    /// Not async and not holding the lock across `continuation.finish()`
+    /// (the caller does that after this returns) — `onTermination` runs
+    /// `remove(id)`, which takes the same non-recursive `NSLock`.
+    private func registerIfNotFinished(id: Int, continuation: AsyncStream<Element>.Continuation) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !finished else { return false }
+        continuations[id] = continuation
+        return true
     }
 
     /// Publish one element to every subscriber that exists right now.
@@ -137,7 +166,6 @@ public final class CurrentValueEventHub<Element: Sendable>: @unchecked Sendable 
         lock.lock()
         let id = nextID
         nextID += 1
-        let alreadyFinished = finished
         let replay = current
         lock.unlock()
 
@@ -145,17 +173,27 @@ public final class CurrentValueEventHub<Element: Sendable>: @unchecked Sendable 
             if let replay {
                 continuation.yield(replay)
             }
-            if alreadyFinished {
-                continuation.finish()
-                return
-            }
-            lock.lock()
-            continuations[id] = continuation
-            lock.unlock()
+            // Same one-critical-section registration as `EventHub`, for
+            // the same measured reason — see
+            // `EventHub.registerIfNotFinished(id:continuation:)`. The
+            // replay above is unchanged: a late subscriber still gets
+            // the last current value before its stream closes, which is
+            // this type's whole point.
             continuation.onTermination = { [weak self] _ in
                 self?.remove(id)
             }
+            if !registerIfNotFinished(id: id, continuation: continuation) {
+                continuation.finish()
+            }
         }
+    }
+
+    /// See `EventHub.registerIfNotFinished(id:continuation:)`.
+    private func registerIfNotFinished(id: Int, continuation: AsyncStream<Element>.Continuation) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !finished else { return false }
+        continuations[id] = continuation
+        return true
     }
 
     /// Publish one element to every subscriber that exists right now,

@@ -1504,3 +1504,60 @@ final class AppGraphTests: XCTestCase {
         return (try? fr.serializedData()) ?? Data()
     }
 }
+
+// MARK: - Hardening QA pass: background/foreground task lifecycle
+
+/// `AppGraph.stop()` is what "background connect = off" calls when the
+/// app is backgrounded ("off = disconnect when backgrounded"). It used
+/// to cancel only the graph's OWN subscriptions, leaving every loop the
+/// view models it built were running. The expensive one is
+/// `RadarViewModel.recomputeLoop`: a 1 Hz `ff_radar_compute` pump that
+/// nothing anywhere ever stopped, because `RadarView` deliberately has
+/// no `.onDisappear` (its view models are process-lifetime singletons —
+/// `makeConnectViewModel()`'s own doc comment). So backgrounding the
+/// app left it recomputing radar geometry once a second, forever, for a
+/// link it had just torn down — on a phone whose battery has to last a
+/// three-day festival.
+@MainActor
+final class AppGraphViewModelLifecycleTests: XCTestCase {
+
+    private func makeGraph(store: any FireflyExtraSettingsStoring) -> AppGraph {
+        AppGraph(dependencies: AppDependencies(
+            client: StubMeshtasticClient(), location: UnavailableLocationProvider(),
+            heading: NoHeadingProvider(), store: store))
+    }
+
+    func testStopCancelsRadarsRecomputeLoopAndStartRestartsIt() async {
+        let store = InMemorySettingsStore()
+        store.backgroundConnectEnabled = false
+        let graph = makeGraph(store: store)
+        let radar = graph.makeRadarViewModel()
+
+        await graph.start()
+        XCTAssertTrue(radar.isObserving, "the graph's own factory starts the pump")
+
+        await graph.handleScenePhaseChange(.background)
+        XCTAssertFalse(radar.isObserving,
+                       "a 1 Hz radar recompute that survives backgrounding is a battery leak for a link that is gone")
+
+        await graph.handleScenePhaseChange(.foreground)
+        XCTAssertTrue(radar.isObserving,
+                      "and coming back to the foreground must not leave Radar frozen")
+    }
+
+    /// The other half of the setting: background connect ON means the
+    /// graph deliberately keeps running, so Radar must keep running too.
+    func testBackgroundingWithBackgroundConnectOnLeavesRadarRunning() async {
+        let store = InMemorySettingsStore()
+        store.backgroundConnectEnabled = true
+        let graph = makeGraph(store: store)
+        let radar = graph.makeRadarViewModel()
+
+        await graph.start()
+        await graph.handleScenePhaseChange(.background)
+
+        XCTAssertTrue(radar.isObserving,
+                      "'keep the link alive in the background' means keep the screen's data alive too")
+        await graph.stop()
+    }
+}

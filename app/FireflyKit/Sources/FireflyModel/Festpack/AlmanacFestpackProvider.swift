@@ -102,6 +102,20 @@ public actor AlmanacFestpackProvider: FestpackProviding {
         return url
     }
 
+    /// `nil` when the age cannot be known — see
+    /// `FestpackSourceState.cached`'s own doc comment. A NEGATIVE
+    /// interval is not clamped to zero: the old `max(0, …)` turned "this
+    /// phone's clock moved backwards since the cache was written" into
+    /// "cached (just now)", presenting a pack of unknown vintage as
+    /// freshly fetched. Pure and `static` so it is testable with no
+    /// provider, no cache and no network.
+    static func cacheAge(savedAt: Date?, now: Date) -> TimeInterval? {
+        guard let savedAt else { return nil }
+        let age = now.timeIntervalSince(savedAt)
+        guard age.isFinite, age >= 0 else { return nil }
+        return age
+    }
+
     public func current() -> Festpack? { pack }
     public func sourceState() -> FestpackSourceState { state }
     public nonisolated func festpackUpdates() -> AsyncStream<Festpack> { hub.subscribe() }
@@ -120,7 +134,7 @@ public actor AlmanacFestpackProvider: FestpackProviding {
     private func loadFromCacheOrBundle() {
         if let cached = cache.load(), case .success(let parsed) = FestpackParser.parse(cached.json) {
             pack = parsed
-            state = .cached(ageSeconds: max(0, now().timeIntervalSince(cached.savedAt)))
+            state = .cached(ageSeconds: Self.cacheAge(savedAt: cached.savedAt, now: now()))
             hub.yield(parsed)
             return
         }

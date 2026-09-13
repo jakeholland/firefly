@@ -99,7 +99,7 @@ final class NodeDBTests: XCTestCase {
         pos.precisionBits = 32
         info.position = pos
 
-        let snapshot = db.apply(nodeInfo: info)
+        let snapshot = db.apply(nodeInfo: info, observedAt: nil)
         XCTAssertEqual(snapshot.num, 0x02e6_06b0)
         XCTAssertEqual(snapshot.shortName, "F1")
         XCTAssertEqual(snapshot.longName, "Firefly 1")
@@ -122,7 +122,7 @@ final class NodeDBTests: XCTestCase {
         // precisionBits left at the wire default (0).
         info.position = pos
 
-        let snapshot = db.apply(nodeInfo: info)
+        let snapshot = db.apply(nodeInfo: info, observedAt: nil)
         XCTAssertNil(snapshot.position?.precisionBits)
     }
 
@@ -139,7 +139,7 @@ final class NodeDBTests: XCTestCase {
         pos.locationSource = .locManual
         info.position = pos
 
-        let snapshot = db.apply(nodeInfo: info)
+        let snapshot = db.apply(nodeInfo: info, observedAt: nil)
         XCTAssertEqual(snapshot.position?.source, .manual)
     }
 
@@ -156,7 +156,7 @@ final class NodeDBTests: XCTestCase {
         var user = User()
         user.shortName = "F1"
         info.user = user
-        db.apply(nodeInfo: info)
+        db.apply(nodeInfo: info, observedAt: nil)
 
         var pos = Position()
         pos.latitudeI = Int32(1 * 1e7)
@@ -181,7 +181,7 @@ final class NodeDBTests: XCTestCase {
         var db = NodeDB()
         var info = NodeInfo()
         info.num = 1
-        db.apply(nodeInfo: info)
+        db.apply(nodeInfo: info, observedAt: nil)
 
         XCTAssertNil(db.applyRxMeta(from: 1, rssiDbm: -40, snrDb: 5, path: .indirect))
         XCTAssertNil(db.applyRxMeta(from: 1, rssiDbm: -40, snrDb: 5, path: .unknown))
@@ -196,7 +196,7 @@ final class NodeDBTests: XCTestCase {
         var db = NodeDB()
         var info = NodeInfo()
         info.num = 1
-        db.apply(nodeInfo: info)
+        db.apply(nodeInfo: info, observedAt: nil)
         XCTAssertEqual(db.all.count, 1)
         db.reset()
         XCTAssertTrue(db.all.isEmpty)
@@ -207,7 +207,7 @@ final class NodeDBTests: XCTestCase {
         var db = NodeDB()
         var info = NodeInfo()
         info.num = 1 // hopsAway left unset (implicit-presence style has_hops_away == false)
-        let snapshot = db.apply(nodeInfo: info)
+        let snapshot = db.apply(nodeInfo: info, observedAt: nil)
         XCTAssertNil(snapshot.hopsAway)
     }
 
@@ -216,7 +216,7 @@ final class NodeDBTests: XCTestCase {
         var info = NodeInfo()
         info.num = 1
         info.hopsAway = 2
-        let snapshot = db.apply(nodeInfo: info)
+        let snapshot = db.apply(nodeInfo: info, observedAt: nil)
         XCTAssertEqual(snapshot.hopsAway, 2)
     }
 }

@@ -14,7 +14,12 @@ import Foundation
 public struct FestpackCacheEntry: Sendable, Equatable {
     public let json: Data
     public let etag: String?
-    public let savedAt: Date
+    /// `nil` when the metadata sidecar is missing or unreadable — the
+    /// JSON is still perfectly usable, but WHEN it was written is then
+    /// genuinely unknown. Hardening QA pass: this used to read
+    /// `.distantPast`, a made-up timestamp that downstream age math
+    /// cannot tell apart from a real one.
+    public let savedAt: Date?
 }
 
 /// `@unchecked Sendable` justified the same way as `EventHub`
@@ -45,7 +50,7 @@ public final class FestpackDiskCache: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard let json = try? Data(contentsOf: jsonURL) else { return nil }
         let meta = (try? Data(contentsOf: metaURL)).flatMap { try? JSONDecoder().decode(CacheMeta.self, from: $0) }
-        return FestpackCacheEntry(json: json, etag: meta?.etag, savedAt: meta?.savedAt ?? .distantPast)
+        return FestpackCacheEntry(json: json, etag: meta?.etag, savedAt: meta?.savedAt)
     }
 
     public func save(json: Data, etag: String?, savedAt: Date) {

@@ -58,8 +58,14 @@ struct NodeDB: Sendable {
     /// (a want_config replay carries no rx_time, so a cached SNR here
     /// could never feed a freshness check honestly). Live SNR arrives
     /// per-packet via `applyRxMeta` instead.
+    /// `observedAt` is the local moment our own radio received this
+    /// frame, or `nil` when the frame is part of a want_config nodeDB
+    /// REPLAY — see `MeshNodeSnapshot.observedAt`. The caller
+    /// (`MeshtasticClient.handle(fromRadio:)`) knows which, because it
+    /// knows whether a want_config phase is outstanding; this type does
+    /// not and must not guess.
     @discardableResult
-    mutating func apply(nodeInfo info: NodeInfo) -> MeshNodeSnapshot {
+    mutating func apply(nodeInfo info: NodeInfo, observedAt: Date?) -> MeshNodeSnapshot {
         let existing = nodes[info.num]
 
         let position: NodePosition? = (info.hasPosition && info.position.hasLatitudeI && info.position.hasLongitudeI)
@@ -87,7 +93,8 @@ struct NodeDB: Sendable {
             lastHeard: lastHeard,
             rssiDbm: existing?.rssiDbm,
             snrDb: existing?.snrDb,
-            hopsAway: hopsAway)
+            hopsAway: hopsAway,
+            observedAt: observedAt)
         nodes[info.num] = snapshot
         return snapshot
     }
@@ -97,7 +104,8 @@ struct NodeDB: Sendable {
     /// a legitimate "no GPS fix yet" broadcast, not corruption, mirroring
     /// `mc_client.c`'s own silent-drop for the same condition.
     @discardableResult
-    mutating func apply(position pb: Position, from num: UInt32, rxTime: Date?) -> MeshNodeSnapshot? {
+    mutating func apply(position pb: Position, from num: UInt32, rxTime: Date?,
+                        observedAt: Date = Date()) -> MeshNodeSnapshot? {
         guard pb.hasLatitudeI, pb.hasLongitudeI else { return nil }
         let existing = nodes[num]
         let pos = NodeDB.position(from: pb, rxTime: rxTime)
@@ -109,7 +117,10 @@ struct NodeDB: Sendable {
             lastHeard: rxTime ?? existing?.lastHeard,
             rssiDbm: existing?.rssiDbm,
             snrDb: existing?.snrDb,
-            hopsAway: existing?.hopsAway)
+            hopsAway: existing?.hopsAway,
+            // A live POSITION_APP packet IS an observation: it arrived
+            // here, now, off the air.
+            observedAt: observedAt)
         nodes[num] = snapshot
         return snapshot
     }
@@ -122,7 +133,8 @@ struct NodeDB: Sendable {
     /// this `num` an identity, matching `mc_client.c`'s comment that
     /// `on_rx_meta` firing does not imply any consumer state exists yet.
     @discardableResult
-    mutating func applyRxMeta(from num: UInt32, rssiDbm: Int16?, snrDb: Float?, path: RxPath) -> MeshNodeSnapshot? {
+    mutating func applyRxMeta(from num: UInt32, rssiDbm: Int16?, snrDb: Float?, path: RxPath,
+                              observedAt: Date = Date()) -> MeshNodeSnapshot? {
         guard let existing = nodes[num] else { return nil }
         guard path == .direct, (rssiDbm != nil || snrDb != nil) else { return nil }
         let snapshot = MeshNodeSnapshot(
@@ -133,7 +145,10 @@ struct NodeDB: Sendable {
             lastHeard: existing.lastHeard,
             rssiDbm: rssiDbm ?? existing.rssiDbm,
             snrDb: snrDb ?? existing.snrDb,
-            hopsAway: existing.hopsAway)
+            hopsAway: existing.hopsAway,
+            // Same reasoning as `apply(position:from:rxTime:)`: a packet
+            // we measured RSSI/SNR off is a packet we received now.
+            observedAt: observedAt)
         nodes[num] = snapshot
         return snapshot
     }
