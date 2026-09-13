@@ -1,7 +1,9 @@
 //
 //  AlmanacFestpackProviderTests.swift — the provider's state machine:
 //  cache-first, a fetch failure keeps whatever pack is already showing,
-//  and a pack that fails to parse never replaces a good one.
+//  a pack that fails to parse never replaces a good one, the automatic
+//  refresh policy (age threshold + throttle), ETag 304 handling,
+//  per-festival disk-cache keys, and checksum verification.
 //
 import XCTest
 @testable import FireflyModel
@@ -11,6 +13,7 @@ private final class MockFestpackFetcher: FestpackHTTPFetching, @unchecked Sendab
         case respond(Data, etag: String?)
         case notModified
         case fail
+        case failHTTPStatus(Int)
     }
 
     private let lock = NSLock()
@@ -39,6 +42,7 @@ private final class MockFestpackFetcher: FestpackHTTPFetching, @unchecked Sendab
         case .respond(let data, let etag): return FestpackHTTPResponse(body: data, etag: etag)
         case .notModified: return nil
         case .fail: throw URLError(.notConnectedToInternet)
+        case .failHTTPStatus(let code): throw URLError(.init(rawValue: code))
         }
     }
 }
@@ -75,6 +79,8 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         Data(#"{"festpack":"9.9"}"#.utf8)
     }
 
+    // MARK: - Fallback order
+
     func testNoCacheAndNoNetworkFallsBackToBundled() async {
         let fetcher = MockFestpackFetcher(.fail)
         let provider = AlmanacFestpackProvider(
@@ -87,12 +93,12 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         let current = await provider.current()
         XCTAssertEqual(current?.name, "Minimal Fest")
         let state = await provider.sourceState()
-        XCTAssertEqual(state, .bundled)
+        XCTAssertEqual(state.source, .bundled)
     }
 
-    func testCacheFirstThenNotModifiedStaysOnCachedPack() async throws {
+    func testCacheFirstThenNotModifiedStaysOnCachedPackAndBumpsFreshness() async throws {
         let cache = FestpackDiskCache(directory: tempDir)
-        cache.save(json: minimalPackJSON, etag: "\"abc123\"", savedAt: Date(timeIntervalSinceNow: -3600))
+        cache.save(json: minimalPackJSON, etag: "\"abc123\"", savedAt: Date(timeIntervalSinceNow: -3600), key: "lost-lands-2026")
         let fetcher = MockFestpackFetcher(.notModified)
         let provider = AlmanacFestpackProvider(
             settings: InMemorySettingsStore(), fetcher: fetcher, cache: cache,
@@ -103,14 +109,17 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         let current = await provider.current()
         XCTAssertEqual(current?.name, "Minimal Fest")
         let state = await provider.sourceState()
-        guard case .cached(let age) = state else { return XCTFail("expected .cached, got \(state)") }
-        XCTAssertGreaterThan(try XCTUnwrap(age), 0)
+        // 304 confirms the pack is current AS OF NOW — the network was
+        // consulted and agreed, so this reads as `.fetched`, not merely
+        // `.cached` (this file's own header on `fetchAndPublish()`).
+        XCTAssertEqual(state.source, .fetched)
+        XCTAssertEqual(try XCTUnwrap(state.ageSeconds), 0, accuracy: 1)
         XCTAssertEqual(fetcher.fetchCount, 1) // it DID try — 304 just means "nothing changed"
     }
 
-    func testFetchFailureKeepsCachedPack() async {
+    func testFetchFailureKeepsCachedPackAndRecordsTheFailureHonestly() async {
         let cache = FestpackDiskCache(directory: tempDir)
-        cache.save(json: minimalPackJSON, etag: nil, savedAt: Date())
+        cache.save(json: minimalPackJSON, etag: nil, savedAt: Date(), key: "lost-lands-2026")
         let fetcher = MockFestpackFetcher(.fail)
         let provider = AlmanacFestpackProvider(
             settings: InMemorySettingsStore(), fetcher: fetcher, cache: cache,
@@ -121,12 +130,48 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         let current = await provider.current()
         XCTAssertEqual(current?.name, "Minimal Fest")
         let state = await provider.sourceState()
-        guard case .cached = state else { return XCTFail("a failed fetch must not clear the cached state") }
+        XCTAssertEqual(state.source, .cached, "a failed fetch must not clear the cached state")
+        XCTAssertEqual(state.lastError, "offline")
+        XCTAssertNotNil(state.lastAttempt)
+        XCTAssertTrue(state.statusText.contains("refresh failed: offline"))
+        XCTAssertTrue(state.statusText.contains("using cache from"))
+    }
+
+    func testHTTPStatusFailureIsDescribedByItsStatusCode() async {
+        let cache = FestpackDiskCache(directory: tempDir)
+        cache.save(json: minimalPackJSON, etag: nil, savedAt: Date(), key: "lost-lands-2026")
+        let fetcher = MockFestpackFetcher(.failHTTPStatus(500))
+        let provider = AlmanacFestpackProvider(
+            settings: InMemorySettingsStore(), fetcher: fetcher, cache: cache,
+            bundleLoader: MockBundleLoader())
+
+        await provider.refresh()
+
+        let state = await provider.sourceState()
+        XCTAssertEqual(state.lastError, "http 500")
+    }
+
+    func testAFailureThenASuccessClearsTheError() async {
+        let cache = FestpackDiskCache(directory: tempDir)
+        cache.save(json: minimalPackJSON, etag: nil, savedAt: Date(), key: "lost-lands-2026")
+        let fetcher = MockFestpackFetcher(.fail)
+        let provider = AlmanacFestpackProvider(
+            settings: InMemorySettingsStore(), fetcher: fetcher, cache: cache,
+            bundleLoader: MockBundleLoader())
+        await provider.refresh()
+        let firstAttempt = await provider.sourceState()
+        XCTAssertNotNil(firstAttempt.lastError)
+
+        fetcher.setBehavior(.respond(minimalPackJSON, etag: "\"v2\""))
+        await provider.refresh()
+
+        let state = await provider.sourceState()
+        XCTAssertNil(state.lastError, "a later success must clear a previous failure, never show it stale")
     }
 
     func testParseFailureNeverReplacesAGoodCachedPack() async {
         let cache = FestpackDiskCache(directory: tempDir)
-        cache.save(json: minimalPackJSON, etag: nil, savedAt: Date())
+        cache.save(json: minimalPackJSON, etag: nil, savedAt: Date(), key: "lost-lands-2026")
         let fetcher = MockFestpackFetcher(.respond(wrongVersionJSON, etag: "\"bad\""))
         let provider = AlmanacFestpackProvider(
             settings: InMemorySettingsStore(), fetcher: fetcher, cache: cache,
@@ -137,12 +182,13 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         let current = await provider.current()
         XCTAssertEqual(current?.name, "Minimal Fest", "a pack that fails fp_parse must never replace the good one")
         let state = await provider.sourceState()
-        guard case .cached = state else { return XCTFail("expected state to remain .cached, got \(state)") }
+        XCTAssertEqual(state.source, .cached, "expected state to remain .cached")
+        XCTAssertEqual(state.lastError, "malformed pack")
         // The bad response must not have been written to disk either.
-        XCTAssertEqual(cache.load()?.etag, nil)
+        XCTAssertEqual(cache.load(key: "lost-lands-2026")?.etag, nil)
     }
 
-    func testSuccessfulFetchGoesFreshAndPersistsForTheNextLaunch() async {
+    func testSuccessfulFetchGoesFetchedAndPersistsForTheNextLaunch() async {
         let fetcher = MockFestpackFetcher(.respond(minimalPackJSON, etag: "\"v1\""))
         let provider = AlmanacFestpackProvider(
             settings: InMemorySettingsStore(), fetcher: fetcher,
@@ -151,7 +197,7 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         await provider.refresh()
 
         let state = await provider.sourceState()
-        XCTAssertEqual(state, .fresh)
+        XCTAssertEqual(state.source, .fetched)
 
         // A second provider instance, same disk directory (simulating a
         // relaunch), must load THIS pack from cache first, before any
@@ -165,6 +211,8 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         let current2 = await provider2.current()
         XCTAssertNil(current2) // honest: nothing loaded yet, pre-refresh
     }
+
+    // MARK: - Settings URL override
 
     func testSettingsURLOverrideIsUsedWhenValid() async {
         let settings = InMemorySettingsStore()
@@ -188,10 +236,11 @@ final class AlmanacFestpackProviderTests: XCTestCase {
 
     /// BLOCKING review finding 1: `sourceURL()` is the last line of
     /// defense against a non-https override reaching the network —
-    /// `SettingsViewModel.setFestpackSourceURLOverride` should already
-    /// reject one before it is ever stored, but a value could reach the
-    /// store some other way (a synced or corrupted default), so this
-    /// provider must never trust it either.
+    /// `FestpackSourceURLValidator`/`SettingsViewModel
+    /// .setFestpackSourceURLOverride` should already reject one before
+    /// it is ever stored, but a value could reach the store some other
+    /// way (a synced or corrupted default), so this provider must never
+    /// trust it either.
     func testHTTPSettingsURLFallsBackToDefault() async {
         let settings = InMemorySettingsStore()
         settings.setString("http://example.com/custom.festpack.json", .festpackSourceURLOverride)
@@ -214,6 +263,229 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         let provider = AlmanacFestpackProvider(settings: settings)
         let url = await provider.sourceURL()
         XCTAssertEqual(url, AlmanacFestpackProvider.defaultURL)
+    }
+
+    // MARK: - Automatic refresh policy ("app: automatic almanac refresh")
+
+    func testRefreshIfNeededFetchesWhenNothingIsCached() async {
+        let fetcher = MockFestpackFetcher(.respond(minimalPackJSON, etag: "\"v1\""))
+        let provider = AlmanacFestpackProvider(
+            settings: InMemorySettingsStore(), fetcher: fetcher,
+            cache: FestpackDiskCache(directory: tempDir), bundleLoader: MockBundleLoader())
+
+        await provider.refreshIfNeeded()
+
+        let state = await provider.sourceState()
+        XCTAssertEqual(fetcher.fetchCount, 1)
+        XCTAssertEqual(state.source, .fetched)
+    }
+
+    func testRefreshIfNeededSkipsTheNetworkWhenTheCacheIsFreshEnough() async {
+        let cache = FestpackDiskCache(directory: tempDir)
+        // Well inside the 6-hour staleness threshold.
+        cache.save(json: minimalPackJSON, etag: "\"abc\"", savedAt: Date(timeIntervalSinceNow: -60), key: "lost-lands-2026")
+        let fetcher = MockFestpackFetcher(.fail)
+        let provider = AlmanacFestpackProvider(
+            settings: InMemorySettingsStore(), fetcher: fetcher, cache: cache, bundleLoader: MockBundleLoader())
+
+        await provider.refreshIfNeeded()
+
+        let current = await provider.current()
+        let state = await provider.sourceState()
+        XCTAssertEqual(fetcher.fetchCount, 0, "a fresh-enough cache must not trigger a network call at all")
+        XCTAssertEqual(current?.name, "Minimal Fest")
+        XCTAssertNil(state.lastError)
+    }
+
+    func testRefreshIfNeededFetchesWhenTheCacheIsOlderThanSixHours() async {
+        let cache = FestpackDiskCache(directory: tempDir)
+        cache.save(json: minimalPackJSON, etag: "\"abc\"",
+                   savedAt: Date(timeIntervalSinceNow: -(6 * 3600 + 60)), key: "lost-lands-2026")
+        let fetcher = MockFestpackFetcher(.respond(minimalPackJSON, etag: "\"v2\""))
+        let provider = AlmanacFestpackProvider(
+            settings: InMemorySettingsStore(), fetcher: fetcher, cache: cache, bundleLoader: MockBundleLoader())
+
+        await provider.refreshIfNeeded()
+
+        XCTAssertEqual(fetcher.fetchCount, 1, "a cache older than the staleness threshold must trigger a fetch")
+    }
+
+    func testRefreshIfNeededNeverFetchesMoreThanOncePerFifteenMinutesEvenWhenStale() async {
+        let cache = FestpackDiskCache(directory: tempDir)
+        // Old enough to be stale...
+        cache.save(json: minimalPackJSON, etag: "\"abc\"",
+                   savedAt: Date(timeIntervalSinceNow: -(7 * 3600)), key: "lost-lands-2026")
+        let fetcher = MockFestpackFetcher(.fail)
+        let provider = AlmanacFestpackProvider(
+            settings: InMemorySettingsStore(), fetcher: fetcher, cache: cache, bundleLoader: MockBundleLoader())
+
+        await provider.refreshIfNeeded() // ...first call attempts (and fails offline).
+        XCTAssertEqual(fetcher.fetchCount, 1)
+
+        fetcher.setBehavior(.respond(minimalPackJSON, etag: "\"v2\""))
+        await provider.refreshIfNeeded() // called again immediately — must be throttled.
+
+        XCTAssertEqual(fetcher.fetchCount, 1, "a second attempt inside the 15-minute throttle window must be skipped")
+    }
+
+    /// Test-only, lock-protected clock override — `AlmanacFestpackProvider`
+    /// is an `actor`; a plain captured `var Date` is the exact race
+    /// Swift 6 is right to flag, same reasoning `LocationProviderTests`
+    /// '`LockedTestClock` already states for `PhoneGPSUplink`.
+    private final class LockedTestClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Date
+        init(_ initial: Date) { value = initial }
+        func get() -> Date { lock.lock(); defer { lock.unlock() }; return value }
+        func advance(by interval: TimeInterval) {
+            lock.lock(); value = value.addingTimeInterval(interval); lock.unlock()
+        }
+    }
+
+    func testRefreshIfNeededIgnoresTheThrottleAfterFifteenMinutesHavePassed() async {
+        let cache = FestpackDiskCache(directory: tempDir)
+        cache.save(json: minimalPackJSON, etag: "\"abc\"",
+                   savedAt: Date(timeIntervalSinceNow: -(7 * 3600)), key: "lost-lands-2026")
+        let now = LockedTestClock(Date())
+        let fetcher = MockFestpackFetcher(.fail)
+        let provider = AlmanacFestpackProvider(
+            settings: InMemorySettingsStore(), fetcher: fetcher, cache: cache, bundleLoader: MockBundleLoader(),
+            now: { now.get() })
+
+        await provider.refreshIfNeeded()
+        XCTAssertEqual(fetcher.fetchCount, 1)
+
+        now.advance(by: 16 * 60) // past the 15-minute throttle
+        fetcher.setBehavior(.respond(minimalPackJSON, etag: "\"v2\""))
+        await provider.refreshIfNeeded()
+
+        XCTAssertEqual(fetcher.fetchCount, 2, "once the throttle window passes, a still-stale cache must be retried")
+    }
+
+    /// `refresh()` (the manual REFRESH button / pull-to-refresh) is
+    /// NEVER throttled, unlike `refreshIfNeeded()` — even immediately
+    /// after an automatic attempt.
+    func testManualRefreshIsNeverThrottled() async {
+        let cache = FestpackDiskCache(directory: tempDir)
+        cache.save(json: minimalPackJSON, etag: "\"abc\"", savedAt: Date(), key: "lost-lands-2026")
+        let fetcher = MockFestpackFetcher(.respond(minimalPackJSON, etag: "\"v2\""))
+        let provider = AlmanacFestpackProvider(
+            settings: InMemorySettingsStore(), fetcher: fetcher, cache: cache, bundleLoader: MockBundleLoader())
+
+        await provider.refresh()
+        await provider.refresh()
+
+        XCTAssertEqual(fetcher.fetchCount, 2, "the manual path must always hit the network, throttle or not")
+    }
+
+    // MARK: - Per-festival disk-cache keys
+
+    func testSwitchingTheSelectedFestivalSwitchesTheDiskCacheKey() async {
+        let settings = InMemorySettingsStore()
+        let cache = FestpackDiskCache(directory: tempDir)
+        cache.save(json: minimalPackJSON, etag: nil, savedAt: Date(), key: "lost-lands-2026")
+        let otherPackJSON = Data("""
+        {"festpack":"0.1","festival":{"name":"Other Fest","year":2027,"start":"2027-08-01","end":"2027-08-02"},
+         "stages":[],"schedule":[]}
+        """.utf8)
+        cache.save(json: otherPackJSON, etag: nil, savedAt: Date(), key: "other-fest-2027")
+        let fetcher = MockFestpackFetcher(.fail)
+        let provider = AlmanacFestpackProvider(settings: settings, fetcher: fetcher, cache: cache, bundleLoader: MockBundleLoader())
+
+        await provider.refresh()
+        let first = await provider.current()
+        XCTAssertEqual(first?.name, "Minimal Fest", "default namespace is lost-lands-2026")
+
+        settings.setString("other-fest", .festivalSelectedSlug)
+        settings.setString("2027", .festivalSelectedYear)
+        await provider.refresh()
+        let second = await provider.current()
+        XCTAssertEqual(second?.name, "Other Fest", "switching festival must switch the disk-cache key")
+
+        // Switching BACK must be instant (no network needed) — the
+        // original festival's own cache file is untouched.
+        settings.setString(nil, .festivalSelectedSlug)
+        settings.setString(nil, .festivalSelectedYear)
+        await provider.refresh()
+        let third = await provider.current()
+        XCTAssertEqual(third?.name, "Minimal Fest")
+    }
+
+    func testANonDefaultFestivalWithNoCacheAndNoBundleHasNoPackUntilAFetchSucceeds() async {
+        let settings = InMemorySettingsStore()
+        settings.setString("other-fest", .festivalSelectedSlug)
+        settings.setString("2027", .festivalSelectedYear)
+        let fetcher = MockFestpackFetcher(.fail)
+        let provider = AlmanacFestpackProvider(
+            settings: settings, fetcher: fetcher, cache: FestpackDiskCache(directory: tempDir),
+            // The bundle only ever has "lost-lands-2026" in it — see
+            // `loadFromCacheOrBundle()`'s own doc comment.
+            bundleLoader: MockBundleLoader(files: ["lost-lands-2026.festpack.json": minimalPackJSON]))
+
+        await provider.refresh()
+
+        let current = await provider.current()
+        let state = await provider.sourceState()
+        XCTAssertNil(current, "no bundled fallback exists for a non-default festival")
+        XCTAssertEqual(state.source, .none)
+    }
+
+    // MARK: - Checksum verification ("app: ... festival picker", owner ask #2)
+
+    func testMatchingChecksumAcceptsTheFetchedPack() async {
+        let settings = InMemorySettingsStore()
+        settings.setString(sha256Hex(minimalPackJSON), .festivalSelectedSHA256)
+        let fetcher = MockFestpackFetcher(.respond(minimalPackJSON, etag: "\"v1\""))
+        let provider = AlmanacFestpackProvider(
+            settings: settings, fetcher: fetcher, cache: FestpackDiskCache(directory: tempDir),
+            bundleLoader: MockBundleLoader())
+
+        await provider.refresh()
+
+        let current = await provider.current()
+        let state = await provider.sourceState()
+        XCTAssertEqual(current?.name, "Minimal Fest")
+        XCTAssertNil(state.lastError)
+    }
+
+    func testMismatchedChecksumRejectsTheFetchAndKeepsTheOldPack() async {
+        let settings = InMemorySettingsStore()
+        settings.setString(String(repeating: "0", count: 64), .festivalSelectedSHA256)
+        let cache = FestpackDiskCache(directory: tempDir)
+        cache.save(json: minimalPackJSON, etag: "\"old\"", savedAt: Date(), key: "lost-lands-2026")
+        let differentPackJSON = Data("""
+        {"festpack":"0.1","festival":{"name":"Wrong Bytes","year":2027,"start":"2027-07-01","end":"2027-07-02"},
+         "stages":[],"schedule":[]}
+        """.utf8)
+        let fetcher = MockFestpackFetcher(.respond(differentPackJSON, etag: "\"new\""))
+        let provider = AlmanacFestpackProvider(settings: settings, fetcher: fetcher, cache: cache, bundleLoader: MockBundleLoader())
+
+        await provider.refresh()
+
+        let current = await provider.current()
+        XCTAssertEqual(current?.name, "Minimal Fest", "a checksum mismatch must never replace the old pack")
+        let state = await provider.sourceState()
+        XCTAssertEqual(state.lastError, "checksum mismatch")
+        // The mismatched bytes must not have been written to disk either.
+        XCTAssertEqual(cache.load(key: "lost-lands-2026")?.etag, "\"old\"")
+    }
+
+    func testChecksumIsCaseInsensitive() async {
+        let settings = InMemorySettingsStore()
+        settings.setString(sha256Hex(minimalPackJSON).uppercased(), .festivalSelectedSHA256)
+        let fetcher = MockFestpackFetcher(.respond(minimalPackJSON, etag: "\"v1\""))
+        let provider = AlmanacFestpackProvider(
+            settings: settings, fetcher: fetcher, cache: FestpackDiskCache(directory: tempDir),
+            bundleLoader: MockBundleLoader())
+
+        await provider.refresh()
+
+        let current = await provider.current()
+        XCTAssertEqual(current?.name, "Minimal Fest")
+    }
+
+    private func sha256Hex(_ data: Data) -> String {
+        AlmanacFestpackProvider.sha256Hex(data)
     }
 }
 
@@ -267,13 +539,13 @@ final class FestpackCacheFreshnessTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let cache = FestpackDiskCache(directory: directory)
-        cache.save(json: Data(#"{"festpack":"0.1"}"#.utf8), etag: nil, savedAt: Date())
+        cache.save(json: Data(#"{"festpack":"0.1"}"#.utf8), etag: nil, savedAt: Date(), key: "lost-lands-2026")
         // Corrupt the sidecar the way a half-written file or a schema
         // change would.
         try Data("not json at all".utf8)
-            .write(to: directory.appendingPathComponent("festpack-cache-meta.json"))
+            .write(to: directory.appendingPathComponent("festpack-cache-lost-lands-2026-meta.json"))
 
-        let entry = try XCTUnwrap(cache.load())
+        let entry = try XCTUnwrap(cache.load(key: "lost-lands-2026"))
         XCTAssertFalse(entry.json.isEmpty, "the pack itself is still perfectly usable")
         XCTAssertNil(entry.savedAt, "but when it was written is genuinely unknown, not `.distantPast`")
         XCTAssertNil(age(savedAt: entry.savedAt))
@@ -283,24 +555,28 @@ final class FestpackCacheFreshnessTests: XCTestCase {
 
     func testTheUnknownAgeSaysSoRatherThanClaimingFreshness() {
         XCTAssertEqual(FestpackSourceState.cached(ageSeconds: nil).statusText, "cached (age unknown)")
-        for text in [FestpackSourceState.cached(ageSeconds: nil).statusText] {
-            XCTAssertFalse(text.contains("just now"),
-                           "an unknown age must never be worded as a fresh one")
-        }
     }
 
     /// The whole ladder, so a three-day-old pack does not read as
     /// "cached (4320 min ago)" — a number nobody parses at a festival.
     func testCachedAgeReadsInUnitsAPersonCanUse() {
-        XCTAssertEqual(FestpackSourceState.cached(ageSeconds: 30).statusText, "cached (just now)")
-        XCTAssertEqual(FestpackSourceState.cached(ageSeconds: 600).statusText, "cached (10 min ago)")
-        XCTAssertEqual(FestpackSourceState.cached(ageSeconds: 3600 * 5).statusText, "cached (5 hr ago)")
-        XCTAssertEqual(FestpackSourceState.cached(ageSeconds: 3600 * 24 * 3).statusText, "cached (3 days ago)")
+        XCTAssertEqual(FestpackSourceState.cached(ageSeconds: 30).statusText, "cached just now")
+        XCTAssertEqual(FestpackSourceState.cached(ageSeconds: 600).statusText, "cached 10 min ago")
+        XCTAssertEqual(FestpackSourceState.cached(ageSeconds: 3600 * 5).statusText, "cached 5 h ago")
+        XCTAssertEqual(FestpackSourceState.cached(ageSeconds: 3600 * 24 * 3).statusText, "cached 3 d ago")
+    }
+
+    func testFetchedAgeReadsTheSameLadder() {
+        XCTAssertEqual(FestpackSourceState.fetched(ageSeconds: 3600 * 2).statusText, "fetched 2 h ago")
     }
 
     func testTheOtherStatesAreUnchanged() {
         XCTAssertEqual(FestpackSourceState.none.statusText, "no pack")
         XCTAssertEqual(FestpackSourceState.bundled.statusText, "bundled copy")
-        XCTAssertEqual(FestpackSourceState.fresh.statusText, "fresh")
+    }
+
+    func testAFailedRefreshIsNamedHonestlyAlongsideWhatIsStillShowing() {
+        let state = FestpackSourceState(source: .cached, savedAt: nil, ageSeconds: 3600 * 6, lastAttempt: Date(), lastError: "offline")
+        XCTAssertEqual(state.statusText, "refresh failed: offline · using cache from 6 h ago")
     }
 }

@@ -1,0 +1,16 @@
+{
+  "schema": "fest-almanac-index/1",
+  "generated": "2026-09-13T00:00:00Z",
+  "packs": [
+    {
+      "slug": "lost-lands",
+      "year": 2026,
+      "name": "Lost Lands",
+      "start": "2026-09-18",
+      "end": "2026-09-20",
+      "timezone": "America/New_York",
+      "path": "packs/lost-lands/2026/festpack.json",
+      "updated": "2026-09-13"
+    }
+  ]
+}

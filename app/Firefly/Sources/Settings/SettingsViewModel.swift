@@ -104,14 +104,36 @@ final class SettingsViewModel {
     /// same reason: every pre-finding-3 test call site that never
     /// mentioned location gets the honest "permanently unavailable"
     /// double, never a real `CLLocationManager` it didn't ask for.
+    /// "app: automatic almanac refresh + festival picker" (owner ask
+    /// #2) — the Settings "Festival data" row's picker sub-view-model.
+    /// Held here, not as `SettingsScreen`'s own `@State`, so a
+    /// `SettingsViewModel`-level test can assert the whole wiring
+    /// (store + lineup + index provider all reaching the SAME picker)
+    /// without standing up a view at all — see `FireflyAppTests`.
+    let festivalPicker: FestivalPickerViewModel
+
+    /// `lineup`/`indexProvider` are defaulted so every pre-existing call
+    /// site (this initializer predates the festival picker) keeps
+    /// compiling: a throwaway `LineupViewModel` over `DemoFestpackProvider`
+    /// /`InMemoryPicksStore` costs nothing and is never actually shown
+    /// unless a test reaches into `festivalPicker` on purpose — the
+    /// SAME "harmless until asked for" convention `client:`'s own
+    /// `StubMeshtasticClient()` default already follows on this
+    /// initializer. The real composition root (`makeObserving`, below)
+    /// always passes the process's ONE shared `LineupViewModel`
+    /// instead, so Settings' picker and the Lineup tab's own refresh
+    /// state can never show two different answers.
     init(store: any FireflyExtraSettingsStoring, channelImport: ChannelImportViewModel,
          client: any MeshtasticClientProtocol = StubMeshtasticClient(), clearHistory: @escaping () -> Void = {},
-         location: any LocationProviding = UnavailableLocationProvider()) {
+         location: any LocationProviding = UnavailableLocationProvider(),
+         lineup: LineupViewModel = LineupViewModel(festpackProvider: DemoFestpackProvider(), picksStore: InMemoryPicksStore()),
+         indexProvider: any AlmanacIndexProviding = AlmanacIndexProvider()) {
         self.store = store
         self.channelImport = channelImport
         self.client = client
         self.clearHistory = clearHistory
         self.location = location
+        self.festivalPicker = FestivalPickerViewModel(indexProvider: indexProvider, settings: store, lineup: lineup)
         nodeLongName = store.nodeLongNamePreference ?? ""
         nodeShortName = store.nodeShortNamePreference ?? ""
         shareGPSWithNode = store.bool(.locationSharingEnabled)
@@ -151,9 +173,12 @@ final class SettingsViewModel {
     static func makeObserving(store: any FireflyExtraSettingsStoring, channelImport: ChannelImportViewModel,
                                client: any MeshtasticClientProtocol,
                                clearHistory: @escaping () -> Void = {},
-                               location: any LocationProviding = UnavailableLocationProvider()) -> SettingsViewModel {
+                               location: any LocationProviding = UnavailableLocationProvider(),
+                               lineup: LineupViewModel = LineupViewModel(festpackProvider: DemoFestpackProvider(), picksStore: InMemoryPicksStore()),
+                               indexProvider: any AlmanacIndexProviding = AlmanacIndexProvider()) -> SettingsViewModel {
         let model = SettingsViewModel(store: store, channelImport: channelImport, client: client,
-                                       clearHistory: clearHistory, location: location)
+                                       clearHistory: clearHistory, location: location,
+                                       lineup: lineup, indexProvider: indexProvider)
         model.observe()
         return model
     }
@@ -234,21 +259,34 @@ final class SettingsViewModel {
     /// swallowing the edit. `AlmanacFestpackProvider.sourceURL()` re-checks
     /// the same scheme on read, as a last line of defense for a value that
     /// reached the store some other way (e.g. a synced/corrupted default).
+    /// Validation itself lives in `FestpackSourceURLValidator` (FireflyModel)
+    /// — the SAME rule `FestivalPickerViewModel.select(_:)` applies to a
+    /// picker-built URL, so a manual edit and a picker selection can never
+    /// disagree about what a "valid" festpack URL looks like.
     private(set) var festpackSourceURLError: String?
 
+    /// "app: automatic almanac refresh + festival picker" — every manual
+    /// edit CLEARS `SettingsKey.festivalSelectedSHA256`: a hand-typed URL
+    /// is not guaranteed to match whatever checksum the last picker
+    /// selection carried, and verifying a fetched pack against a stale,
+    /// unrelated checksum would turn a perfectly good manual override
+    /// into a permanent "checksum mismatch" failure. `festivalSelectedSlug`
+    /// /`Year` (the cache/picks namespace) are left untouched — a manual
+    /// URL override does not, on its own, mean the user picked a
+    /// DIFFERENT festival, only a different mirror/URL for the same one.
     func setFestpackSourceURLOverride(_ value: String?) {
-        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let trimmed, !trimmed.isEmpty else {
+        switch FestpackSourceURLValidator.validate(value) {
+        case .clear:
             festpackSourceURLError = nil
             store.setString(nil, .festpackSourceURLOverride)
-            return
+            store.setString(nil, .festivalSelectedSHA256)
+        case .use(let normalized):
+            festpackSourceURLError = nil
+            store.setString(normalized, .festpackSourceURLOverride)
+            store.setString(nil, .festivalSelectedSHA256)
+        case .reject(let message):
+            festpackSourceURLError = message
         }
-        guard let url = URL(string: trimmed), url.scheme?.lowercased() == "https" else {
-            festpackSourceURLError = "Festival data URL must start with https:// — keeping the previous value."
-            return
-        }
-        festpackSourceURLError = nil
-        store.setString(trimmed, .festpackSourceURLOverride)
     }
 
     func setShareGPSWithNode(_ value: Bool) {

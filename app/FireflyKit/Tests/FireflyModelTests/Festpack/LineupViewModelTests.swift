@@ -45,6 +45,7 @@ final class LineupViewModelTests: XCTestCase {
             }
         }
         func refresh() async {}
+        func refreshIfNeeded() async {}
     }
 
     /// Never a fixed sleep or a fixed-iteration poll budget (the house

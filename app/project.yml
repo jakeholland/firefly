@@ -98,6 +98,14 @@ targets:
         group: Firefly/Resources/Festpacks
       - path: ../firmware/assets/field/lost-lands-2026.festpack.json
         group: Firefly/Resources/Festpacks
+      # "app: automatic almanac refresh + festival picker" —
+      # `AlmanacIndexProvider`'s bundled fallback index (that type's own
+      # header comment): so the Settings festival picker is never empty
+      # offline, even before fest-almanac itself publishes a live
+      # `packs/index.json`. Same `group:`/no-copy convention as the two
+      # festpacks above.
+      - path: ../firmware/assets/field/fest-almanac-index.json
+        group: Firefly/Resources/Festpacks
     dependencies:
       - package: FireflyKit
         product: FireflyCore

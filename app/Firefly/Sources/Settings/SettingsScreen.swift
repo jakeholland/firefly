@@ -343,6 +343,11 @@ struct SettingsScreen: View {
             Text(festivalDataStatusText)
                 .font(.footnote)
                 .foregroundStyle(Color.ffMuted)
+            festivalPickerList
+            Text("Advanced")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Color.ffMuted)
+                .padding(.top, 4)
             LabeledField(label: "Pack URL (blank = fest-almanac default)") {
                 TextField(AlmanacFestpackProvider.defaultURL.absoluteString, text: $festpackURLDraft)
                     .textFieldStyle(.roundedBorder)
@@ -375,6 +380,54 @@ struct SettingsScreen: View {
         let sourceText = lineup.sourceState.statusText
         guard let updated = lineup.festpack?.meta.updated else { return sourceText }
         return "pack updated \(updated) · from fest-almanac · \(sourceText)"
+    }
+
+    /// "app: automatic almanac refresh + festival picker" (owner ask
+    /// #2) — one row per festival `model.festivalPicker` knows about,
+    /// sorted by start date (that view model's own `load()` doc
+    /// comment), current one marked, the selected one checked. Loaded
+    /// on first appear so opening Settings never shows a stale list
+    /// from whenever the app last happened to fetch the index.
+    private var festivalPickerList: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(model.festivalPicker.rows) { row in
+                Button {
+                    Task { await model.festivalPicker.select(row.id) }
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("\(row.name) \(String(row.year))")
+                                .font(.footnote.weight(row.isSelected ? .semibold : .regular))
+                                .foregroundStyle(Color.ffInk)
+                            if row.isCurrent {
+                                Text("HAPPENING NOW")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(Color.ffAmber)
+                            }
+                        }
+                        Spacer()
+                        if row.isSelected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(Color.ffAmber)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .frame(minHeight: 36)
+            }
+            if model.festivalPicker.isLoading, model.festivalPicker.rows.isEmpty {
+                Text("Loading festivals…")
+                    .font(.caption2)
+                    .foregroundStyle(Color.ffMuted)
+            }
+            if let error = model.festivalPicker.loadError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(Color.ffAlert)
+            }
+        }
+        .task { await model.festivalPicker.load() }
     }
 
     // MARK: - Crew (M2)

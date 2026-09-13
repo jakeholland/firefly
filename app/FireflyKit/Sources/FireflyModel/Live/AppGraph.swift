@@ -209,10 +209,23 @@ public final class AppGraph {
         self.packetSender = MeshFireflyPacketSender(client: dependencies.client)
         self.flareTakeover = FlareTakeoverViewModel(crew: self.core.crew)
         self.crewPairing = CrewPairingController(crew: core.crew, store: dependencies.crewPairingStore)
-        self.festpack = dependencies.client is DemoMeshtasticClient
+        let isDemo = dependencies.client is DemoMeshtasticClient
+        self.festpack = isDemo
             ? DemoFestpackProvider()
             : AlmanacFestpackProvider(settings: dependencies.store)
-        self.picks = PicksStore(store: dependencies.store)
+        // "app: automatic almanac refresh + festival picker" — demo
+        // mode's picks live under their own fixed namespace (Firefly
+        // Fields is never selectable through the real picker, and
+        // `dependencies.store` is a fresh, in-memory store per demo
+        // launch anyway — see `PicksStore`'s own doc comment for why a
+        // dynamic namespace closure exists at all); every other
+        // composition (`.stub()` included, same reasoning `festpack`
+        // above already states) resolves the namespace from settings on
+        // every read, so a Settings festival-picker selection made
+        // mid-session is picked up immediately.
+        self.picks = isDemo
+            ? PicksStore(store: dependencies.store, namespace: { "firefly-fields-2026" })
+            : PicksStore(store: dependencies.store, namespace: { [store = dependencies.store] in store.festivalNamespace() })
         let client = dependencies.client
         self.uplink = PhoneGPSUplink(
             location: dependencies.location,
@@ -324,7 +337,26 @@ public final class AppGraph {
             Self.log("start(): considering launch auto-connect — lastPeripheralID=\(remembered ?? "nil")")
             autoConnectToLastKnownPeripheral()
         }
+        // "app: automatic almanac refresh" (owner ask #1, 2026-09-13) —
+        // covers genuine launch AND a restart after `stop()` (the
+        // `backgroundConnectEnabled == false` case); the foreground
+        // resume that does NOT restart the graph is covered separately
+        // by `handleScenePhaseChange(.foreground)`'s own call, since
+        // this `start()` body would not even run for it.
+        triggerFestpackAutoRefresh()
         Self.log("start() completed — every subscription is live")
+    }
+
+    /// Fires `festpack.refreshIfNeeded()` as its own `Task`, never
+    /// awaited inline — matching `autoConnectToLastKnownPeripheral()`'s
+    /// own reasoning just above: a slow or absent network must not hold
+    /// up `start()`'s own completion (the tick loop, the private-packet
+    /// reader), and `refreshIfNeeded()`'s own throttle/staleness policy
+    /// already makes most calls a same-actor no-op.
+    private func triggerFestpackAutoRefresh() {
+        Task { [festpack] in
+            await festpack.refreshIfNeeded()
+        }
     }
 
     /// Same discipline as `BLETransport.log(_:)`/`MeshtasticClient.log(_:)`:
@@ -437,6 +469,17 @@ public final class AppGraph {
             // undo "off means off"; the user taps CONNECT again, same
             // as M1.
             await start()
+            // "app: automatic almanac refresh" (owner ask #1) — called
+            // UNCONDITIONALLY, not folded into `start()`'s own body:
+            // when `backgroundConnectEnabled` is ON (the common case),
+            // `stop()` never ran on background, so `start()`'s guard
+            // makes the call just above a no-op on every foreground
+            // resume — exactly the resumes this feature most needs to
+            // catch. `refreshIfNeeded()` carries its own 6-hour/
+            // 15-minute policy, so firing it on every foreground is
+            // correct: most calls simply see a fresh-enough cache and
+            // do nothing.
+            triggerFestpackAutoRefresh()
         }
     }
 

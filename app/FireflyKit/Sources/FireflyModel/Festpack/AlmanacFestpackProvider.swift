@@ -6,17 +6,29 @@
 //
 //  Fallback order, honestly narrated by `sourceState()`:
 //    1. Disk cache (Application Support), loaded FIRST, synchronously
-//       relative to `refresh()`'s caller — the app never blocks its
-//       first frame on the network.
-//    2. If no cache: the bundled copy (`firmware/assets/field/
-//       lost-lands-2026.festpack.json`), labelled "bundled copy".
-//    3. Either way, a background fetch attempt follows. Success updates
-//       the cache and `current()`/`sourceState()` to `.fresh`. ANY
-//       failure — offline, HTTP error, or `fp_parse` rejecting the
-//       response — leaves whatever pack was already showing untouched.
-//       A pack that fails to parse is NEVER shown, and NEVER written to
-//       the cache (a corrupt fetch must not evict a good cached one).
+//       relative to `refresh()`/`refreshIfNeeded()`'s caller — the app
+//       never blocks its first frame on the network. Keyed per festival
+//       (`SettingsStoring.festivalNamespace()`, "<slug>-<year>") so
+//       switching the Settings festival picker back to a previously
+//       loaded festival is instant — see `FestpackDiskCache`'s own
+//       header.
+//    2. If no cache: the bundled copy — ONLY for the built-in default
+//       festival (Lost Lands 2026, `firmware/assets/field/
+//       lost-lands-2026.festpack.json`); no other festival ships an
+//       offline fallback, so this step is a no-op for anything else,
+//       labelled "bundled copy" only when it actually applies.
+//    3. Either way, a fetch attempt follows: unconditionally for
+//       `refresh()` (the manual REFRESH button and pull-to-refresh),
+//       or subject to the auto-refresh policy for `refreshIfNeeded()`
+//       (`AppGraph.start()`/foreground — see that method's own doc
+//       comment for the exact thresholds). Success updates the cache
+//       and `current()`/`sourceState()` to `.fetched`. ANY failure —
+//       offline, HTTP error, a checksum mismatch, or `fp_parse`
+//       rejecting the response — leaves whatever pack was already
+//       showing untouched, and is recorded honestly in `sourceState()
+//       .lastError` rather than swallowed.
 //
+import CryptoKit
 import FireflyMesh
 import Foundation
 
@@ -55,9 +67,21 @@ public struct URLSessionFestpackFetcher: FestpackHTTPFetching {
 
 public actor AlmanacFestpackProvider: FestpackProviding {
     /// The owner-specified fest-almanac source: Lost Lands 2026, schema
-    /// v0.1.
+    /// v0.1. Also the built-in default for `SettingsKey
+    /// .festivalSelectedSlug`/`.festivalSelectedYear` (unset = this
+    /// festival — `SettingsStoring.festivalNamespace()`).
     public static let defaultURL = URL(
         string: "https://raw.githubusercontent.com/jakeholland/fest-almanac/main/packs/lost-lands/2026/festpack.json")!
+
+    /// "app: automatic almanac refresh" (owner ask #1, 2026-09-13):
+    /// `refreshIfNeeded()` attempts a network fetch when the showing
+    /// pack is missing or at least this old.
+    public static let autoRefreshStaleAfter: TimeInterval = 6 * 60 * 60
+    /// Never more than one attempt per this interval, regardless of
+    /// staleness — a flapping connection (airplane mode toggled,
+    /// elevator Wi-Fi) must not turn every foreground resume into a
+    /// fetch attempt.
+    public static let autoRefreshMinInterval: TimeInterval = 15 * 60
 
     /// `nonisolated`: `CurrentValueEventHub` is its own thread-safe,
     /// `Sendable` type (a lock-guarded class — see its own doc comment),
@@ -66,7 +90,22 @@ public actor AlmanacFestpackProvider: FestpackProviding {
     /// requirement, without needing actor isolation on this property.
     private nonisolated let hub = CurrentValueEventHub<Festpack>()
     private var pack: Festpack?
-    private var state: FestpackSourceState = .none
+    /// Raw provenance fields — `sourceState()` composes these, PLUS a
+    /// freshly measured `ageSeconds` (never baked in at write time),
+    /// into the struct callers actually read. See `FestpackSourceState`
+    /// 's own doc comment for why each field exists.
+    private var currentSource: FestpackSourceState.Source = .none
+    private var currentSavedAt: Date?
+    private var lastAttemptAt: Date?
+    private var lastErrorMessage: String?
+    /// The festival namespace (`SettingsStoring.festivalNamespace()`)
+    /// this provider was last operating against — compared on every
+    /// `refresh()`/`refreshIfNeeded()` call so a festival switch made
+    /// through the Settings picker (which only writes settings; it does
+    /// not reach into this actor directly) is picked up the next time
+    /// either method runs, the same way `sourceURL()` already re-reads
+    /// settings on every call rather than capturing it once at `init`.
+    private var lastFestivalKey: String?
     private let settings: any SettingsStoring
     private let fetcher: any FestpackHTTPFetching
     private let cache: FestpackDiskCache
@@ -91,9 +130,10 @@ public actor AlmanacFestpackProvider: FestpackProviding {
     /// feeds the whole cache-then-parse pipeline, so a non-https scheme
     /// (plaintext `http://`, `file://`, or anything else) is rejected
     /// exactly the same way an unparseable string already is, even
-    /// though `SettingsViewModel.setFestpackSourceURLOverride` should
-    /// never let one reach the store in the first place — this is the
-    /// last line of defense against a synced/corrupted settings value.
+    /// though `FestpackSourceURLValidator`/`SettingsViewModel`/
+    /// `FestivalPickerViewModel` should never let one reach the store in
+    /// the first place — this is the last line of defense against a
+    /// synced/corrupted settings value.
     public func sourceURL() -> URL {
         guard let raw = settings.string(.festpackSourceURLOverride),
               let url = URL(string: raw), url.scheme?.lowercased() == "https" else {
@@ -102,8 +142,28 @@ public actor AlmanacFestpackProvider: FestpackProviding {
         return url
     }
 
+    /// The festival namespace this provider is currently pointed at —
+    /// `SettingsStoring.festivalNamespace()`, "<slug>-<year>", also the
+    /// disk-cache key and the bundled-resource base name (see
+    /// `loadFromCacheOrBundle()`).
+    private func festivalKey() -> String { settings.festivalNamespace() }
+
+    /// The Settings festival picker's expected checksum for the
+    /// CURRENTLY selected festival, if the almanac index carried one —
+    /// `SettingsKey.festivalSelectedSHA256`. `nil` whenever there is
+    /// nothing to verify against (no festival ever picked, or the index
+    /// entry had no `sha256`, or the field was hand-edited via the
+    /// manual "Pack URL" override — see `SettingsViewModel
+    /// .setFestpackSourceURLOverride`'s own doc comment on why a manual
+    /// edit clears this).
+    private func expectedSHA256() -> String? {
+        settings.string(.festivalSelectedSHA256)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
     /// `nil` when the age cannot be known — see
-    /// `FestpackSourceState.cached`'s own doc comment. A NEGATIVE
+    /// `FestpackSourceState.ageSeconds`'s own doc comment. A NEGATIVE
     /// interval is not clamped to zero: the old `max(0, …)` turned "this
     /// phone's clock moved backwards since the cache was written" into
     /// "cached (just now)", presenting a pack of unknown vintage as
@@ -116,52 +176,174 @@ public actor AlmanacFestpackProvider: FestpackProviding {
         return age
     }
 
+    /// A short, honest description of a fetch failure — "offline" for
+    /// the connectivity-shaped `URLError`s, "http NNN" for the
+    /// non-2xx/304 statuses `URLSessionFestpackFetcher` re-throws as a
+    /// `URLError` carrying the HTTP status as its raw code (that type's
+    /// own `fetch(_:ifNoneMatch:)` doc comment), and a generic fallback
+    /// for anything else. Never a raw `Error.localizedDescription` dump
+    /// — this string is read by a person at a festival, not a debugger.
+    static func describeFetchFailure(_ error: Error) -> String {
+        guard let urlError = error as? URLError else { return "network error" }
+        let offlineCodes: Set<Int> = [
+            URLError.notConnectedToInternet.rawValue,
+            URLError.networkConnectionLost.rawValue,
+            URLError.timedOut.rawValue,
+            URLError.cannotConnectToHost.rawValue,
+            URLError.cannotFindHost.rawValue,
+            URLError.dnsLookupFailed.rawValue,
+            URLError.internationalRoamingOff.rawValue,
+            URLError.dataNotAllowed.rawValue,
+        ]
+        if offlineCodes.contains(urlError.code.rawValue) { return "offline" }
+        if (100...599).contains(urlError.code.rawValue) { return "http \(urlError.code.rawValue)" }
+        return "network error"
+    }
+
+    static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     public func current() -> Festpack? { pack }
-    public func sourceState() -> FestpackSourceState { state }
     public nonisolated func festpackUpdates() -> AsyncStream<Festpack> { hub.subscribe() }
 
+    public func sourceState() -> FestpackSourceState {
+        FestpackSourceState(source: currentSource,
+                             savedAt: currentSavedAt,
+                             ageSeconds: Self.cacheAge(savedAt: currentSavedAt, now: now()),
+                             lastAttempt: lastAttemptAt,
+                             lastError: lastErrorMessage)
+    }
+
     /// First call: cache-first (falling back to the bundled copy if
-    /// there is no cache), then a background fetch attempt. Every later
-    /// call is just the fetch attempt again — the same one Settings'
-    /// "refresh" action triggers.
+    /// there is no cache), then an UNCONDITIONAL background fetch
+    /// attempt. Every later call is just the fetch attempt again — the
+    /// same one Settings' "REFRESH" button and Lineup's pull-to-refresh
+    /// trigger. Never throttled — see `refreshIfNeeded()` for the
+    /// throttled, automatic counterpart.
     public func refresh() async {
+        reloadIfFestivalChanged()
         if pack == nil {
             loadFromCacheOrBundle()
         }
         await fetchAndPublish()
     }
 
+    /// "app: automatic almanac refresh" (owner ask #1) — what
+    /// `AppGraph.start()`/`handleScenePhaseChange(.foreground)` call.
+    /// Loads cache/bundle first exactly like `refresh()` when nothing
+    /// is loaded yet, but only attempts the network when the showing
+    /// pack is missing/unknown-age or older than
+    /// `autoRefreshStaleAfter`, AND at least `autoRefreshMinInterval`
+    /// has passed since the last attempt (whether that attempt
+    /// succeeded, 304'd, or failed).
+    public func refreshIfNeeded() async {
+        reloadIfFestivalChanged()
+        if pack == nil {
+            loadFromCacheOrBundle()
+        }
+        guard shouldAttemptAutoRefresh() else { return }
+        await fetchAndPublish()
+    }
+
+    private func shouldAttemptAutoRefresh() -> Bool {
+        if let lastAttemptAt, now().timeIntervalSince(lastAttemptAt) < Self.autoRefreshMinInterval {
+            return false
+        }
+        guard let age = Self.cacheAge(savedAt: currentSavedAt, now: now()) else { return true }
+        return age > Self.autoRefreshStaleAfter
+    }
+
+    /// A Settings festival-picker selection only ever writes settings
+    /// (`FestivalPickerViewModel.select(_:)`) — it has no reference to
+    /// this actor to reset directly. So both `refresh()` and
+    /// `refreshIfNeeded()` re-read `festivalKey()` on every call
+    /// (`sourceURL()`'s own existing convention) and, if it changed
+    /// since the last operation, drop the in-memory pack/state and let
+    /// `loadFromCacheOrBundle()` reload from THAT festival's own cache —
+    /// instant if it was ever loaded before this process launched, per
+    /// `FestpackDiskCache`'s own per-key header comment.
+    private func reloadIfFestivalChanged() {
+        let key = festivalKey()
+        guard key != lastFestivalKey else { return }
+        lastFestivalKey = key
+        pack = nil
+        currentSource = .none
+        currentSavedAt = nil
+        lastAttemptAt = nil
+        lastErrorMessage = nil
+    }
+
     private func loadFromCacheOrBundle() {
-        if let cached = cache.load(), case .success(let parsed) = FestpackParser.parse(cached.json) {
+        let key = festivalKey()
+        if let cached = cache.load(key: key), case .success(let parsed) = FestpackParser.parse(cached.json) {
             pack = parsed
-            state = .cached(ageSeconds: Self.cacheAge(savedAt: cached.savedAt, now: now()))
+            currentSource = .cached
+            currentSavedAt = cached.savedAt
             hub.yield(parsed)
             return
         }
-        guard let bundled = bundleLoader.festpackData(forResource: "lost-lands-2026", extension: "festpack.json"),
+        // Only the built-in default festival ships an offline fallback
+        // (the bundled resource is literally named after it) — any
+        // other festival simply has nothing to show until a fetch
+        // succeeds, which `loadFromCacheOrBundle()` leaves as the
+        // honest `.none` state rather than inventing a bundled copy
+        // that does not exist.
+        guard let bundled = bundleLoader.festpackData(forResource: key, extension: "festpack.json"),
               case .success(let parsed) = FestpackParser.parse(bundled) else { return }
         pack = parsed
-        state = .bundled
+        currentSource = .bundled
+        currentSavedAt = nil
         hub.yield(parsed)
     }
 
     private func fetchAndPublish() async {
-        let cachedETag = cache.load()?.etag
+        let key = festivalKey()
+        lastAttemptAt = now()
+        let cachedETag = cache.load(key: key)?.etag
         do {
             guard let response = try await fetcher.fetch(sourceURL(), ifNoneMatch: cachedETag) else {
-                return // 304 Not Modified: the cache (and whatever it seeded) is already current
+                // 304 Not Modified: the network just confirmed this
+                // exact pack is still current. Bump the disk sidecar
+                // (not the bytes) so the freshness clock resets — an
+                // hour-old pack the server just re-validated is not
+                // honestly "an hour old" any more, it is confirmed
+                // current as of right now.
+                lastErrorMessage = nil
+                if let entry = cache.load(key: key) {
+                    cache.touch(etag: entry.etag, savedAt: now(), key: key)
+                    currentSource = .fetched
+                    currentSavedAt = now()
+                }
+                return
             }
             guard case .success(let parsed) = FestpackParser.parse(response.body) else {
+                lastErrorMessage = "malformed pack"
                 return // never show, and never cache, a pack that failed to parse
             }
-            cache.save(json: response.body, etag: response.etag, savedAt: now())
+            if let expected = expectedSHA256(), !expected.isEmpty {
+                let actual = Self.sha256Hex(response.body)
+                guard actual == expected else {
+                    // "verify sha256 of a fetched pack against the index
+                    // when both are available (mismatch -> keep the old
+                    // pack, show the error honestly)" — owner ask #2.
+                    // Never cached, never parsed into `pack`, exactly
+                    // like a parse failure just above.
+                    lastErrorMessage = "checksum mismatch"
+                    return
+                }
+            }
+            cache.save(json: response.body, etag: response.etag, savedAt: now(), key: key)
             pack = parsed
-            state = .fresh
+            currentSource = .fetched
+            currentSavedAt = now()
+            lastErrorMessage = nil
             hub.yield(parsed)
         } catch {
             // Offline or an HTTP failure: keep whatever pack (cached or
             // bundled) is already showing — never clear it on a failed
-            // fetch.
+            // fetch. Recorded honestly rather than swallowed.
+            lastErrorMessage = Self.describeFetchFailure(error)
         }
     }
 }
