@@ -4,8 +4,16 @@
 //
 //  Bubbles oldest -> newest, a real-keyboard compose bar (no T9 — A01's
 //  "Scope cuts": "T9 (S08). Out, permanently. A phone has a keyboard."),
-//  quick-reply chips, FLARE send/receive, and the outbox: WAITING ->
-//  SENT -> DELIVERED / NO ACK, queued and flushed on reconnect.
+//  FLARE/RALLY send/receive, and the outbox: WAITING -> SENT ->
+//  DELIVERED / NO ACK, queued and flushed on reconnect.
+//
+//  Owner note (build 304): the "omw"/"here"/"wait"/"meet at…"
+//  quick-reply chips that used to live here (`QuickReply`,
+//  `quickReplies`, `tap(_:)`, `sendImmediate(text:)`) were removed —
+//  they were free-text canned phrases with no honesty content of their
+//  own to preserve. RALLY's real position-seeding/honesty logic
+//  (`sendRally(name:)` below) is untouched; only the chip that used to
+//  seed the compose bar with "Meet at " is gone.
 //
 //  The outbox queue itself is this app's own: `ff_shell.c` (the puck's
 //  `shell_send_or_queue_text` / bounded FIFO / `FF_SHELL_OUTBOX_CAP`,
@@ -19,22 +27,6 @@
 import FireflyMesh
 import Foundation
 import Observation
-
-/// A one-tap thread affordance. `Meet at…` seeds the compose bar instead
-/// of sending immediately: a real place picker (Rally/festpack) is out of
-/// scope for M1 (A01, "Scope cuts": "Map face (S09)... festpack (S05).
-/// Out of M1-M3"), so the honest one-tap affordance is "start the
-/// sentence for me," never a fabricated place.
-public struct QuickReply: Sendable, Equatable, Identifiable {
-    public var id: String { label }
-    public let label: String
-    public let seedsComposeText: Bool
-
-    public init(label: String, seedsComposeText: Bool) {
-        self.label = label
-        self.seedsComposeText = seedsComposeText
-    }
-}
 
 /// This seam's own node-address type — kept distinct from a bare
 /// `UInt32` only so a future real conformance's call site reads as "a
@@ -86,15 +78,15 @@ public extension FireflyPacketSending {
     }
 }
 
-/// A transient, non-queued failure surfaced by a quick-reply or FLARE
-/// tap. Unlike free-typed compose text, neither is ever queued into
-/// the bounded outbox (BLOCKING review item 3 — S24's 2026-09-07
-/// amendment: canned replies "still call send_text with no
-/// out_packet_id and no outbox tracking; a link-down tap on one still
-/// fails outright exactly as it did before this amendment... Flare/
-/// Rally sends are likewise unchanged... only FEED_TEXT sends... go
-/// through the outbox"). The view reads this, shows it, and it is
-/// cleared on the next attempt — never silently retried later.
+/// A transient, non-queued failure surfaced by a FLARE or RALLY tap.
+/// Unlike free-typed compose text, neither is ever queued into the
+/// bounded outbox (BLOCKING review item 3 — S24's 2026-09-07 amendment:
+/// canned replies "still call send_text with no out_packet_id and no
+/// outbox tracking; a link-down tap on one still fails outright exactly
+/// as it did before this amendment... Flare/Rally sends are likewise
+/// unchanged... only FEED_TEXT sends... go through the outbox"). The
+/// view reads this, shows it, and it is cleared on the next attempt —
+/// never silently retried later.
 public enum ImmediateSendFailure: Error, Sendable, Equatable {
     /// The link was down at the moment of the tap.
     case linkDown
@@ -166,20 +158,13 @@ public final class ThreadViewModel {
     public private(set) var isLinkReady = false
     /// How many of this thread's sends are sitting in the local outbox,
     /// waiting for the link to come back — the thread's own "N queued"
-    /// affordance. Free-text compose only: quick replies and FLARE
-    /// never contribute to this count (BLOCKING review item 3).
+    /// affordance. Free-text compose only: FLARE/RALLY never contribute
+    /// to this count (BLOCKING review item 3).
     public private(set) var queuedCount = 0
-    /// The view's transient, non-queued failure for a quick-reply or
-    /// FLARE tap — see `ImmediateSendFailure`'s own doc comment. Reset
-    /// to `nil` at the start of every quick-reply/FLARE attempt.
+    /// The view's transient, non-queued failure for a FLARE or RALLY
+    /// tap — see `ImmediateSendFailure`'s own doc comment. Reset to
+    /// `nil` at the start of every FLARE/RALLY attempt.
     public private(set) var immediateSendFailure: ImmediateSendFailure?
-
-    public static let quickReplies: [QuickReply] = [
-        QuickReply(label: "Omw", seedsComposeText: false),
-        QuickReply(label: "Here", seedsComposeText: false),
-        QuickReply(label: "Wait", seedsComposeText: false),
-        QuickReply(label: "Meet at…", seedsComposeText: true),
-    ]
 
     /// A01, "Routing ACK -> delivery state": "5 minutes elapsed with no
     /// routing packet" -> NO ACK, "derived at render time... not driven
@@ -358,20 +343,8 @@ public final class ThreadViewModel {
 
     // MARK: - Composing and sending
 
-    /// Omw/Here/Wait: fire-and-forget, exactly like FLARE — NEVER
-    /// enters the bounded outbox (BLOCKING review item 3). Sends
-    /// immediately when the link is up; when it is down the tap fails
-    /// visibly (`immediateSendFailure`), not queued for a later flush.
-    public func tap(_ reply: QuickReply) async {
-        if reply.seedsComposeText {
-            composeText = "Meet at "
-            return
-        }
-        await sendImmediate(text: reply.label)
-    }
-
     /// Free-text compose is the ONLY sender that uses the bounded
-    /// outbox — quick replies and FLARE deliberately do not (item 3).
+    /// outbox — FLARE/RALLY deliberately do not (item 3).
     public func sendCompose() async {
         let text = composeText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
@@ -382,9 +355,9 @@ public final class ThreadViewModel {
     /// FLARE send (`S04-firefly-protocol.md` type `0x02`, default
     /// 300 s) — goes ONLY through `FireflyPacketSending.sendFlare`,
     /// NEVER through `send(text:kind:)`/`client.sendText`
-    /// (BLOCKING review items 2 and 3). Fire-and-forget like the quick
-    /// replies: never enters the outbox, fails visibly when the link
-    /// is down or the seam is missing.
+    /// (BLOCKING review items 2 and 3). Fire-and-forget: never enters
+    /// the outbox, fails visibly when the link is down or the seam is
+    /// missing.
     public func sendFlare(durationSeconds: UInt16 = 300) async {
         immediateSendFailure = nil
         guard let flareSender else {
@@ -415,8 +388,7 @@ public final class ThreadViewModel {
     /// `name`, when supplied, is the place label (never a festpack
     /// landmark — this app has none, A01's own scope cut); when omitted
     /// the current `composeText` is used as the label (consumed and
-    /// cleared, mirroring the "Meet at…" quick reply's own text-entry
-    /// affordance), falling back to "MY SPOT" when both are empty
+    /// cleared afterward), falling back to "MY SPOT" when both are empty
     /// (`ff_rally.h`'s own `FF_RALLY_DEFAULT_NAME` — the honest fallback
     /// the puck uses when it has no better name either).
     public func sendRally(name providedName: String? = nil) async {
@@ -453,37 +425,6 @@ public final class ThreadViewModel {
             provider.push(sent, into: conversation)
             refresh()
         } catch {
-            immediateSendFailure = .transportError
-        }
-    }
-
-    /// The single non-outbox send path shared by quick replies (FLARE
-    /// has its own, above, since it uses a different seam entirely).
-    /// Pushes a local record only once the send has actually been
-    /// attempted — no phantom WAITING row sitting forever behind a
-    /// link that may never come back, since (unlike compose) this is
-    /// never going to be flushed later.
-    private func sendImmediate(text: String) async {
-        immediateSendFailure = nil
-        guard isLinkReady else {
-            immediateSendFailure = .linkDown
-            return
-        }
-        let dest = destination
-        let wantAck = (conversation != .crew)
-        let outboxID = outboxIDGenerator.next()
-        let now = Date()
-        let pending = FeedMessage(id: outboxID, kind: .text, direction: .out, text: text, timestamp: now,
-                                   destination: dest, deliveryState: .waiting, statusAt: now)
-        provider.push(pending, into: conversation)
-        refresh()
-        do {
-            let packetID = try await client.sendText(text, to: dest, wantAck: wantAck)
-            provider.markSent(outboxID: outboxID, packetID: packetID, at: Date())
-            refresh()
-        } catch {
-            provider.setStatus(outboxID: outboxID, state: .dropped, at: Date())
-            refresh()
             immediateSendFailure = .transportError
         }
     }
