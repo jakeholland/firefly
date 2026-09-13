@@ -37,4 +37,12 @@ public actor DemoFestpackProvider: FestpackProviding {
         pack = parsed
         hub.yield(parsed)
     }
+
+    /// Demo mode has no network source at all — identical to
+    /// `refresh()`, which is already idempotent once `pack` is loaded.
+    /// `AppGraph.start()`/foreground call this unconditionally
+    /// regardless of which `FestpackProviding` composition is live, so
+    /// this has to exist rather than being a "real providers only"
+    /// method.
+    public func refreshIfNeeded() async { await refresh() }
 }

@@ -9,6 +9,16 @@
 //  old cache differently; re-parsing on every load keeps that true
 //  instead of freezing today's decode into the cache format.
 //
+//  PER-PACK KEYING ("app: automatic almanac refresh + festival
+//  picker", owner ask #2): every call takes a `key` — the festival
+//  namespace (`SettingsStoring.festivalNamespace()`, "<slug>-<year>")
+//  — and reads/writes that pack's OWN pair of files. Switching the
+//  Settings festival picker back to a previously-selected festival is
+//  then "instant": its cache is still on disk under its own key, never
+//  overwritten by whichever OTHER festival was selected in between.
+//  `key` is sanitized to a filesystem-safe token so an almanac slug
+//  cannot smuggle a path separator into a cache filename.
+//
 import Foundation
 
 public struct FestpackCacheEntry: Sendable, Equatable {
@@ -23,7 +33,7 @@ public struct FestpackCacheEntry: Sendable, Equatable {
 }
 
 /// `@unchecked Sendable` justified the same way as `EventHub`
-/// (`EventHub.swift`'s own comment) — every access to the two files this
+/// (`EventHub.swift`'s own comment) — every access to the files this
 /// owns goes through `lock`.
 public final class FestpackDiskCache: @unchecked Sendable {
     private let directory: URL
@@ -43,31 +53,62 @@ public final class FestpackDiskCache: @unchecked Sendable {
         return base.appendingPathComponent("Festpack", isDirectory: true)
     }
 
-    private var jsonURL: URL { directory.appendingPathComponent("festpack-cache.json") }
-    private var metaURL: URL { directory.appendingPathComponent("festpack-cache-meta.json") }
+    /// Filesystem-safe form of a festival namespace key — letters,
+    /// digits, `-`/`_` pass through; anything else (a path separator
+    /// smuggled through a malformed almanac slug, say) becomes `_`,
+    /// same defensive posture `AlmanacFestpackProvider.sourceURL()`
+    /// already takes toward untrusted almanac-sourced strings.
+    private static func sanitize(_ key: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let cleaned = String(key.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
+        return cleaned.isEmpty ? "default" : cleaned
+    }
 
-    public func load() -> FestpackCacheEntry? {
+    private func jsonURL(key: String) -> URL {
+        directory.appendingPathComponent("festpack-cache-\(Self.sanitize(key)).json")
+    }
+    private func metaURL(key: String) -> URL {
+        directory.appendingPathComponent("festpack-cache-\(Self.sanitize(key))-meta.json")
+    }
+
+    public func load(key: String) -> FestpackCacheEntry? {
         lock.lock(); defer { lock.unlock() }
-        guard let json = try? Data(contentsOf: jsonURL) else { return nil }
-        let meta = (try? Data(contentsOf: metaURL)).flatMap { try? JSONDecoder().decode(CacheMeta.self, from: $0) }
+        guard let json = try? Data(contentsOf: jsonURL(key: key)) else { return nil }
+        let meta = (try? Data(contentsOf: metaURL(key: key))).flatMap { try? JSONDecoder().decode(CacheMeta.self, from: $0) }
         return FestpackCacheEntry(json: json, etag: meta?.etag, savedAt: meta?.savedAt)
     }
 
-    public func save(json: Data, etag: String?, savedAt: Date) {
+    public func save(json: Data, etag: String?, savedAt: Date, key: String) {
         lock.lock(); defer { lock.unlock() }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try? json.write(to: jsonURL, options: .atomic)
+        try? json.write(to: jsonURL(key: key), options: .atomic)
         if let data = try? JSONEncoder().encode(CacheMeta(etag: etag, savedAt: savedAt)) {
-            try? data.write(to: metaURL, options: .atomic)
+            try? data.write(to: metaURL(key: key), options: .atomic)
+        }
+    }
+
+    /// Rewrites only the metadata sidecar (`etag`/`savedAt`), leaving
+    /// the cached JSON bytes untouched — what a 304 Not Modified
+    /// response means: the network confirmed this pack is STILL
+    /// current as of right now, with nothing new to write. A no-op if
+    /// there is no cached JSON to own this metadata (should not happen
+    /// — a 304 implies an `If-None-Match` was sent, which implies a
+    /// cached etag existed — but defensive rather than fabricating a
+    /// JSON file that was never fetched).
+    public func touch(etag: String?, savedAt: Date, key: String) {
+        lock.lock(); defer { lock.unlock() }
+        guard FileManager.default.fileExists(atPath: jsonURL(key: key).path) else { return }
+        if let data = try? JSONEncoder().encode(CacheMeta(etag: etag, savedAt: savedAt)) {
+            try? data.write(to: metaURL(key: key), options: .atomic)
         }
     }
 
     /// Test-only teardown — production never deletes its own cache
     /// outside a fresh `refresh()` overwriting it.
-    public func clear() {
+    public func clear(key: String) {
         lock.lock(); defer { lock.unlock() }
-        try? FileManager.default.removeItem(at: jsonURL)
-        try? FileManager.default.removeItem(at: metaURL)
+        try? FileManager.default.removeItem(at: jsonURL(key: key))
+        try? FileManager.default.removeItem(at: metaURL(key: key))
     }
 
     private struct CacheMeta: Codable {

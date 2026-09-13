@@ -117,8 +117,28 @@ public final class LineupViewModel {
     }
 
     private func apply(_ pack: Festpack) async {
+        let isDifferentFestival = festpack.map { $0.name != pack.name || $0.year != pack.year } ?? true
         festpack = pack
         sourceState = await festpackProvider.sourceState()
+        // Review fix: picks are namespaced PER FESTIVAL in the store
+        // (`PicksStore`'s own header), but this view model cached
+        // `pickedSetIDs` at `init` and only ever re-read it after a
+        // local toggle/import — so after the Settings picker switched
+        // festivals the grid kept showing the PREVIOUS festival's
+        // picked set. Lost Lands -> Wakaan -> Lost Lands lost the Lost
+        // Lands stars until the next launch (and, where two packs coin
+        // the same set id, showed one festival's pick on the other's
+        // lineup — the exact cross-contamination the namespacing was
+        // added to stop). Re-read unconditionally (the store is the only truth, and
+        // reading it is a settings read, not I/O worth guarding).
+        pickedSetIDs = picksStore.pickedSetIDs()
+        if isDifferentFestival {
+            // Same reasoning for the day pill and the open detail
+            // sheet: a day-of-year and a set from the old pack mean
+            // nothing in the new one.
+            selectedNightDayOfYear = nil
+            selectedSet = nil
+        }
         let packNights = nights
         guard selectedNightDayOfYear == nil || !packNights.contains(selectedNightDayOfYear!) else { return }
         // The phone's wall clock only picks the selected night when it
@@ -149,6 +169,24 @@ public final class LineupViewModel {
         if let pack = await festpackProvider.current() {
             await apply(pack)
         } else {
+            // Review fix ("automatic almanac refresh + festival
+            // picker"): a provider that now has NO pack must clear this
+            // screen, not leave the previous festival's schedule on it.
+            // Before the Settings festival picker existed, `current()`
+            // going back to `nil` after it had once been non-nil was
+            // unreachable — a failed fetch always keeps the old pack.
+            // Switching the picker to a festival with no disk cache
+            // while offline reaches it: `sourceState` said "refresh
+            // failed: offline · no pack cached" while the grid, the
+            // now/next strip and `shareURL` all still rendered the
+            // OLD festival — a settimes link for Lost Lands under a
+            // Settings screen that says Wakaan. `selectedNightDayOfYear`
+            // /`selectedSet` go with it: both index into a pack that is
+            // no longer loaded.
+            festpack = nil
+            selectedNightDayOfYear = nil
+            selectedSet = nil
+            pickedSetIDs = picksStore.pickedSetIDs()
             sourceState = await festpackProvider.sourceState()
         }
         isRefreshing = false

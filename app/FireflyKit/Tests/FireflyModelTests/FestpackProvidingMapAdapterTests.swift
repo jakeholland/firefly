@@ -134,9 +134,10 @@ private actor StubFestpackProviding: FestpackProviding {
     private let pack: Festpack?
     init(pack: Festpack?) { self.pack = pack }
     func current() async -> Festpack? { pack }
-    func sourceState() async -> FestpackSourceState { pack == nil ? .none : .fresh }
+    func sourceState() async -> FestpackSourceState { pack == nil ? .none : .fetched() }
     nonisolated func festpackUpdates() -> AsyncStream<Festpack> {
         AsyncStream { $0.finish() }
     }
     func refresh() async {}
+    func refreshIfNeeded() async {}
 }

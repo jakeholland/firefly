@@ -48,8 +48,35 @@ public enum SettingsKey: String, Sendable, CaseIterable {
     /// persisted set, keyed by `PicksCodec.setID(for:in:)` rather than
     /// artist name (see that store's own doc comment for why a pick is
     /// per-SET). Same comma-joined/base64-per-token encoding as
-    /// `starredFestivalArtists` above.
+    /// `starredFestivalArtists` above; per-festival namespaced since
+    /// "app: automatic almanac refresh + festival picker" — see
+    /// `PicksStore`'s own header for the encoding and migration rule.
     case pickedFestivalSetIDs
+    // Appended for "app: automatic almanac refresh + festival picker"
+    // (owner ask #2, 2026-09-13) — three new cases, same append-only
+    // convention as `unitsPreference`/`festpackSourceURLOverride`
+    // above. Together they answer "which festival is selected", read
+    // by `festivalNamespace()` below and by `AlmanacFestpackProvider`
+    // (the per-pack disk-cache key, and the fetched-pack checksum).
+    /// The Settings festival picker's current selection — an
+    /// almanac-index `slug` (e.g. "lost-lands"). `nil` (never picked
+    /// yet) means the built-in default festival, exactly the same
+    /// "unset = default" convention `festpackSourceURLOverride` uses.
+    case festivalSelectedSlug
+    /// Paired with `festivalSelectedSlug`, stored as a decimal string
+    /// (`SettingsStoring` has no typed int accessor) — together they
+    /// form `festivalNamespace()`'s "<slug>-<year>".
+    case festivalSelectedYear
+    /// The almanac index entry's `sha256` for the selected festival, if
+    /// it published one — `AlmanacFestpackProvider` verifies a freshly
+    /// fetched pack's bytes against this when both are present, and a
+    /// mismatch is treated exactly like a parse failure (keep the old
+    /// pack, record the error honestly). Cleared whenever the "Pack
+    /// URL" field is hand-edited (`SettingsViewModel
+    /// .setFestpackSourceURLOverride`'s own doc comment) — a manually
+    /// typed URL is not guaranteed to match whatever checksum the last
+    /// picker selection carried.
+    case festivalSelectedSHA256
 }
 
 /// Small and typed rather than a raw `UserDefaults` pass-through, so a
@@ -236,5 +263,53 @@ extension SettingsStoring {
     /// site.
     public func resolvedImperial(locale: Locale = .current) -> Bool {
         unitsPreference().resolvedImperial(locale: locale)
+    }
+}
+
+// MARK: - Festival namespace ("app: automatic almanac refresh + festival
+// picker"; owner ask #2, 2026-09-13)
+//
+// Appended as its own contiguous hunk for the same reason "Units
+// preference" above is — shared infra several other slices of this
+// sprint also touch.
+
+extension SettingsStoring {
+    /// "<slug>-<year>" for whichever festival the Settings picker last
+    /// selected, or `PicksStore.legacyNamespace` ("lost-lands-2026")
+    /// when nothing has ever been picked — the SAME string the
+    /// built-in default festival's own slug/year would produce, so a
+    /// fresh install's cache/picks land in exactly the namespace a
+    /// user who later opens the picker and taps "Lost Lands 2026"
+    /// would land in too; there is no silent re-namespacing the first
+    /// time someone touches the picker. Read by `AlmanacFestpackProvider`
+    /// (the per-pack disk-cache key and bundled-resource name) and
+    /// `PicksStore` (per-festival pick namespacing) — the ONE place
+    /// this resolution happens, so the two can never disagree about
+    /// which festival is "current".
+    public func festivalNamespace() -> String {
+        guard let slug = string(.festivalSelectedSlug), !slug.isEmpty,
+              let yearString = string(.festivalSelectedYear), let year = Int(yearString) else {
+            return PicksStore.legacyNamespace
+        }
+        return Self.sanitizeNamespace("\(slug)-\(year)")
+    }
+
+    /// Review fix — this string is not just a label: it is a disk-cache
+    /// FILENAME component and a field inside `PicksStore`'s own
+    /// comma-joined, `"|"`-separated tokens, and the slug half of it is
+    /// authored by fest-almanac, not by this app. `FestpackDiskCache`
+    /// already sanitized on its side; `PicksStore` did not, so a slug
+    /// carrying a `","` or a `"|"` silently destroyed picks — measured:
+    /// slug "a,b" wrote the token `a,b-2026|<base64>`, which splits on
+    /// the comma and reads back as NO picks at all, every time, with no
+    /// error anywhere. Sanitizing here (the ONE place the namespace is
+    /// resolved, per this method's own doc comment) fixes both readers
+    /// at once and keeps them agreeing. Letters, digits, `-` and `_`
+    /// pass through unchanged, so every real slug — and the
+    /// `legacyNamespace` default — is untouched.
+    static func sanitizeNamespace(_ raw: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let cleaned = String(raw.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
+        return cleaned.isEmpty ? PicksStore.legacyNamespace : cleaned
     }
 }

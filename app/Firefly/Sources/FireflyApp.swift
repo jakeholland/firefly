@@ -127,11 +127,33 @@ struct FireflyApp: App {
         // .clearAll()`), never a second, independent path — Settings
         // owns the confirmation UI (`SettingsScreen.swift`), not a
         // second opinion about what "history" means.
+        // "app: automatic almanac refresh + festival picker" — built
+        // BEFORE `_settings` (moved up from its previous spot below
+        // `_radar`) so the ONE `LineupViewModel` instance this graph
+        // ever creates (`lineup`'s own doc comment on `SettingsScreen`:
+        // "shared with the Lineup destination... so the 'Festival data'
+        // row and the Lineup tab can never show two different sourceState
+        // /URL answers") can be handed to `SettingsViewModel.makeObserving`
+        // too — its own `festivalPicker` calls `lineup.refresh()` on a
+        // selection, which must land on the SAME view model the Lineup
+        // tab renders, never a second one racing it.
+        let lineupVM = graph.makeLineupViewModel()
+        _lineup = State(initialValue: lineupVM)
+        // `indexProvider:` — same `dependencies.client is DemoMeshtasticClient`
+        // downcast `AppGraph.init` already uses to pick `festpack`/`picks`
+        // (that file's own doc comment): demo mode's Settings picker must
+        // never depend on whatever fest-almanac happens to publish live
+        // that day — `DemoAlmanacIndexProvider`'s own header comment.
+        let indexProvider: any AlmanacIndexProviding = graph.dependencies.client is DemoMeshtasticClient
+            ? DemoAlmanacIndexProvider()
+            : AlmanacIndexProvider()
         _settings = State(initialValue: SettingsViewModel.makeObserving(store: graph.dependencies.store,
                                                                          channelImport: importVM,
                                                                          client: graph.dependencies.client,
                                                                          clearHistory: { graph.inboxProvider.clearAll() },
-                                                                         location: graph.dependencies.location))
+                                                                         location: graph.dependencies.location,
+                                                                         lineup: lineupVM,
+                                                                         indexProvider: indexProvider))
         let inboxVM = graph.makeInboxViewModel()
         _inbox = State(initialValue: inboxVM)
         #if os(iOS)
@@ -142,7 +164,6 @@ struct FireflyApp: App {
         #endif
         let radarVM = graph.makeRadarViewModel(haptics: haptics)
         _radar = State(initialValue: radarVM)
-        _lineup = State(initialValue: graph.makeLineupViewModel())
         _map = State(initialValue: graph.makeMapViewModel())
         // "app: five-tab bar per design" — read once, here, from the
         // same persisted state `BLETransport`'s own auto-reconnect

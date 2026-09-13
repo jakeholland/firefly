@@ -906,6 +906,190 @@ relaunch, `HistoryStore`'s own schema-versioning/migration machinery
 already generalizes to a second `@Model` type — this decision can be
 revisited without redesigning the persistence layer underneath it.
 
+## Festival data (festpack)
+
+Landed piecemeal across several PRs (`AlmanacFestpackProvider`,
+`FestpackDiskCache`, `FestpackParser`, the Lineup grid/picks rework) and
+never previously written up in this master spec — this section is that
+write-up, plus "app: automatic almanac refresh + festival picker"
+(owner asks, 2026-09-13): (1) pull from fest-almanac automatically, and
+(2) pick the festival from the app.
+
+### Fallback order and provenance
+
+`AlmanacFestpackProvider` (`FireflyKit/Sources/FireflyModel/Festpack/`)
+is the phone's one source of festival data — unlike the puck, which
+embeds a pack at build time, the phone fetches fest-almanac at runtime
+and caches it offline. Loading a pack always tries, in order:
+
+1. **Disk cache** (Application Support), per-FESTIVAL (see "Per-pack
+   cache and picks" below) — loaded synchronously, before any network
+   call, so the app never blocks its first frame.
+2. **Bundled fallback** — ONLY for the built-in default festival (Lost
+   Lands 2026, `firmware/assets/field/lost-lands-2026.festpack.json`).
+   No other festival ships an offline fallback; a freshly selected
+   festival with no cache yet has no pack until a fetch succeeds.
+3. **Network fetch**, ETag-conditional (`If-None-Match`), never
+   replacing a good pack on failure or a parse error.
+
+`FestpackSourceState` (`FestpackProviding.swift`) is the whole honest
+story: `source` (`.none`/`.bundled`/`.cached`/`.fetched`), `savedAt`,
+`ageSeconds` (measured fresh on every read, never baked in, and `nil`
+— never zero — when unknown: a missing cache sidecar, or a `savedAt` in
+the future from a phone-clock correction), `lastAttempt`, and
+`lastError` (a short, honest reason — "offline", "http 500", "checksum
+mismatch" — cleared the moment a later attempt succeeds). Settings'
+"Festival data" row and the Lineup header render the SAME
+`statusText`, e.g. "fetched 2 h ago", "cached (age unknown)", "bundled
+copy", or "refresh failed: offline · using cache from 6 h ago" — never
+a claim the app cannot back up.
+
+### Automatic refresh policy (owner ask #1)
+
+`refreshIfNeeded()` — called from `AppGraph.start()` (launch, and a
+restart after `stop()`) and unconditionally from
+`handleScenePhaseChange(.foreground)` (a foreground resume that does
+NOT restart the graph, the common case when "stay connected in
+background" is on, would otherwise never reach `start()`'s own body at
+all) — attempts a network fetch only when BOTH:
+
+- the current pack is missing, or its age is unknown, or it is older
+  than `AlmanacFestpackProvider.autoRefreshStaleAfter` (6 hours), AND
+- at least `autoRefreshMinInterval` (15 minutes) has passed since the
+  last attempt, success or failure.
+
+This is throttled and stale-tolerant on purpose — a flapping connection
+must not turn every foreground resume into a fetch, and going offline
+for the whole festival must never clear a good cached pack. The manual
+REFRESH button (Settings) and Lineup's pull-to-refresh call `refresh()`
+instead, which is UNCONDITIONAL (still ETag-conditional, never
+throttled) — a person who taps REFRESH expects an attempt, not a
+policy decision.
+
+### Festival picker (owner ask #2)
+
+`AlmanacIndexProvider` fetches fest-almanac's own index of every pack
+it publishes:
+
+```
+https://raw.githubusercontent.com/jakeholland/fest-almanac/main/packs/index.json
+```
+
+Schema (a concurrent fest-almanac PR adds this; this app is coded
+against the agreed shape ahead of that PR landing):
+
+```json
+{"schema": "fest-almanac-index/1", "generated": "<ISO8601>",
+ "packs": [{"slug", "year", "name", "start", "end", "timezone", "path",
+            "updated", "sha256"}, ...]}
+```
+
+Decoding walks the raw JSON object graph (not a single `Codable`
+array decode) so ONE malformed entry is skipped rather than failing the
+whole index. Until the almanac's index PR lands — and forever after,
+for anyone offline — `AlmanacIndexProvider` falls back to a bundled
+index (`firmware/assets/field/fest-almanac-index.json`) containing only
+Lost Lands 2026, so the picker is never empty.
+
+Settings → Festival Data gains a picker above the existing "Pack URL"
+field (which stays, relabelled "Advanced" — a manual override). Order
+(`FestivalPickerViewModel.ordered(_:now:)`): everything not yet over
+first — the one happening right now, then upcoming, soonest first —
+and already-finished festivals after that, most recent first. Past
+festivals are still listed (a finished festival's lineup and picks are
+real data, not something to hide); they are just never above the one
+the user is about to attend. The current festival is marked "HAPPENING
+NOW" and the selected one is checked.
+
+A festival's `start`/`end` in the index are normally bare calendar
+dates ("2026-09-18"). A bare `end` covers the WHOLE of that day, not
+midnight at its start — otherwise a festival stops being marked
+"HAPPENING NOW" for the entirety of its final day. A full ISO 8601
+timestamp is taken exactly as published. The index's `timezone` is a
+free-text display label only (the festpack itself is the authority on
+UTC offset), so the "happening now" window is UTC-based and may be off
+by a timezone's width at the very edges — honest imprecision in a
+marker, not a fabricated instant.
+
+Selecting a row (`FestivalPickerViewModel.select(_:)`):
+
+1. Writes `SettingsKey.festivalSelectedSlug`/`.festivalSelectedYear`
+   (together, `SettingsStoring.festivalNamespace()`'s "<slug>-<year>").
+2. Sets `.festpackSourceURLOverride` to
+   `https://raw.githubusercontent.com/jakeholland/fest-almanac/main/<path>`
+   — the SAME setting the manual field writes, through the SAME
+   `FestpackSourceURLValidator` (https-only).
+3. Records `.festivalSelectedSHA256` from the index entry, if it
+   published one.
+4. Triggers a real refresh through the shared `LineupViewModel` (never
+   a second, parallel refresh path).
+
+`AlmanacFestpackProvider.fetchAndPublish()` verifies a freshly fetched
+pack's SHA-256 against `.festivalSelectedSHA256` whenever both are
+present; a mismatch is treated exactly like a parse failure — the old
+pack is kept, `lastError` reads "checksum mismatch", and nothing bad is
+ever cached. A manual "Pack URL" edit clears the stored checksum (a
+hand-typed URL is not guaranteed to match whatever the last picker
+selection carried) but leaves the slug/year selection alone — an
+advanced URL override is a different mirror for the same festival, not
+necessarily a different one.
+
+### Per-pack cache and picks
+
+The namespace itself (`SettingsStoring.festivalNamespace()`) is
+sanitized at the ONE place it is resolved — letters, digits, `-` and
+`_` survive, anything else becomes `_`. The slug half of it is authored
+by fest-almanac, and the namespace is both a cache FILENAME component
+and a field inside `PicksStore`'s own delimited tokens, so an
+unsanitized slug carrying a `,` or `|` would silently destroy picks
+(measured, before the fix: a pick written under slug "a,b" read back as
+no picks at all, with no error anywhere). Every real slug — and the
+`lost-lands-2026` default — is unchanged by the sanitization.
+
+`FestpackDiskCache` is keyed by festival namespace (`load(key:)`/
+`save(…key:)`/`touch(…key:)` — the sanitized "<slug>-<year>"), so
+switching the picker back to a previously-loaded festival is instant:
+its cache is still on disk under its own key, never overwritten by
+whatever festival was selected in between. `PicksStore` namespaces the
+same way, but through a single existing settings key rather than a new
+one per festival: each persisted pick is a token
+`"<namespace>|<base64(setID)>"`, so `SettingsKey.pickedFestivalSetIDs`
+still holds every pick ever made, across every festival, while
+`pickedSetIDs()`/`setPicked(_:setID:)` filter to the current namespace.
+A pick made under Lost Lands 2026 never shows up under a different
+festival, and vice versa.
+
+**Switching is a real reset, on every surface.** `AlmanacFestpackProvider`
+re-reads the namespace on every `refresh()`/`refreshIfNeeded()`, drops
+the in-memory pack when it changed, AND clears its update stream's
+replay value — so a subscriber arriving after the switch is never
+handed the previous festival's pack while `current()` honestly reports
+`nil`. `LineupViewModel` mirrors that: when the provider has no pack it
+clears `festpack`, the selected night and any open set sheet rather
+than leaving the old festival's schedule on screen, and it re-reads
+`pickedSetIDs` from the store on every pack change so each festival
+shows its OWN picks. Without both halves, switching to a festival with
+no cache while offline left a full Lost Lands grid — and a
+`settimes.kandiwooks.com/lost-lands/...` share link — under a Settings
+screen saying a different festival was selected and no pack was cached.
+
+**Tests never fetch.** `.stub()` — the stack every unit test composes —
+builds the real `AlmanacFestpackProvider` over a real URLSession
+fetcher (it is also what the iOS Simulator gets, where live fetching is
+correct), so `AppGraph` gates its automatic refresh on
+`isXCTestRuntimeLoaded` and skips it whenever the XCTest runtime is in
+the process. The policy itself is covered directly against a stub
+fetcher in `AlmanacFestpackProviderTests`. A UI test or a plain
+Simulator run is unaffected — the app under test is its own process
+with no XCTest runtime in it.
+
+**Migration.** Every pick persisted before this feature is a bare,
+un-namespaced base64 token. The first read after upgrading migrates
+those tokens to the `lost-lands-2026` namespace (the only festival this
+app pointed at before per-festival namespacing existed) and PERSISTS
+the migrated form back — a real, one-time migration, not merely an
+interpretive shim re-run on every call.
+
 ## Test strategy
 
 **Unit (`swift test`, every PR, no hardware, no simulator).** The whole

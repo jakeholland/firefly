@@ -206,6 +206,26 @@ public final class CurrentValueEventHub<Element: Sendable>: @unchecked Sendable 
         for continuation in subs { continuation.yield(element) }
     }
 
+    /// Forget the replay value WITHOUT closing anything — a later
+    /// subscriber is replayed nothing until the next `yield`, while
+    /// every existing subscription stays live.
+    ///
+    /// Exists for the one shape a plain `CurrentValue` hub cannot
+    /// otherwise express: a publisher whose current value became
+    /// genuinely UNKNOWN rather than merely old. `AlmanacFestpackProvider`
+    /// hit exactly that when the Settings festival picker switches to a
+    /// festival with no cached pack — `current()` honestly goes back to
+    /// `nil`, but without this the hub would keep handing the PREVIOUS
+    /// festival's pack to the next subscriber, i.e. re-assert data the
+    /// provider itself no longer claims. Honest-data rule (CLAUDE.md):
+    /// unknown must stay unknown on every surface, the replay buffer
+    /// included.
+    public func clearCurrent() {
+        lock.lock()
+        current = nil
+        lock.unlock()
+    }
+
     /// Close every current and future subscriber's stream. Idempotent.
     /// A subscriber arriving after `finish()` still gets replayed the
     /// last current value (if any) before its stream closes — "what was
