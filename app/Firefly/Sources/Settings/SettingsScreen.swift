@@ -26,6 +26,14 @@ struct SettingsScreen: View {
     /// every non-demo build.
     var autoOpenDiagnostics: Bool = false
     @State private var showDiagnostics = false
+    /// Owner note (build 304, item 3): pairing itself only happens on
+    /// Connect's Nearby section (`NearbyNodesViewModel.addToCrew(_:)`)
+    /// — the Crew section here only has rename/remove
+    /// (`CrewSettingsViewModel`). This screen's own "ADD CREW" button
+    /// (`crewSection`, below) calls this to get the owner there rather
+    /// than leaving them to find Connect on their own. Defaults to a
+    /// no-op for previews/tests that never wire real navigation.
+    var onOpenConnect: () -> Void = {}
     /// M3 — confirm-then-write sheets for the node-name and region edits
     /// (docs/specs/A01-companion-app.md M3), the same pattern Connect's
     /// channel "Apply to node" uses.
@@ -37,11 +45,12 @@ struct SettingsScreen: View {
     @State private var isShowingClearHistoryConfirmation = false
 
     init(model: SettingsViewModel, client: any MeshtasticClientProtocol, pairing: CrewPairingController,
-         lineup: LineupViewModel, autoOpenDiagnostics: Bool = false) {
+         lineup: LineupViewModel, autoOpenDiagnostics: Bool = false, onOpenConnect: @escaping () -> Void = {}) {
         self.model = model
         self.client = client
         self.lineup = lineup
         self.autoOpenDiagnostics = autoOpenDiagnostics
+        self.onOpenConnect = onOpenConnect
         _crewSettings = State(initialValue: CrewSettingsViewModel(pairing: pairing))
         _festpackURLDraft = State(initialValue: model.festpackSourceURLOverride ?? "")
     }
@@ -373,7 +382,7 @@ struct SettingsScreen: View {
     private var crewSection: some View {
         SettingsBlock(title: "CREW") {
             if crewSettings.rows.isEmpty {
-                Text("Nobody paired yet. Add crew from Connect \u{2192} Nearby.")
+                Text("Nobody paired yet.")
                     .font(.footnote)
                     .foregroundStyle(Color.ffMuted)
             } else {
@@ -385,6 +394,25 @@ struct SettingsScreen: View {
                         onRemove: { crewSettings.remove(row.id) })
                 }
             }
+            // Owner note (build 304, item 3): this section could only
+            // ever rename/remove — pairing itself lives on Connect's
+            // Nearby section (`NearbyNodesViewModel.addToCrew(_:)`), and
+            // nothing here used to say so with a real way to get there.
+            // Honest about what happens BEFORE the tap, not just after.
+            Button {
+                onOpenConnect()
+            } label: {
+                Label("ADD CREW", systemImage: "person.badge.plus")
+                    .font(.system(.footnote, design: .rounded).weight(.bold))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(.ffAmber)
+            .frame(minHeight: 44)
+            .accessibilityIdentifier("Settings.AddCrew")
+            Text("Pick a nearby radio on Connect \u{2192} Nearby to add it to your crew.")
+                .font(.caption2)
+                .foregroundStyle(Color.ffMuted)
         }
     }
 }

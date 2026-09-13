@@ -1,8 +1,8 @@
 //
 //  InboxThreadViewModelTests.swift — the delivery-state state machine
 //  (including the render-time no-ack window), outbox flush on
-//  reconnect, echo dedup by packet.id, quick replies, and FLARE
-//  send/receive rendering (docs/specs/A01-companion-app.md, slice E).
+//  reconnect, echo dedup by packet.id, and FLARE/RALLY send/receive
+//  rendering (docs/specs/A01-companion-app.md, slice E).
 //
 import FireflyMesh
 import FireflyModel
@@ -416,55 +416,16 @@ final class InboxThreadViewModelTests: XCTestCase {
         vm.stopObserving()
     }
 
-    // MARK: - Quick replies (BLOCKING review item 3: never enter the outbox)
-
-    func testOmwHereWaitSendImmediately() async {
-        let store = InMemoryInboxStore()
-        let client = StubMeshtasticClient()
-        let vm = ThreadViewModel(conversation: .member(5), provider: store, client: client)
-        vm.observe() // subscribe before connect — EventHub semantics (SHOULD-FIX 6)
-        try? await client.connect()
-        await waitUntil { vm.isLinkReady }
-
-        let omw = ThreadViewModel.quickReplies.first { $0.label == "Omw" }!
-        await vm.tap(omw)
-        XCTAssertEqual(vm.messages.last?.text, "Omw")
-        XCTAssertEqual(vm.messages.last?.direction, .out)
-        XCTAssertEqual(vm.queuedCount, 0, "quick replies never enter the bounded outbox")
-        XCTAssertNil(vm.immediateSendFailure)
-        vm.stopObserving()
-    }
-
-    func testMeetAtSeedsComposeTextInsteadOfSending() async {
-        let store = InMemoryInboxStore()
-        let client = StubMeshtasticClient()
-        let vm = ThreadViewModel(conversation: .member(5), provider: store, client: client)
-        let meetAt = ThreadViewModel.quickReplies.first { $0.label == "Meet at…" }!
-        await vm.tap(meetAt)
-        XCTAssertEqual(vm.composeText, "Meet at ")
-        XCTAssertTrue(vm.messages.isEmpty, "must not send anything by itself")
-    }
-
-    /// S24's 2026-09-07 amendment, verbatim: a link-down tap on a canned
-    /// reply "still fails outright... queuing it risks a stale
-    /// 'omw'/'5 min' firing minutes later once the link recovers." No
-    /// phantom WAITING row, no outbox growth — just a visible failure.
-    func testQuickReplyFailsVisiblyWhenDisconnectedAndIsNotQueued() async {
-        let store = InMemoryInboxStore()
-        let client = StubMeshtasticClient()
-        let vm = ThreadViewModel(conversation: .member(5), provider: store, client: client)
-        vm.observe() // link never connects for this whole test
-
-        let here = ThreadViewModel.quickReplies.first { $0.label == "Here" }!
-        await vm.tap(here)
-
-        XCTAssertEqual(vm.immediateSendFailure, .linkDown)
-        XCTAssertEqual(vm.queuedCount, 0, "must NOT be queued into the outbox")
-        XCTAssertTrue(vm.messages.isEmpty, "no phantom row waiting on a flush that will never fire")
-        vm.stopObserving()
-    }
-
     // MARK: - FLARE (BLOCKING review items 2 and 3)
+    //
+    // Owner note (build 304): the "omw"/"here"/"wait"/"meet at…"
+    // quick-reply chip tests that used to live here
+    // (`testOmwHereWaitSendImmediately`,
+    // `testMeetAtSeedsComposeTextInsteadOfSending`,
+    // `testQuickReplyFailsVisiblyWhenDisconnectedAndIsNotQueued`) were
+    // removed along with `ThreadViewModel.QuickReply`/`quickReplies`/
+    // `tap(_:)`/`sendImmediate(text:)`. FLARE/RALLY's own fire-and-
+    // forget/link-down/outbox-exclusion coverage below is unaffected.
 
     func testFlareSendCarriesItsDurationAndKind() async {
         let store = InMemoryInboxStore()
@@ -636,7 +597,7 @@ final class InboxThreadViewModelTests: XCTestCase {
 
         XCTAssertEqual(vm.messages.last?.kind, .rally)
         XCTAssertEqual(vm.messages.last?.direction, .out)
-        XCTAssertEqual(vm.composeText, "", "the typed name is consumed, like the FLARE/quick-reply compose flow")
+        XCTAssertEqual(vm.composeText, "", "the typed name is consumed, same as sendFlare's own compose flow")
         vm.stopObserving()
     }
 

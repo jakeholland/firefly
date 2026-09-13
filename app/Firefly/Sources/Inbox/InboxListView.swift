@@ -26,11 +26,19 @@ struct InboxContainerView: View {
     /// render, the SAME flag Radar's ring reads, so a member's colour
     /// never disagrees between the two faces.
     var colorblind: Bool = false
+    /// Owner note (build 304, item 3): the empty-state copy used to say
+    /// "pair crew from the Crew screen" with no way to actually get
+    /// there from here. Switches to the More tab and lands on Connect's
+    /// Nearby section — the one place pairing (`NearbyNodesViewModel
+    /// .addToCrew(_:)`) actually happens — rather than leaving the
+    /// owner to find it on their own. Defaults to a no-op for previews/
+    /// tests that never wire real cross-tab navigation.
+    var onPairCrew: () -> Void = {}
     @State private var activeThread: ThreadViewModel?
 
     var body: some View {
         NavigationStack {
-            InboxListView(model: model, colorblind: colorblind) { kind in
+            InboxListView(model: model, colorblind: colorblind, onPairCrew: onPairCrew) { kind in
                 activeThread = model.openThread(kind)
             }
             .navigationTitle("INBOX")
@@ -64,6 +72,9 @@ struct InboxContainerView: View {
 struct InboxListView: View {
     let model: InboxViewModel
     var colorblind: Bool = false
+    /// See `InboxContainerView.onPairCrew`'s own doc comment — threaded
+    /// straight through to this view's empty-state "ADD CREW" button.
+    var onPairCrew: () -> Void = {}
     let onSelect: (ConversationKind) -> Void
 
     /// S24's "no crew paired" edge state: only the CREW row exists.
@@ -91,16 +102,33 @@ struct InboxListView: View {
         .scrollContentBackground(.hidden)
         .background(Color.ffBackground)
         .overlay {
+            // Owner note (build 304, item 3): this used to be plain,
+            // non-interactive text pointing at a "Crew screen" that
+            // doesn't exist as its own destination — `allowsHitTesting
+            // (false)` on the whole VStack was honest about that at the
+            // time (there was nothing to tap). Now that `onPairCrew`
+            // gives it a real destination (Connect's Nearby section),
+            // the button gets its OWN `allowsHitTesting(true)` override
+            // so it is tappable while the static text around it (and,
+            // underneath this overlay, the always-present CREW row —
+            // `InboxViewModel`'s own "CREW is always present" rule)
+            // stays exactly as pass-through as before.
             if noCrewPaired {
-                VStack(spacing: 8) {
+                VStack(spacing: 12) {
                     Text("NO CREW LINKED YET")
                         .font(.system(.headline, design: .rounded).weight(.bold))
                         .foregroundStyle(Color.ffInk)
-                    Text("Pair crew from the Crew screen to start a conversation.")
+                    Text("Pick a nearby radio on Connect to add it to your crew.")
                         .font(.footnote)
                         .foregroundStyle(Color.ffMuted)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 32)
+                    Button("ADD CREW", action: onPairCrew)
+                        .buttonStyle(.borderedProminent)
+                        .tint(.ffAmber)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("Inbox.AddCrew")
+                        .allowsHitTesting(true)
                 }
                 .allowsHitTesting(false)
             }

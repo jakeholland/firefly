@@ -1,8 +1,12 @@
 //
 //  ThreadView.swift — one conversation's thread: bubbles, delivery
-//  state, quick-reply chips and a real-keyboard compose bar
-//  (docs/specs/A01-companion-app.md, slice E; docs/specs/
-//  S24-signals-inbox.md).
+//  state, FLARE/RALLY and a real-keyboard compose bar (docs/specs/
+//  A01-companion-app.md, slice E; docs/specs/S24-signals-inbox.md).
+//
+//  Owner note (build 304): the "omw"/"here"/"wait"/"meet at…"
+//  quick-reply chips (`QuickReplyRow`, `ThreadViewModel.QuickReply`)
+//  were removed — the FLARE/RALLY row below is what remains of this
+//  bar's one-tap affordances.
 //
 import FireflyMesh
 import FireflyModel
@@ -52,7 +56,7 @@ struct ThreadView: View {
                 ImmediateSendFailureBanner(failure: failure)
             }
 
-            QuickReplyRow(model: model)
+            FlareRallyRow(model: model)
             ComposeBar(model: model)
         }
         .background(Color.ffBackground)
@@ -107,9 +111,9 @@ private struct LinkDownBanner: View {
     }
 }
 
-/// The transient, non-queued failure banner for a quick-reply or FLARE
-/// tap (BLOCKING review item 3: neither is ever queued, so a link-down
-/// or transport-error tap needs to fail VISIBLY here instead).
+/// The transient, non-queued failure banner for a FLARE or RALLY tap
+/// (BLOCKING review item 3: neither is ever queued, so a link-down or
+/// transport-error tap needs to fail VISIBLY here instead).
 private struct ImmediateSendFailureBanner: View {
     let failure: ImmediateSendFailure
 
@@ -248,27 +252,20 @@ private struct MessageBubble: View {
     }
 }
 
-private struct QuickReplyRow: View {
+/// The thread's one-tap send row — FLARE and RALLY. The "omw"/"here"/
+/// "wait"/"meet at…" quick-reply chips that used to lead this row are
+/// gone (owner note, build 304): they were free-text canned phrases
+/// with no honesty content of their own, unlike FLARE/RALLY which each
+/// guard a real, honest send (`flareAvailable`/`rallyAvailable`,
+/// `rallyNoFix`). `ThreadViewModel.sendRally(name:)`'s own
+/// position-seeding/honesty logic is unchanged — only the chip that
+/// used to seed the compose bar with "Meet at " is gone.
+private struct FlareRallyRow: View {
     let model: ThreadViewModel
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(ThreadViewModel.quickReplies) { reply in
-                    Button {
-                        Task { await model.tap(reply) }
-                    } label: {
-                        Text(reply.label.uppercased())
-                            .font(.system(.caption, design: .rounded).weight(.bold))
-                            .foregroundStyle(Color.ffInk)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .frame(minWidth: 44, minHeight: 44) // HIG 44pt minimum tap target
-                            .background(Color.ffSurface, in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .contentShape(Capsule())
-                }
                 // Disabled with an honest label, never a placeholder
                 // transmission, whenever no FLARE seam was injected
                 // (BLOCKING review item 2).
