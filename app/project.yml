@@ -222,6 +222,13 @@ targets:
       # SettingsScreen/DiagnosticsScreen and the SwiftUI/Theme
       # dependency this target's own comment above says to avoid).
       - path: Firefly/Sources/MoreScreenNavigation.swift
+      # "app: Find tab — Radar · Map · Field segments" — the segment
+      # enum and its pure start/stop rule, split into its own
+      # SwiftUI/FireflyModel-free file for the SAME reason
+      # `MoreScreenNavigation.swift` just above is (its own header
+      # comment): so `FireflyAppTests` can exercise the rule without
+      # `FindScreen.swift`'s SwiftUI/Theme dependency.
+      - path: Firefly/Sources/Find/FindSegment.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit

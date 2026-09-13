@@ -3,10 +3,12 @@
 //  A01-companion-app.md, "Navigation"). iOS caps a `TabView` at five
 //  visible tabs before it starts auto-generating its own "More" list
 //  for the rest; the approved design (RadarSignal.dc.html/MapLive.dc
-//  .html/Settings.dc.html mocks) puts exactly five tabs on the bar —
-//  Radar, Map, Inbox, Lineup, More — so Connect and Settings, which no
-//  longer fit as their own tabs, live one tap under this screen
-//  instead of iOS's own unstyled overflow list.
+//  .html/Settings.dc.html mocks) originally put exactly five tabs on
+//  the bar — Radar, Map, Inbox, Lineup, More — now four (owner
+//  decision, 2026-09-13: Radar and Map became segments of one Find
+//  tab) — Find, Inbox, Lineup, More — so Connect and Settings, which
+//  do not fit as their own tabs either way, live one tap under this
+//  screen instead of iOS's own unstyled overflow list.
 //
 //  A plain list, not a re-implementation of Connect/Settings/System:
 //  each row PUSHES the existing screen (`ConnectScreen`, `SettingsScreen`,

@@ -4,13 +4,14 @@
 //  exactly one line in the `detail(for:)` switch below — see docs/specs/
 //  A01-companion-app.md, "Slices", the shared-file table).
 //
-//  Five tabs on the bar (docs/specs/A01-companion-app.md, "Navigation"):
-//  Radar, Map, Inbox, Lineup, More — matching the approved design
-//  (RadarSignal.dc.html/MapLive.dc.html mocks' own tab bar) and staying
-//  under iOS's five-tab cap before `UITabBarController` starts
-//  auto-generating its own unstyled "More" overflow list. Connect and
-//  Settings, which used to be their own tabs, are now `MoreScreen` rows
-//  — see that file's own header comment for why they PUSH the existing
+//  Four tabs on the bar (docs/specs/A01-companion-app.md, "Navigation"
+//  — owner decision, 2026-09-13): Find, Inbox, Lineup, More. Find
+//  replaces the old separate Radar and Map tabs with ONE tab and a
+//  segmented control (Radar · Map · Field, Radar the default) — one
+//  tab-bar question ("where do I look for my crew?") instead of two,
+//  and bigger tap targets for gloved hands at a festival. Connect and
+//  Settings, which used to be their own tabs, are `MoreScreen` rows —
+//  see that file's own header comment for why they PUSH the existing
 //  screens rather than re-implementing them.
 //
 import FireflyMesh
@@ -18,10 +19,10 @@ import FireflyModel
 import SwiftUI
 
 enum Destination: String, CaseIterable, Identifiable {
-    case radar = "Radar"
-    // Map tab slice: appended, not inserted (this file's own
-    // "each slice changes exactly one line" convention).
-    case map = "Map"
+    // "app: Find tab — Radar · Map · Field segments, four-tab bar
+    // (owner decision)" — replaces the old separate `.radar`/`.map`
+    // cases; see `FindScreen.swift`.
+    case find = "Find"
     case inbox = "Inbox"
     // "app: festpack from fest-almanac + Lineup".
     case lineup = "Lineup"
@@ -33,8 +34,7 @@ enum Destination: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
-        case .radar: return "location.north.line"
-        case .map: return "map"
+        case .find: return "location.north.line"
         case .inbox: return "tray"
         case .lineup: return "music.mic"
         case .more: return "ellipsis"
@@ -139,6 +139,21 @@ struct RootView: View {
     /// `MoreScreen`'s header comment) is exactly what happens when that
     /// system gesture's result gets silently undone a moment later.
     @State private var morePath: [MoreScreen.Row] = []
+    /// "app: Find tab — Radar · Map · Field segments" — which segment
+    /// `FindScreen` shows, Radar the default (owner decision). Hoisted
+    /// up here rather than kept as `FindScreen`'s own `@State`, same
+    /// reason `morePath` is (that property's own doc comment): on
+    /// macOS, `detail(for:)`'s `@ViewBuilder switch` constructs a FRESH
+    /// `FindScreen` every time `selection` moves away from `.find` and
+    /// back, which would otherwise reset the segment on every trip
+    /// through another sidebar row — "remember the selected segment
+    /// across tab switches within a session" (owner decision) needs
+    /// state that survives that reconstruction. On iOS, where `TabView`
+    /// keeps every tab's own view alive, this would have worked as
+    /// local `@State` too, but the two platforms sharing one `RootView`
+    /// means the state has to live wherever the platform that CAN'T get
+    /// away with local `@State` needs it.
+    @State private var findSegment: FindSegment = .radar
 
     /// iOS's `TabView(selection:)` binding, wrapping `$selection` so a
     /// tap on the ALREADY-selected More tab — which changes nothing
@@ -149,8 +164,11 @@ struct RootView: View {
     /// not depend on that system gesture actually firing (see
     /// `MoreScreen`'s header comment on why relying on it silently
     /// wasn't enough). Every other tab keeps ordinary `$selection`
-    /// semantics — reselecting Radar/Map/Inbox/Lineup does nothing
-    /// beyond what always happened.
+    /// semantics — reselecting Find/Inbox/Lineup does nothing beyond
+    /// what always happened. In particular, leaving Find for another
+    /// tab and coming back does NOT reset `findSegment` — that
+    /// property is not tied to `selection` at all, which is the whole
+    /// point of hoisting it up here (its own doc comment).
     private var selectionBinding: Binding<Destination> {
         Binding(
             get: { selection },
@@ -187,6 +205,13 @@ struct RootView: View {
             }
             .task { applyInitialSelection() }
             .task { await runInitialDemoScreen() }
+            // The Find tab's start/stop rule is driven from HERE, off
+            // this view's own `selection`/`findSegment` state, rather
+            // than from `FindScreen`'s `onAppear`/`onDisappear` — see
+            // `applyFindLifecycle()`'s own comment for the measured
+            // launch trace that requires it.
+            .onChange(of: selection, initial: true) { _, _ in applyFindLifecycle() }
+            .onChange(of: findSegment) { _, _ in applyFindLifecycle() }
 
             if flareTakeover.isActive {
                 FlareTakeoverView(model: flareTakeover)
@@ -202,14 +227,14 @@ struct RootView: View {
         #if os(macOS)
         NavigationSplitView {
             List(selection: $selection) {
-                ForEach([Destination.radar, .map, .inbox, .lineup]) { destination in
+                ForEach([Destination.find, .inbox, .lineup]) { destination in
                     Label(destination.rawValue, systemImage: destination.systemImage)
                         .tag(destination)
                 }
                 // "app: five-tab bar per design" — grouped the same way
-                // the iOS tab bar groups them (Radar/Map/Inbox/Lineup
-                // direct, then a More section), just laid out flat
-                // rather than behind a tap: a Mac sidebar has the room,
+                // the iOS tab bar groups them (Find/Inbox/Lineup direct,
+                // then a More section), just laid out flat rather than
+                // behind a tap: a Mac sidebar has the room,
                 // so Connect/Settings/System show as their own rows
                 // instead of needing `MoreScreen`'s own list opened
                 // first. Plain buttons, not `.tag()`-bound selection
@@ -233,7 +258,7 @@ struct RootView: View {
             // path to push into, not this container's own private,
             // opaque one. Harmless for every OTHER selection — nothing
             // but `MoreScreen` ever pushes a `Row` value onto it, so it
-            // just stays empty while Radar/Map/Inbox/Lineup are showing.
+            // just stays empty while Find/Inbox/Lineup are showing.
             NavigationStack(path: $morePath) {
                 detail(for: selection)
             }
@@ -278,11 +303,15 @@ struct RootView: View {
     @ViewBuilder
     private func detail(for destination: Destination) -> some View {
         switch destination {
-        case .radar: RadarView(model: radar, colorblind: settings.colorblindPalette)
-        case .map: MapTabView(model: map, initialSegment: initialMapSegment ?? .field,
-                               colorblind: settings.colorblindPalette,
-                               onFind: { nodeID in mapFind(nodeID); selection = .radar },
-                               onMessage: { nodeID in mapMessage(nodeID); selection = .inbox })
+        case .find: FindScreen(radar: radar, map: map, segment: $findSegment,
+                                colorblind: settings.colorblindPalette,
+                                // FIND (from a Map pin card) switches THIS tab's own
+                                // segment to Radar — the FIND affordance's own UI lives
+                                // there (`RadarView.swift`) — never the outer tab, since
+                                // we are already on it. MESSAGE switches the OUTER tab
+                                // to Inbox, which only `RootView` can do.
+                                onFind: { nodeID in mapFind(nodeID); findSegment = .radar },
+                                onMessage: { nodeID in mapMessage(nodeID); selection = .inbox })
         case .inbox: InboxContainerView(model: inbox, demoInitialThread: demoThreadTarget,
                                          colorblind: settings.colorblindPalette,
                                          // Owner note (build 304, item 3): Inbox's own
@@ -314,14 +343,50 @@ struct RootView: View {
         }
     }
 
-    /// Map tab slice: `-FireflyDemoScreen map-gps`/`map-field` pick
-    /// which segment `MapTabView` opens on — `nil` (its own default,
-    /// `.field`) for every other launch argument.
-    private var initialMapSegment: MapSegment? {
+    /// "app: Find tab — Radar · Map · Field segments" — which segment
+    /// `-FireflyDemoScreen <name>` should land Find on. `nil` for every
+    /// launch argument that is not one of these (Radar is `findSegment`'s
+    /// own default, so "radar"/"radar-signal"/"find" need no override
+    /// here — see `runInitialDemoScreen()`, which reads this).
+    /// "map-gps"/"map-field" are the ORIGINAL names (kept for whatever
+    /// already scripts against them); "map"/"field" are the bare names
+    /// the owner's brief itself uses.
+    private var initialFindSegment: FindSegment? {
         switch initialDemoScreen {
-        case "map-gps": return .gps
-        case "map-field": return .field
+        case "map", "map-gps": return .map
+        case "field", "map-field": return .field
         default: return nil
+        }
+    }
+
+    /// "Only the visible segment's view model observes/pumps" (owner
+    /// decision, 2026-09-13) — applied from `selection`/`findSegment`,
+    /// the two pieces of state that actually define which segment is on
+    /// screen, on a view that is never remounted.
+    ///
+    /// MEASURED, not reasoned (review of this PR). Wiring this to
+    /// `FindScreen`'s own `onAppear`/`onDisappear` — the obvious place
+    /// — reproduces the `NavigationSplitView` detail-column remount
+    /// `ConnectScreen.swift`'s own `.onAppear` comment documents.
+    /// Instrumented macOS launch, Find as the detail destination:
+    ///
+    ///     onAppear segment=radar
+    ///     onAppear segment=radar
+    ///     onDisappear
+    ///
+    /// — two mounts, and the FIRST instance's `onDisappear` arriving
+    /// after the second's `onAppear`. `stopAll()` therefore ran last
+    /// and left BOTH `RadarViewModel` and `MapViewModel` stopped while
+    /// Find was on screen: a frozen Radar on the app's own landing
+    /// destination, for the rest of the process or until the user
+    /// happened to tap a segment. `selection`/`findSegment` are plain
+    /// `@State` on this view, which that remount does not touch, so the
+    /// same rule applied from here cannot be orphaned by it.
+    private func applyFindLifecycle() {
+        if selection == .find {
+            FindLifecycle.apply(segment: findSegment, radar: radar, map: map)
+        } else {
+            FindLifecycle.stopAll(radar: radar, map: map)
         }
     }
 
@@ -338,7 +403,7 @@ struct RootView: View {
     /// race between the two.
     private func applyInitialSelection() {
         if hasKnownRadio {
-            selection = .radar
+            selection = .find
         } else {
             selection = .more
             moreAutoOpen = .connect
@@ -381,12 +446,20 @@ struct RootView: View {
             selection = .more
             moreAutoOpen = .connect
         case "radar":
-            selection = .radar
+            selection = .find
+            findSegment = .radar
         case "radar-signal":
-            selection = .radar
+            selection = .find
+            findSegment = .radar
             demoRunner.withdrawPhoneFix()
         case "find":
-            selection = .radar
+            // "app: Find tab — Radar · Map · Field segments" — this
+            // name predates the tab itself (it started a FIND ping
+            // session on Taylor, which lives on the Radar segment); now
+            // it also has to pick the right SEGMENT, not just the right
+            // tab.
+            selection = .find
+            findSegment = .radar
             try? await Task.sleep(nanoseconds: 300_000_000)
             demoRunner.startFindOnTaylor()
         case "inbox", "thread":
@@ -395,7 +468,8 @@ struct RootView: View {
             // The takeover renders on top of whatever tab is selected
             // (S10: "regardless of current face") — Radar just gives the
             // screenshot a sensible screen underneath it.
-            selection = .radar
+            selection = .find
+            findSegment = .radar
             try? await Task.sleep(nanoseconds: 300_000_000)
             demoRunner.triggerInboundFlare()
         case "rally":
@@ -442,8 +516,12 @@ struct RootView: View {
         case "settings", "diagnostics":
             selection = .more
             moreAutoOpen = .settings
-        case "map-gps", "map-field":
-            selection = .map
+        case "map", "map-gps", "field", "map-field":
+            // "app: Find tab — Radar · Map · Field segments" — these
+            // land on Find, on the segment `initialFindSegment` picks
+            // for this exact name.
+            selection = .find
+            findSegment = initialFindSegment ?? .map
         default:
             break
         }

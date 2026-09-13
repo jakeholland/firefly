@@ -4,15 +4,20 @@
 //  platform — launch, visit all four destinations, assert nothing
 //  crashes and that the placeholder screens do not claim to have
 //  data."; M3's own acceptance criterion adds Thread as a fifth stop
-//  and CI wiring). Deliberately thin, same as the rest of this app's
-//  test strategy: the logic under test lives in the view models
-//  FireflyKit's own `swift test` suite (and `FireflyAppTests`) already
-//  exercise directly. This only proves the SwiftUI layer wires them up
-//  and nothing crashes navigating between them.
+//  and CI wiring; the owner's 2026-09-13 Find-tab decision folds Radar
+//  and Map into one tab's three segments, which is why the iOS test
+//  below is `testDemoSmokeTapsThroughAllScreens`, not "...AllFiveScreens"
+//  any more — "five" stopped being an honest count of anything once two
+//  of those five became segments of a fourth tab). Deliberately thin,
+//  same as the rest of this app's test strategy: the logic under test
+//  lives in the view models FireflyKit's own `swift test` suite (and
+//  `FireflyAppTests`) already exercise directly. This only proves the
+//  SwiftUI layer wires them up and nothing crashes navigating between
+//  them.
 //
 //  Two platforms, two different tests, not one test run twice:
 //
-//  - iOS (`testDemoSmokeTapsThroughAllFiveScreens`) launches with
+//  - iOS (`testDemoSmokeTapsThroughAllScreens`) launches with
 //    `-FireflyDemo`. `AppDependencies.current()`'s own doc comment: the
 //    `-FireflyDemo`/`FIREFLY_DEMO=1` check lives INSIDE `#if
 //    targetEnvironment(simulator)`, so this only ever does anything in
@@ -34,7 +39,7 @@
 //    auto-starts a scan (its own `.onAppear` comment), so a plain
 //    launch is honestly Bluetooth-free. This test proves only that:
 //    the app launches to the Connect screen without crashing or
-//    popping a permission prompt — never a full five-screen walk,
+//    popping a permission prompt — never a full screen-by-screen walk,
 //    which needs demo mode's seeded data to be worth anything and demo
 //    mode does not run here.
 //
@@ -55,19 +60,28 @@ final class FireflyUITests: XCTestCase {
     }
 
     #if os(iOS)
-    /// Connect -> Radar -> Inbox -> Thread -> Settings -> Connect,
-    /// asserting each screen's own `accessibilityIdentifier`
-    /// (`RootView`/`ConnectScreen`/`RadarView`/`InboxListView`/
+    /// Connect -> Find/Radar -> Find/Map -> Find/Field -> Find/Radar ->
+    /// Inbox -> Thread -> Settings -> Connect, asserting each screen's
+    /// own `accessibilityIdentifier` (`RootView`/`ConnectScreen`/
+    /// `RadarView`/`MapTabView`/`FieldMapView`/`InboxListView`/
     /// `ThreadView`/`SettingsScreen`, M3's "append-only" additions) is
     /// actually on screen before moving on — never just "the app did
     /// not crash".
     ///
-    /// "app: five-tab bar per design": the tab bar itself is now
-    /// Radar/Map/Inbox/Lineup/More (`RootView.Destination`) — Connect
-    /// and Settings live one tap under More (`MoreScreen.swift`)
+    /// "app: Find tab — Radar · Map · Field segments, four-tab bar
+    /// (owner decision)": the tab bar itself is now Find/Inbox/Lineup/
+    /// More (`RootView.Destination`), with Find's own segmented control
+    /// standing in for the two tabs (Radar, Map) it replaces — Connect
+    /// and Settings still live one tap under More (`MoreScreen.swift`)
     /// instead of iOS's own auto-generated overflow list, so
     /// `tapDestination` below goes through OUR list, not a system one.
-    func testDemoSmokeTapsThroughAllFiveScreens() throws {
+    /// Every `accessibilityIdentifier` this test asserts on
+    /// (`Screen.Radar`, `Screen.Map`, `Screen.Map.GPS`,
+    /// `Screen.Map.Field`) is exactly the one the old five-tab layout
+    /// used — kept unchanged so this assertion stays just as strong,
+    /// only reached through the segmented control now instead of a tab
+    /// bar button.
+    func testDemoSmokeTapsThroughAllScreens() throws {
         let app = XCUIApplication()
         app.launchArguments = ["-FireflyDemo"]
         app.launch()
@@ -80,7 +94,21 @@ final class FireflyUITests: XCTestCase {
         // behavior before the five-tab rewrite.
         assertScreen("Screen.Connect", in: app)
 
-        tapDestination("Radar", in: app)
+        tapDestination("Find", in: app)
+        // Radar is Find's default segment (owner decision) — no
+        // segmented-control tap needed to see it first.
+        assertScreen("Screen.Radar", in: app)
+
+        tapFindSegment("Map", in: app)
+        assertScreen("Screen.Map", in: app)
+        assertScreen("Screen.Map.GPS", in: app)
+
+        tapFindSegment("Field", in: app)
+        assertScreen("Screen.Map.Field", in: app)
+
+        // Back to Radar, proving the segmented control (not just the
+        // tab bar) is a genuine two-way switch.
+        tapFindSegment("Radar", in: app)
         assertScreen("Screen.Radar", in: app)
 
         tapDestination("Inbox", in: app)
@@ -115,9 +143,19 @@ final class FireflyUITests: XCTestCase {
         assertScreen("Screen.Connect", in: app)
     }
 
+    /// Taps one of `FindScreen`'s own segmented-control buttons
+    /// (`FindScreen.swift`'s `"Find.Segment.<name>"` identifiers) —
+    /// plain buttons, not a native segmented control, so this is a
+    /// direct button lookup, same shape as `tapDestination`'s own
+    /// `MoreRow.<name>` lookup just below.
+    private func tapFindSegment(_ name: String, in app: XCUIApplication) {
+        let button = app.buttons["Find.Segment.\(name)"]
+        tapWhenHittable(button)
+    }
+
     /// Taps a `Destination`'s tab directly when it still has one
-    /// (Radar/Map/Inbox/Lineup), or goes through the More tab and its
-    /// own row (`MoreScreen.MoreRow`'s own `accessibilityIdentifier`,
+    /// (Find/Inbox/Lineup), or goes through the More tab and its own
+    /// row (`MoreScreen.MoreRow`'s own `accessibilityIdentifier`,
     /// `"MoreRow.<name>"`) for Connect/Settings/System — OUR list, not
     /// an iOS-auto-generated one (`RootView`'s five-tab rewrite put an
     /// end to that overflow). `MoreScreen` keeps its own push state

@@ -173,28 +173,64 @@ already exists instead of inventing their own shape for it (S5).
 screens"/"six destinations" language above — Map (S09) and Lineup (S07)
 shipped after M1, and by the time Settings was the sixth destination
 `RootView.Destination` registered, iOS's five-tab cap had already
-pushed it into an unstyled, auto-generated "More" overflow list.)
+pushed it into an unstyled, auto-generated "More" overflow list. Then
+"app: Find tab — Radar · Map · Field segments, four-tab bar" —
+**owner decision, 2026-09-13, Jake:** combine Radar and Map into ONE
+tab, Find, with a segmented control — one tab-bar question ("where do
+I look for my crew?") instead of two, and bigger tap targets for gloved
+hands at a festival than five cramped tab-bar icons gave.)
 
 `RootView`'s tab bar (`TabView` on iOS, a `NavigationSplitView` sidebar
-on macOS) carries exactly five destinations, in this order, matching
-the approved design canvas's own tab bar (`RadarSignal.dc.html`/
-`MapLive.dc.html`):
+on macOS) carries exactly four destinations, in this order:
 
-1. **Radar** — S06/S29's signal/no-GPS view.
-2. **Map** — S09's Field/GPS segmented view.
-3. **Inbox** — S24's conversations, threads and outbox.
-4. **Lineup** — S07's festpack schedule.
-5. **More** — `MoreScreen.swift`, this app's own screen, not an
+1. **Find** — a segmented control, Radar the default segment:
+   - **Radar** — S06/S29's signal/no-GPS view.
+   - **Map** — S09's GPS/MapKit view (`MapSegment.gps`).
+   - **Field** — S09's schematic, offline-guaranteed view
+     (`MapSegment.field`) — this used to be reachable only as the OTHER
+     half of the Map tab's own internal Field/GPS toggle; that toggle
+     is gone, replaced by Find's one segmented control, per the owner's
+     decision above.
+2. **Inbox** — S24's conversations, threads and outbox.
+3. **Lineup** — S07's festpack schedule.
+4. **More** — `MoreScreen.swift`, this app's own screen, not an
    iOS-generated one.
+
+Radar and Map/Field keep their own view models (`RadarViewModel`,
+`MapViewModel`) and views (`RadarView`, `MapTabView`) exactly as they
+were — `FindScreen.swift` only adds the segmented control and the
+explicit start/stop wiring the owner's decision calls for: "only the
+visible segment's view model observes/pumps," with Radar's 1 Hz
+recompute pump and Map's pin-refresh loop starting/stopping on segment
+change the same way `MapTabView`'s own `isOnScreen` guard already did
+for backgrounding/foregrounding (PR #294). That rule is applied by
+`RootView.applyFindLifecycle()`, off `RootView`'s own `selection`/
+`findSegment` state — never off `FindScreen`'s own `onAppear`/
+`onDisappear`, which the `NavigationSplitView` detail-column remount
+orphans (measured at launch; that method's own comment carries the
+trace, and `FindLifecycleWiringGuardTests` pins it). Radar's own
+background/foreground lifecycle stays owned by `AppGraph.start()`/
+`.stop()` (gated on `SettingsKey.backgroundConnectEnabled` — a real,
+already-tested product decision, `AppGraphViewModelLifecycleTests`),
+not duplicated at the Find/segment level — an interpretation call, not
+a spec gap: adding a second, UI-level background handler for Radar
+would fight that setting rather than respect it. `start()` RESTORES
+that pump only when it was running at `stop()` time, so a foreground
+resume onto Map/Field, Inbox or Lineup no longer wakes a Radar pump
+nothing off-screen would stop again. The selected segment is remembered for
+the session (not persisted) — see `RootView.findSegment`'s own doc
+comment for why that state is hoisted up to `RootView` rather than kept
+local to `FindScreen`.
 
 **Connect and Settings are not tabs.** Each is one tap under More: a
 plain list whose rows (CONNECT, SETTINGS, SYSTEM) push the existing
 `ConnectScreen`, `SettingsScreen` and `DiagnosticsScreen` — the same
 view models and state every other entry point to those screens already
 uses, never a second copy. On macOS, the sidebar groups the same way
-(Radar/Map/Inbox/Lineup direct, then a "More" section with Connect/
-Settings/System as their own rows) rather than nesting them behind a
-click into More first — the sidebar has the room; the tab bar does not.
+(Find/Inbox/Lineup direct — Find's detail view carries the same
+segmented control — then a "More" section with Connect/Settings/System
+as their own rows) rather than nesting them behind a click into More
+first — the sidebar has the room; the tab bar does not.
 
 **First launch.** A fresh install (or the iOS Simulator, which has no
 Bluetooth at all) has no radio to already know about, so launch lands
@@ -202,9 +238,9 @@ on More with Connect pre-pushed — zero taps, the same place a plain
 launch always landed before this tab existed. Once a radio has been
 bonded (`SettingsKey.lastPeripheralID`/`.bondedPeripheralIDs`,
 `AppDependencies.live()`) — or a `-FireflyAutoConnect <name>` debug
-launch is already reaching for one — launch instead lands on Radar,
-where there is now something to look at. See `RootView.hasKnownRadio`'s
-own doc comment.
+launch is already reaching for one — launch instead lands on Find (its
+default Radar segment), where there is now something to look at. See
+`RootView.hasKnownRadio`'s own doc comment.
 
 **Known gap, flagged rather than silently added:** the design canvas
 shows a small radio-status chip in Radar's/Map's own top bar (green

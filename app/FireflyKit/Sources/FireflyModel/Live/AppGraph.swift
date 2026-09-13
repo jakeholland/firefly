@@ -106,6 +106,15 @@ public final class AppGraph {
     /// than queued — S29's FIND is a live, on-face activity and a reply
     /// to a session nobody is watching has nothing to update.
     private weak var radar: RadarViewModel?
+    /// Whether Radar's pump was running the moment `stop()` tore the
+    /// graph down — the one thing `start()` needs in order to RESTORE
+    /// it rather than wake it (see `start()`'s own comment). `false`
+    /// before any `stop()` has ever run: a launch `start()` must not
+    /// start a pump for a screen that may not even be selected —
+    /// `makeRadarViewModel()` starts it once for the graph's own
+    /// factory contract, and `RootView.applyFindLifecycle()` is what
+    /// decides whether it keeps running from the first frame on.
+    private var radarWasObservingAtStop = false
 
     // MARK: - M2: inbound FLARE/RALLY/STATUS + PING auto-reply
     // (docs/specs/A01-companion-app.md M2; see `AppGraph+M2Protocol.swift`
@@ -270,10 +279,24 @@ public final class AppGraph {
         // Paired with `stop()`'s `radar?.stopObserving()` — without this,
         // backgrounding with background-connect off would stop Radar's
         // recompute loop permanently and coming back to the foreground
-        // would show a frozen Radar. `observe()` is idempotent
-        // (its own doc comment), so this is a no-op on the first
-        // `start()`, where `makeRadarViewModel()` already called it.
-        radar?.observe()
+        // would show a frozen Radar.
+        //
+        // RESTORE, not "start unconditionally" (PR #298 review): since
+        // the Find tab landed, Radar's pump is only supposed to run
+        // while Find's Radar segment is the thing on screen
+        // (`FindLifecycle`, docs/specs/A01-companion-app.md
+        // "Navigation"). An unconditional `observe()` here woke that
+        // 1 Hz `ff_radar_compute` pump on EVERY foreground, including
+        // one that resumed onto Find's Map segment, Inbox or Lineup —
+        // and nothing off-screen ever stopped it again, which is the
+        // same off-screen leak `MapTabView`'s own `isOnScreen` guard
+        // exists to close. `stop()` records whether the pump was
+        // actually running when it tore things down, so this puts back
+        // exactly what was there and never more than that. Also why
+        // this cannot simply be re-applied from the UI layer on
+        // `.active`: `start()` runs in its own `Task`, so a synchronous
+        // `scenePhase` handler in a view would always lose that race.
+        if radarWasObservingAtStop { radar?.observe() }
         observePrivatePackets()
         observeMyLocation()
         observeIncomingTextsForNotifications()
@@ -453,6 +476,7 @@ public final class AppGraph {
         // Radar is also the expensive one — the other three have no
         // repeating loop at all. The remaining gap is filed rather than
         // half-closed here.
+        radarWasObservingAtStop = radar?.isObserving ?? false
         radar?.stopObserving()
         await uplink.stop()
         // The graph's own subscriptions stopping is not enough on its

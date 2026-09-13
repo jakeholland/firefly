@@ -1545,6 +1545,43 @@ final class AppGraphViewModelLifecycleTests: XCTestCase {
                       "and coming back to the foreground must not leave Radar frozen")
     }
 
+    /// PR #298 review, BLOCKING 2. The Find tab (owner decision,
+    /// 2026-09-13) made Radar's pump conditional on Find's Radar
+    /// segment being the thing on screen — `RootView
+    /// .applyFindLifecycle()` stops it the moment another tab or
+    /// segment is selected. `start()` used to call `radar?.observe()`
+    /// unconditionally, so a background/foreground cycle while the user
+    /// sat on Find's Map segment (or Inbox, or Lineup) woke the 1 Hz
+    /// `ff_radar_compute` pump for a screen nobody could see, with
+    /// nothing off-screen left to stop it again — the same leak
+    /// `MapTabView`'s own `isOnScreen` guard closes for the Map.
+    ///
+    /// The proxy this deliberately avoids: asserting only that
+    /// `stop()`/`start()` round-trip a RUNNING pump (the test just
+    /// above) is satisfied by an unconditional restart, which is
+    /// exactly the bug. The property is "restore what was running",
+    /// so the case that distinguishes them is a pump that was NOT.
+    func testForegroundingDoesNotWakeARadarThatWasNotRunning() async {
+        let store = InMemorySettingsStore()
+        store.backgroundConnectEnabled = false
+        let graph = makeGraph(store: store)
+        let radar = graph.makeRadarViewModel()
+
+        await graph.start()
+        // What `RootView.applyFindLifecycle()` does whenever Find's
+        // Radar segment is not the thing on screen.
+        radar.stopObserving()
+        XCTAssertFalse(radar.isObserving)
+
+        await graph.handleScenePhaseChange(.background)
+        await graph.handleScenePhaseChange(.foreground)
+
+        XCTAssertFalse(radar.isObserving,
+                       "foregrounding must restore the pump the app went to background with, not start one "
+                       + "for a segment that is not on screen — a 1 Hz radar recompute nothing off-screen "
+                       + "will ever stop again")
+    }
+
     /// The other half of the setting: background connect ON means the
     /// graph deliberately keeps running, so Radar must keep running too.
     func testBackgroundingWithBackgroundConnectOnLeavesRadarRunning() async {

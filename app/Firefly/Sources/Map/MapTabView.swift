@@ -1,9 +1,14 @@
 //
-//  MapTabView.swift — Map tab slice: the Field/GPS segmented control
-//  the owner's design canvas calls for. Owns the one `MapViewModel`
-//  this destination renders (`AppGraph.makeMapViewModel()` builds it
-//  once, same "one view model per destination, built by the graph"
-//  rule every other screen in this app follows).
+//  MapTabView.swift — Find tab slice (owner decision, 2026-09-13): the
+//  Field/GPS content that used to be its own "Map" tab with its own
+//  internal segmented control. That control is gone — `FindScreen`'s
+//  ONE segmented control (Radar · Map · Field) now drives `segment`
+//  from outside, as a plain parameter, so this view no longer owns
+//  which of Field/GPS it shows. Everything else — the one
+//  `MapViewModel` this destination renders (`AppGraph.makeMapViewModel()`
+//  builds it once, same "one view model per destination, built by the
+//  graph" rule every other screen in this app follows) and its
+//  `onAppear`/`onDisappear`/`scenePhase` lifecycle below — is UNCHANGED.
 //
 import FireflyModel
 import SwiftUI
@@ -16,7 +21,11 @@ enum MapSegment: String, CaseIterable, Identifiable {
 
 struct MapTabView: View {
     @State private var model: MapViewModel
-    @State private var segment: MapSegment
+    /// Which of Field/GPS to show — chosen by `FindScreen`'s own
+    /// segmented control now, not this view's own (removed) Picker.
+    /// A plain `let`, not `@Binding`: nothing in here ever needs to
+    /// WRITE it any more, only read it.
+    let segment: MapSegment
     /// `SettingsViewModel.colorblindPalette`, read fresh by `RootView`
     /// on every redraw — same convention `RadarView`/`ConnectScreen`
     /// already follow for their own crew colors (PR #283 review,
@@ -33,10 +42,10 @@ struct MapTabView: View {
     /// necessary.
     @State private var isOnScreen = false
 
-    init(model: MapViewModel, initialSegment: MapSegment = .field, colorblind: Bool,
+    init(model: MapViewModel, segment: MapSegment, colorblind: Bool,
          onFind: @escaping (UInt32) -> Void, onMessage: @escaping (UInt32) -> Void) {
         _model = State(initialValue: model)
-        _segment = State(initialValue: initialSegment)
+        self.segment = segment
         self.colorblind = colorblind
         self.onFind = onFind
         self.onMessage = onMessage
@@ -44,13 +53,6 @@ struct MapTabView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Map view", selection: $segment) {
-                ForEach(MapSegment.allCases) { Text($0.rawValue.uppercased()).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .padding(12)
-            .accessibilityIdentifier("Map.Segment")
-
             switch segment {
             case .field:
                 FieldMapView(model: model, onSelect: { model.select(nodeID: $0) },
@@ -124,6 +126,18 @@ struct MapTabView: View {
             default: break
             }
         }
+        // "app: Find tab — Radar · Map · Field segments" — `.contain`
+        // is load-bearing here, not decorative: without it, this
+        // VStack's OWN identifier ("Screen.Map") swallows
+        // `FieldMapView`/`GPSMapView`'s own `"Screen.Map.Field"`/
+        // `"Screen.Map.GPS"` identifier (measured empirically via a
+        // UI-test diagnostic dump on `FindScreen`'s identical shape —
+        // `FindScreen.swift`'s own comment on its own `.contain`).
+        // Neither of these two identifiers was ever asserted alongside
+        // its parent's before this change (the old five-tab test never
+        // visited Map at all), so this was a live bug nothing had
+        // caught yet.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("Screen.Map")
     }
 }
