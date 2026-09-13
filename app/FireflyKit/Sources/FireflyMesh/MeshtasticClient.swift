@@ -46,6 +46,11 @@ public enum MeshtasticClientError: Error, Equatable, Sendable {
     /// double-consuming `transport.events()`. Thrown by the SECOND
     /// overlapping call; the first runs to completion normally.
     case alreadyConnecting
+    /// A `LocationFix` that cannot be honestly encoded as a Meshtastic
+    /// `Position` — a non-finite or out-of-range coordinate, or a
+    /// timestamp outside the wire format's `uint32` epoch seconds.
+    /// Refused rather than clamped: see `MeshtasticClient.encodePosition`.
+    case invalidPositionFix
 }
 
 /// The seam between the handshake-retry loop
@@ -507,18 +512,59 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// rows nothing renders.
     @discardableResult
     public func sendPosition(_ fix: ExternalPositionFix, to destination: UInt32) async throws -> UInt32 {
+        // Every conversion below is a TRAPPING one: `Int32(Double.nan)`
+        // and `UInt32(someHugeDouble)` are runtime crashes, not errors,
+        // and this method's input comes from CoreLocation via
+        // `MeshPositionSink` — i.e. from outside this module. A fix that
+        // cannot be honestly encoded is refused, never clamped into a
+        // plausible-looking coordinate: clamping a NaN latitude to 0
+        // would transmit the Gulf of Guinea as this phone's position,
+        // which is exactly the fabrication this app exists not to do.
+        guard let position = Self.encodePosition(fix) else {
+            throw MeshtasticClientError.invalidPositionFix
+        }
+        guard let payload = try? position.serializedData() else {
+            throw MeshtasticClientError.encodingFailed
+        }
+        return try await sendData(payload, portnum: .positionApp, to: destination, wantAck: false)
+    }
+
+    /// Pure, and `static` so it is testable with no actor, no transport
+    /// and no radio. `nil` means "this fix cannot be honestly put on the
+    /// wire" — see `sendPosition`.
+    ///
+    /// Meshtastic's `Position` is fixed-width: `latitude_i`/`longitude_i`
+    /// are degrees x 1e7 in an `int32`, `time` is a `uint32` epoch
+    /// second. Real values fit comfortably (±90° is ±9e8, well inside
+    /// int32), so every rejection below is a value that was never a
+    /// position in the first place.
+    static func encodePosition(_ fix: ExternalPositionFix) -> Position? {
+        guard fix.latitude.isFinite, fix.longitude.isFinite,
+              fix.latitude >= -90, fix.latitude <= 90,
+              fix.longitude >= -180, fix.longitude <= 180 else { return nil }
+        let seconds = fix.time.timeIntervalSince1970
+        // `uint32` epoch seconds run out in 2106; anything outside that
+        // is a phone whose clock is wrong, not a fix from the future.
+        guard seconds.isFinite, seconds >= 0, seconds <= Double(UInt32.max) else { return nil }
+
         var position = Position()
         position.latitudeI = Int32((fix.latitude * 1e7).rounded())
         position.longitudeI = Int32((fix.longitude * 1e7).rounded())
-        position.time = UInt32(max(0, fix.time.timeIntervalSince1970))
+        position.time = UInt32(seconds)
         position.locationSource = .locExternal
-        if let altitude = fix.altitudeMeters {
+        // Altitude is optional on the wire AND optional in truth: a
+        // value that will not fit an int32 metre is dropped rather than
+        // dragging the whole (otherwise perfectly good) fix down with
+        // it — the lat/lon is still worth sending.
+        if let altitude = fix.altitudeMeters, altitude.isFinite,
+           altitude >= Double(Int32.min), altitude <= Double(Int32.max) {
             position.altitude = Int32(altitude.rounded())
         }
         // Both are "only when the value means something" fields, per the
         // spec's payload rule — an absent speed is not 0 m/s, and an
-        // absent course is not due north.
-        if let speed = fix.groundSpeedMetersPerSecond, speed > 0 {
+        // absent course is not due north. The range checks double as the
+        // NaN guard (`NaN > 0` is false).
+        if let speed = fix.groundSpeedMetersPerSecond, speed > 0, speed <= Double(UInt32.max) {
             position.groundSpeed = UInt32(speed.rounded())
         }
         if let track = fix.groundTrackDegrees, track > 0, track <= 360 {
@@ -528,11 +574,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         // CoreLocation reports no satellite count, and precision is the
         // CHANNEL's setting (`position_precision`), asserted by the node
         // itself — claiming either here would be inventing wire data.
-
-        guard let payload = try? position.serializedData() else {
-            throw MeshtasticClientError.encodingFailed
-        }
-        return try await sendData(payload, portnum: .positionApp, to: destination, wantAck: false)
+        return position
     }
 
     /// Portnum 269, Firefly's own (S04) — `payload` is an already
