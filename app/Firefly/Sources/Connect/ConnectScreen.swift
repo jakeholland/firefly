@@ -183,14 +183,9 @@ struct ConnectScreen: View {
     // MARK: - Header
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("FIREFLY")
-                .font(.system(.largeTitle, design: .rounded).weight(.heavy))
-                .foregroundStyle(Color.ffAmber)
-            Text("One crew. One channel.")
-                .font(.caption)
-                .foregroundStyle(Color.ffMuted)
-        }
+        Text("FIREFLY")
+            .font(.system(.largeTitle, design: .rounded).weight(.heavy))
+            .foregroundStyle(Color.ffAmber)
     }
 
     // MARK: - Connection state
