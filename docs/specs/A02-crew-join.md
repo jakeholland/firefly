@@ -1030,43 +1030,85 @@ re-installing.
 | `NSCameraUsageDescription` *(reworded — the key already ships, saying "channel")* | Firefly uses the camera to scan your friend's crew code. |
 | `CFBundleURLTypes` *(new — the app registers no URL scheme today)* | the `firefly` scheme, §1.8 |
 
-### 6.3 Presence words
+### 6.3 Presence and status words — one vocabulary, both surfaces
 
-One vocabulary, everywhere (Crew page, Inbox rows, Radar detail line),
-driven by `ff_crew_presence` — the heard axis, S02's 2026-09-07
-amendment — and always paired with an age:
+**Amendment (2026-09-14, owner decision via the orchestrator) —
+supersedes this section as originally written.** The QUIET / `quiet for
+6 min` / `not heard since 9:40 pm` / `waiting to hear from them` copy
+below, and the `NAME?` chip in §4.4, predate two PRs that have since
+shipped and are canonical:
 
-| `ff_crew_presence_t` | Chip | Line |
-|---|---|---|
-| `HEARD` (< 2 min) | **HERE** | `heard just now` / `heard 40 s ago` |
-| `STALE` (2–10 min) | **QUIET** | `quiet for 6 min` |
-| `LOST` (> 10 min) | **NO SIGNAL** | `not heard since 9:40 pm` (+ `· last seen by the Crater` when a last-known position exists) |
-| `NEVER` | *(none)* | `waiting to hear from them` |
+- **App** — PR #304 (`e9d2ad0`, "app: plain-language states and
+  delivery words, puck permission strings, FIND persists across
+  segments"), pinned by `PresenceWordsTests.swift`.
+- **Puck** — PR #303 (`dbbc79b`, "puck: plain-language faces — status
+  words, no jargon outside Diagnostics").
 
-"LOST" is deleted from the user-facing vocabulary entirely. Deshawn's
-review is right that it reads as *the person* is lost, at 11pm, to
-someone worried about a friend. The enum keeps its name; the screen does
-not.
+Where this section's original wording disagrees with what shipped, the
+table below wins. `ff_crew_presence_t`'s enum names (`HEARD`/`STALE`/
+`LOST`/`NEVER`, S02's 2026-09-07 amendment) are untouched — only what
+each state renders as changed.
 
-The `NO SIGNAL` detail view adds the calm, honest guidance Deshawn asked
-for: *"Could be a dead battery, out of range, or turned off."* plus a
-**[ SEND RALLY ]** button, because that is the actual next action.
-Nothing there is invented — battery/range/off are the three possible
-causes, stated as possibilities, never picked between.
+One vocabulary, everywhere it appears — puck (Radar, Inbox/Signals
+rows, Crew page) and app (Crew page, Inbox rows, Radar detail line) —
+always paired with an age where an age is honestly known:
+
+| State | Puck word | App word | When |
+|---|---|---|---|
+| Heard recently | `SEEN <age>` | "Heard just now" / "`<age>` ago" | < 2 min since any packet heard (`HEARD`) |
+| Heard, aging | `SEEN <age>` | age only, e.g. "6 min ago" | 2–10 min since any packet heard (`STALE`) |
+| Long radio silence | `NO SIGNAL <age>` | "No signal · 40 min" | > 10 min since any packet heard (`LOST`) |
+| Paired, never heard | `NOT SEEN YET` | "Paired · not seen yet" | paired but zero packets ever received (`NEVER`) |
+| No GPS fix, never heard | `NO LOCATION YET` | "No location yet" | selection has no position, and is never-heard |
+| No GPS fix, heard recently | `NEARBY, NO LOCATION` | "Near · no location yet" | selection has no position, but IS heard/stale |
+| Relayed | `RELAYED` | "via relay `<name>`" — only when true | packet reached this puck/app through another node, not directly |
+| Sending | `WAITING` (queued) / `SENT` (accepted by the radio) | "Sending…" | outgoing message queued or accepted, not yet resolved |
+| Delivered | `DELIVERED` | "Delivered" | a routing ack came back OK for a direct send |
+| Not delivered | `NOT DELIVERED` | "Didn't get through" (RESEND unchanged) | routing NAK, or ack timeout, on a direct send |
+| Not sent | `NOT SENT` | "Couldn't send" / "Couldn't send · `<reason>`" | evicted from the bounded outbox queue before it could send |
+| Nameless crew member | *(no puck equivalent — see below)* | "New crew member" | crew member paired with an empty/blank name |
+| Puck↔radio link *(not presence — a different axis)* | `LINKED` / `NO RADIO` | *(app-only concept is Bluetooth-to-puck, a different axis; no shared word)* | the puck's own connection to its comms-brain radio |
+
+"LOST" is retired from the user-facing vocabulary entirely, on both
+surfaces — Deshawn's original review (which this section's now-retired
+draft was trying to satisfy) is still right that it reads as *the
+person* is lost, at 11pm, to someone worried about a friend. The
+`ff_crew_presence_t` enum keeps the name `LOST`; no screen renders it.
+
+The **no-signal** detail view (puck and app both) adds the calm, honest
+guidance Deshawn asked for: *"Could be a dead battery, out of range, or
+turned off."* plus a **[ SEND RALLY ]** action, because that is the
+actual next step. Nothing there is invented — battery/range/off are the
+three possible causes, stated as possibilities, never picked between.
+
+**§4.4 correction, same amendment:** the shipped nameless-row fallback
+is **`New crew member`** for the display name and a **`?`** in the
+colour swatch (`CrewMemberRow`, owner decision 2026-09-13) — not the
+`NAME?` chip or the `waiting to hear from them` / `joined 2 min ago ·
+no name yet` subtitle §4.4 describes. A member restored from
+persistence before any packet reads **"Paired · not seen yet"** (this
+table's `NEVER` row), not a bespoke phrase.
 
 ### 6.4 Other copy replacements
 
+Presence, delivery, relay, and nameless-row words move to the shared
+table in §6.3. What remains here:
+
 | Today | Ships as |
 |---|---|
-| `NO ACK` | **Didn't get through** (RESEND button unchanged) |
-| `DELIVERED` | Delivered *(unchanged — it already works)* |
-| `LINKED` chip on a nameless row | never occurs: `New crew member` + `NAME?` (§4.4) |
+| `LINKED` chip on a nameless row | never occurs: `New crew member` + a `?` swatch initial (§6.3 correction to §4.4) |
 | "The node saves this, then reboots and disconnects…" | "Your puck will blink off for a few seconds while it saves this, then reconnect on its own." |
 | "Tap RESCAN to look for nearby Meshtastic radios" | "Tap RESCAN to find your puck." |
 | Settings "NODE NAME" / "APPLY NAME TO NODE" | "Your name" / "This is what your crew sees for you." / **Save** |
-| "Taylor's radio: strong signal, direct, heard just now" | "Taylor: strong signal, heard just now" — `relayed through Dana` appended **only when true**, never a bare "direct" |
-| `±6 m`, `−61 dBm`, `SNR 4.2 dB` on any main-path screen | removed; Advanced only |
+| "Taylor's radio: strong signal, direct, heard just now" | "Taylor: strong signal, heard just now" — `relayed through Dana` appended **only when true**, never a bare "direct" (§6.3's `RELAYED` / `via relay` row) |
+| `−61 dBm`, `SNR 4.2 dB` on any main-path screen | removed; Advanced only |
 | `!02e5e3d4` | removed from the main path; Advanced only |
+
+**Amendment (2026-09-14) — `±6 m` stays.** The row this replaced also
+deleted GPS accuracy (`±6 m`) from main-path screens. Reversed by owner
+decision: GPS accuracy is a fact, not jargon, and Radar keeps showing
+it. Only the raw radio numbers (dBm, SNR) and the raw node id move to
+Advanced.
 
 ### 6.5 Advanced — the full inventory
 

@@ -1295,7 +1295,8 @@ static void S10_notif_flare_lock_expiry_leaves_selection_on_the_sender(void)
 }
 
 /* The reviewer's scratch-test scenario, confirmed non-vacuous: a NOFIX
- * sender must render their own honest NOFIX state (RADAR_LOST / "NO FIX
+ * sender must render their own honest NOFIX state (RADAR_LOST / "NO
+ * LOCATION YET" — wording per A02/PR #303, 2026-09-13, was "NO FIX
  * YET" — ff_radar.h's RENDERER CONTRACT: mode==RADAR_LOST with
  * age_str=="" means never-fixed, as opposed to a real past fix gone
  * stale) after GO, not the geometry left over from whoever was selected
@@ -1339,8 +1340,9 @@ static void S10_notif_flare_go_nofix_sender_shows_their_honest_nofix_not_prior_g
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, v->active_face);
     TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_flare(&H.shell)->locked_node_id);
 
-    /* KEV's own honest NOFIX (never had a fix -> RADAR_LOST, "NO FIX
-     * YET" per the RENDERER CONTRACT), not a fabricated arrow and not
+    /* KEV's own honest NOFIX (never had a fix -> RADAR_LOST, "NO
+     * LOCATION YET" per the RENDERER CONTRACT; wording per A02/PR #303,
+     * 2026-09-13 — was "NO FIX YET"), not a fabricated arrow and not
      * any trace of DANA's geometry above. */
     TEST_ASSERT_EQUAL_STRING("KEV", v->radar.name);
     TEST_ASSERT_EQUAL_INT(RADAR_LOST, v->radar.mode);

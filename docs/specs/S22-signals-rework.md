@@ -31,12 +31,17 @@ list the screen renders top-to-bottom:
   dimmed with an honest **presence** label derived from `ff_freshness_t`
   (`FF_FRESH_LIVE` / `STALE` / `LOST` / `NEVER`) + `rssi_age_ms`:
   - LIVE/STALE → `SEEN <age>` (e.g. `SEEN 6 MIN`).
-  - LOST → `SEEN <age>` in the stale tint, or `LOST` past `FF_CREW_LOST_MS`.
-  - NEVER → `LINKED` (paired but never heard) — never a fabricated time.
+  - LOST → `SEEN <age>` in the stale tint, or `NO SIGNAL <age>` past
+    `FF_CREW_LOST_MS` (puck wording per PR #303, 2026-09-13 — was the
+    bare `LOST`; see `S24-signals-inbox.md`'s Amendments for the full
+    puck↔app status-vocabulary table).
+  - NEVER → `NOT SEEN YET` (paired but never heard; was `LINKED`) —
+    never a fabricated time.
 
   **Honest-data (enforced in review, [[firefly-touch-cal-default]]):** presence
   is a freshness value. Never render a guessed "online"/"now"; a cold node shows
-  its real last-heard age with the stale treatment, or `LINKED`/`LOST`.
+  its real last-heard age with the stale treatment, or `NOT SEEN YET`/`NO SIGNAL
+  <age>` (was `LINKED`/`LOST`).
 
 ### Targeting
 
@@ -80,7 +85,8 @@ nav page-dots. Every band's width derived from its worst-case y, verified by
 
 - **AC1** Unified list: recent feed rows, a CREW divider, then paired crew with
   no recent item, ordered by presence; joins feed `from_node` → crew identity.
-- **AC2** Presence labels are honest (`SEEN <age>` / stale / `LOST` / `LINKED`),
+- **AC2** Presence labels are honest (`SEEN <age>` / stale / `NO SIGNAL <age>` /
+  `NOT SEEN YET` — wording per PR #303, 2026-09-13, was `LOST` / `LINKED`),
   derived from `ff_freshness_t` + `rssi_age_ms`; never a fabricated freshness.
 - **AC3** Target defaults to WHOLE_CREW; selecting a row targets that member;
   clear returns to WHOLE_CREW; the target line always shows the current target;
@@ -199,3 +205,14 @@ redirect and the code will follow.
   one-way core→festpack dependency edge, `docs/ARCHITECTURE.md`), and the
   call into `ff_proto_encode_rally`. No wire bytes, no test behavior, and no
   product answer changed.
+
+- **2026-09-14, owner decision via the orchestrator — one status
+  vocabulary for puck and app.** This document's presence-label
+  wording (above) predates puck PR #303 (`dbbc79b`, "puck:
+  plain-language faces") and app PR #304 (`e9d2ad0`, "app:
+  plain-language states and delivery words"), which are canonical.
+  `S24-signals-inbox.md`'s Amendments section carries the full
+  puck↔app status-vocabulary table this document's labels now defer
+  to; `docs/specs/A02-crew-join.md` §6.3 carries the same table for the
+  app's crew-join copy. No behavior or wiring changed — words only,
+  already shipped.

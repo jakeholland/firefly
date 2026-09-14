@@ -110,8 +110,9 @@ void test_S20_radar_maya_stale_last_seen(void)
 {
     ff_app_state_t const *v = seed(FF_DEMO_NODE_MAYA);
     /* A real past fix, ~25 min old: LOST band, but a non-empty age_str, so
-     * the radar shows "LAST SEEN 25 MIN" rather than "NO FIX YET"
-     * (ff_radar.h's renderer contract). */
+     * the radar shows "LAST SEEN 25 MIN" rather than "NO LOCATION YET"
+     * (wording per A02/PR #303, 2026-09-13 — was "NO FIX YET";
+     * ff_radar.h's renderer contract). */
     TEST_ASSERT_EQUAL_INT(RADAR_LOST, v->radar.mode);
     TEST_ASSERT_NOT_EQUAL('\0', v->radar.age_str[0]);
     ff_shell_close(&s_shell);
@@ -120,8 +121,9 @@ void test_S20_radar_maya_stale_last_seen(void)
 void test_S20_radar_sam_no_fix(void)
 {
     ff_app_state_t const *v = seed(FF_DEMO_NODE_SAM);
-    /* Paired, never sent a fix: LOST mode but EMPTY age_str => "NO FIX
-     * YET", the honest no-fix state. */
+    /* Paired, never sent a fix: LOST mode but EMPTY age_str => "NO
+     * LOCATION YET" (wording per A02/PR #303, 2026-09-13 — was "NO FIX
+     * YET"), the honest no-fix state. */
     TEST_ASSERT_EQUAL_INT(RADAR_LOST, v->radar.mode);
     TEST_ASSERT_EQUAL_CHAR('\0', v->radar.age_str[0]);
     ff_shell_close(&s_shell);

@@ -83,7 +83,8 @@ typedef enum {
      * knows exactly where a member is and how far away they are — just
      * not which way IT is currently facing (no magnetometer driver yet,
      * or a compass that lost calibration/tilted out mid-festival) — told
-     * the user "NO FIX - RADIO ONLY / Looking for <name>", which is false
+     * the user "NO LOCATION - RADIO ONLY / Looking for <name>" (wording
+     * per A02/PR #303, 2026-09-13; was "NO FIX - RADIO ONLY"), which is false
      * on both counts: there IS a fix, and we are not "looking" for
      * anything, only for our own facing. RADAR_NOHDG is its own mode so
      * this degraded-but-informative state gets its own honest copy
@@ -276,8 +277,10 @@ typedef struct {
      * same "geometry alone, no heading" gate); when false, `bearing_deg`
      * is left at 0.0f, which callers must not read as "due north" — check
      * `bearing_valid` first, exactly like every other conditionally-known
-     * field on this struct. Primary consumer: RADAR_NOHDG's "BEARING
-     * 180 deg . S" hint (scr_radar.c), via `ff_geo_compass_point`. */
+     * field on this struct. Primary consumer: RADAR_NOHDG's compass-
+     * letter hint (e.g. "S"; scr_radar.c), via `ff_geo_compass_point` —
+     * the 2026-09-13 plain-language pass dropped the "BEARING 180 deg
+     * . S" framing and renders just the letter. */
     float bearing_deg;
     bool  bearing_valid;
     /* 2026-09-05 amendment: the selected member's OWN position freshness,
@@ -526,7 +529,8 @@ void ff_radar_smooth_reset(ff_radar_smooth_t *s);
  *   - `mode == RADAR_LOST && age_str[0] != '\0'` — a real past fix exists;
  *     show it ("LAST SEEN <age_str>").
  *   - `mode == RADAR_LOST && age_str[0] == '\0'` — never fixed; show a
- *     distinct "NO FIX YET" (or equivalent), never a "LAST SEEN" label.
+ *     distinct "NO LOCATION YET" (or equivalent; wording per A02/PR
+ *     #303, 2026-09-13 — was "NO FIX YET"), never a "LAST SEEN" label.
  * This is exactly the invariant `S06_AC1_mode_lost_via_never_had_a_fix`
  * (core/tests/test_radar.c) pins: `age_str == ""` whenever there is no
  * real fix to report, regardless of `mode`.

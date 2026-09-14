@@ -1117,8 +1117,9 @@ static void radar_render_nofix(lv_obj_t *parent, ff_radar_view_t const *r)
  * real distance and a real absolute bearing, only MY heading is missing
  * (no magnetometer driver yet, or a compass that lost calibration/tilted
  * out mid-festival). The bench-confirmed gap this fixes: the puck could
- * compute the distance to a member but still said "NO FIX - RADIO ONLY /
- * Looking for X", which is false on both counts — there IS a fix, and
+ * compute the distance to a member but still said "NO LOCATION - RADIO
+ * ONLY / Looking for X" (wording per A02/PR #303, 2026-09-13 — was
+ * "NO FIX - RADIO ONLY"), which is false on both counts — there IS a fix, and
  * the puck isn't "looking" for anything except its own facing.
  *
  * Renders the SAME name+distance headline as LIVE (r->dist_str already
@@ -1167,12 +1168,15 @@ static void radar_render_nohdg(lv_obj_t *parent, ff_radar_view_t const *r, bool 
         char point[4];
         ff_geo_compass_point(r->bearing_deg, point);
 
-        /* ASCII hyphen substituted for the spec's literal "BEARING 180 deg
-         * . S" (degree sign + U+00B0 MIDDLE DOT) — same LVGL built-in
-         * Montserrat bitmap-font ASCII-only constraint documented at
-         * radar_render_nofix's headline text just above in this file; no
-         * DEGREE SIGN or MIDDLE DOT glyph is compiled into the font
-         * subset this codebase vendors. */
+        /* Bare compass letter only (e.g. "S") since the 2026-09-13
+         * plain-language pass — both persona reviews flagged "BEARING
+         * 180 deg . S" as unreadable at a glance. That older string used
+         * an ASCII hyphen in place of the spec's literal degree sign +
+         * U+00B0 MIDDLE DOT (same LVGL built-in Montserrat bitmap-font
+         * ASCII-only constraint documented at radar_render_nofix's
+         * headline text just above in this file); the substitution no
+         * longer applies here since no degree sign or middle dot is
+         * rendered by this hint at all any more. */
         char hint[24];
         snprintf(hint, sizeof(hint), "%s", point);
 
@@ -1196,7 +1200,8 @@ static void radar_render_nohdg(lv_obj_t *parent, ff_radar_view_t const *r, bool 
  * `r->arrow_valid` (the SAME field/gate every other mode already uses
  * for "is there something to point at"):
  *  - non-ghost (arrow_valid false): headline stack only — name, a
- *    signal chip (tier / VIA RELAY / RADIO SILENT), a "heard <age> ago"
+ *    signal chip (tier / RELAYED / RADIO SILENT; wording per A02/PR
+ *    #303, 2026-09-13 — was VIA RELAY), a "heard <age> ago"
  *    line, and a trend chip when there's a real tier to refine.
  *  - ghost (arrow_valid true): the SAME stack, plus the existing ghost
  *    arrow (RADAR_LOST's real-fix styling, reused verbatim) and a

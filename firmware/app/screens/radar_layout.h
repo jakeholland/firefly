@@ -343,7 +343,7 @@ extern "C" {
  * RADAR_LAYOUT_PAGE_DOT_DY (186) with margin even for the 5-row ghost
  * case. */
 #define RADAR_LAYOUT_SIGNAL_NAME_DY         46.0f
-#define RADAR_LAYOUT_SIGNAL_CHIP_DY         72.0f /* tier / VIA RELAY / RADIO SILENT chip */
+#define RADAR_LAYOUT_SIGNAL_CHIP_DY         72.0f /* tier / RELAYED / RADIO SILENT chip (wording per A02/PR #303, 2026-09-13 — was VIA RELAY) */
 #define RADAR_LAYOUT_SIGNAL_AGE_DY          98.0f /* "heard <age> ago" line */
 #define RADAR_LAYOUT_SIGNAL_TREND_DY       124.0f /* WARMER/COLDER/STEADY chip, only when signal_tier != FF_SIGNAL_NONE */
 #define RADAR_LAYOUT_SIGNAL_LASTKNOWN_DY   156.0f /* ghost variant only: "LAST KNOWN <age>, <dist> <compass>" */

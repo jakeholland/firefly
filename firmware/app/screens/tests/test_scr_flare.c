@@ -587,7 +587,11 @@ static void S10_sender_overlay_rim_matches_glass_geometry_flipped(void)
  * S10 Amendment (2026-09-03, "Wire honesty", fix/flare-wire-send) — the
  * sender overlay's status line reads off `flare->wire_state`: the
  * confident "you are flaring" copy only while SENT, the honest amber
- * "NO MESH" retry copy while WAITING. Screen-level guard for the P0 bug
+ * "NO RADIO" retry copy while WAITING (wording per A02/PR #303,
+ * 2026-09-13 — was "NO MESH"; the assertion below still checks for the
+ * literal "NO MESH" absence, which is a vacuous pass now that the
+ * screen never renders that string — see the flagged follow-up).
+ * Screen-level guard for the P0 bug
  * fix (core/shell coverage lives in test_flare.c/test_shell.c) — this is
  * the proof the actual label text on the actual overlay changes, not
  * just the underlying enum.
