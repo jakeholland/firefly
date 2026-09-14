@@ -188,7 +188,7 @@ private struct InboxRow: View {
 
     private var previewLine: String {
         guard conversation.hasPreview else {
-            return conversation.kind == .crew ? "no signals yet" : "no messages yet"
+            return conversation.kind == .crew ? "No signals yet" : "No messages yet"
         }
         let text = InboxText.preview(conversation.previewText)
         if conversation.previewDirection == .out { return "You: \(text)" }

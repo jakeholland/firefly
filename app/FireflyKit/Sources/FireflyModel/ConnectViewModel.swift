@@ -419,13 +419,16 @@ public final class ConnectViewModel {
     }
 
     /// Pure and testable with no real wall-clock wait. Coarse on
-    /// purpose — this is "roughly how long", not a stopwatch.
+    /// purpose — this is "roughly how long", not a stopwatch. Same
+    /// ladder and wording as `FestpackSourceState.ageDescription` and
+    /// `RadarViewModel.agoPhrase` — "just now" / "N min ago" / "N h
+    /// ago" everywhere in the app, not a screen-local variant.
     public static func relativeAgo(from date: Date, to now: Date) -> String {
         let seconds = max(0, Int(now.timeIntervalSince(date)))
-        if seconds < 60 { return "\(seconds)s ago" }
+        if seconds < 60 { return "just now" }
         let minutes = seconds / 60
-        if minutes < 60 { return "\(minutes)m ago" }
+        if minutes < 60 { return "\(minutes) min ago" }
         let hours = minutes / 60
-        return "\(hours)h ago"
+        return "\(hours) h ago"
     }
 }

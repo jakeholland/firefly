@@ -37,7 +37,7 @@ struct SetDetailSheet: View {
                     .font(.system(.title2, design: .rounded).weight(.bold))
                     .foregroundStyle(Color.ffInk)
                     .multilineTextAlignment(.center)
-                Text(stage?.name ?? "Unknown stage")
+                Text((stage?.name ?? "Unknown stage").uppercased())
                     .font(.system(.subheadline, design: .rounded).weight(.semibold))
                     .foregroundStyle(stage.map { Color(fireflyHex: $0.colorRGB) } ?? Color.ffMuted)
                 Text(timeRangeText)

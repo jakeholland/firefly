@@ -304,7 +304,7 @@ final class RadarViewModelTests: XCTestCase {
         let (model, _, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
         XCTAssertEqual(model.chipText, "STRONG SIGNAL")
-        XCTAssertEqual(model.subheadline, "heard 8 SEC ago")
+        XCTAssertEqual(model.subheadline, "Heard 8 SEC ago")
         XCTAssertFalse(model.snapshot.arrowValid, "no ghost arrow when my own position is what's missing")
         XCTAssertTrue(model.showsTrendChip)
         XCTAssertEqual(model.snapshot.signalDots.count, 2)
@@ -319,7 +319,7 @@ final class RadarViewModelTests: XCTestCase {
         let (model, _, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
         XCTAssertEqual(model.chipText, "VIA RELAY")
-        XCTAssertEqual(model.subheadline, "heard 2 MIN ago")
+        XCTAssertEqual(model.subheadline, "Heard 2 MIN ago")
         XCTAssertFalse(model.showsTrendChip, "a trend on top of no direct reading would be a fabricated refinement of nothing")
     }
 
@@ -335,7 +335,7 @@ final class RadarViewModelTests: XCTestCase {
         XCTAssertEqual(model.chipText, "GOOD SIGNAL")
         XCTAssertTrue(model.snapshot.arrowValid, "a real, if old, fix must still ghost-arrow")
         XCTAssertEqual(model.trendLabel, "COLDER")
-        XCTAssertEqual(model.subheadline, "heard 3 MIN ago\nLAST KNOWN 42 MIN ago, ~1.1 km SSW")
+        XCTAssertEqual(model.subheadline, "Heard 3 MIN ago\nLast known 42 MIN ago, ~1.1 km SSW")
         // Two INDEPENDENT axes, never conflated: the position (GPS, old)
         // and the radio evidence (current, direct/relay + age).
         XCTAssertEqual(model.theirPositionLine,
@@ -350,7 +350,7 @@ final class RadarViewModelTests: XCTestCase {
                           signalTier: .strong, signalHeard: true, signalViaRelay: false, signalAgeText: "now")
         let (model, _, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
-        XCTAssertEqual(model.subheadline, "heard just now")
+        XCTAssertEqual(model.subheadline, "Heard just now")
         XCTAssertEqual(model.theirSignalLine, "Taylor's radio: strong signal, direct, heard just now")
     }
 
@@ -384,7 +384,7 @@ final class RadarViewModelTests: XCTestCase {
                               signalTier: .good, signalHeard: true, signalViaRelay: false, signalAgeText: "now")
         let (ghostModel, _, _) = makeModel(snapshot: ghost)
         ghostModel.observe(); defer { ghostModel.stopObserving() }
-        XCTAssertEqual(ghostModel.subheadline, "heard just now\nLAST KNOWN just now, ~1.1 km SSW")
+        XCTAssertEqual(ghostModel.subheadline, "Heard just now\nLast known just now, ~1.1 km SSW")
         XCTAssertEqual(ghostModel.theirPositionLine, "DANA's last known position: their puck GPS, just now, SSW")
     }
 

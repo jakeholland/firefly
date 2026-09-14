@@ -541,7 +541,7 @@ final class SettingsViewModelTests: XCTestCase {
         let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel(),
                                     client: client)
         XCTAssertEqual(vm.region, "US")
-        XCTAssertEqual(vm.nodeConfigSourceLabel, "from node")
+        XCTAssertEqual(vm.nodeConfigSourceLabel, "from radio")
     }
 
     func testChannelNameIsUnknownUntilSomethingIsImportedOrReportedByTheClient() {
@@ -637,8 +637,8 @@ final class SettingsViewModelTests: XCTestCase {
         client.nodeConfig = NodeConfigSnapshot(ownerLongName: "Firefly One", ownerShortName: "FF1")
         let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel(),
                                     client: client)
-        XCTAssertEqual(vm.nodeLongNameSourceLabel, "from node")
-        XCTAssertEqual(vm.nodeShortNameSourceLabel, "from node")
+        XCTAssertEqual(vm.nodeLongNameSourceLabel, "from radio")
+        XCTAssertEqual(vm.nodeShortNameSourceLabel, "from radio")
     }
 
     /// No source claimed until the client has actually reported an
@@ -663,12 +663,12 @@ final class SettingsViewModelTests: XCTestCase {
         vm.observe()
         client.nodeConfig = NodeConfigSnapshot(ownerLongName: "Node's Name", ownerShortName: "NODE")
         await eventually("vm.nodeConfig to arrive") { vm.nodeConfig != nil }
-        XCTAssertEqual(vm.nodeLongNameSourceLabel, "from node")
-        XCTAssertEqual(vm.nodeShortNameSourceLabel, "from node")
+        XCTAssertEqual(vm.nodeLongNameSourceLabel, "from radio")
+        XCTAssertEqual(vm.nodeShortNameSourceLabel, "from radio")
 
         vm.setNodeLongName("My Own Draft")
         XCTAssertNil(vm.nodeLongNameSourceLabel, "a typed draft must stop claiming the value came from the node")
-        XCTAssertEqual(vm.nodeShortNameSourceLabel, "from node", "the untouched field is still an honest pre-fill")
+        XCTAssertEqual(vm.nodeShortNameSourceLabel, "from radio", "the untouched field is still an honest pre-fill")
         vm.stopObserving()
     }
 

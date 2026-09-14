@@ -203,7 +203,7 @@ public actor AlmanacFestpackProvider: FestpackProviding {
             URLError.dataNotAllowed.rawValue,
         ]
         if offlineCodes.contains(urlError.code.rawValue) { return "offline" }
-        if (100...599).contains(urlError.code.rawValue) { return "http \(urlError.code.rawValue)" }
+        if (100...599).contains(urlError.code.rawValue) { return "server error (\(urlError.code.rawValue))" }
         return "network error"
     }
 
@@ -384,7 +384,7 @@ public actor AlmanacFestpackProvider: FestpackProviding {
                     // pack, show the error honestly)" — owner ask #2.
                     // Never cached, never parsed into `pack`, exactly
                     // like a parse failure just above.
-                    lastErrorMessage = "checksum mismatch"
+                    lastErrorMessage = "corrupted download"
                     return
                 }
             }

@@ -148,7 +148,7 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         await provider.refresh()
 
         let state = await provider.sourceState()
-        XCTAssertEqual(state.lastError, "http 500")
+        XCTAssertEqual(state.lastError, "server error (500)")
     }
 
     func testAFailureThenASuccessClearsTheError() async {
@@ -478,7 +478,7 @@ final class AlmanacFestpackProviderTests: XCTestCase {
         let current = await provider.current()
         XCTAssertEqual(current?.name, "Minimal Fest", "a checksum mismatch must never replace the old pack")
         let state = await provider.sourceState()
-        XCTAssertEqual(state.lastError, "checksum mismatch")
+        XCTAssertEqual(state.lastError, "corrupted download")
         // The mismatched bytes must not have been written to disk either.
         XCTAssertEqual(cache.load(key: "lost-lands-2026")?.etag, "\"old\"")
     }
