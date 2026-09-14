@@ -1612,3 +1612,46 @@ way "Decisions already made" is at the top of this spec.
    gain a "generate a new channel" action in M1–M3. Provisioning a new
    puck's channel stays CLI territory. If that changes later it is a
    deliberate scope expansion, not an oversight to paper over here.
+
+---
+
+## Amendment — 2026-09-13: decision 5 reversed by A02
+
+**"Channel PSK handling: the app never mints one"** (Decisions from the
+owner, #5, above) is **reversed** by `docs/specs/A02-crew-join.md`.
+That decision's own last sentence anticipated this: *"If that changes
+later it is a deliberate scope expansion, not an oversight to paper over
+here."* A02 is that expansion, made on the owner's decision of
+2026-09-13 after two UX reviews independently found the same hole —
+there is no way to create or share a crew from inside this app, so the
+product's first step happens in a different app or on the CLI.
+
+A02 supersedes or amends the following parts of this spec. Nothing else
+in this file changes.
+
+- **Decision 5** — the app now mints a channel PSK, derived offline
+  (HKDF-SHA256) from a human-readable crew code. A02 §1, with the
+  threat model written out honestly in §1.6: the code is a privacy
+  fence against other festival-goers, not a security boundary.
+- **Scope cut "Channel *editing*"** — already lifted by M3's
+  write-back (PR #274); A02 reuses that machinery unchanged
+  (`preparePlan` → `confirmApply` → read-back) and adds no new write
+  path.
+- **Navigation → First launch** — a fresh install now lands on A02's
+  Start/Join welcome screen, not on More with Connect pre-pushed. The
+  condition is widened from "no known radio" to "no known radio **or**
+  no crew".
+- **Navigation → Find segments** — "only the visible segment's view
+  model observes/pumps" is qualified: it stays true for render pumps
+  and is **false for a live FIND session**, which `AppGraph` owns and
+  which keeps running across segment and tab switches (owner decision,
+  2026-09-13; A02 §6.7).
+- **Connect** — reduced to a radio picker (A02 §6.6). Its CHANNEL card
+  moves to Crew → Advanced → Import a channel link; its NEARBY section
+  and every ADD TO CREW control are deleted, because with A02's
+  auto-membership there is nothing left to add: having the code is
+  membership.
+- **M2's "the Add action explains the limit"** — kept, and extended:
+  the limit is now reachable by accident (a 9th person scanning the
+  code), so A02 §4.3 requires the overflow to be listed, not just
+  explained.
