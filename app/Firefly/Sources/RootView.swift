@@ -157,6 +157,19 @@ struct RootView: View {
     /// `navigationDestination(item:)` a real tap uses — never a second,
     /// parallel presentation path. Cleared once opened.
     @State private var deepLinkThread: ConversationKind?
+    /// Set by `applyPendingDeepLink()` the moment it actually consumes a
+    /// route, and read by `applyInitialSelection()` — which runs LATER,
+    /// in a `.task`, by which time `DeepLinkRouter.consume()` has
+    /// already emptied `pending` and reading that property would say
+    /// "no deep link" on exactly the launch that had one. See
+    /// `RootLaunchPlan`'s own header for the bug (a tapped notification
+    /// losing its tab, and on a crewless install disappearing behind the
+    /// crew welcome cover).
+    ///
+    /// `@State`, so it lives and dies with this view: nothing is
+    /// persisted, and the next plain launch of an app that still has no
+    /// crew raises the welcome exactly as before.
+    @State private var appliedDeepLink = false
     /// Which row `MoreScreen` should push into the moment it next
     /// processes it (or, on macOS, the moment a sidebar row changes this
     /// while More is already selected) — `nil` opens on the plain list.
@@ -256,7 +269,20 @@ struct RootView: View {
             // the app sets the pending route before this view's first
             // frame, so a change-only observer would miss exactly the
             // case notifications exist for.
-            .onChange(of: deepLinks.pending, initial: true) { _, _ in applyPendingDeepLink() }
+            //
+            // The handler NOTICES only; it writes nothing. Every write
+            // `applyPendingDeepLink()` makes is to observed state —
+            // `selection`, `deepLinkThread`, and `showCrewOnboarding`,
+            // which drives the `.crewOnboardingCover` below — and
+            // `initial: true` means it would make them DURING the first
+            // view update, on exactly the launch that has a route. Same
+            // "modifying state during view update" hazard PR #310's
+            // review removed from `DeepLinkRouter.consume()` and this
+            // PR removes from `InboxContainerView`, so: same fix.
+            .onChange(of: deepLinks.pending, initial: true) { _, pending in
+                guard pending != nil else { return }
+                Task { @MainActor in applyPendingDeepLink() }
+            }
 
             if flareTakeover.isActive {
                 FlareTakeoverView(model: flareTakeover)
@@ -431,6 +457,26 @@ struct RootView: View {
     /// not somebody asking to transmit.
     private func applyPendingDeepLink() {
         guard let route = deepLinks.consume() else { return }
+        // Recorded BEFORE the switch, and never unset, so
+        // `applyInitialSelection()` cannot overwrite what the tap just
+        // chose (`RootLaunchPlan`'s own header).
+        appliedDeepLink = true
+        // A02 §6.1's cover comes DOWN for this launch, and this is not
+        // redundant with the flag above — the two cover the two
+        // orderings, and only one of them is fixable by the flag.
+        // MEASURED on a fresh simulator (cold `-FireflyDebugNotify
+        // thread` tap, `NotificationTapUITests`): the response can
+        // arrive AFTER `applyInitialSelection()`'s `.task` has already
+        // run, which on an install with no crew code has already raised
+        // the welcome. `Screen.Thread` was underneath it and correct —
+        // the routing worked — and completely invisible. A flag read
+        // before the fact cannot un-raise a cover, so the route lowers
+        // it itself.
+        //
+        // Lowered, not disabled: `showCrewOnboarding` is `@State` and
+        // nothing here is persisted, so the next plain launch of an app
+        // that still has no crew raises it exactly as before.
+        showCrewOnboarding = false
         switch route {
         case .find(let nodeID):
             if let nodeID { radar.select(nodeID: nodeID) }
@@ -504,7 +550,23 @@ struct RootView: View {
     /// `hasKnownRadio`/`hasCrew` are actually consulted: both known ->
     /// land on Find, otherwise show the crew welcome (§6.1's own
     /// "replaces launch lands on More with Connect pre-pushed" —
-    /// SAME condition, different destination). Runs in its own `.task`,
+    /// SAME condition, different destination).
+    ///
+    /// ... UNLESS a notification tap launched this process, in which
+    /// case this function assigns nothing at all. The decision itself
+    /// lives in `RootLaunchPlan`, whose header has the bug: an
+    /// unconditional `selection = .find` here threw away the tab a tap
+    /// had already picked, and `showCrewOnboarding = true` hid the
+    /// result behind A02 §6.1's cover on any install with no crew code.
+    ///
+    /// This function handles the ordering where the route landed FIRST
+    /// (it reads `appliedDeepLink`). The reverse — a response that
+    /// arrives after this `.task` has already run, which is what a cold
+    /// launch actually did on a fresh simulator — is handled at the
+    /// other end, by `applyPendingDeepLink()` lowering the cover itself.
+    /// Two orderings, two halves; neither alone is enough.
+    ///
+    /// Runs in its own `.task`,
     /// separate from `runInitialDemoScreen()`: that one awaits
     /// `demoRunner.waitUntilStarted()` before touching `selection` at
     /// all, so on any launch that also passes `-FireflyDemoScreen`,
@@ -512,9 +574,25 @@ struct RootView: View {
     /// screen's own choice (once it resolves) always wins — never a
     /// race between the two.
     private func applyInitialSelection() {
-        if hasKnownRadio, hasCrew {
+        let plan = RootLaunchPlan.plan(hasKnownRadio: hasKnownRadio,
+                                       hasCrew: hasCrew,
+                                       // Both halves: the flag covers the normal
+                                       // ordering (route applied during the first
+                                       // view update, this `.task` afterwards), the
+                                       // `pending` read covers the reverse one, so
+                                       // this does not depend on winning a race it
+                                       // does not control.
+                                       hasPendingDeepLink: appliedDeepLink || deepLinks.pending != nil)
+        switch plan {
+        case .deferToDeepLink:
+            // A tapped notification already chose this launch's
+            // destination. Assign nothing — not the tab, not the cover,
+            // and not the debug overrides below either: a debug launch
+            // argument must not quietly outrank a real tap.
+            return
+        case .find:
             selection = .find
-        } else {
+        case .findWithCrewWelcome:
             selection = .find
             showCrewOnboarding = true
         }

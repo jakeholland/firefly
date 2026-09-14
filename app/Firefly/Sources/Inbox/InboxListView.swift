@@ -76,11 +76,41 @@ struct InboxContainerView: View {
         }
         // A03 §3.11.3. `initial: true`: a tap that launched the app sets
         // the request before this view's first frame.
+        //
+        // The handler only NOTICES here; it does not write. See
+        // `consumeDeepLinkThread()` just below for why — this is PR
+        // #310's "modifying state during view update" fix, one view
+        // down, and `initial: true` means the launch that actually has a
+        // route is exactly the launch that would have hit it.
         .onChange(of: deepLinkThread.wrappedValue, initial: true) { _, conversation in
-            guard let conversation else { return }
-            deepLinkThread.wrappedValue = nil
-            activeThread = model.openThread(conversation)
+            guard conversation != nil else { return }
+            Task { @MainActor in consumeDeepLinkThread() }
         }
+    }
+
+    /// Takes the deep-linked conversation and opens it — OUTSIDE the
+    /// view update that noticed it.
+    ///
+    /// Both writes below are to observed state, and one of them
+    /// (`deepLinkThread`) is `RootView`'s own `@State`, reached through
+    /// a `Binding`. Making them from the `.onChange(initial: true)`
+    /// handler above meant making them DURING the first view update, on
+    /// exactly the launch where the value is already non-nil — the
+    /// "Modifying state during view update" hazard PR #310's review
+    /// removed from `DeepLinkRouter.consume()` (that function's own doc
+    /// comment), surviving here in its sibling. Same fix, same reason:
+    /// nothing observed is written while SwiftUI is mid-update.
+    ///
+    /// The value is re-read here rather than captured from the handler,
+    /// so a route that arrives between the notice and this hop opens the
+    /// NEWER conversation rather than a stale one, and a route already
+    /// consumed by another turn of this function is a no-op instead of a
+    /// second push.
+    @MainActor
+    private func consumeDeepLinkThread() {
+        guard let conversation = deepLinkThread.wrappedValue else { return }
+        deepLinkThread.wrappedValue = nil
+        activeThread = model.openThread(conversation)
     }
 }
 

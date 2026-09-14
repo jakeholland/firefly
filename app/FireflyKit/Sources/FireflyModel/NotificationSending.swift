@@ -133,6 +133,19 @@ public actor UNNotificationSending: NotificationSending {
         guard !postedIDs.contains(plan.identifier) else { return }
         remember(plan.identifier)
 
+        // `trigger: nil` — deliver immediately, no repeat, no schedule.
+        let request = UNNotificationRequest(identifier: plan.identifier,
+                                             content: Self.content(for: plan), trigger: nil)
+        try? await center.add(request)
+    }
+
+    /// The ONE place a `NotificationPlan` becomes `UNNotificationContent`
+    /// — shared with the DEBUG-only scheduling seam below so a
+    /// reproduction notification is byte-for-byte the notification the
+    /// real path posts, `userInfo` deep link included. A second
+    /// transcription would be a repro that proves nothing about the
+    /// shipping path.
+    private static func content(for plan: NotificationPlan) -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
         content.title = plan.title
         content.body = plan.body
@@ -141,10 +154,29 @@ public actor UNNotificationSending: NotificationSending {
         content.categoryIdentifier = plan.categoryIdentifier
         content.interruptionLevel = Self.level(for: plan.interruptionLevel)
         content.userInfo[NotificationUserInfoKey.deepLink] = plan.deepLink
-        // `trigger: nil` — deliver immediately, no repeat, no schedule.
-        let request = UNNotificationRequest(identifier: plan.identifier, content: content, trigger: nil)
+        return content
+    }
+
+    #if DEBUG
+    /// DEBUG-ONLY reproduction seam (`-FireflyDebugNotify`): schedule the
+    /// plan `after` seconds instead of now, so a test can background or
+    /// terminate the app before it is delivered and then TAP it.
+    /// Deliberately not on `NotificationSending` — nothing in the
+    /// shipping app may reach it, and a protocol requirement would put it
+    /// in every conformance's surface.
+    ///
+    /// Authorization is NOT requested here: `FireflyApp` asks at launch,
+    /// while the app is foregrounded and the system alert can actually be
+    /// answered, and this is called from the background transition, where
+    /// §3.11.5's whole point is that asking does not work.
+    public func scheduleDebugNotification(_ plan: NotificationPlan, after seconds: TimeInterval) async {
+        guard Self.hasAppBundle else { return }
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(seconds, 1), repeats: false)
+        let request = UNNotificationRequest(identifier: plan.identifier,
+                                             content: Self.content(for: plan), trigger: trigger)
         try? await center.add(request)
     }
+    #endif
 
     @discardableResult
     public func requestAuthorization() async -> Bool {
