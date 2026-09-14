@@ -729,9 +729,9 @@ Precisely, all of the following, on the same packet:
 3. `from != 0` and `from != connectedNodeNum`.
 4. `from` is not on the hide list (§4.5).
 5. `via_mqtt == false`.
-6. The portnum is one of **`NODEINFO_APP` (4), `POSITION_APP` (3),
-   `TEXT_MESSAGE_APP` (1), or Firefly's own private portnum
-   `FF_PORTNUM` = **269** (`firmware/core/include/ff_proto.h`).
+6. The portnum is one of **`NODEINFO_APP` (4)**, **`POSITION_APP` (3)**,
+   **`TEXT_MESSAGE_APP` (1)**, or **Firefly's own private portnum
+   `FF_PORTNUM` = 269** (`firmware/core/include/ff_proto.h`).
 
    > **269 is not `PRIVATE_APP`.** In `portnums.proto` (verified in
    > this checkout, `MeshtasticProto/portnums.pb.swift`)
