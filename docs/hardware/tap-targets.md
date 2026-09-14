@@ -126,11 +126,27 @@ opened MAP. `scr_launcher.c` now gives the hub and satellites an
 `LV_EVENT_HIT_TEST` handler that requires the point to be inside the
 disc, and the sweep measures two such controls disc-to-disc
 (`sweep_is_disc_control`, a geometric classifier: advanced hit-testing +
-a square rect + `LV_RADIUS_CIRCLE`). Shrinking a control back under its
+a square rect + `LV_RADIUS_CIRCLE`, and then `lv_obj_hit_test` asked
+directly — all four corners of the square must come back rejected and the
+centre accepted. The flags alone were not enough: `LV_OBJ_FLAG_ADV_HITTEST`
+with no handler leaves LVGL's answer at the plain bounding box, and since
+a disc gap is always the larger quantity, mis-classifying a box as a disc
+can only ever hide an overlap. Second review round of this PR — mutation:
+set the flag, drop the handler, and the sweep reports the 10 launcher
+violations again instead of passing). Shrinking a control back under its
 documented floor was the alternative, and there was no version of it that
 worked — at the binding satellite angle (144°/216°, |dy| = 103.6) two
 squares need `60 + sat/2 + 8 ≤ 103.6`, i.e. a 71 px satellite, *smaller
 than the 88 px this pass started from*.
+
+The shape is BEHAVIOUR, so it is pinned by a press, not only by the
+sweep's geometry: `S26e_launcher_square_corner_off_both_discs_emits_nothing`
+(`test_scr_intent.c`) derives a point inside both the hub's and the MAP
+satellite's bounding squares and outside both painted discs, presses it
+with the synthetic indev, and requires **no** intent — then presses the
+hub's centre and requires Radar, so a hit shape that rejected everything
+would fail rather than pass. Mutation: drop the `LV_EVENT_HIT_TEST`
+registration and the empty-glass press emits one intent again.
 
 One consequence worth knowing: `ff_scr_nav_remainder_clears_floor`
 (`scr_nav.c`), which decides whether a control partly covered by the
@@ -484,8 +500,8 @@ as one composite control.
 
 Measured on the committed fixtures, with this pass's own geometry in
 place: **576 pairs gap-checked, 3 464 skipped as "composite"**. After the
-fix: **3 901 checked, 81 skipped** (81 is the real number of
-label-plus-chip pairings), 819 by the other exclusions, 0 violations.
+fix: **3 922 checked, 81 skipped** (81 is the real number of
+label-plus-chip pairings), 850 by the other exclusions, 0 violations.
 `scr_nav.c` carried a long comment asserting that the shared handler
 "never accidentally aliases two DIFFERENT controls"; it is corrected in
 place, including its own empirical note, which was the same fact read the
@@ -557,7 +573,7 @@ numbers above moved:
 | finding | what it was | what it is |
 |---|---|---|
 | inbox chip strip ran under the compose FAB | a press on the drawn FLARE chip emitted `FF_INTENT_INBOX_NEW` | chips 57/75/62, strip at x 49..258, 9 px clear of the FAB, `_Static_assert`ed |
-| adjacency sweep aliased every button | 576 pairs checked, 3 464 skipped | 3 901 checked, 81 skipped, 0 violations |
+| adjacency sweep aliased every button | 576 pairs checked, 3 464 skipped | 3 922 checked, 81 skipped, 850 other exclusions, 0 violations |
 | launcher hub/satellite squares overlapped | 35×7 px, never reported | round controls hit-test round; sweep measures discs |
 | `FF_THEME_HIT_KEY_PX` | 68 in code, 50 in this doc, enforced nowhere | 50, asserted in `scr_compose.c` |
 | 1:1 thread band overlapped the chip strip | "NOT SENT now" sliced, then faded | band 176, strip 258, fade drawn only on real overflow |

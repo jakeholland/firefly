@@ -518,19 +518,36 @@ static void sweep_identify(lv_obj_t *obj, sweep_clickable_t *s)
 /* sweep_is_disc_control — true iff this object's REAL touchable shape is
  * the disc inscribed in its hit rect rather than the rect itself.
  *
- * Three conditions, all read off the object (a geometric classifier, not
- * a per-screen exception list): it carries LV_OBJ_FLAG_ADV_HITTEST and an
- * LV_EVENT_HIT_TEST handler, so LVGL asks rather than assuming the box;
- * its hit rect is square; and its main-part radius is LV_RADIUS_CIRCLE,
- * so what it PAINTS is the same disc. scr_launcher.c's hub and satellites
- * are the only controls in the codebase that qualify today — see
+ * A geometric classifier read off the object, not a per-screen exception
+ * list, and — second review round of PR #311 — the last condition is
+ * MEASURED rather than inferred. The flags say what an object is
+ * configured to do; only `lv_obj_hit_test` says what LVGL will actually
+ * answer a finger with, and it is the same call `lv_indev_search_obj`
+ * makes on a real touch. So:
+ *
+ *   1. it carries LV_OBJ_FLAG_ADV_HITTEST, so LVGL asks its
+ *      LV_EVENT_HIT_TEST handler instead of assuming the box;
+ *   2. its hit rect is square and its main-part radius is
+ *      LV_RADIUS_CIRCLE, so what it PAINTS is the inscribed disc;
+ *   3. LVGL, asked directly, REJECTS all four corners of that square and
+ *      ACCEPTS its centre.
+ *
+ * (3) is what the first version of this function only claimed. It tested
+ * the ADV_HITTEST flag and stopped, so a square, circle-radius control
+ * that carried the flag with NO handler — the flag alone leaves
+ * `hit_info.res` at its default `true`, i.e. the plain bounding box —
+ * would have been measured disc-to-disc while hit-testing corner-to-
+ * corner. Disc gaps are always the LARGER quantity, so that mistake can
+ * only ever hide an overlap, which is precisely the failure mode the
+ * repaired sweep exists to stop. scr_launcher.c's hub and satellites are
+ * the only controls in the codebase that qualify today — see
  * `launcher_round_hit`'s comment there for why they had to.
  *
- * This exists because the corner of a disc's bounding square is not
- * touchable and never was: measuring two discs corner-to-corner reports
- * an overlap that no finger can produce, which is the same class of
- * wrong-quantity error FF_HIT_MIN_GAP_PX's own comment rejects
- * centre-to-centre for. */
+ * This whole distinction exists because the corner of a disc's bounding
+ * square is not touchable and never was: measuring two discs corner-to-
+ * corner reports an overlap that no finger can produce, which is the
+ * same class of wrong-quantity error FF_HIT_MIN_GAP_PX's own comment
+ * rejects centre-to-centre for. */
 static bool sweep_is_disc_control(lv_obj_t *obj, ff_layout_rect_t rect)
 {
     if (!lv_obj_has_flag(obj, LV_OBJ_FLAG_ADV_HITTEST)) {
@@ -539,7 +556,31 @@ static bool sweep_is_disc_control(lv_obj_t *obj, ff_layout_rect_t rect)
     if ((rect.x2 - rect.x1) != (rect.y2 - rect.y1)) {
         return false;
     }
-    return lv_obj_get_style_radius(obj, LV_PART_MAIN) == LV_RADIUS_CIRCLE;
+    if (lv_obj_get_style_radius(obj, LV_PART_MAIN) != LV_RADIUS_CIRCLE) {
+        return false;
+    }
+
+    /* Ask LVGL itself, over the SAME rect the sweep is about to measure
+     * (`rect` carries ff_layout_rect_t's exclusive far edge, so the last
+     * real pixel is x2-1). 1px in from each true corner, for the same
+     * off-by-one reason S99's full-area tap test insets its corners. */
+    int32_t const x1 = (int32_t)rect.x1;
+    int32_t const y1 = (int32_t)rect.y1;
+    int32_t const x2 = (int32_t)rect.x2 - 1;
+    int32_t const y2 = (int32_t)rect.y2 - 1;
+    lv_point_t const corners[4] = {
+        {x1 + 1, y1 + 1},
+        {x2 - 1, y1 + 1},
+        {x1 + 1, y2 - 1},
+        {x2 - 1, y2 - 1},
+    };
+    for (int i = 0; i < 4; i++) {
+        if (lv_obj_hit_test(obj, &corners[i])) {
+            return false; /* a corner IS touchable — this is a box, whatever it paints */
+        }
+    }
+    lv_point_t const centre = {(x1 + x2) / 2, (y1 + y2) / 2};
+    return lv_obj_hit_test(obj, &centre);
 }
 
 /* sweep_disc_gap_px — edge-to-edge gap between two discs: the distance

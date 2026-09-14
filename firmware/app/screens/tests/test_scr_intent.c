@@ -1167,9 +1167,10 @@ static lv_obj_t *find_row_hit_by_name(lv_obj_t *root, char const *name_text)
 }
 
 /* The FAB's tap target carries no label (the + glyph is deco); find it
- * as the one clickable button sized exactly 112x112 (scr_inbox.c's
- * FF_INBOX_FAB_HIT_PX = PUCK_PX - 300 — the corner-anchored hit that
- * covers the whole visible amber lens). */
+ * as the one clickable button sized exactly FF_TEST_FAB_HIT_PX square
+ * (scr_inbox.c's FF_INBOX_FAB_HIT_PX = PUCK_PX - FF_INBOX_FAB_HIT_X =
+ * 412 - 268 = 144 since the tap-target sizing pass — the corner-anchored
+ * hit that covers the whole visible amber lens). */
 static lv_obj_t *find_clickable_by_size(lv_obj_t *root, int32_t w, int32_t h)
 {
     uint32_t n = lv_obj_get_child_count(root);
@@ -1222,12 +1223,13 @@ static lv_obj_t *find_nth_clickable_by_size(lv_obj_t *root, int32_t w, int32_t h
  *
  * S26e VISUAL REFRESH (2026-09-01, compass ring): the launcher no
  * longer draws five uniform 96x96 circles — idx 0 (Radar) is now the
- * 120x120 HUB disc and idx 1-4 are 88x88 SATELLITE discs
- * (scr_launcher.c). Circle CREATION order still equals launcher_idx
- * order (see that file's satellite descriptor table comment, which
- * exists specifically so this helper doesn't have to change beyond its
- * size constants) — so idx 0 is the sole 120x120 clickable, and idx
- * 1..4 are the Nth 88x88 clickable in creation order. */
+ * 120x120 HUB disc and idx 1-4 are SATELLITE discs (scr_launcher.c),
+ * 100x100 since the tap-target sizing pass and 88x88 before it. Circle
+ * CREATION order still equals launcher_idx order (see that file's
+ * satellite descriptor table comment, which exists specifically so this
+ * helper doesn't have to change beyond its size constants) — so idx 0 is
+ * the sole 120x120 clickable, and idx 1..4 are the Nth 100x100 clickable
+ * in creation order. */
 static lv_obj_t *launcher_circle_at(int idx)
 {
     int counter = 0;
@@ -1926,7 +1928,7 @@ static void S24_direct_thread_shows_at_least_4_rows_at_rest(void)
 /* which of the review's two acceptable shapes a future change picks.   */
 /* Circle matches scr_inbox.c's own FF_INBOX_FAB_DECO_X/Y/D (278,    */
 /* 280, 240 — private to that file, so mirrored here as literals, same  */
-/* convention this file already uses for the FAB hit target's 112x112   */
+/* convention this file already uses for the FAB hit target's own size   */
 /* size via find_clickable_by_size). Checked against every message ROW  */
 /* (not each label individually) — rows bound their own bubble/age/     */
 /* sender-line children, so a row disjoint from the circle guarantees   */
@@ -1953,17 +1955,19 @@ static bool rect_disjoint_from_fab_deco(lv_area_t const *a, float cx, float cy)
 }
 
 /* The FAB deco circle's ABSOLUTE center in THIS test's own render space.
- * Derived at runtime from the FAB hit target (112x112, corner-anchored —
- * already how this file locates the FAB elsewhere, find_clickable_by_size)
+ * Derived at runtime from the FAB hit target (FF_TEST_FAB_HIT_PX square,
+ * corner-anchored — already how this file locates the FAB elsewhere,
+ * find_clickable_by_size)
  * rather than hardcoding scr_inbox.c's private FF_INBOX_FAB_DECO_X/Y
  * literals: this test's bare `lv_obj_create(lv_screen_active())` parent
  * (unlike the real shell's own stripped container) carries default-theme
  * padding that shifts EVERY absolute coordinate by a constant offset —
  * measured, not assumed, elsewhere in this file's own S24 probes — so a
  * literal circle center would silently compare against the wrong origin.
- * FF_INBOX_FAB_HIT_X/Y are both 300 (scr_inbox.c); the deco circle's
- * center sits at deco (278,280) + D/2 = (398,400) in that SAME space, a
- * constant (+98,+100) offset from the hit rect's own top-left corner that
+ * FF_INBOX_FAB_HIT_X/Y are both 268 (scr_inbox.c) since the tap-target
+ * sizing pass; the deco circle's centre sits at deco (278,280) + D/2 =
+ * (398,400) in that SAME space, a constant (+130,+132) offset from the
+ * hit rect's own top-left corner that
  * survives whatever the test harness's own translation happens to be. */
 static void fab_deco_center(lv_obj_t *parent, float *out_cx, float *out_cy)
 {
@@ -3908,6 +3912,93 @@ static void S26e_launcher_click_emits_exactly_one_intent(void)
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
 }
 
+/* PR #311, second review round — the launcher's round tap shape is
+ * BEHAVIOUR, and nothing exercised it.
+ *
+ * `launcher_round_hit_cb` (scr_launcher.c) was added in this PR's fix
+ * round to stop the RADAR hub's 120x120 bounding SQUARE from claiming
+ * taps on visibly empty glass. test_face_hit_targets.c's sweep learned
+ * the same fact, but only to *classify* the controls while measuring
+ * gaps — no test anywhere pressed a point and checked what came back, so
+ * deleting the handler (or the flag) changed no test result outside the
+ * sweep's own geometry. Every `click()` test above injects LV_EVENT_
+ * CLICKED straight into the object and would pass with the hit shape
+ * gone entirely.
+ *
+ * The witness point is the exact defect the repaired sweep found: the
+ * hub's square and the lower-left MAP satellite's square overlap by
+ * 36x8 px at their corners, and before the handler a press in there —
+ * on glass showing neither disc — opened MAP. It is derived from the two
+ * measured rects, not written as a literal, and guarded three ways so it
+ * cannot quietly become vacuous: the point must be inside BOTH squares
+ * (otherwise there is no overlap left to test) and outside BOTH discs
+ * (otherwise a real control legitimately owns it). */
+static void S26e_launcher_square_corner_off_both_discs_emits_nothing(void)
+{
+    ff_app_state_t state;
+    memset(&state, 0, sizeof(state));
+    ff_scr_launcher_build(&state);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *hub = launcher_circle_at(0);
+    lv_obj_t *map = launcher_circle_at(3);
+    TEST_ASSERT_NOT_NULL(hub);
+    TEST_ASSERT_NOT_NULL(map);
+
+    lv_area_t ha;
+    lv_area_t ma;
+    lv_obj_get_coords(hub, &ha);
+    lv_obj_get_coords(map, &ma);
+
+    float const hr = (float)(ha.x2 - ha.x1 + 1) / 2.0f;
+    float const hcx = (float)ha.x1 + hr;
+    float const hcy = (float)ha.y1 + hr;
+    float const mr = (float)(ma.x2 - ma.x1 + 1) / 2.0f;
+    float const mcx = (float)ma.x1 + mr;
+    float const mcy = (float)ma.y1 + mr;
+
+    /* The overlap of the two squares, and a point well inside it: the
+     * hub's bottom edge, a quarter of the way across the shared span. */
+    int32_t const ox1 = (ha.x1 > ma.x1) ? ha.x1 : ma.x1;
+    int32_t const ox2 = (ha.x2 < ma.x2) ? ha.x2 : ma.x2;
+    int32_t const oy1 = (ha.y1 > ma.y1) ? ha.y1 : ma.y1;
+    int32_t const oy2 = (ha.y2 < ma.y2) ? ha.y2 : ma.y2;
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(ox1, ox2,
+                                         "the hub and MAP bounding squares must still overlap in x for this "
+                                         "regression to have anything to catch");
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(oy1, oy2,
+                                         "the hub and MAP bounding squares must still overlap in y for this "
+                                         "regression to have anything to catch");
+
+    int32_t const px = ox2 - (ox2 - ox1) / 4;
+    int32_t const py = (oy1 + oy2) / 2;
+
+    float const hdx = (float)px - hcx;
+    float const hdy = (float)py - hcy;
+    float const mdx = (float)px - mcx;
+    float const mdy = (float)py - mcy;
+    TEST_ASSERT_TRUE_MESSAGE(sqrtf(hdx * hdx + hdy * hdy) > hr,
+                             "the witness point must lie OUTSIDE the RADAR hub's painted disc");
+    TEST_ASSERT_TRUE_MESSAGE(sqrtf(mdx * mdx + mdy * mdy) > mr,
+                             "the witness point must lie OUTSIDE the MAP satellite's painted disc");
+
+    memset(&s_spy, 0, sizeof(s_spy));
+    tap_at(px, py);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count,
+                                  "a press on empty glass between the RADAR hub and the MAP satellite must select "
+                                  "nothing — the discs' bounding squares overlap there, and before "
+                                  "launcher_round_hit_cb this point opened MAP");
+
+    /* Non-vacuity in the other direction: the same synthetic tap on the
+     * hub's own centre must still select Radar, so a hit shape that
+     * rejected EVERYTHING would fail here rather than pass above. */
+    memset(&s_spy, 0, sizeof(s_spy));
+    tap_at((int32_t)hcx, (int32_t)hcy);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, s_spy.count, "the hub's centre must still be a tap target");
+    TEST_ASSERT_EQUAL(FF_INTENT_LAUNCHER_SELECT, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_UINT8(0u, s_spy.last.u.launcher_idx);
+}
+
 /* =================================================================== */
 /* debt/batt-low-core — the launcher's status row must tint amber on a  */
 /* low reading, exactly like scr_radar.c's status bar. Both screens     */
@@ -4847,6 +4938,7 @@ int main(void)
     RUN_TEST(S26e_launcher_map_circle_emits_index_3);
     RUN_TEST(S26e_launcher_settings_circle_emits_index_4);
     RUN_TEST(S26e_launcher_click_emits_exactly_one_intent);
+    RUN_TEST(S26e_launcher_square_corner_off_both_discs_emits_nothing);
     RUN_TEST(S26e_satellite_deg_is_n_agnostic);
     RUN_TEST(S26e_launcher_drag_across_satellites_emits_nothing);
 
