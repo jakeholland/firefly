@@ -85,6 +85,21 @@ CONFIG_LV_FONT_MONTSERRAT_36=y
 CONFIG_LV_FONT_DEFAULT_MONTSERRAT_24=y
 CONFIG_LV_USE_TILEVIEW=y
 CONFIG_LV_USE_ARC=y
+# A02 slice D (docs/specs/S02-core-crew.md's 2026-09-13 amendment, §D) —
+# Settings -> CREW -> SHOW CODE renders the crew code as an lv_qrcode of
+# its firefly://crew?... invite link.
+#
+# BOTH lines are load-bearing on THIS target, and the CANVAS one is the
+# trap the amendment calls out by name. lv_qrcode's widget class derives
+# from lv_canvas_class (lvgl/src/libs/qrcode/lv_qrcode.c), and
+# lv_conf_internal.h defaults LV_USE_CANVAS to 1 WITHOUT Kconfig (the sim,
+# firmware/lv_conf.h) but to 0 WITH it (ESP-IDF, this file). So a device
+# build that set only CONFIG_LV_USE_QRCODE=y would compile the qrcode
+# sources and then fail to link lv_canvas_class — with nothing in
+# lv_conf.h to explain it, because the sim would be perfectly green.
+# LV_USE_QRCODE itself defaults to 0 on both targets.
+CONFIG_LV_USE_QRCODE=y
+CONFIG_LV_USE_CANVAS=y
 # LVGL object heap — the radar face's static point pools are light, but
 # give the widget tree comfortable headroom (default is smaller).
 CONFIG_LV_MEM_SIZE_KILOBYTES=64

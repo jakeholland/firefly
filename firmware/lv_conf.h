@@ -66,4 +66,21 @@
  * plainly cannot do. Corrected.) */
 #define LV_USE_ARC 1
 
+/* A02 slice D (docs/specs/S02-core-crew.md's 2026-09-13 amendment, §D) —
+ * Settings -> CREW -> SHOW CODE renders the crew code as an `lv_qrcode`
+ * of its `firefly://crew?...` invite link.
+ *
+ * TWO defines, and the second one is the trap. `lv_qrcode`'s widget class
+ * derives from `lv_canvas_class` (lvgl/src/libs/qrcode/lv_qrcode.c), so
+ * the canvas widget must be compiled in too. On THIS target that is
+ * free — `lv_conf_internal.h` defaults `LV_USE_CANVAS` to 1 when no
+ * Kconfig is present — but on the ESP-IDF target the same option defaults
+ * to 0, which is why the device's sdkconfig.defaults sets BOTH
+ * explicitly. Stating both here as well keeps the two configs readable
+ * side by side rather than leaving the device build looking like it
+ * enables one option more than the sim for no reason.
+ * `LV_USE_QRCODE` itself defaults to 0 on both. */
+#define LV_USE_QRCODE 1
+#define LV_USE_CANVAS 1
+
 #endif /* LV_CONF_H */
