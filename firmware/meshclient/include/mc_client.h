@@ -303,6 +303,26 @@ typedef struct {
 } mc_nodeinfo_t;
 
 /**
+ * mc_user_reply_t — `[api]` bench finding 2026-09-14: the names carried
+ * by a LIVE `NODEINFO_APP` `MeshPacket` (`mc_events_t.on_nodeinfo_reply`
+ * — see that event's own doc comment, and `mc_send_nodeinfo_request`).
+ *
+ * Deliberately NOT `mc_nodeinfo_t` reused with the rest force-zeroed: a
+ * live NodeInfo packet's payload is only a `meshtastic_User` — no
+ * position, no battery, no `last_heard`/hops summary. Those belong to a
+ * DIFFERENT message (the want_config replay's `FromRadio.node_info`
+ * wrapper, decoded separately into `mc_nodeinfo_t` via `on_node`) that
+ * this one is not. A shared struct with unpopulated fields would invite
+ * a caller to read a fact this decode never actually carried; a
+ * dedicated, narrower type cannot be misread that way. */
+typedef struct {
+    bool has_long_name;
+    char long_name[MC_NAME_MAX];
+    bool has_short_name;
+    char short_name[MC_NAME_MAX];
+} mc_user_reply_t;
+
+/**
  * Per-packet reception metadata, measured by our local radio.
  *
  * Delivered via `mc_events_t.on_rx_meta` for every inbound MeshPacket that
@@ -603,6 +623,35 @@ typedef struct {
     void (*on_rx_meta)(void *u, uint32_t from, mc_rx_meta_t const *m);
 
     /**
+     * [api] bench finding 2026-09-14 — fires for a LIVE `NODEINFO_APP`
+     * `MeshPacket` (portnum 4), as opposed to `on_node`'s want_config
+     * NodeInfo REPLAY (`FromRadio.node_info`, a synthesized nodeDB dump
+     * with no reception time of its own — see `on_node`'s doc comment
+     * and `docs/specs/S02-core-crew.md`'s 2026-09-13 amendment §B for
+     * why the replay must never be treated as a live observation).
+     *
+     * Fires for EVERY live NodeInfo this radio decodes — a crew member's
+     * own periodic re-announcement, or the reply this library's
+     * `mc_send_nodeinfo_request` solicited; this event does not
+     * distinguish the two, because the payload itself (a bare
+     * `meshtastic_User`) carries nothing that would let it. `from` is
+     * the reporting node; `user` carries only the two name fields a
+     * live NodeInfo payload actually has (see `mc_user_reply_t`'s own
+     * doc comment for why it is not `mc_nodeinfo_t` reused). Both
+     * `has_long_name`/`has_short_name` may be false on a User that
+     * genuinely left both unset — that is a legitimate (if unusual)
+     * reply, not a decode failure, and this event still fires so a
+     * caller's own "did I get an answer at all" bookkeeping (e.g. this
+     * puck's NodeInfo-request throttle) sees it.
+     *
+     * `from == 0` never fires this (mirrors `on_rx_meta`'s own "nobody
+     * to attribute the reading to" rule) — not a NodeInfo-specific
+     * restriction, `mc_process_mesh_packet` never has a `from == 0` to
+     * dispatch from in the first place.
+     */
+    void (*on_nodeinfo_reply)(void *u, uint32_t from, mc_user_reply_t const *user);
+
+    /**
      * [api] Diagnostics — fires for a `Telemetry` message (TELEMETRY_APP,
      * portnum 67) carrying a `device_metrics` variant. `from` is the
      * reporting node — for THIS puck's comms brain reporting on itself,
@@ -822,6 +871,19 @@ typedef struct mc_client {
 
     uint32_t my_node_id;
     bool has_my_node_id;
+
+    /* Our OWN owner names and hardware model, as most recently reported
+     * by the radio itself (the want_config nodeDB entry for
+     * `my_node_id`, refreshed by an `AdminMessage.get_owner_response`).
+     * Radio-sourced, never invented: each stays "" / UNSET until the
+     * radio says otherwise, and a later report that omits a field never
+     * blanks a name already learned. Read by
+     * `mc_send_nodeinfo_request`, whose payload IS a `meshtastic_User`
+     * that the peer writes straight into its nodeDB — see that
+     * function's doc comment for why an EMPTY one is not an option. */
+    char     my_long_name[MC_NAME_MAX];
+    char     my_short_name[MC_NAME_MAX];
+    uint32_t my_hw_model;
 
     uint32_t want_config_id;
     uint32_t rng_state;
@@ -1087,6 +1149,87 @@ int mc_send_set_owner(mc_client_t *c, uint32_t dest, char const *long_name, char
  * failure).
  */
 int mc_send_get_owner_request(mc_client_t *c, uint32_t dest);
+
+/**
+ * mc_send_nodeinfo_request — `[api]` bench finding 2026-09-14: send a
+ * `NODEINFO_APP` packet to `dest` carrying THIS node's own `User` with
+ * `meshtastic_Data.want_response = true`, asking it to reply with its
+ * own `User` right away instead of waiting for its next periodic
+ * NodeInfo broadcast (Meshtastic's stock interval is hours-scale — see
+ * `docs/specs/A02-crew-join.md` §4.4 / `docs/specs/S02-core-crew.md`'s
+ * 2026-09-13 amendment §F, "a member admitted with no NodeInfo yet…
+ * the name fills in when NodeInfo actually arrives").
+ *
+ * `dest` is the REMOTE node's id — unlike `mc_send_set_owner`/
+ * `mc_send_get_owner_request`/`mc_client_set_channel`, this is not the
+ * "local admin, no key needed" path (it doesn't ride `ADMIN_APP` at
+ * all), so there is no `dest == self` requirement here.
+ *
+ * Verified against `meshtastic/firmware` tag `v2.7.26.54e0d8d`,
+ * `src/modules/NodeInfoModule.cpp`: `handleReceivedProtobuf` records
+ * every inbound NodeInfo it decodes into the local nodeDB regardless of
+ * `want_response` (that part needs no request at all — it is what an
+ * ordinary broadcast already does for every listener). The REQUEST half
+ * is `MeshModule`'s own generic reply mechanism: returning `false` from
+ * `handleReceivedProtobuf` while the incoming `Data.want_response` bit
+ * is set causes the base class to call `NodeInfoModule::allocReply`,
+ * which sends the local node's OWN `User` (`owner`) back to the
+ * requester — subject to that node's own throttle (skips if it already
+ * broadcast NodeInfo within the last ~10 minutes, or already answered
+ * the SAME requester within the last 12 hours; both are the remote
+ * node's concern, not this call's). This is the identical mechanism
+ * `mc_send_get_owner_request` already documents in full for
+ * `AdminModule::handleGetOwner` — same bit, same "an admin/info read
+ * with the bit unset is silently answered with nothing" rule, a
+ * different module.
+ *
+ * **The payload is our own `User`, and must never be an empty one.**
+ * `NodeInfoModule::handleReceivedProtobuf` does not merely inspect the
+ * request's payload for the `want_response` bit's sake — it decodes it
+ * as a `meshtastic_User` and hands it to `NodeDB::updateUser`, which
+ * overwrites the peer's stored record for our node with it (the one
+ * escape is the PKI guard: a peer that already holds a 32-byte public
+ * key for us drops any `User` that doesn't carry the matching key, and
+ * replies anyway). So an "empty ask" is not payload-free — it is a wire
+ * claim that this node has no name, and any peer without our key on
+ * file believes it, blanking the very name this feature exists to
+ * exchange. Sending our own names instead is also what Meshtastic's own
+ * clients do for this exact request (`Meshtastic-Apple`'s
+ * `exchangeUserInfo`, `NODEINFO_APP` + `wantResponse`, payload = the
+ * local `User`).
+ *
+ * The names come from `mc_client_t.my_long_name`/`my_short_name` — what
+ * the RADIO last said about its own owner (its want_config nodeDB entry
+ * for `my_node_id`, refreshed by a `get_owner_response`), never
+ * anything this library invented. Before the radio has said anything
+ * they are empty, and an empty name is encoded as absent (proto3
+ * implicit presence) rather than as a claim of emptiness.
+ *
+ * `is_licensed` is sent false, and `NodeInfoModule` discards the `User`
+ * of a request whose `is_licensed` differs from its OWN owner's — so a
+ * licensed (HAM) peer learns nothing from this payload. It still
+ * REPLIES (the reply is `MeshModule::callModules`' job, run before that
+ * module return value is even looked at), which is what this call is
+ * for. Accepted, not worked around: this library has no honest way to
+ * know the wearer's licence status, and inventing one to satisfy a
+ * remote check would be a lie about a legal fact.
+ *
+ * Rides `NODEINFO_APP` (portnum 4). `want_ack` is false — the value of
+ * this call is the reply's `User` payload
+ * (`mc_events_t.on_node`/`.on_nodeinfo`, wherever the caller's decode
+ * path lands it), not a routing-layer delivery receipt; a caller that
+ * also wants that can watch `on_routing_ack` against `out_packet_id`.
+ *
+ * `out_packet_id` — mirrors every other send in this header (optional,
+ * NULL-safe; receives the outgoing `MeshPacket.id` on success only) —
+ * is included for parity even though no caller in this tree currently
+ * correlates a NodeInfo reply back to a specific request id; a future
+ * caller that wants to is not blocked on a signature change.
+ *
+ * Returns 0 on success, negative on failure (not READY, encode/write
+ * failure).
+ */
+int mc_send_nodeinfo_request(mc_client_t *c, uint32_t dest, uint32_t *out_packet_id);
 
 /**
  * mc_client_set_channel — [api] A02 slice D2: send a Meshtastic

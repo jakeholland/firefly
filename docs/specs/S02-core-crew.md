@@ -870,3 +870,116 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
   cannot be believed from the sim alone. The bench console's
   `crew` / `crew start` / `crew leave` exist so the orchestrator can
   drive exactly that over USB.
+
+- **2026-09-14, bench finding — ask for a name on admission, both
+  sides.** A node auto-admitted (this amendment's own §B) on a
+  Position/Text/`FF_PORTNUM` packet — i.e. anything but NodeInfo itself
+  — stays "New crew member" (A02 §4.4) until its OWN radio gets around
+  to its next periodic NodeInfo broadcast, which Meshtastic schedules on
+  the order of HOURS apart, not minutes. That is a needlessly long,
+  entirely avoidable wait: the mesh already has a mechanism for asking a
+  node to identify itself on demand (`NODEINFO_APP` with
+  `Data.want_response` set — verified against `meshtastic/firmware` tag
+  `v2.7.26.54e0d8d`, `src/modules/NodeInfoModule.cpp`: any node that
+  receives such a packet from a sender that isn't itself replies with
+  its own `User`, via the same generic `MeshModule` reply mechanism
+  `mc_send_get_owner_request`'s own doc comment already documents for
+  `AdminModule`). This amendment adds the ask, on both the puck and the
+  companion app, without touching the admission rule itself (§B is
+  unchanged — this only follows a successful admission, never causes
+  one).
+
+  **Rate limit, not a one-shot.** An ordinary admission asks exactly
+  once, by construction (the roster-growth path is reached only while a
+  sender is not yet paired). The throttle is the safety net for
+  admit/un-admit churn — hide/unhide, or the 2026-09-11 unpaired-LRU
+  eviction cycling a busy roster's last slot — which could otherwise
+  re-trigger an over-the-air ask on every cycle before an earlier one
+  has had time to be answered. Ten minutes: comfortably under the
+  hours-scale periodic interval this feature exists to shortcut, long
+  enough that a reply (or its absence) has had time to show up.
+
+  **The request carries our own `User`, never an empty payload.**
+  `NodeInfoModule::handleReceivedProtobuf` does not merely check the
+  `want_response` bit: it decodes the request's payload as a
+  `meshtastic_User` and hands it to `NodeDB::updateUser`, which
+  overwrites the peer's stored record of the sender with it (the one
+  escape being the PKI guard, which drops a `User` that doesn't carry
+  the public key the peer already holds — and replies anyway). So an
+  "empty ask" is not payload-free: it is a wire claim that this node has
+  no name, which any peer without our key on file believes, blanking the
+  very name this feature exists to exchange. The names sent are the ones
+  the RADIO last reported for its own owner (the want_config nodeDB
+  entry for `my_node_id`, refreshed by a `get_owner_response`) — never
+  invented, and absent rather than empty when the radio has said
+  nothing. Meshtastic's own clients send their `User` on this exact
+  request (`Meshtastic-Apple`'s `exchangeUserInfo`).
+
+  `[api]` — `firmware/meshclient/include/mc_client.h`:
+  ```c
+  int mc_send_nodeinfo_request(mc_client_t *c, uint32_t dest, uint32_t *out_packet_id);
+
+  /* A live NODEINFO_APP MeshPacket's User fields ONLY — no position, no
+   * battery, no last_heard/hops summary (those belong to the DIFFERENT
+   * message the want_config replay decodes into mc_nodeinfo_t/on_node). */
+  typedef struct {
+      bool has_long_name;  char long_name[MC_NAME_MAX];
+      bool has_short_name; char short_name[MC_NAME_MAX];
+  } mc_user_reply_t;
+
+  /* mc_events_t gains — fires for ANY live NodeInfo (solicited or an
+   * unsolicited re-announcement; the payload can't tell the two apart),
+   * NEVER for the want_config replay (that stays on_node/mc_nodeinfo_t,
+   * unchanged): */
+  void (*on_nodeinfo_reply)(void *u, uint32_t from, mc_user_reply_t const *user);
+  ```
+  `firmware/app/ff_wiring.h` — `ff_wiring_sender_t` gains
+  `send_nodeinfo_request`, appended so existing positional initializers
+  still compile (the three in this tree were updated in this same
+  change).
+
+  **New core module** — `firmware/core/include/ff_nodeinfo_req.h`: the
+  rate-limit decision and its bounded (`FF_CREW_MAX`-sized, LRU-evicting)
+  per-node memory, pure C11, independently unit-tested
+  (`core/tests/test_nodeinfo_req.c`) with no roster/radio in the loop.
+
+  **Wiring** (`app/ff_shell.c`): `shell_try_admit` — the one place a
+  live packet grows the roster — checks the freshly-admitted member's
+  `name` field immediately after `shell_pair` succeeds; empty and due
+  per `ff_nodeinfo_req_should_send` sends through
+  `sender.send_nodeinfo_request`. A NEW handler, `shell_ev_nodeinfo_
+  reply` (wired to `on_nodeinfo_reply`), writes the name onto the
+  existing roster slot exactly like `shell_ev_node`'s own name-write for
+  the replay path, but touches NOTHING else (amendment §F's rule
+  extended: a live User-only reply has no position/time/freshness to
+  invent either). Deliberately does not touch `ff_nodeinfo_req` itself —
+  the reply is the ANSWER to a request already made, not new grounds to
+  ask again.
+
+  **Never on the replay.** `shell_ev_node` (the want_config path) never
+  calls `shell_try_admit` — this was already true before this amendment
+  (the whole point of the 2026-09-07 and 2026-09-13 replay-is-not-
+  evidence rulings) and remains the reason the NodeInfo-request hook,
+  living entirely inside `shell_try_admit`, cannot fire from a replay by
+  construction, not by an added guard.
+
+  **New acceptance criterion**, `firmware/app/tests/test_shell.c`'s
+  `NIR_*` group:
+  - **NodeInfo-request-on-admission.** A nameless admission sends
+    exactly one request, to the admitted node. An admission of an
+    already-named member (a hide/unhide cycle after naming) sends none.
+    The want_config replay never sends one. The ten-minute rate limit is
+    honoured across a hide/unhide churn cycle, including the boundary.
+    A live reply names the member through the existing display-name
+    read path. Mirrored at the meshclient layer
+    (`firmware/meshclient/tests/test_meshclient.c`): the outgoing
+    packet's `want_response` bit and its own-`User` payload (including
+    that it is the RADIO's reported owner and never another node's
+    name); a live NODEINFO_APP packet decodes to `on_nodeinfo_reply`
+    and never `on_node`; a corrupt payload counts `decode_errors` and
+    fires nothing.
+
+  App-side counterpart: `docs/specs/A02-crew-join.md` owns the
+  equivalent product rule for the companion app
+  (`CrewMembershipEngine`/`MeshtasticClient`); this amendment is the
+  puck's half only.

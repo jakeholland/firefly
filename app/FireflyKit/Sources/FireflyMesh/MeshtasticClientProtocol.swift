@@ -434,6 +434,38 @@ public protocol MeshtasticClientProtocol: AnyObject, Sendable {
     @discardableResult
     func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32
 
+    /// `[api]` — A02 slice C follow-up, bench finding 2026-09-14
+    /// (`docs/specs/A02-crew-join.md` §4.4): ask `nodeID` directly for
+    /// its NodeInfo rather than waiting on its own periodic broadcast
+    /// (Meshtastic's stock interval is on the order of hours) —
+    /// `CrewMembershipEngine` calls this once per successful admission
+    /// of a still-nameless member, rate-limited to once per node per
+    /// ten minutes (`CrewNodeInfoRequestThrottle`, `FireflyModel`).
+    /// Sends THIS node's own `User` on `NODEINFO_APP` with
+    /// `want_response = true` and `want_ack = false` — a genuine ask,
+    /// not a guaranteed message, mirroring firmware's own
+    /// `mc_send_nodeinfo_request` (`firmware/meshclient`), whose doc
+    /// comment carries the full reasoning for why the payload is our
+    /// `User` and never an empty one (the peer writes it straight into
+    /// its nodeDB, so an empty one blanks its record of us):
+    /// `NodeInfoModule::allocReply` (verified against
+    /// meshtastic/firmware tag `v2.7.26.54e0d8d`,
+    /// `src/modules/NodeInfoModule.cpp`) replies with its own `User` to
+    /// any `NODEINFO_APP` packet that carries `want_response` from a
+    /// sender that is not itself, independent of the periodic broadcast
+    /// timer.
+    ///
+    /// The reply needs no separate seam or event: it arrives as an
+    /// ordinary live `NODEINFO_APP` packet and is published on
+    /// `nodeUpdates()` through the SAME `.nodeinfoApp` decode case every
+    /// other NodeInfo broadcast already takes (`MeshtasticClient.handle(
+    /// meshPacket:)`) — which is what already updates a nameless
+    /// member's name in place once a reply lands (`CoreStore.apply(
+    /// nodeUpdate:)` -> `crew.setIdentity`). Returns the packet id, same
+    /// contract as `sendPrivate`/`sendPosition`.
+    @discardableResult
+    func requestNodeInfo(from nodeID: UInt32) async throws -> UInt32
+
     /// M3 — "Channel write-back (admin messages) behind an explicit
     /// confirmation" (docs/specs/A01-companion-app.md, M3). Writes every
     /// channel in `request` (in order), plus the LoRa config it carries
@@ -511,6 +543,24 @@ extension MeshtasticClientProtocol {
         AsyncStream { $0.finish() }
     }
     public var connectedNodeConfig: NodeConfigSnapshot? { nil }
+}
+
+/// Default "asks nothing, sends nothing" implementation of
+/// `requestNodeInfo(from:)`, same convention as the extension just
+/// above: every conformer that can actually reach a radio —
+/// `MeshtasticClient`, `StubMeshtasticClient`, `DemoMeshtasticClient` —
+/// overrides this with real (or recorded) behaviour; every OTHER
+/// existing conformer (the small test doubles scattered across
+/// `FireflyModelTests`/`app/Firefly/Tests` that predate A02 and do not
+/// exercise crew admission at all) keeps compiling unchanged. Returning
+/// `0` rather than throwing keeps this consistent with the method's own
+/// `@discardableResult` contract — nothing in `CrewMembershipEngine`
+/// (the only real caller) ever inspects the return value; it fires the
+/// call and discards it, the same fire-and-forget shape
+/// `ThreadViewModel`'s FLARE/FIND sends already use.
+extension MeshtasticClientProtocol {
+    @discardableResult
+    public func requestNodeInfo(from nodeID: UInt32) async throws -> UInt32 { 0 }
 }
 
 // MARK: - M3: channel/config write-back (admin messages) — shared types
@@ -747,6 +797,34 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     public var sentPrivateLog: [(Data, UInt32, Bool)] {
         lock.lock(); defer { lock.unlock() }
         return sentPrivate
+    }
+
+    // MARK: - A02 slice C follow-up: NodeInfo-request seam — stub semantics
+
+    private var sentNodeInfoRequests: [UInt32] = []
+
+    /// Records and returns a packet id — no reply is fabricated, same
+    /// "never invents incoming messages" rule as everything else on this
+    /// stub. A test that wants a reply injects one on `nodeUpdates()`
+    /// exactly as it would for any other live NodeInfo packet.
+    @discardableResult
+    public func requestNodeInfo(from nodeID: UInt32) async throws -> UInt32 {
+        try await transport.send(Data())
+        return recordNodeInfoRequest(nodeID)
+    }
+
+    private func recordNodeInfoRequest(_ nodeID: UInt32) -> UInt32 {
+        lock.lock()
+        sentNodeInfoRequests.append(nodeID)
+        lock.unlock()
+        return nextPacket()
+    }
+
+    /// Every node id this stub was asked to request a NodeInfo for, in
+    /// order — the seam `CrewMembershipEngine`'s tests assert on.
+    public var sentNodeInfoRequestLog: [UInt32] {
+        lock.lock(); defer { lock.unlock() }
+        return sentNodeInfoRequests
     }
 
     // Non-async on purpose — see LoopbackTransport.record(_:).
