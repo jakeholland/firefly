@@ -917,7 +917,7 @@ static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r, radar_
                                      r->heard_presence == FF_CREW_PRESENCE_STALE);
 
         lv_obj_t *headline = lv_label_create(parent);
-        lv_label_set_text(headline, heard_recently ? "NEARBY, NO LOCATION" : "NO SIGNAL YET");
+        lv_label_set_text(headline, heard_recently ? "NEARBY, NO LOCATION" : "NO LOCATION YET");
         lv_obj_set_style_text_font(headline, FF_THEME_FONT_HEADLINE, 0);
         lv_obj_set_style_text_color(headline, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
         lv_obj_align(headline, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NEVER_HEADLINE_DY);
