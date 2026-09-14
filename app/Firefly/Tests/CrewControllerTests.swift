@@ -32,7 +32,7 @@ final class CrewControllerTests: XCTestCase {
 
         let began = await controller.beginStart(humanName: "Camp Firefly")
         XCTAssertTrue(began)
-        guard case .start(let code, "Camp Firefly") = controller.pending else {
+        guard case .start(let code, "Camp Firefly", nil) = controller.pending else {
             return XCTFail("expected a staged .start")
         }
 
@@ -158,6 +158,55 @@ final class CrewControllerTests: XCTestCase {
         let extra = controller.confirmationLines.joined(separator: " ")
         XCTAssertTrue(extra.contains("Camp Firefly"), "the crew being LEFT must be named: \(extra)")
         XCTAssertTrue(extra.contains("Night Shift"), "the crew being JOINED must be named: \(extra)")
+    }
+
+    // MARK: - A02 slice E — Advanced -> "Start a new crew" while already on one
+
+    /// §6.5's "Start a new crew" reuses THIS function — `beginStart`,
+    /// unchanged in shape — so there is no second minting path to keep
+    /// in sync. The only new behaviour is the confirmation copy: the
+    /// old crew's name appears, and it says the old crew stops seeing
+    /// you (task scope item 2).
+    func testAdvanced_startingANewCrewWhileAlreadyOnOneNamesTheOldCrewAndWarnsItStopsSeeing() async {
+        let (controller, client) = makeController()
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        _ = await controller.beginStart(humanName: "Camp Firefly")
+        _ = await controller.confirmApply()
+        XCTAssertEqual(controller.profile?.humanName, "Camp Firefly")
+
+        let began = await controller.beginStart(humanName: "Night Shift")
+        XCTAssertTrue(began)
+        guard case .start(_, "Night Shift", "Camp Firefly") = controller.pending else {
+            return XCTFail("expected a staged .start carrying the OLD crew's name")
+        }
+        let extra = controller.confirmationLines.joined(separator: " ")
+        XCTAssertTrue(extra.contains("Camp Firefly"), "the OLD crew must be named: \(extra)")
+        XCTAssertTrue(extra.localizedCaseInsensitiveContains("stops seeing you"),
+                      "must say the old crew stops seeing you: \(extra)")
+
+        // AC8 still holds for this new sentence: no jargon anywhere on
+        // the main sheet.
+        let jargon = ["node", "channel", "index", "precision", "preset", "region", "PSK", "Meshtastic"]
+        for word in jargon {
+            XCTAssertFalse(extra.localizedCaseInsensitiveContains(word), "\"\(word)\" leaked onto the main sheet")
+        }
+
+        let confirmed = await controller.confirmApply()
+        XCTAssertTrue(confirmed)
+        XCTAssertEqual(controller.profile?.humanName, "Night Shift", "the NEW crew is now active")
+    }
+
+    /// A first-ever Start (no prior crew) must not gain the new
+    /// sentence just because the switching machinery now exists.
+    func testAdvanced_ordinaryFirstStartStillHasNoSwitchingSentence() async {
+        let (controller, client) = makeController()
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        let began = await controller.beginStart(humanName: "Camp Firefly")
+        XCTAssertTrue(began)
+        guard case .start(_, "Camp Firefly", nil) = controller.pending else {
+            return XCTFail("expected a staged .start with no switchingFrom")
+        }
+        XCTAssertTrue(controller.confirmationLines.isEmpty)
     }
 
     // MARK: - A02_AC7 — region gate

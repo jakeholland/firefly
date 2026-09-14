@@ -98,7 +98,7 @@ struct CrewScreen: View {
                 Section {
                     NavigationLink("Advanced — radio, frequency, invite link") {
                         CrewAdvancedScreen(
-                            controller: controller, connect: connect, client: client,
+                            controller: controller, membership: membership, connect: connect, client: client,
                             channelImport: channelImport, scanner: scanner, pairing: pairing,
                             colorblind: colorblind)
                     }
@@ -226,12 +226,33 @@ struct CrewCodeCard: View {
 /// stays reachable as Advanced → Radio).
 struct CrewAdvancedScreen: View {
     let controller: CrewController
+    /// The Joined/People list seam (`CrewMembershipProviding`) — the
+    /// SAME instance `CrewScreen` already holds, threaded through so
+    /// this screen can read the two slice-E-only seams
+    /// (`CrewHeardListProviding`/`CrewDiagnosticsProviding`) off it via
+    /// a runtime cast (`heardListViewModel`/`diagnosticsViewModel`
+    /// below) rather than widening this file's own parameter list with
+    /// a concrete `CrewMembershipEngine` type — every real composition
+    /// hands in exactly that engine (`AppGraph.crewMembership`, #306),
+    /// so the cast always succeeds outside a test that deliberately
+    /// passes a narrower stub.
+    let membership: any CrewMembershipProviding
     let connect: ConnectViewModel
     let client: any MeshtasticClientProtocol
     let channelImport: ChannelImportViewModel
     let scanner: (any NodeScanning)?
     let pairing: CrewPairingController
     let colorblind: Bool
+
+    private var heardListViewModel: CrewHeardListViewModel? {
+        guard let heard = membership as? any CrewHeardListProviding else { return nil }
+        return CrewHeardListViewModel(heard: heard, membership: membership)
+    }
+
+    private var diagnosticsViewModel: CrewDiagnosticsViewModel? {
+        guard let source = membership as? any CrewDiagnosticsProviding else { return nil }
+        return CrewDiagnosticsViewModel(source: source)
+    }
 
     var body: some View {
         List {
@@ -240,6 +261,45 @@ struct CrewAdvancedScreen: View {
                     ConnectScreen(connect: connect, client: client, channelImport: channelImport,
                                   scanner: scanner, pairing: pairing, colorblind: colorblind)
                 }
+            }
+            // §6.5: "Start a new crew (mints a fresh code; leaves the
+            // current crew)" — reuses `CrewStartView`/`CrewController
+            // .beginStart` unchanged; the only new behaviour is the
+            // confirmation sheet's extra line when a crew is already
+            // active (`CrewController.confirmationLines`'s own
+            // `.start(_, _, .some)` case).
+            Section {
+                NavigationLink("Start a new crew") {
+                    CrewStartNewCrewView(controller: controller, membership: membership)
+                }
+            }
+            // §4.7/§6.5, scoped for this slice — `CrewHeardListProviding
+            // .swift`'s own header comment on why this is crew-channel
+            // overflow/hidden state rather than raw nodeDB strangers.
+            if let heardListViewModel {
+                Section {
+                    NavigationLink("People my puck hears") {
+                        CrewHeardListView(viewModel: heardListViewModel)
+                    }
+                }
+            }
+            // §6.5's "Crew diagnostics" — plain labels, numbers only
+            // where they help; UNKNOWN is never rendered as 0
+            // (`CrewDiagnosticsViewModel`'s own header comment).
+            if let diagnosticsViewModel {
+                Section("Crew diagnostics") {
+                    LabeledContent("Channel", value: diagnosticsViewModel.channelLabel)
+                    LabeledContent("Admitted", value: diagnosticsViewModel.admittedLabel)
+                    LabeledContent("Refused", value: diagnosticsViewModel.refusedLabel)
+                    ForEach(diagnosticsViewModel.refusalBreakdown, id: \.reason) { entry in
+                        LabeledContent("  \u{2014} \(entry.reason)", value: "\(entry.count)")
+                            .font(.caption)
+                            .foregroundStyle(Color.ffMuted)
+                    }
+                    LabeledContent("Last admission", value: diagnosticsViewModel.lastAdmissionLabel)
+                }
+                .font(.system(.footnote, design: .monospaced))
+                .foregroundStyle(Color.ffMuted)
             }
             if let profile = controller.profile, let code = try? CrewCode.parse(profile.code) {
                 // §6.5: "channel index, channel name (= the code), modem

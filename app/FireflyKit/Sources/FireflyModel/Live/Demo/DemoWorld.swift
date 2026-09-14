@@ -29,6 +29,17 @@ public enum DemoCrew {
     public static let mo: UInt32 = 0x0000_1005 // paired, never heard — the honest LOST case
     public static let camp: UInt32 = 0x0000_1006 // an asserted landmark, not a person
     public static let stranger: UInt32 = 0x0000_1007 // heard, never paired
+    /// A02 slice E, `-FireflyDemoScreen crew`: paired, then hidden by
+    /// this phone (§4.5) — a real hide through the real API, never a
+    /// fabricated row. A dedicated id, not Taylor/Dana/Sam/Mo: those
+    /// four are shared scenery every other demo screenshot also
+    /// depends on staying paired and visible.
+    public static let hiddenFriend: UInt32 = 0x0000_1008
+    /// A02 slice E: seeded directly into `CrewMembershipEngine
+    /// .untracked` (`seedUntrackedForDemo`) — someone who scanned the
+    /// crew code after the roster was already full (§4.3). Never
+    /// paired.
+    public static let overflowFriend: UInt32 = 0x0000_1009
 }
 
 public struct DemoWorld: Sendable {
