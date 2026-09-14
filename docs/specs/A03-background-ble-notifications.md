@@ -1375,6 +1375,18 @@ exists and none will be faked.
    signature itself, which is why §3.1 states it as a constraint and
    not a preference). It does **not** construct a manager while
    `CBCentralManager.authorization == .notDetermined`.
+   **DONE (S1b)** — `BLETransport.prepareForRestoration()`, `nonisolated`
+   and synchronous over a lock-guarded `BLECentralStore` (the actor's own
+   `central` reads the same reference). Split three ways, because only
+   one third of it needs a manager: the authorization gate is a pure
+   function (`shouldConstructCentralManagerAtLaunch(authorization:)`,
+   `BLEStateRestorationTests`); "synchronously, and no scan" is pinned at
+   the composition root with a recording `NodeScanning`
+   (`AppGraphRestorationTests`, which asserts with no `await` between the
+   call and the check); and "exactly one real `CBCentralManager`, no
+   scan, no peripheral" is `BLERestorationHostTests` — **[app-host]**,
+   gated on `FIREFLY_HARDWARE=1` because an UNSIGNED host app is exactly
+   what TCC aborts, so it must never run on CI. It needs no radio.
 2. **A03_AC2** — the iOS central-manager options contain a **fixed**
    restore identifier and `CBCentralManagerOptionShowPowerAlertKey`
    `false`; the macOS options contain neither. **[unit]** — but note
@@ -1385,17 +1397,48 @@ exists and none will be faked.
    `internal` and add `@testable import FireflyMesh` to that file, or
    move A03_AC2 to **[app-host]**. Widening is the cheaper of the two
    and keeps the criterion radio-free.
+   **DONE (S1b)** — `BLEStateRestorationTests
+   .testA03_AC2_CentralManagerOptionsCarryTheFixedRestoreIdentifierAndNoPowerAlert`,
+   both platforms. One deviation, stated: `centralManagerOptions` was
+   made `public`, not `internal` + `@testable`, following the precedent
+   S1a already set on the sibling `connectOptions` for this exact
+   constraint rather than introducing a second convention. The identifier
+   itself is now a named constant (`BLETransport.restoreIdentifier`), so
+   "identical across executions" is pinned by a test rather than by a
+   literal nobody is watching.
 3. **A03_AC3** — a transport `.ready` that arrives with **no**
    `connect()` continuation outstanding starts a handshake and drives
    the client to `.ready`, with the nodeDB rebuilt exactly once.
    **[loopback]** — this is the restoration path's client half (2.2.2)
    and it is the single most important automated test in this spec.
+   **DONE (S1b)** — `ClientRestorationTests
+   .testA03_AC3_AReadyNobodyIsAwaitingRunsTheHandshakeAndRebuildsTheNodeDBOnce`,
+   plus the ordering this criterion does not name but the path actually
+   has: the restore can win the race and reach `.ready` BEFORE the client
+   subscribes, and `EventHub` never replays — so `beginListening()` also
+   ASKS (`MeshTransport.isLinkReady`, `[api]`), and that half has its own
+   test. The gate is now "is a `connect()` awaiting this `.ready`?"
+   rather than `hasCompletedInitialConnect`, which also closes an older
+   race in the same branch (a `.ready` processed after `connect()`
+   returned used to start a duplicate handshake); the M1 connect path is
+   pinned unchanged by
+   `testAnOrdinaryConnectAfterBeginListeningStillRunsExactlyOneHandshake`.
 4. **A03_AC4** — `BLETransport.powerStateAction(for:shouldAutoReconnect:
    hasPreferred:restorePending:)` returns, for every `CBManagerState`,
    exactly the row in §3.5's table; `.poweredOff` never clears
    `shouldAutoReconnect`; and `.poweredOn` with `restorePending == true`
    returns "do nothing" rather than a reconnect, for every combination
    of the other two inputs (§3.1's ordering fix). **[unit]**
+   **DONE (S1b)** — `BLEStateRestorationTests`, every row plus both
+   exhaustive clauses. The ordering fix it depends on is pinned
+   separately (`BLEDelegateDeliveryTests`): `willRestoreState` raises a
+   restore marker SYNCHRONOUSLY on the delegate queue before building any
+   hop, and `BLEDelegateBridge` now delivers every callback through a
+   serial chain instead of an independent `Task` each, so the actor sees
+   them in CoreBluetooth's own order. The marker is CONSUMED by the one
+   `didUpdateState` it exists to guard — a marker that outlived it would
+   suppress the Bluetooth-off-and-back-on recovery §3.5 is for, which
+   fails silently rather than loudly.
 5. **A03_AC5** — `BLETransport.reconnectLadderDelay(forAttempt:)` is
    monotonically non-decreasing, reaches the 15-minute cap, stays there
    for every later attempt, and applies jitter within ±20 %. **[unit]**
@@ -1537,6 +1580,37 @@ Grant notifications when the Connect screen asks (§3.11.5).
 | **P9** | Notification behaviour | With the phone **locked** and Sleep Focus **on**: send (a) a FLARE, (b) a DM, (c) three crew messages in a row. | (a) breaks through Focus, lights the screen, plays a sound. (b) alerts normally. (c) arrive as **one group**, and during quiet hours make no sound. Tapping (a) opens Find ▸ Radar with that person selected; tapping (b) opens their thread. | Lock screen with all three; the grouped stack expanded |
 | **P10** | Honest status | While the radio is off, read the status line on Connect and in Settings. Then pull the radio's antenna / walk 300 m away. | Never the word "connected" while the link is down; **Last heard** ages honestly; no fabricated uptime. | Status line in each state |
 
+**P3, expanded (added by S1b, because S1b is what makes it
+runnable).** "Relaunch after jettison" is one row of the table above but
+four genuinely different ways to lose the process, and they have four
+different expected outcomes on an iOS 26 phone. Run them as 3a–3d and
+record each separately — a single "P3 failed" tells us nothing, while
+"3a passed and 3c did not" is exactly the evidence §3.13's
+AccessorySetupKit decision needs.
+
+| Step | How the process dies | Expected | What it proves |
+|---|---|---|---|
+| **P3a** | **Background jettison** — background Firefly, then open camera, maps and a game until iOS evicts it (confirm in Xcode ▸ Devices ▸ Console, or by the app cold-launching later). Send a **DM** from the second radio. | **A notification arrives with the app never opened.** This is the row TN3115 lists as "removed from memory (jetsam) → relaunched: Yes", and note 5 does **not** touch it. Diagnostics afterwards shows **Restored sessions ≥ 1** and a **Last restore** age matching when the DM was sent. | §3.1 end to end: the manager was constructed during the launch cycle, `willRestoreState` fired, the session was adopted, the client handshook and the packet was decoded. |
+| **P3b** | **Force quit** — swipe Firefly out of the app switcher, then send a **FLARE**. | **Nothing, until the app is opened again.** TN3115's force-quit row was `No` before iOS 26 and stays `No` (§1.2). This is a **known limitation, recorded as one**, not a bug. | That the limitation is the one §1.2 predicts, and not something worse (e.g. a crash on next launch, or a restore that arrives hours late and confuses the status line). |
+| **P3c** | **Bluetooth toggled in Control Centre** while backgrounded, waited 60 s, toggled back. | If the process is **still alive**: recovers on its own, no user action — that is §3.5's whole point, and `.poweredOn` should `retrievePeripherals` + connect without a scan. If the process was **already jettisoned**: **no relaunch on iOS 26** (note 5), so nothing happens until the app is opened. Record **which of the two states the process was in**, or the result is uninterpretable. | §3.5's recovery path, and the honest edge of it. |
+| **P3d** | **Reboot the phone**, unlock once, do **not** open Firefly, wait 5 min, send a **DM**. | Relaunch is expected after the first unlock (TN3115 note 4). A notification arrives with no app launch. | The launch-time construction runs on the coldest possible start — nothing in the process's own memory, no scene, and a `didFinishLaunchingWithOptions` that is the only hook there is. |
+
+> **The iOS 26 caveat, stated where it will be read.** §1.2's note 5 —
+> "only apps that use AccessorySetupKit … will be relaunched" — is
+> attached to the force-quit and Control-Centre rows, and note 3 routes
+> it onto airplane mode. Firefly does not use AccessorySetupKit. Whether
+> note 5 ALSO narrows the **jetsam** row (P3a) is **[unverified]**: the
+> note is not attached to that row, TN3115's jetsam row reads a plain
+> `Yes`, and the plain reading is that ordinary eviction still
+> relaunches — but the note's own wording ("only apps that use
+> AccessorySetupKit will be relaunched") is broad enough that a reader
+> could take it to cover every relaunch. **P3a is the measurement that
+> settles it**, and it settles the value of this whole slice on iOS 26,
+> so it is the one P-step worth running first. If P3a fails on a phone
+> where the console confirms a genuine jettison, that is not an S1b bug
+> — it is the AccessorySetupKit decision (§3.13) arriving with its
+> evidence, and it should be recorded that way.
+
 Anything P-step that fails gets its device console log attached. A
 failing step is a finding, not a reason to soften the spec.
 
@@ -1657,6 +1731,49 @@ ordering fix is the kind of thing that is verified on a phone, not in
 CI. If S1a is not merged and green by **Sep 16**, S1b should wait —
 a festival build that reconnects reliably while alive beats one that
 might restore after a jettison and might have broken connecting.
+
+> **S1b status (this PR).** §3.1 and §3.5 are implemented, plus the two
+> items the S1a review left behind and the diagnostics the phone
+> protocol needs to read a result:
+> * §3.1 — `BLETransport.prepareForRestoration()` (`nonisolated`,
+>   synchronous, authorization-gated), an `AppDelegate` via
+>   `UIApplicationDelegateAdaptor` whose `didFinishLaunchingWithOptions`
+>   calls it before returning, `FireflyApp.init()` as the documented
+>   second path, and `MeshtasticClient.beginListening()` so a restored
+>   session has a listener.
+> * §3.1's ordering fix — `BLEDelegateBridge` no longer hops each
+>   callback as an independent `Task`; it delivers them through a serial
+>   chain, and raises the restore marker synchronously on the delegate
+>   queue.
+> * §3.5 — the whole power-state table as
+>   `powerStateAction(for:shouldAutoReconnect:hasPreferred:restorePending:)`,
+>   `retrievePeripherals` + pending connect on `.poweredOn` (never a scan
+>   first), honest link reasons for off/resetting/unauthorized/
+>   unsupported, `shouldAutoReconnect` preserved across a power cycle,
+>   and `CBCentralManagerOptionShowPowerAlertKey: false`.
+> * §3.6 — the ladder is evaluated on the foreground transition, not only
+>   from the sleep nudge.
+> * §3.11.5 — foregrounding onto an ALREADY-`.ready` link asks for
+>   notification permission. Without this a restored session, which
+>   reaches `.ready` exactly once and does so in the background, was
+>   never asked at all.
+> * Diagnostics — "Restored sessions" and "Last restore" (with the state
+>   it restored into), UNKNOWN rather than `0` where there is no
+>   transport to ask, same rule as S1a's counters.
+>
+> Three things S1b does NOT do, stated rather than left to be noticed:
+> * `.poweredOn` with a remembered identifier that
+>   `retrievePeripherals(withIdentifiers:)` no longer resolves arms the
+>   §3.6 ladder, which needed a mode for "there is no pending connect
+>   behind this" (`ReconnectLadder.requiresPendingConnect`). The ordinary
+>   arming is unchanged and still cancels without its pending connect.
+> * A03_AC7's **[app-host]** half (that `stopScan()` is really called on a
+>   live manager) is still not automated — unchanged from S1a; §6 P7 is
+>   where it is observed.
+> * §3.10's nine-row table still needs `lastInboundAt` (§3.8) and stays
+>   S2. The new power-state reasons are published and named
+>   (`BLETransport.bluetoothOffReason` and friends) so S2's table has
+>   something honest to read.
 
 **After the festival — everything else.** §3.8 liveness probe, §3.9 gap
 marker, §3.10's full status-line table (one honest line is worth

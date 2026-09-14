@@ -28,6 +28,14 @@ struct DiagnosticsScreen: View {
                      isLive: model.hasLinkDiagnostics, source: linkSource)
                 row(label: "Rediscovery scans started", value: model.scanStartsLabel,
                      isLive: model.hasLinkDiagnostics, source: linkSource)
+                // A03 §3.1 (S1b) — the restoration counters. §6's P3 is
+                // measured here: a relaunch after a jettison shows a
+                // restore this process actually adopted, with the state
+                // it restored into.
+                row(label: "Restored sessions", value: model.restoredSessionsLabel,
+                     isLive: model.hasLinkDiagnostics, source: linkSource)
+                row(label: "Last restore", value: model.lastRestoreLabel,
+                     isLive: model.hasLinkDiagnostics, source: linkSource)
                 row(label: "Notifications", value: model.notificationsLabel, isLive: true,
                      source: "source: this phone's notification settings")
                 row(label: "Heard in last 10 min", value: model.heardInLast10MinCount, isLive: false)

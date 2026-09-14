@@ -46,6 +46,25 @@ private final class CountingClient: MeshtasticClientProtocol, @unchecked Sendabl
     var disconnectCallCount: Int {
         lock.lock(); defer { lock.unlock() }; return _disconnectCallCount
     }
+    /// A03 §3.1 — `AppGraph.start()` attaches the client to its
+    /// transport before any connect, so a restored session has a
+    /// listener. Counted so "the graph attaches, exactly once, and does
+    /// NOT connect" is mechanical rather than read off the source.
+    private var _beginListeningCalls = 0
+    var beginListeningCalls: Int {
+        lock.lock(); defer { lock.unlock() }; return _beginListeningCalls
+    }
+
+    func beginListening() async {
+        recordBeginListening()
+    }
+
+    /// Its own synchronous function: `NSLock` may not be locked from an
+    /// asynchronous context, the same reason `record(_:)` exists on
+    /// `LoopbackTransport`.
+    private func recordBeginListening() {
+        lock.lock(); _beginListeningCalls += 1; lock.unlock()
+    }
 
     func subscriptionCount(_ stream: String) -> Int {
         lock.lock(); defer { lock.unlock() }
@@ -2115,6 +2134,255 @@ final class AppGraphViewModelLifecycleTests: XCTestCase {
 
         XCTAssertTrue(radar.isObserving,
                       "'keep the link alive in the background' means keep the screen's data alive too")
+        await graph.stop()
+    }
+}
+
+/// A `NodeScanning` double that records the two A03 §3.1/§3.6 launch and
+/// lifecycle hooks — and, just as importantly, records `scan()`/
+/// `setPreferredPeripheral` too, because A03_AC1's own wording is that
+/// preparing for restoration "never issues a `connect()` or a scan".
+///
+/// A plain class + `NSLock`, not an actor, for the same reason
+/// `RecordingNotificationSending` above is one: `prepareForRestoration()`
+/// is SYNCHRONOUS by contract (§3.1) and a test asserting it already ran
+/// by the time the call returned cannot `await` to find that out.
+final class RecordingScanner: NodeScanning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _prepareCalls = 0
+    private var _appDidBecomeActiveCalls = 0
+    private var _scanCalls = 0
+
+    var prepareCalls: Int { lock.lock(); defer { lock.unlock() }; return _prepareCalls }
+    var appDidBecomeActiveCalls: Int { lock.lock(); defer { lock.unlock() }; return _appDidBecomeActiveCalls }
+    var scanCalls: Int { lock.lock(); defer { lock.unlock() }; return _scanCalls }
+
+    func scan() async -> AsyncStream<BLEDiscoveredPeripheral> {
+        recordScan()
+        return AsyncStream { $0.finish() }
+    }
+
+    private func recordScan() {
+        lock.lock(); _scanCalls += 1; lock.unlock()
+    }
+
+    func stopScanning() async {}
+    func setPreferredPeripheral(_ id: UUID?) async {}
+
+    func prepareForRestoration() {
+        lock.lock(); _prepareCalls += 1; lock.unlock()
+    }
+
+    func appDidBecomeActive() async {
+        recordAppDidBecomeActive()
+    }
+
+    /// Synchronous for the same reason `prepareForRestoration()` above
+    /// is: `NSLock` may not be locked from an asynchronous context.
+    private func recordAppDidBecomeActive() {
+        lock.lock(); _appDidBecomeActiveCalls += 1; lock.unlock()
+    }
+}
+
+/// A03 §3.1/§3.5/§3.6/§3.11.5 — the graph's half of S1b: the launch hook
+/// the `UIApplicationDelegate` calls, the ladder tick a foreground
+/// transition owes the transport, and the permission ask a restored
+/// session would otherwise never reach.
+@MainActor
+final class AppGraphRestorationTests: XCTestCase {
+
+    private func waitUntil(_ condition: @escaping () -> Bool, timeout: Int = 200) async {
+        for _ in 0..<timeout where !condition() {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
+    private func dependencies(client: CountingClient, scanner: any NodeScanning,
+                              store: any FireflyExtraSettingsStoring = InMemorySettingsStore()) -> AppDependencies {
+        AppDependencies(client: client, location: UnavailableLocationProvider(),
+                        heading: NoHeadingProvider(), store: store, scanner: scanner)
+    }
+
+    // MARK: - §3.1, the launch hook
+
+    /// **A03_AC1, the composition-root half.** `prepareForRestoration()`
+    /// reaches the transport SYNCHRONOUSLY — before the call returns,
+    /// not on some later executor.
+    ///
+    /// This is the property §3.1 spends a paragraph on: iOS wants a
+    /// manager with the matching restore identifier to exist during the
+    /// launch cycle, and `Task { await … }` is "shortly after, on
+    /// another executor", which is not the same thing. The assertion is
+    /// written with no `await` between the call and the check on
+    /// purpose — an implementation that hopped would fail here.
+    func testA03_AC1_PreparingForRestorationReachesTheTransportSynchronously() {
+        let scanner = RecordingScanner()
+        let graph = AppGraph(dependencies: dependencies(client: CountingClient(), scanner: scanner))
+
+        graph.prepareForRestoration()
+
+        XCTAssertEqual(scanner.prepareCalls, 1, "the manager must exist before this call returns")
+        XCTAssertEqual(scanner.scanCalls, 0, "A03_AC1: restoration must never start a scan")
+    }
+
+    /// …and the whole `didFinishLaunchingWithOptions` body does it too,
+    /// before returning, which is the one that actually matters: that
+    /// method is the hook iOS guarantees on a background relaunch.
+    func testA03_AC1_DidFinishLaunchingPreparesForRestorationBeforeItReturns() async {
+        let scanner = RecordingScanner()
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client, scanner: scanner))
+
+        graph.handleDidFinishLaunching(isForegrounded: false)
+
+        XCTAssertEqual(scanner.prepareCalls, 1)
+        XCTAssertEqual(scanner.scanCalls, 0)
+        // §3.2: a background relaunch has no scene, and the delegate is
+        // the only thing that can say so. Believing we are on screen is
+        // what rendered a FLARE takeover to nobody (audit 2.3.10).
+        XCTAssertFalse(graph.isForegrounded)
+
+        // …and it kicks the graph, which is what gives the restored
+        // session a listener at all (`beginListening()`).
+        await waitUntil { client.beginListeningCalls >= 1 }
+        XCTAssertEqual(client.beginListeningCalls, 1)
+        await graph.stop()
+    }
+
+    /// Calling it repeatedly is safe — §3.1 has TWO launch paths on
+    /// purpose (the AppDelegate and `FireflyApp.init()`), and the
+    /// idempotence that makes that safe lives in the transport, so the
+    /// graph must simply pass every call through rather than
+    /// second-guessing which one is "the" launch.
+    func testPreparingForRestorationTwiceIsSafe() {
+        let scanner = RecordingScanner()
+        let graph = AppGraph(dependencies: dependencies(client: CountingClient(), scanner: scanner))
+        graph.prepareForRestoration()
+        graph.prepareForRestoration()
+        XCTAssertEqual(scanner.prepareCalls, 2, "both launch paths call through; the transport is what dedupes")
+    }
+
+    /// A03 §3.1 — the client attaches to the transport on `start()`,
+    /// with no `connect()` anywhere near it. Without this a background
+    /// relaunch has a live BLE session and nothing listening to it
+    /// (audit 2.2.2).
+    func testStartAttachesTheClientToTheTransport() async {
+        let client = CountingClient()
+        let graph = AppGraph(dependencies: dependencies(client: client, scanner: RecordingScanner()))
+
+        await graph.start()
+
+        XCTAssertEqual(client.beginListeningCalls, 1)
+        XCTAssertEqual(client.connectCallCount, 0,
+                        "restoration must adopt the session, never race a fresh connect")
+        await graph.stop()
+    }
+
+    // MARK: - §3.6, the ladder on foreground
+
+    /// A03 §3.6, the S1a review's leftover: the ladder is a clock
+    /// evaluated at "every opportunity the OS actually gives us", and a
+    /// foreground transition is one of them — the `Task.sleep` nudge did
+    /// not run while the process was suspended (§1.7), so a rung that
+    /// came due at 3 am is otherwise not noticed until some unrelated
+    /// CoreBluetooth callback happens to arrive.
+    func testForegroundingEvaluatesTheReconnectLadder() async {
+        let scanner = RecordingScanner()
+        let graph = AppGraph(dependencies: dependencies(client: CountingClient(), scanner: scanner))
+        await graph.start()
+
+        await graph.handleScenePhaseChange(.foreground)
+
+        XCTAssertEqual(scanner.appDidBecomeActiveCalls, 1)
+        await graph.stop()
+    }
+
+    /// Backgrounding is NOT a ladder tick: there is no new information
+    /// in it, and a scan started as the screen goes off is the battery
+    /// bug §3.6 exists to bound.
+    func testBackgroundingDoesNotEvaluateTheLadder() async {
+        let store = InMemorySettingsStore()
+        store.backgroundConnectEnabled = true
+        let scanner = RecordingScanner()
+        let graph = AppGraph(dependencies: dependencies(client: CountingClient(), scanner: scanner, store: store))
+        await graph.start()
+
+        await graph.handleScenePhaseChange(.background)
+
+        XCTAssertEqual(scanner.appDidBecomeActiveCalls, 0)
+        await graph.stop()
+    }
+
+    // MARK: - §3.11.5, permission after a restored session
+
+    /// A03 §3.11.5, the S1a review's other leftover.
+    ///
+    /// The restored-session case in full: the phone was relaunched into
+    /// the background, adopted the session and reached `.ready` there —
+    /// and `.ready` is not published again when the user finally opens
+    /// the app, because `EventHub` is multicast and never replayed (S1).
+    /// S1a asked for permission only on a `.ready` seen WHILE
+    /// foregrounded, so this user was never asked at all, and the first
+    /// FLARE of the festival is exactly what that costs.
+    func testAuthorizationIsAskedWhenForegroundingOntoAnAlreadyReadyLink() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client, scanner: RecordingScanner()),
+                             notifications: notifications)
+        await graph.start()
+
+        // Backgrounded `.ready` — iOS could not present a prompt here,
+        // and this is the ONLY `.ready` there will ever be.
+        client.yieldLink(.ready)
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(notifications.authorizationRequests, 0)
+
+        graph.setForegrounded(true)
+
+        await waitUntil { notifications.authorizationRequests == 1 }
+        XCTAssertEqual(notifications.authorizationRequests, 1,
+                        "a restored session reaches .ready once, in the background; foregrounding is the second trigger")
+        await graph.stop()
+    }
+
+    /// …and still only once, however many times the user leaves and
+    /// comes back. iOS shows the system prompt once anyway; asking again
+    /// after a "no" is useless and rude.
+    func testForegroundingRepeatedlyStillOnlyAsksOnce() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client, scanner: RecordingScanner()),
+                             notifications: notifications)
+        await graph.start()
+        client.yieldLink(.ready)
+        graph.setForegrounded(true)
+        await waitUntil { notifications.authorizationRequests == 1 }
+
+        for _ in 0..<3 {
+            graph.setForegrounded(false)
+            graph.setForegrounded(true)
+        }
+        try? await Task.sleep(for: .milliseconds(150))
+
+        XCTAssertEqual(notifications.authorizationRequests, 1)
+        await graph.stop()
+    }
+
+    /// Foregrounding onto a link that is NOT ready asks nothing — the
+    /// prompt belongs at a moment that can answer it, and "the app is on
+    /// screen" is only half of that. The other half is a working radio.
+    func testForegroundingWithNoReadyLinkAsksNothing() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client, scanner: RecordingScanner()),
+                             notifications: notifications)
+        await graph.start()
+
+        client.yieldLink(.disconnected)
+        graph.setForegrounded(true)
+        try? await Task.sleep(for: .milliseconds(150))
+
+        XCTAssertEqual(notifications.authorizationRequests, 0)
         await graph.stop()
     }
 }

@@ -382,7 +382,32 @@ public final class AppGraph {
     /// `FireflyApp`'s `ScenePhase` observation calls this — the one
     /// source of truth `handleInboundFlare`/the notification path below
     /// read to decide "takeover, or a local notification instead".
-    public func setForegrounded(_ active: Bool) { isForegrounded = active }
+    public func setForegrounded(_ active: Bool) {
+        isForegrounded = active
+        guard active else { return }
+        // A03 §3.11.5, the S1a review's own leftover: the ask is armed on
+        // the first `.ready` seen WHILE FOREGROUNDED — but a link that
+        // reached `.ready` while the app was backgrounded does not
+        // re-publish `.ready` when the user comes back (`EventHub` is
+        // multicast, never replayed — S1). That is precisely the
+        // restored-session case §3.1 exists for: the phone was relaunched
+        // into the background, adopted the session, handshook, and the
+        // user opens the app an hour later to a link that has been
+        // `.ready` the whole time. Without this, that user is never asked
+        // for notification permission at all, and the first FLARE of the
+        // festival is lost to the very bug audit 2.3.11 describes.
+        //
+        // Foregrounding is therefore the second trigger, and it reads a
+        // state this graph actually OBSERVED (`lastObservedLinkState`),
+        // never an assumption about what the link is probably doing.
+        guard lastObservedLinkState == .ready else { return }
+        Task { await requestNotificationAuthorizationIfNeeded() }
+    }
+
+    /// The most recent `LinkState` `observeLinkForNotificationPermission()`
+    /// actually saw. `nil` until the link publishes anything — an honest
+    /// "nothing observed yet", not a fabricated `.disconnected`.
+    private var lastObservedLinkState: LinkState?
 
     /// A03 §3.11.5 — asked in the foreground, at a moment that can
     /// actually answer.
@@ -411,6 +436,12 @@ public final class AppGraph {
         notificationPermissionObservation = Task { [weak self] in
             for await state in states {
                 guard let self else { return }
+                // Recorded FIRST, for every state, because
+                // `setForegrounded(_:)` reads it as the second trigger
+                // (its own doc comment) — a `.ready` this loop declines
+                // to act on here is exactly the one a later foreground
+                // transition has to act on.
+                self.lastObservedLinkState = state
                 guard state == .ready, self.isForegrounded else { continue }
                 await self.requestNotificationAuthorizationIfNeeded()
             }
@@ -536,6 +567,16 @@ public final class AppGraph {
         observeIncomingTextsForNotifications()
         observeLinkForNotificationPermission()
         observeHistoryOutboxFlush()
+        // A03 §3.1 — the client attaches to the transport HERE, after
+        // every subscription above is live and BEFORE any connect.
+        // Two things depend on the position of this line: a restored
+        // session's `.ready` needs a listener (and `beginListening()`
+        // additionally ASKS the transport whether the link is already up,
+        // for the ordering where the adoption won the race), and the
+        // handshake it may kick off publishes through `CoreStore`'s and
+        // this graph's own subscriptions — which is why it cannot move
+        // above `core.observe(client:)`.
+        await dependencies.client.beginListening()
         // A03 §1.10 — categories (and their actions) must be registered
         // on EVERY launch, background relaunches included, or a delivered
         // notification's category is unknown to the system and its
@@ -734,6 +775,72 @@ public final class AppGraph {
         }
     }
 
+    // MARK: - A03 §3.1: launch, including the ones nobody can see
+
+    /// Construct the BLE `CBCentralManager` NOW, synchronously, so
+    /// CoreBluetooth has a manager carrying the fixed restore identifier
+    /// during the launch cycle (§3.1, A03_AC1).
+    ///
+    /// Two callers, deliberately: the `UIApplicationDelegate` (via
+    /// `handleDidFinishLaunching(isForegrounded:)` below — the hook iOS
+    /// actually guarantees runs on a background relaunch) and
+    /// `FireflyApp.init()` as a second path for the ordering question
+    /// SwiftUI does not document. Both are idempotent, so whichever runs
+    /// first wins and the other is a no-op.
+    ///
+    /// It issues no `connect()` and starts no scan — restoration must be
+    /// allowed to ADOPT the session rather than race a fresh connect —
+    /// and it is a no-op on a stack with no BLE under it at all (the
+    /// stub stack, the iOS Simulator, the demo world), which is what
+    /// `NodeScanning`'s empty default implementation states.
+    public func prepareForRestoration() {
+        guard !shouldSkipLaunchWorkUnderXCTest else {
+            Self.log("prepareForRestoration(): running under XCTest as an app-hosted test's HOST — not constructing a manager")
+            return
+        }
+        Self.log("prepareForRestoration(): constructing the central manager")
+        dependencies.scanner?.prepareForRestoration()
+    }
+
+    /// `application(_:didFinishLaunchingWithOptions:)`'s whole body,
+    /// where it can actually be tested (the delegate itself is iOS-only
+    /// UIKit glue; this is platform-free).
+    ///
+    /// Order is the point, and it is the order §3.1 states:
+    ///
+    /// 1. `prepareForRestoration()` — SYNCHRONOUSLY, before this method
+    ///    returns to UIKit, because that is when iOS wants the manager to
+    ///    exist.
+    /// 2. Seed `isForegrounded` from `UIApplication.applicationState`
+    ///    (§3.2) — the only signal available during a background
+    ///    relaunch, before any scene exists.
+    /// 3. Kick `start()`, which is what subscribes `MeshtasticClient` to
+    ///    the transport (`beginListening()`) so the restored session has
+    ///    a listener at all. Not awaited — it cannot be, from a
+    ///    synchronous UIKit callback — and it does not need to be:
+    ///    `start()`'s own `started` guard makes it idempotent against the
+    ///    scene's `.task`, and `beginListening()` covers BOTH orderings
+    ///    of itself against the restore (its own doc comment).
+    public func handleDidFinishLaunching(isForegrounded: Bool) {
+        Self.log("handleDidFinishLaunching(isForegrounded: \(isForegrounded))")
+        prepareForRestoration()
+        setForegrounded(isForegrounded)
+        Task { await start() }
+    }
+
+    /// The same gate `autoConnectToLastKnownPeripheral()` applies, for
+    /// the same reason and with the same opt-in: `xcodebuild test
+    /// -only-testing:FireflyHardwareTests` launches `Firefly.app` as the
+    /// test HOST, and that process must not construct a second
+    /// `CBCentralManager` alongside whatever the test itself is driving
+    /// over BLE. Only `FireflyApp.init()` opts in
+    /// (`skipLaunchAutoConnectUnderXCTest: true`); every test that
+    /// constructs `AppGraph` directly defaults to `false` and exercises
+    /// the real path.
+    private var shouldSkipLaunchWorkUnderXCTest: Bool {
+        skipLaunchAutoConnectUnderXCTest && Self.isRunningUnderXCTest
+    }
+
     /// M2 — the "stay connected in background" setting actually gating
     /// something (`SettingsScreen.swift`'s toggle; PR #265 review,
     /// should-fix, tracked for M2 on `stop()`'s own doc comment below).
@@ -758,6 +865,18 @@ public final class AppGraph {
             // undo "off means off"; the user taps CONNECT again, same
             // as M1.
             await start()
+            // A03 §3.6, the S1a review's own leftover: "the ladder …
+            // evaluates `Date.now - disconnectedAt` against the table at
+            // every opportunity the OS actually gives us: each
+            // CoreBluetooth delegate callback, each
+            // `centralManagerDidUpdateState`, and each **foreground
+            // transition**". The first two are inside the transport; this
+            // is the third, and it is the one that matters most after a
+            // long suspension — the `Task.sleep` nudge does not run while
+            // the process is suspended (§1.7), so a rung that came due at
+            // 3 am is otherwise not noticed until some unrelated
+            // CoreBluetooth callback happens to arrive.
+            await dependencies.scanner?.appDidBecomeActive()
             // "app: automatic almanac refresh" (owner ask #1) — called
             // UNCONDITIONALLY, not folded into `start()`'s own body:
             // when `backgroundConnectEnabled` is ON (the common case),

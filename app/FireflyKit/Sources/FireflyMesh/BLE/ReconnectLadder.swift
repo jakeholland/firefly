@@ -18,6 +18,7 @@
 //  the process, so the DECISIONS have to be testable without one
 //  (`BLEReconnectLadderTests`, plain `swift test`, no radio).
 //
+import CoreBluetooth
 import Foundation
 
 /// The §3.6 ladder: when to open a rediscovery scan window for a
@@ -77,6 +78,21 @@ public struct ReconnectLadder: Sendable, Equatable {
     public private(set) var attempt: Int = 0
     private(set) var nextFireAt: Date?
     private(set) var scanStartedAt: Date?
+    /// A03 §3.5 — whether this ladder is a backstop BEHIND a pending
+    /// `central.connect()` (the ordinary case, `true`) or the only
+    /// mechanism running (`false`).
+    ///
+    /// The second case is exactly one row of §3.5's table: Bluetooth
+    /// came back on, `retrievePeripherals(withIdentifiers:)` did not
+    /// resolve the remembered identifier, so there is no `CBPeripheral`
+    /// to issue a connect against at all and "arm the §3.6 ladder
+    /// instead" is the whole recovery. Keeping the distinction explicit
+    /// — rather than letting the transport write the identifier into
+    /// `pendingConnectPeripheralID` without having issued anything —
+    /// is what stops a ladder armed this way from silently suppressing
+    /// the next real `issueConnect(_:)` for the same peripheral
+    /// (`BLETransport.shouldIssueConnect(for:pendingConnectPeripheralID:)`).
+    public private(set) var requiresPendingConnect: Bool = true
 
     public init() {}
 
@@ -111,10 +127,13 @@ public struct ReconnectLadder: Sendable, Equatable {
     /// callbacks for one loss must not restart the clock, or the first
     /// window would never arrive.
     public mutating func arm(target: UUID, disconnectedAt: Date,
+                             requiresPendingConnect: Bool = true,
                              jitterFraction: Double = ReconnectLadder.randomJitterFraction()) {
-        if self.target == target, self.disconnectedAt == disconnectedAt { return }
+        if self.target == target, self.disconnectedAt == disconnectedAt,
+           self.requiresPendingConnect == requiresPendingConnect { return }
         self.target = target
         self.disconnectedAt = disconnectedAt
+        self.requiresPendingConnect = requiresPendingConnect
         attempt = 1
         scanStartedAt = nil
         nextFireAt = disconnectedAt.addingTimeInterval(
@@ -152,10 +171,12 @@ public struct ReconnectLadder: Sendable, Equatable {
                                   jitterFraction: Double = ReconnectLadder.randomJitterFraction()) -> Action {
         guard let target else { return .doNothing }
         // The same two conditions `shouldRunReconnectFallbackScan` has
-        // always checked: we still want to reconnect, and the pending
-        // connect this ladder is a backstop FOR is still the one
-        // outstanding. Either failing means the ladder is stale.
-        guard shouldAutoReconnect, pendingConnectPeripheralID == target else {
+        // always checked — with the second one waived for the one §3.5
+        // row that has no pending connect to check against (see
+        // `requiresPendingConnect`'s own doc comment). A ladder armed
+        // that way still stands down the moment auto-reconnect does.
+        guard shouldAutoReconnect,
+              !requiresPendingConnect || pendingConnectPeripheralID == target else {
             return cancel() ? .endScan(.cancelled) : .doNothing
         }
         if let scanStartedAt {
@@ -215,8 +236,11 @@ public enum BLEDisconnectAction: Sendable, Equatable {
 /// `BLETransport.ladderAction(forCentralState:shouldAutoReconnect:
 /// hasPendingConnect:)`; this enum is the pure half, same as every other
 /// decision type in this file. It is the ladder's share of §3.5 and
-/// nothing more: the full power-state machine (`retrievePeripherals`,
-/// `powerStateAction(...)`, the restore-ordering fix) is S1b.
+/// nothing more — the SESSION's share (`retrievePeripherals`, the
+/// terminal-versus-transient question, the restore-ordering fix) is
+/// `BLEPowerStateAction` below, and `handleCentralStateUpdate` applies
+/// both: this one first, because a scan window left open across a power
+/// cycle is the 2.2.6 battery bug whatever the session is doing.
 public enum BLELadderPowerAction: Sendable, Equatable {
     /// Stand the ladder down, closing any scan window it still owes a
     /// `stopScan()` for.
@@ -248,14 +272,32 @@ public struct BLELinkDiagnostics: Sendable, Equatable {
     /// Whether the system told us it was reconnecting on its own at the
     /// most recent disconnect.
     public var isSystemReconnecting: Bool
+    /// A03 §3.1 (S1b) — how many CoreBluetooth state RESTORATIONS this
+    /// process has adopted. `0` here is a real observation ("this
+    /// process was not relaunched into a restored session"), which is
+    /// why it is a count and not an optional; `lastRestoreAt` below is
+    /// the one that must stay nil until something actually happened.
+    public var restores: Int
+    /// When the most recent restore was adopted. `nil` — never a
+    /// fabricated date — when this process has adopted none.
+    public var lastRestoreAt: Date?
+    /// What that restore restored INTO — the restored peripheral's own
+    /// `CBPeripheralState`, mapped onto the branch it took. `nil` until
+    /// there has been one.
+    public var lastRestoreAction: BLERestoreAction?
 
     public init(scanStarts: Int = 0, reconnects: Int = 0, lastReconnectAt: Date? = nil,
-                lastDisconnectAt: Date? = nil, isSystemReconnecting: Bool = false) {
+                lastDisconnectAt: Date? = nil, isSystemReconnecting: Bool = false,
+                restores: Int = 0, lastRestoreAt: Date? = nil,
+                lastRestoreAction: BLERestoreAction? = nil) {
         self.scanStarts = scanStarts
         self.reconnects = reconnects
         self.lastReconnectAt = lastReconnectAt
         self.lastDisconnectAt = lastDisconnectAt
         self.isSystemReconnecting = isSystemReconnecting
+        self.restores = restores
+        self.lastRestoreAt = lastRestoreAt
+        self.lastRestoreAction = lastRestoreAction
     }
 }
 
@@ -265,4 +307,90 @@ public struct BLELinkDiagnostics: Sendable, Equatable {
 /// actually built, or nothing at all on a stack that has no BLE).
 public protocol BLELinkDiagnosticsProviding: Sendable {
     func linkDiagnostics() async -> BLELinkDiagnostics
+}
+
+/// A03 §3.5's table — what a `CBManagerState` transition means for the
+/// SESSION (as opposed to `BLELadderPowerAction` above, which is the
+/// ladder's share of the same callback).
+///
+/// Extracted for the reason every other decision in this file is: a
+/// `CBCentralManager` cannot be constructed outside a signed `.app`, so
+/// a rule only reachable through a live manager is a rule no unit test
+/// can check. `BLEStateRestorationTests` pins every row (A03_AC4).
+public enum BLEPowerStateAction: Sendable, Equatable {
+    /// Nothing to do — and deliberately the answer for `.poweredOn`
+    /// while a restore is pending (§3.1's ordering fix), for
+    /// `.poweredOn` with auto-reconnect off (the user disconnected;
+    /// Bluetooth coming back is not them asking to reconnect), for
+    /// `.poweredOn` with no remembered peripheral (there is nothing to
+    /// reconnect TO — and connecting to whatever Meshtastic node
+    /// happens to be advertising would be connecting to a stranger's
+    /// radio), and for `.unknown` (transient, says nothing yet).
+    case doNothing
+    /// `.poweredOn`, auto-reconnect wanted, a remembered peripheral:
+    /// `retrievePeripherals(withIdentifiers:)` then a pending
+    /// `connect()`. NEVER a scan first — §3.5's own wording, and the
+    /// battery reason §4.1 gives.
+    ///
+    /// Whether that retrieve actually RESOLVES is not knowable from
+    /// this function's inputs (it needs the live manager), so §3.5's
+    /// "if the identifier no longer resolves, arm the §3.6 ladder
+    /// instead" is handled at the call site — see
+    /// `BLETransport.retrieveAndReconnectPreferred()`.
+    case retrieveAndConnect
+    /// `.poweredOff`: cancel the ladder, end any scan window, drop the
+    /// characteristic references, clear the pending connect
+    /// (CoreBluetooth has invalidated it), fail every outstanding
+    /// continuation and publish `.disconnected(reason: "bluetooth-off")`.
+    /// `shouldAutoReconnect` is deliberately PRESERVED — the user
+    /// turning Bluetooth off is not the user asking us never to
+    /// reconnect.
+    case bluetoothOff
+    /// `.resetting`: a transient loss, not a terminal one. Publish the
+    /// honest reason and wait for the next transition.
+    case transientLoss
+    /// `.unauthorized`: terminal, and published as its OWN reason so the
+    /// status line can say "Firefly can't use Bluetooth" rather than a
+    /// generic failure (§3.10).
+    case unauthorized
+    /// `.unsupported`: terminal, same reasoning.
+    case unsupported
+}
+
+/// A03 §3.1's other table: what a RESTORED peripheral's own
+/// `CBPeripheralState` means (the Meshtastic-Apple pattern — branch on
+/// the state rather than assume one).
+///
+/// Pure, and `public`, for the same reason as everything else here:
+/// `willRestoreState` can only be reached with a live manager and a
+/// relaunch, so the DECISION has to be checkable without one.
+public enum BLERestoreAction: Sendable, Equatable {
+    /// `.connected` — already up at the GATT level. Adopt it: rediscover
+    /// services (THIS process has no characteristic references), let the
+    /// ordinary connect chain run to `completeConnect`, and let the
+    /// client re-run the handshake, because A01 deliberately does not
+    /// persist the nodeDB. No `central.connect()`: it already is
+    /// connected.
+    case adoptConnected
+    /// `.connecting` — a pending connect from before the relaunch, which
+    /// CoreBluetooth resumes on its own. Record it as pending so an
+    /// explicit `connect()` racing this relaunch does not issue a
+    /// SECOND native connect for the same peripheral.
+    case keepPendingConnect
+    /// `.disconnected`/`.disconnecting` — re-arm a pending connect the
+    /// same way a mid-session drop does (§3.4/§3.6).
+    case reconnect
+}
+
+public extension BLERestoreAction {
+    /// §3.1's branch, as a total function of the restored peripheral's
+    /// own state.
+    static func action(forPeripheralState state: CBPeripheralState) -> BLERestoreAction {
+        switch state {
+        case .connected: return .adoptConnected
+        case .connecting: return .keepPendingConnect
+        case .disconnected, .disconnecting: return .reconnect
+        @unknown default: return .reconnect
+        }
+    }
 }

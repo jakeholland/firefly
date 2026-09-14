@@ -120,4 +120,40 @@ public protocol NodeScanning: AnyObject, Sendable {
     /// The peripheral a subsequent `connect()` should prefer over
     /// whatever else is advertising.
     func setPreferredPeripheral(_ id: UUID?) async
+
+    /// A03 §3.1 — **`[api]`, S1b.** Construct the `CBCentralManager`,
+    /// with its fixed restore identifier, before returning.
+    ///
+    /// `nonisolated` and SYNCHRONOUS by contract, not by coincidence:
+    /// the caller is `UIApplicationDelegate
+    /// .application(_:didFinishLaunchingWithOptions:)`, and §3.1's whole
+    /// requirement is that the manager exists before that method returns
+    /// to UIKit. An `async` requirement here would let an implementation
+    /// satisfy it on another executor, which is the failure this closes.
+    ///
+    /// This protocol is the app's ONE handle on the BLE transport
+    /// (`AppDependencies.scanner`), which is why the two launch/lifecycle
+    /// hooks live here rather than in a second seam the composition root
+    /// would have to wire separately — §3.1 names this choice explicitly
+    /// ("S1 either adds `prepareForRestoration()` to `NodeScanning` … or
+    /// `AppDependencies` grows a concrete accessor. The protocol
+    /// addition is the better shape").
+    ///
+    /// Default: **nothing**. A conformer with no CoreBluetooth under it
+    /// (every test double; the iOS Simulator's stub stack, which has no
+    /// Bluetooth at all) has nothing to prepare, and an empty default is
+    /// the honest statement of that rather than a fatalError nobody
+    /// could act on.
+    func prepareForRestoration()
+
+    /// A03 §3.6 — the ladder is a clock evaluated "at every opportunity
+    /// the OS actually gives us", and a foreground transition is one of
+    /// them: nothing inside CoreBluetooth can see it, and a suspended
+    /// process's `Task.sleep` nudge may never have fired.
+    func appDidBecomeActive() async
+}
+
+public extension NodeScanning {
+    func prepareForRestoration() {}
+    func appDidBecomeActive() async {}
 }

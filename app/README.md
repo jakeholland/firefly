@@ -469,6 +469,28 @@ being off means the link — and the radio's own reconnect-on-loss loop
 underneath it — actually stands down when backgrounded, not just that
 the screen stops updating.
 
+**The relaunch test (A03 S1b)** — the one the two above cannot reach,
+because both of them assume the process is still alive. Background the
+app, then open camera/maps/a game until iOS evicts Firefly from memory
+(Xcode ▸ Devices ▸ Console confirms it; so does the app cold-launching
+later), and have a second radio send a DM. A notification should arrive
+**with the app never opened**, and Diagnostics afterwards should show
+**Restored sessions ≥ 1** with a **Last restore** age matching when the
+DM was sent. That pair of rows is the only way to tell "state
+restoration worked" apart from "the app was never actually killed" after
+the fact. The full protocol — including the force-quit and
+Control-Centre cases, which are expected to FAIL on iOS 26 and why — is
+`docs/specs/A03-background-ble-notifications.md` §6, step P3.
+
+A note for anyone changing launch code: the `CBCentralManager` is
+constructed at launch now, synchronously, from
+`AppGraph.handleDidFinishLaunching(isForegrounded:)` (the iOS
+`UIApplicationDelegate`) and `FireflyApp.init()`. It must stay
+synchronous — `Task { await … }` there hops off the launch run-loop turn,
+and iOS wants the manager with the matching restore identifier to exist
+DURING the launch cycle. `BLETransport.prepareForRestoration()`'s own doc
+comment has the full reasoning.
+
 `app/FireflyHardwareTests/BLEHardwareTests.swift`'s
 `testReconnectsOnItsOwnAfterFirefly2IsPowerCycled` automates the
 power-cycle test's ASSERTIONS (gated behind `FIREFLY_HARDWARE=1` AND

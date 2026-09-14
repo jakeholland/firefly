@@ -405,6 +405,16 @@ public protocol MeshtasticClientProtocol: AnyObject, Sendable {
     var connectedNodeNum: UInt32? { get }
 
     func connect() async throws
+    /// A03 §3.1 — **`[api]`, S1b.** Attach to the transport before any
+    /// connect: subscribe to its events, and adopt a link that is
+    /// already up because CoreBluetooth state restoration handed this
+    /// process a live session. `AppGraph.start()` is the one caller.
+    ///
+    /// Default: **nothing**. A client with no restorable transport under
+    /// it (the stub, the scripted demo) has nothing to attach to, and an
+    /// empty default is the honest statement of that — it also keeps
+    /// this a pure addition to a seam several stacks conform to.
+    func beginListening() async
     func disconnect() async
     /// Returns the packet id the radio assigned, so the caller can match
     /// a later Routing ack to this message.
@@ -603,6 +613,12 @@ public let meshBroadcastAddress: UInt32 = 0xFFFF_FFFF
 public func isBroadcastDestination(_ to: UInt32) -> Bool {
     to == meshBroadcastAddress
 }
+public extension MeshtasticClientProtocol {
+    /// See `beginListening()`'s own doc comment on the protocol: a
+    /// client with nothing restorable under it has nothing to attach to.
+    func beginListening() async {}
+}
+
 
 /// Milestone-1 stand-in. Reaches `.ready` over whatever transport it is
 /// given and records what was sent; it NEVER invents nodes, positions or

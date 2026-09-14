@@ -203,6 +203,46 @@ final class DiagnosticsViewModel {
         return PresenceAge.ago(now().timeIntervalSince(at))
     }
 
+    /// A03 §3.1 (S1b) — how many CoreBluetooth state RESTORATIONS this
+    /// process has adopted: how many times iOS relaunched Firefly into a
+    /// session it had kept alive. This is the number P3 (§6) is actually
+    /// measuring, and the only way to tell "restoration worked" apart
+    /// from "the app was never killed" after the fact.
+    ///
+    /// UNKNOWN, not "0", where there is no BLE transport to ask — "this
+    /// process was not restored" and "there is nothing here that could
+    /// be restored" are different facts, same rule the scan/reconnect
+    /// counters already follow.
+    var restoredSessionsLabel: String {
+        _ = tickTrigger
+        guard linkDiagnostics != nil else { return Self.unknown }
+        return "\(diagnostics.restores)"
+    }
+
+    /// When the most recent restore was adopted, and what it restored
+    /// INTO (§3.1 branches on the restored peripheral's own
+    /// `CBPeripheralState`, so which branch it took is the interesting
+    /// half). UNKNOWN until one has actually happened — never a
+    /// fabricated date, and never "never".
+    var lastRestoreLabel: String {
+        _ = tickTrigger
+        guard linkDiagnostics != nil, let at = diagnostics.lastRestoreAt else { return Self.unknown }
+        let ago = PresenceAge.ago(now().timeIntervalSince(at))
+        guard let action = diagnostics.lastRestoreAction else { return ago }
+        return "\(ago) \u{00B7} \(Self.restoreWords(action))"
+    }
+
+    /// The `BLERestoreAction` cases in the register this screen uses —
+    /// plain words for what the session was doing when we got it back,
+    /// not an enum case name.
+    static func restoreWords(_ action: BLERestoreAction) -> String {
+        switch action {
+        case .adoptConnected: return "still connected"
+        case .keepPendingConnect: return "still connecting"
+        case .reconnect: return "had dropped"
+        }
+    }
+
     /// A03 §3.11.5 — said plainly, because a user whose notifications
     /// are off has an app that will never tell them about a FLARE.
     var notificationsLabel: String {

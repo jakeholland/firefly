@@ -334,6 +334,87 @@ final class BLEReconnectLadderTests: XCTestCase {
         XCTAssertEqual(evaluate(&ladder, at: at(step + 20), jitter: 0), .startScan(attempt: 1))
     }
 
+    // MARK: - A03 §3.5 — a ladder with no pending connect behind it
+
+    /// §3.5's "if the identifier no longer resolves, arm the §3.6 ladder
+    /// instead" row: Bluetooth came back on,
+    /// `retrievePeripherals(withIdentifiers:)` returned nothing, and
+    /// there is therefore no `CBPeripheral` to issue a connect against
+    /// at all. The ladder still has to run — it is the whole recovery —
+    /// so its usual "is the pending connect still mine?" check is waived
+    /// for exactly this arming.
+    ///
+    /// The default arming is unchanged and still cancels on a nil
+    /// pending connect (the test below), which is what keeps this from
+    /// being a quiet weakening of A03_AC6.
+    func testALadderArmedWithoutAPendingConnectStillOpensItsWindow() {
+        var ladder = ReconnectLadder()
+        ladder.arm(target: target, disconnectedAt: t0, requiresPendingConnect: false, jitterFraction: 0)
+
+        XCTAssertEqual(ladder.evaluate(now: at(19), shouldAutoReconnect: true,
+                                        pendingConnectPeripheralID: nil, jitterFraction: 0),
+                       .doNothing, "the rung is not due yet")
+        XCTAssertEqual(ladder.evaluate(now: at(20), shouldAutoReconnect: true,
+                                        pendingConnectPeripheralID: nil, jitterFraction: 0),
+                       .startScan(attempt: 1))
+        // And it still CLOSES on time — the 2.2.6 battery bound is not
+        // waived along with the pending-connect check.
+        XCTAssertEqual(ladder.evaluate(now: at(50), shouldAutoReconnect: true,
+                                        pendingConnectPeripheralID: nil, jitterFraction: 0),
+                       .endScan(.windowElapsed))
+    }
+
+    /// …and it stands down the moment auto-reconnect does, exactly like
+    /// any other ladder. "No pending connect to check" is not "no
+    /// conditions at all".
+    func testALadderArmedWithoutAPendingConnectStillStandsDownWhenAutoReconnectDoes() {
+        var ladder = ReconnectLadder()
+        ladder.arm(target: target, disconnectedAt: t0, requiresPendingConnect: false, jitterFraction: 0)
+        _ = ladder.evaluate(now: at(20), shouldAutoReconnect: true,
+                             pendingConnectPeripheralID: nil, jitterFraction: 0)
+
+        XCTAssertEqual(ladder.evaluate(now: at(25), shouldAutoReconnect: false,
+                                        pendingConnectPeripheralID: nil, jitterFraction: 0),
+                       .endScan(.cancelled))
+        XCTAssertFalse(ladder.isArmed)
+    }
+
+    /// The ORDINARY arming is untouched: a ladder that is a backstop
+    /// behind a pending connect is stale the moment that connect is not
+    /// the one outstanding (already reconnected, or superseded by a loss
+    /// on a different peripheral).
+    func testTheOrdinaryLadderStillCancelsWithoutItsPendingConnect() {
+        var ladder = ReconnectLadder()
+        ladder.arm(target: target, disconnectedAt: t0, jitterFraction: 0)
+        XCTAssertTrue(ladder.requiresPendingConnect, "the default is unchanged")
+
+        XCTAssertEqual(ladder.evaluate(now: at(20), shouldAutoReconnect: true,
+                                        pendingConnectPeripheralID: nil, jitterFraction: 0),
+                       .doNothing)
+        XCTAssertFalse(ladder.isArmed, "no pending connect means this backstop is stale")
+
+        ladder.arm(target: target, disconnectedAt: t0, jitterFraction: 0)
+        XCTAssertEqual(ladder.evaluate(now: at(20), shouldAutoReconnect: true,
+                                        pendingConnectPeripheralID: other, jitterFraction: 0),
+                       .doNothing)
+        XCTAssertFalse(ladder.isArmed, "superseded by a loss on a different peripheral")
+    }
+
+    /// Re-arming the SAME loss with a different mode is not the same
+    /// arming: `arm` is idempotent per loss (two callbacks for one drop
+    /// must not restart the clock), and that idempotence must not
+    /// silently swallow the mode change §3.5 depends on.
+    func testReArmingWithADifferentModeTakesEffect() {
+        var ladder = ReconnectLadder()
+        ladder.arm(target: target, disconnectedAt: t0, jitterFraction: 0)
+        XCTAssertTrue(ladder.requiresPendingConnect)
+        ladder.arm(target: target, disconnectedAt: t0, requiresPendingConnect: false, jitterFraction: 0)
+        XCTAssertFalse(ladder.requiresPendingConnect)
+        // Still idempotent for a genuinely identical re-arm.
+        ladder.arm(target: target, disconnectedAt: t0, requiresPendingConnect: false, jitterFraction: 0)
+        XCTAssertEqual(ladder.attempt, 1)
+    }
+
     // MARK: - Helpers
 
     /// `t0` plus a number of seconds. A helper rather than a `+`
