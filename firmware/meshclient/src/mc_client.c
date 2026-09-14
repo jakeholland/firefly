@@ -222,6 +222,33 @@ static void mc_emit_rx_meta(mc_client_t *c, meshtastic_MeshPacket const *pkt,
 
     m.rx_path = mc_rx_path_from_pkt(pkt, has_decoded_bitfield);
 
+    /* [api] A02 slice D — the three facts the crew-admission rule needs
+     * (docs/specs/S02-core-crew.md's 2026-09-13 amendment §B). See the
+     * mc_rx_meta_t field comments for the full reasoning; the short
+     * version of the presence rule for `channel`:
+     *
+     *   - an encrypted-variant packet carries the channel HASH in that
+     *     field, not an index (mesh.pb.h says so explicitly), so it is
+     *     reported ABSENT — a hash that happened to equal the crew's
+     *     index would otherwise admit a stranger we could not even
+     *     decrypt;
+     *   - a PKI-encrypted DM proves possession of a key PAIR, not of the
+     *     crew channel's key, so its channel is absent too;
+     *   - otherwise the field IS the index, and 0 is a real, meaningful
+     *     value ("If unset, packet was on the primary channel").
+     *
+     * `has_decoded_bitfield` is passed only from the decoded path, so it
+     * doubles as this function's "we have a Data" tell — but the caller
+     * also passes it as false for a DECODED packet whose Data simply has
+     * no bitfield, so it cannot be used for that. The decoded-ness is
+     * therefore read from the packet itself. */
+    bool const decoded = (pkt->which_payload_variant == meshtastic_MeshPacket_decoded_tag);
+    m.has_channel_index = decoded && !pkt->pki_encrypted;
+    m.channel_index = m.has_channel_index ? pkt->channel : 0u;
+    m.via_mqtt = pkt->via_mqtt;
+    m.has_portnum = decoded;
+    m.portnum = decoded ? (uint32_t)pkt->payload_variant.decoded.portnum : 0u;
+
     c->events.on_rx_meta(c->events.user, pkt->from, &m);
 }
 
@@ -517,7 +544,155 @@ static void mc_process_mesh_packet(mc_client_t *c, meshtastic_MeshPacket const *
     }
 }
 
-static void mc_process_from_radio(mc_client_t *c, meshtastic_FromRadio const *fr, uint32_t now_ms)
+/* -------------------------------------------------------------------- */
+/* [api] A02 slice D — the channel table, from want_config               */
+/* -------------------------------------------------------------------- */
+
+/**
+ * Why this is a SECOND decode pass rather than another `case` reading
+ * fields off the already-decoded `FromRadio`.
+ *
+ * `ChannelSettings.name` and `.psk` are unbounded in channel.proto, so
+ * the generator emits them as `pb_callback_t` fields with no callback
+ * installed — nanopb skips them silently during the ordinary decode, and
+ * by the time `mc_process_from_radio` sees the struct those two values
+ * are simply gone. (That is the deliberate "everything else skipped but
+ * counted" shape `mc_nanopb.options`' own header describes; it was right
+ * when nothing needed these two.)
+ *
+ * Three ways out were considered:
+ *  1. add `max_size` entries to `mc_nanopb.options` and regenerate.
+ *     Correct in principle — generated code should stay generated — but
+ *     it needs protoc plus the python protobuf package and network
+ *     access to two pinned clones (tools/gen_nanopb.sh), and it rewrites
+ *     the whole generated tree with whatever the local generator
+ *     version emits. Left as the right move for whoever next bumps the
+ *     protobuf pin, with the options file untouched here so that move
+ *     stays a one-line diff.
+ *  2. install the callbacks on the real `FromRadio` before decoding.
+ *     Does not work: `payload_variant` is a oneof, and pb_decode.c
+ *     explicitly `memset`s a oneof's union when the variant changes,
+ *     "so that any callbacks are set to NULL". The pointers would be
+ *     wiped before the field they belong to was read.
+ *  3. this — walk the frame's top-level fields for the `channel` tag and
+ *     decode that ONE submessage into a local `meshtastic_Channel` we
+ *     fully control, with real callbacks attached.
+ *
+ * The cost is one extra pass over a handful of small frames per
+ * handshake (Meshtastic sends at most 8 channels), on the connect path,
+ * never in steady state.
+ */
+
+/* Bounded sink for a callback field. An OVERSIZED value is read and
+ * discarded, leaving `ok == false` — not a decode failure: a channel
+ * whose name is longer than Meshtastic's own 11-byte budget, or whose
+ * psk is longer than 32 bytes, is simply not a channel this client can
+ * describe, and failing the frame would lose the other channels in the
+ * same handshake along with it. */
+typedef struct {
+    uint8_t *buf;
+    size_t   cap;
+    size_t   len;
+    bool     ok;
+} mc_bytes_sink_t;
+
+static bool mc_cb_bytes(pb_istream_t *stream, pb_field_t const *field, void **arg)
+{
+    (void)field;
+    mc_bytes_sink_t *s = (mc_bytes_sink_t *)(*arg);
+    size_t const n = stream->bytes_left;
+    if (s == NULL) {
+        return pb_read(stream, NULL, n);
+    }
+    if (n > s->cap) {
+        s->ok = false;
+        s->len = 0u;
+        return pb_read(stream, NULL, n); /* consume, report absent */
+    }
+    if (!pb_read(stream, s->buf, n)) {
+        return false;
+    }
+    s->len = n;
+    s->ok = true;
+    return true;
+}
+
+/**
+ * Finds `FromRadio.channel` (tag 10) in a raw frame and decodes it with
+ * the name/psk callbacks attached. Returns true iff a channel row was
+ * decoded into `*out`.
+ */
+static bool mc_decode_channel_frame(uint8_t const *frame, size_t frame_len, mc_channel_t *out)
+{
+    pb_istream_t top = pb_istream_from_buffer(frame, frame_len);
+
+    for (;;) {
+        pb_wire_type_t wire = PB_WT_VARINT;
+        uint32_t tag = 0u;
+        bool eof = false;
+        if (!pb_decode_tag(&top, &wire, &tag, &eof) || eof) {
+            return false;
+        }
+        if (tag != (uint32_t)meshtastic_FromRadio_channel_tag || wire != PB_WT_STRING) {
+            if (!pb_skip_field(&top, wire)) {
+                return false;
+            }
+            continue;
+        }
+
+        pb_istream_t sub;
+        if (!pb_make_string_substream(&top, &sub)) {
+            return false;
+        }
+
+        /* Name gets one spare byte for the NUL we add; the wire value
+         * itself is not NUL-terminated. */
+        uint8_t name_buf[sizeof(out->name) - 1u];
+        uint8_t psk_buf[sizeof(out->psk)];
+        mc_bytes_sink_t name_sink = {name_buf, sizeof(name_buf), 0u, false};
+        mc_bytes_sink_t psk_sink = {psk_buf, sizeof(psk_buf), 0u, false};
+
+        meshtastic_Channel ch = meshtastic_Channel_init_zero;
+        ch.settings.name.funcs.decode = mc_cb_bytes;
+        ch.settings.name.arg = &name_sink;
+        ch.settings.psk.funcs.decode = mc_cb_bytes;
+        ch.settings.psk.arg = &psk_sink;
+
+        bool const ok = pb_decode(&sub, meshtastic_Channel_fields, &ch);
+        /* Closed unconditionally so the outer stream stays consistent
+         * even on a failed submessage decode. */
+        (void)pb_close_string_substream(&top, &sub);
+        if (!ok) {
+            return false;
+        }
+
+        memset(out, 0, sizeof(*out));
+        /* `index` is an int32 on the wire and a table slot in reality
+         * (0..MAX_NUM_CHANNELS-1). A negative value is channel.proto's
+         * own reserved "someday, set by name" sentinel and is not a slot
+         * any packet can arrive on; anything above 255 cannot be a slot
+         * either. Both are rejected rather than cast into range — a
+         * wrapped index would name SOME channel, and naming the wrong
+         * one here is how a stranger's packet gets read as crew. */
+        if (ch.index < 0 || ch.index > 255) {
+            return false;
+        }
+        out->index = (uint8_t)ch.index;
+        out->is_primary = (ch.role == meshtastic_Channel_Role_PRIMARY);
+        if (name_sink.ok && name_sink.len < sizeof(out->name)) {
+            memcpy(out->name, name_buf, name_sink.len);
+            out->name[name_sink.len] = '\0';
+        }
+        if (psk_sink.ok) {
+            memcpy(out->psk, psk_buf, psk_sink.len);
+            out->psk_len = (uint8_t)psk_sink.len;
+        }
+        return true;
+    }
+}
+
+static void mc_process_from_radio(mc_client_t *c, meshtastic_FromRadio const *fr, uint32_t now_ms,
+                                   uint8_t const *frame, size_t frame_len)
 {
     switch (fr->which_payload_variant) {
     case meshtastic_FromRadio_rebooted_tag:
@@ -637,6 +812,26 @@ static void mc_process_from_radio(mc_client_t *c, meshtastic_FromRadio const *fr
         mc_process_mesh_packet(c, &fr->payload_variant.packet);
         break;
 
+    case meshtastic_FromRadio_channel_tag: {
+        /* [api] A02 slice D — the channel table. Until now this frame
+         * fell through to `default:` and was counted as skipped; the
+         * crew-index resolution (amendment §B clause 2) needs it.
+         *
+         * Still counted as skipped when we cannot actually read the row
+         * — an honestly unreadable channel is exactly the "well-formed,
+         * nothing this library can report" case that counter is for, and
+         * silently dropping it would hide a real regression. */
+        mc_channel_t out;
+        if (frame != NULL && mc_decode_channel_frame(frame, frame_len, &out)) {
+            if (c->events.on_channel != NULL) {
+                c->events.on_channel(c->events.user, &out);
+            }
+        } else {
+            c->stats.decode_skipped++;
+        }
+        break;
+    }
+
     default:
         c->stats.decode_skipped++;
         break;
@@ -693,7 +888,10 @@ static void mc_tick_feed_byte(mc_client_t *c, uint8_t byte, uint32_t *frames_dis
         meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
         pb_istream_t is = pb_istream_from_buffer(frame_buf, frame_len);
         if (pb_decode(&is, meshtastic_FromRadio_fields, &fr)) {
-            mc_process_from_radio(c, &fr, now_ms);
+            /* The raw frame rides along for the ONE variant whose payload
+             * this library cannot read out of the decoded struct — see
+             * mc_decode_channel_frame's comment. */
+            mc_process_from_radio(c, &fr, now_ms, frame_buf, (size_t)frame_len);
         } else {
             c->stats.decode_errors++;
         }

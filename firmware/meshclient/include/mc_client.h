@@ -367,7 +367,100 @@ typedef struct {
     /* Whether rssi/snr may be attributed to `from` at all. See
      * mc_rx_path_t — this is the qualifier, not a nicety. */
     mc_rx_path_t rx_path;
+
+    /* ---------------------------------------------------------------
+     * [api] A02 slice D (docs/specs/S02-core-crew.md's 2026-09-13
+     * amendment §B) — the three facts the crew-admission rule needs and
+     * this struct did not carry. Additive; every existing caller is
+     * unaffected.
+     * ------------------------------------------------------------- */
+
+    /* The channel-table index the radio reports for this packet
+     * (`MeshPacket.channel`).
+     *
+     * PRESENCE-FLAGGED, and this flag is load-bearing in a way the
+     * others here are not: the crew channel is normally index 0 (the
+     * primary), so "we don't know which channel" silently reading as 0
+     * is *exactly* how a stranger on the public channel gets admitted to
+     * somebody's crew. Absent must never read as 0.
+     *
+     * Present iff the field genuinely is a channel-table index. Two
+     * cases where it is NOT, both from the vendored protobuf's own
+     * comments (mesh.pb.h):
+     *  - an ENCRYPTED-variant packet, where "deep inside the device
+     *    Router code, this field instead contains the 'channel hash'".
+     *    A hash that happened to be 0 would name the crew slot;
+     *  - a PKI-encrypted DM (`pki_encrypted`), which proves possession
+     *    of a key PAIR, not of the crew channel's key — the whole basis
+     *    of membership — and carries no meaningful channel.
+     *
+     * Note what absence does NOT mean: proto3 gives this field implicit
+     * presence, so a packet genuinely received on the primary channel
+     * serializes `channel` as nothing at all. That is not "unknown" —
+     * mesh.proto states it outright: "If unset, packet was on the
+     * primary channel." So a decoded, non-PKI packet reports
+     * has_channel_index == true with channel_index == 0, which is the
+     * honest reading, not a fabricated default. */
+    bool     has_channel_index;
+    uint32_t channel_index;
+
+    /* `MeshPacket.via_mqtt` — this packet reached our radio over the
+     * internet rather than over the air.
+     *
+     * Not presence-flagged: it is a proto3 bool whose absent state and
+     * false state are both "not via MQTT", which is a single meaning,
+     * unlike the index above. Note that `rx_path` ALREADY folds this in
+     * (via_mqtt forces MC_RX_PATH_INDIRECT), but folded is not good
+     * enough for the admission rule: plenty of ordinary relayed LoRa
+     * packets are INDIRECT too, and a crew is people who are here. This
+     * field is the un-folded fact. */
+    bool via_mqtt;
+
+    /* The decoded payload's portnum (`Data.portnum`).
+     *
+     * PRESENCE-FLAGGED because an encrypted-variant packet has no
+     * decoded payload to read one from — which is also, conveniently,
+     * exactly the case the admission rule's clause 1 rejects.
+     *
+     * [api] NOTE, flagged for review rather than slipped in: the
+     * amendment's own `[api]` list names only the two fields above. The
+     * rule it specifies has a sixth clause about the portnum, and it
+     * puts admission on `on_rx_meta` ("it falls out of routing admission
+     * through `shell_ev_rx_meta` rather than `shell_ev_node`") — so
+     * without this the shell would have to correlate two callbacks by
+     * `from`, and live NODEINFO_APP packets (which produce no payload
+     * event in this library at all) could never admit anyone. Carrying
+     * the portnum here is per-packet reception metadata like everything
+     * else in this struct, and it keeps the rule evaluable in one place. */
+    bool     has_portnum;
+    uint32_t portnum;
 } mc_rx_meta_t;
+
+/**
+ * [api] A02 slice D — one row of the radio's channel table, delivered
+ * during `want_config` (docs/specs/S02-core-crew.md's 2026-09-13
+ * amendment §B).
+ *
+ * Why a client needs this at all: `MeshPacket.channel` is an INDEX, and
+ * mesh.proto says the index is "inherently a local concept and
+ * meaningless to send between nodes". A radio provisioned by CLI or by
+ * the stock Meshtastic app may hold the crew channel anywhere, so the
+ * only honest way to know which index is the crew's is to look it up in
+ * this table by NAME and PSK — never to assume 0.
+ *
+ * Both halves of that match matter. The name alone is not enough (anyone
+ * can name a channel `FIRE-4K9M7X` without holding the key), and the PSK
+ * alone is not enough either (Meshtastic's on-air channel hash folds the
+ * name, A02 §1.3, so two radios agreeing on a key but not a name never
+ * hear each other).
+ */
+typedef struct {
+    uint8_t  index;      /* the channel's slot in the table, 0 = primary */
+    char     name[12];   /* Meshtastic's own limit: "Less than 12 bytes", NUL-terminated */
+    uint8_t  psk[32];
+    uint8_t  psk_len;    /* 0, 1, 16 or 32 — 0 means the channel stated no key */
+    bool     is_primary; /* Channel.role == PRIMARY */
+} mc_channel_t;
 
 /**
  * [api] Diagnostics — a node's own DEVICE metrics, decoded from a
@@ -533,6 +626,29 @@ typedef struct {
      * event rather than guess which send it belonged to.
      */
     void (*on_routing_ack)(void *u, uint32_t request_id, bool ok);
+
+    /**
+     * [api] A02 slice D — one row of the radio's channel table, from the
+     * `want_config` reply stream (`FromRadio.channel`, tag 10), which
+     * this library used to drop on the floor.
+     *
+     * Fires once per configured channel, in the order the radio sends
+     * them, between `on_my_info` and `config_complete`. A caller
+     * resolving "which index is my crew channel" should clear whatever
+     * it resolved when `on_state(MC_STATE_HANDSHAKE)` fires and rebuild
+     * from these — the table is re-sent on every handshake, including
+     * the one after a reboot or an admin write, which is exactly when a
+     * cached index can have gone stale.
+     *
+     * `psk_len == 0` means the channel stated no key. That is not the
+     * same as an all-zero key and must not be read as one: Meshtastic
+     * uses a 1-byte PSK as shorthand for a well-known default key, and a
+     * channel row whose key this library could not read is reported with
+     * no key rather than with a plausible-looking wrong one.
+     *
+     * `ch` is valid only for the duration of the call.
+     */
+    void (*on_channel)(void *u, mc_channel_t const *ch);
 
     void *user;
 } mc_events_t;
