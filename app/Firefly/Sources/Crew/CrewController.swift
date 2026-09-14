@@ -57,9 +57,10 @@ final class CrewController {
     // (`MeshtasticClient.requireConnectedNode()`). That error was not an
     // `ChannelWritePlanError`, so `ChannelImportViewModel.planMessage(for:)`
     // fell through to `String(describing:)` and the whole failure reached
-    // the screen as the single word `notConnected`, in grey `.footnote`
-    // under a JOIN button that stayed enabled — a silent no-op in every
-    // way that matters to the person holding the phone.
+    // the screen as the single word `notConnected`, in a `.footnote`
+    // `Color.ffAlert` line under a JOIN button that stayed enabled — a
+    // silent no-op in every way that matters to the person holding the
+    // phone.
     //
     // The fix is two-sided: the message is plain language now
     // (`planMessage(for:)`), AND the attempt is refused up front, here,

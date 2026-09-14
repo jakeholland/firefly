@@ -101,6 +101,19 @@ public final class ConnectViewModel {
     /// start of the next one and on any `.ready`.
     public private(set) var lastTrouble: RadioTrouble?
 
+    /// The failure text ANY screen shows — the classified plain
+    /// sentence when there is one, otherwise `lastError` unchanged.
+    ///
+    /// Review of PR #319: `ConnectScreen` renders `lastError` directly,
+    /// and this PR changed what `BLETransport.throwIfTerminal(_:)`
+    /// throws, so without this the Connect screen regressed — a
+    /// declined Bluetooth prompt used to print
+    /// `unsupportedOnThisPlatform("… grant it in System Settings …")`
+    /// (ugly, but a real instruction) and would now print the bare word
+    /// `notAllowed`. `lastError` itself keeps its raw contract for logs
+    /// and for `.failed(reason)` provenance; this is the rendering.
+    public var lastErrorText: String? { lastTrouble?.plainMessage ?? lastError }
+
     /// Pure and typed — `BluetoothUnavailable` first (the phone's own
     /// radio), then anything else described as itself. Exposed
     /// `static` so it is testable with no client at all.

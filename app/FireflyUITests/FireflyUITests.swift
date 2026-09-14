@@ -187,6 +187,7 @@ final class FireflyUITests: XCTestCase {
         // step, not a second parallel one.
         tapWhenHittable(app.descendants(matching: .any)["CrewBanner.Connect"])
         assertScreen("Screen.CrewConnectPuck", in: app)
+        dismissCameraPermissionAlertIfPresent(timeout: 2)
     }
 
     /// The other half of §6.1's rule — "the step is skipped
@@ -205,6 +206,41 @@ final class FireflyUITests: XCTestCase {
                        "a connected puck must not be asked to connect again")
         XCTAssertFalse(app.descendants(matching: .any)["CrewBanner.NeedsRadio"].exists,
                        "no banner when a puck is connected")
+        dismissCameraPermissionAlertIfPresent()
+    }
+
+    /// Answers the camera-permission alert `Screen.CrewJoin` raises, so
+    /// it does not outlive this test.
+    ///
+    /// Review of PR #319: landing on Join starts `CrewScannerCard`'s
+    /// `AVCaptureSession`, and on a simulator that has never been asked,
+    /// iOS puts up a system-modal camera alert. It belongs to
+    /// **Springboard**, not to this app, so terminating the app at the
+    /// end of a test does not take it away — it stays on screen and
+    /// every tap in the NEXT test lands on it instead. Measured, not
+    /// theorised: on a freshly created `iPhone 17 Pro` this suite failed
+    /// `testDemoSmokeTapsThroughAllScreens` ("Screen.Connect did not
+    /// appear") twice in a row, passed that test when run on its own,
+    /// and passed all three with `simctl privacy … grant camera`
+    /// pre-applied. Before this PR no iOS UI test ever reached a screen
+    /// with a camera on it, which is why it has not bitten before.
+    ///
+    /// Not `addUIInterruptionMonitor`: that fires only while a tap is
+    /// being attempted on the app, and the alert here is raised by a
+    /// screen appearing, then sits through the end of the test with
+    /// nothing else to interrupt.
+    private func dismissCameraPermissionAlertIfPresent(timeout: TimeInterval = 10) {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let alert = springboard.alerts.firstMatch
+        guard alert.waitForExistence(timeout: timeout) else { return }
+        // Either answer clears it — a simulator has no camera to grant
+        // access to — so take whichever this iOS version offers rather
+        // than pinning one button's exact wording.
+        for label in ["Allow", "OK", "Continue", "Don't Allow"] where alert.buttons[label].exists {
+            alert.buttons[label].tap()
+            return
+        }
+        alert.buttons.firstMatch.tap()
     }
 
     /// Taps one of `FindScreen`'s own segmented-control buttons

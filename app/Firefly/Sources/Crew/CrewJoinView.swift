@@ -253,9 +253,30 @@ struct CrewJoinView: View {
             scanMessage = "That's not a Firefly crew code."
         case .crewLink, .bareCode:
             lastPayload = payload
+            // Review of PR #319: put the code a SCAN produced into the
+            // field. Without this, a scan made with no puck connected
+            // is refused, the banner sends the user to the connect
+            // step, and coming back leaves JOIN disabled saying "Type
+            // the six characters after FIRE-." — the code they scanned
+            // silently gone, which is the same "my tap did nothing"
+            // this change exists to stop. With it, the code is on
+            // screen the whole time and JOIN goes live the moment a
+            // puck connects. A typed code sets `typedCode` already, so
+            // this only ever re-states what the user just supplied.
+            if let code = Self.code(of: payload) { typedCode = code.symbols }
             if await controller.beginJoin(payload: payload) {
                 showConfirmation = true
             }
+        }
+    }
+
+    /// The crew code inside a scan/deep-link payload, for the two cases
+    /// that carry one.
+    private static func code(of payload: CrewScanPayload) -> CrewCode? {
+        switch payload {
+        case .bareCode(let code): return code
+        case .crewLink(let link): return link.code
+        case .meshtasticChannelLink, .unrecognized: return nil
         }
     }
 

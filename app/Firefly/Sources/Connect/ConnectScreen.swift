@@ -218,7 +218,12 @@ struct ConnectScreen: View {
                     .foregroundStyle(Color.ffCaption)
             }
 
-            if let error = connect.lastError {
+            // `lastErrorText`, not `lastError`: the three Bluetooth
+            // states this PR gave a typed error to reach here as a
+            // plain sentence rather than as their Swift case names
+            // (`poweredOff`/`notAllowed`/`unsupported`). Everything
+            // else is unchanged.
+            if let error = connect.lastErrorText {
                 Text(error)
                     .font(.footnote)
                     .foregroundStyle(Color.ffCaption)

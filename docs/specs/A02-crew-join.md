@@ -796,8 +796,9 @@ somewhere a person can read:
 that: `ChannelImportViewModel.planMessage(for:)` had no `AdminWriteError`
 branch, so a not-connected radio during the PLAN step fell through its
 `String(describing:)` default and the Join screen printed the bare word
-`notConnected` in a grey footnote, under a JOIN button that stayed
-enabled. Pinned by `CrewControllerTests
+`notConnected` on a `.footnote` alert-coloured line (`Color.ffAlert` —
+styled like a real error, and still saying nothing), under a JOIN
+button that stayed enabled. Pinned by `CrewControllerTests
 .testJoinWithNoRadioNeverShowsARawEnumCase`.
 
 **Leave (§3.4) is gated the same way.** Leaving is a write; refusing it

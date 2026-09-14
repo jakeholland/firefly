@@ -194,8 +194,8 @@ final class ChannelImportViewModel {
     /// throws `AdminWriteError.notConnected` when no radio is connected
     /// (`MeshtasticClient.requireConnectedNode()`). That fell straight
     /// through this function's `String(describing:)` default and reached
-    /// the Join screen as the bare word **`notConnected`**, in
-    /// `.footnote` grey-on-black, under a JOIN button that stayed
+    /// the Join screen as the bare word **`notConnected`**, on a
+    /// `.footnote` `Color.ffAlert` line, under a JOIN button that stayed
     /// enabled — which is what "nothing happened" looked like from the
     /// outside. `AdminWriteError` now gets the same plain-language
     /// treatment `writeMessage(for:)` gives it, and `CrewController`

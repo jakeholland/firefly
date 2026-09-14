@@ -570,11 +570,9 @@ struct RootView: View {
         } else {
             applied = false
         }
-        // On success the app lands where a human's own "Done · go to
-        // Find" would put it (§3.3 step 5). On failure it deliberately
-        // does NOT: the screen keeps whatever honest failure
-        // `CrewController.failureMessage` is showing, which is the
-        // whole point of running this on a bench.
+        // On failure this deliberately moves nothing: the screen keeps
+        // whatever honest failure `CrewController.failureMessage` is
+        // showing, which is the whole point of running this on a bench.
         // A `-FireflyDemoScreen` name is an explicit instruction about
         // WHAT TO SHOW and outranks this (the same precedence
         // `runInitialDemoScreen()` already applies to the first-launch

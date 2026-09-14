@@ -595,14 +595,25 @@ final class CrewControllerTests: XCTestCase {
     /// Every other honest `AdminWriteError` reaches the screen as its
     /// own sentence — a NAK/partial apply, a timeout, a read-back
     /// mismatch. None of them is ever a Swift enum case.
+    ///
+    /// Review of PR #319: each expected sentence is spelled out here
+    /// rather than checked for length. "Longer than 20 characters and
+    /// not literally `String(describing:)`" is a proxy — a message of
+    /// `timeout (AdminWriteError.timeout)` satisfies it and violates
+    /// the property.
     func testEveryApplyFailureIsASentenceNotACaseName() async {
-        let cases: [AdminWriteError] = [
-            .timeout,
-            .readBackMismatch("channel 0 (FIRE-4K9M7X)"),
-            .partialApplyFailed(step: "channel 0", underlying: "writeFailed"),
-            .encodingFailed,
+        let cases: [(AdminWriteError, String)] = [
+            (.timeout,
+             "Your puck didn't answer in time — it may still be restarting. Try again in a moment."),
+            (.readBackMismatch("channel 0 (FIRE-4K9M7X)"),
+             "Your puck didn't confirm the change (channel 0 (FIRE-4K9M7X)). Nothing is certain " +
+             "until it does — try again."),
+            (.partialApplyFailed(step: "channel 0", underlying: "writeFailed"),
+             "Couldn't send channel 0: writeFailed. Your puck may be only partly set up — " +
+             "reconnect and try again."),
+            (.encodingFailed, "Couldn't prepare that change to send."),
         ]
-        for scripted in cases {
+        for (scripted, expected) in cases {
             let (controller, client) = makeController()
             client.nodeConfig = NodeConfigSnapshot(region: .us)
             _ = await controller.beginJoin(payload: .bareCode(try! CrewCode.parse("FIRE-4K9M7X")))
@@ -610,12 +621,16 @@ final class CrewControllerTests: XCTestCase {
             let confirmed = await controller.confirmApply()
             XCTAssertFalse(confirmed)
 
-            guard let message = controller.failureMessage else {
-                return XCTFail("no message for \(scripted)")
+            guard case .failed(let message) = controller.phase else {
+                return XCTFail("expected .failed for \(scripted), got \(controller.phase)")
             }
-            XCTAssertNotEqual(message, String(describing: scripted))
-            XCTAssertTrue(message.count > 20, "\(scripted) produced \"\(message)\"")
+            XCTAssertEqual(message, expected, "\(scripted)")
+            XCTAssertEqual(controller.failureMessage, expected)
+            XCTAssertNil(controller.progressLabel, "a failure is not progress")
             XCTAssertNil(controller.profile)
+            // The plan survives, so the screen's TRY AGAIN is a genuine
+            // retry of the same attempt.
+            XCTAssertNotNil(controller.pending)
         }
     }
 

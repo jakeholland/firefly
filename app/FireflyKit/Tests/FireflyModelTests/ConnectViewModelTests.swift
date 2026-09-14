@@ -511,12 +511,66 @@ final class ConnectViewModelTests: XCTestCase {
 
     /// A `.ready` clears whatever went wrong last time — otherwise
     /// "Bluetooth is off" would sit under a CONNECTED header.
+    ///
+    /// Review of PR #319: this drives a REAL failed `connect()` first.
+    /// Asserting `lastTrouble` is nil before and after `apply(.ready)`
+    /// without ever setting it would pass against an implementation
+    /// that never cleared anything.
     func testReachingReadyClearsTheLastTrouble() async {
-        let client = StubMeshtasticClient()
-        let vm = ConnectViewModel(client: client)
-        vm.apply(.failed("x"))
-        XCTAssertNil(vm.lastTrouble, "apply(_:) alone never classifies — only a real connect() does")
+        let vm = ConnectViewModel(client: StubMeshtasticClient(
+            transport: FailingConnectTransport(error: BluetoothUnavailable.poweredOff)))
+        await vm.connect()
+        XCTAssertEqual(vm.lastTrouble, .bluetoothOff)
+
         vm.apply(.ready)
         XCTAssertNil(vm.lastTrouble)
     }
+
+    /// The bare enum case must not reach a screen from EITHER side of
+    /// the split this PR introduced. `lastError` keeps the raw
+    /// description (logs, `.failed(reason)` provenance); `lastErrorText`
+    /// is what `ConnectScreen` renders, and it has to be the sentence.
+    func testConnectScreenTextIsASentenceNotAnEnumCase() async {
+        for (thrown, expected) in [
+            (BluetoothUnavailable.poweredOff, ConnectViewModel.RadioTrouble.bluetoothOff),
+            (BluetoothUnavailable.notAllowed, .bluetoothNotAllowed),
+            (BluetoothUnavailable.unsupported, .bluetoothUnsupported),
+        ] {
+            let vm = ConnectViewModel(client: StubMeshtasticClient(
+                transport: FailingConnectTransport(error: thrown)))
+            await vm.connect()
+
+            XCTAssertEqual(vm.lastErrorText, expected.plainMessage)
+            for caseName in ["poweredOff", "notAllowed", "unsupported"] {
+                XCTAssertFalse(vm.lastErrorText?.contains(caseName) ?? false,
+                               "\(thrown): \"\(caseName)\" reached the screen")
+            }
+        }
+    }
+
+    /// With no classified trouble, `lastErrorText` is `lastError`
+    /// unchanged — this is a rendering preference, not a filter.
+    func testConnectScreenTextFallsBackToLastErrorUnchanged() {
+        let vm = ConnectViewModel(client: StubMeshtasticClient())
+        XCTAssertNil(vm.lastErrorText)
+        vm.apply(.failed("bluetooth is off"))
+        XCTAssertEqual(vm.lastErrorText, "bluetooth is off")
+    }
+}
+
+/// A transport whose `connect()` only ever throws — the one thing
+/// `LoopbackTransport` cannot do, and the only way to reach
+/// `ConnectViewModel.connect()`'s catch (and so `lastTrouble`) without
+/// CoreBluetooth.
+private final class FailingConnectTransport: MeshTransport, @unchecked Sendable {
+    let kind: TransportKind = .message
+    private let hub = EventHub<TransportEvent>()
+    private let error: Error
+
+    init(error: Error) { self.error = error }
+
+    func events() -> AsyncStream<TransportEvent> { hub.subscribe() }
+    func connect() async throws { throw error }
+    func disconnect() async { hub.finish() }
+    func send(_ data: Data) async throws { throw error }
 }

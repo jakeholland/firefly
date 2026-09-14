@@ -776,13 +776,6 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     private var sentOwnerWrites: [(String, String)] = []
     private var sentRegionWrites: [Config.LoRaConfig.RegionCode] = []
 
-    /// A stub has no firmware to diverge from what it was asked to
-    /// write, so its own record IS the read-back — this stays honest
-    /// with the rest of the type's "never invents" rule by reporting
-    /// back exactly the request, never a hidden extra field. Throws
-    /// `.notConnected` under the same rule `sendPosition`'s destination
-    /// check would if this type had one — `connectedNodeNum` is only
-    /// ever set by a test.
     /// Test-injected only: the error the NEXT `applyChannelSet` throws
     /// INSTEAD of recording the write, consumed by that one call.
     ///
@@ -805,6 +798,13 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
         return nextChannelWriteError
     }
 
+    /// A stub has no firmware to diverge from what it was asked to
+    /// write, so its own record IS the read-back — this stays honest
+    /// with the rest of the type's "never invents" rule by reporting
+    /// back exactly the request, never a hidden extra field. Throws
+    /// `.notConnected` under the same rule `sendPosition`'s destination
+    /// check would if this type had one — `connectedNodeNum` is only
+    /// ever set by a test.
     @discardableResult
     public func applyChannelSet(_ request: ChannelWriteRequest) async throws -> ChannelWriteReport {
         guard connectedNodeNum != nil else { throw AdminWriteError.notConnected }

@@ -178,9 +178,21 @@ struct CrewConnectPuckView: View {
             }
             .frame(minHeight: 44, alignment: .leading)
         } else if scanDidTimeOut {
-            Text("No puck found — is it powered on and nearby?")
+            // Review of PR #319: this must not blame the puck for
+            // something the app has not checked. `NodeScanning.scan()`
+            // yields nothing when Bluetooth is off or not allowed
+            // ("a radio that never powers on … simply yields nothing"),
+            // and with no REMEMBERED radio this screen never calls
+            // `connect()`, so `lastTrouble` is nil and the three plain
+            // Bluetooth sentences are unreachable on a genuine first
+            // launch. Until the scan seam can report why it found
+            // nothing, an empty scan means one of two things and this
+            // says both rather than asserting the one it cannot know.
+            Text("Nothing found yet. Check your puck is powered on and nearby, " +
+                 "and that Bluetooth is on for Firefly.")
                 .font(.footnote)
                 .foregroundStyle(Color.ffMuted)
+                .fixedSize(horizontal: false, vertical: true)
         } else {
             Text("Tap RESCAN to find your puck.")
                 .font(.footnote)
@@ -342,7 +354,7 @@ private struct CrewRadioRow: View {
 
     private var actionLabel: String {
         switch row.action {
-        case .connect: return row.status == .remembered ? "CONNECT" : "CONNECT"
+        case .connect: return "CONNECT"
         case .disconnect: return connectingOrConnected
         case .unavailable: return "—"
         }
