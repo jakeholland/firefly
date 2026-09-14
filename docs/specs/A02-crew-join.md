@@ -1198,17 +1198,17 @@ someone is, and losing the FIND you started, is a bug with a rationale.
 
 **Auto-membership**
 
-11. **A02_AC11** — a decrypted `NODEINFO_APP`/`POSITION_APP`/
+11. **A02_AC11** ✅ (slice C, PR pending) — a decrypted `NODEINFO_APP`/`POSITION_APP`/
     `TEXT_MESSAGE_APP`/`FF_PORTNUM` (269, matched by raw value — §4.1
     clause 6) packet on the crew index from an unknown id admits that id
     as crew, assigns the next free colour, and persists a
     `CrewPairingRecord` — without any user action.
-12. **A02_AC12** — none of the following admit anyone: the same packet
+12. **A02_AC12** ✅ (slice C) — none of the following admit anyone: the same packet
     on another channel index; the same packet with `via_mqtt == true`; a
     `TELEMETRY_APP` packet; a `want_config` NodeInfo replay entry; a
     packet from our own `connectedNodeNum`; a packet from a hidden id.
     Each is its own test.
-13. **A02_AC13** — a **membership gate in front of**
+13. **A02_AC13** ✅ (slice C) — a **membership gate in front of**
     `CoreStore.apply(nodeUpdate:)` drops any node that is neither
     already crew nor being admitted by AC11, so a replayed nodeDB of 200
     strangers leaves `ff_crew` untouched (issue #266's app-side live
@@ -1220,20 +1220,20 @@ someone is, and losing the FIND you started, is a bug with a rationale.
     `Nearby`'s own dictionary (`NearbyNodesViewModel`, its own
     `nodeUpdates()` subscription) is untouched, so §4.7's "People my
     puck hears" still has its data.
-14. **A02_AC14** — crew index resolution matches on name **and** PSK,
+14. **A02_AC14** ✅ (slice C) — crew index resolution matches on name **and** PSK,
     re-resolves on reconnect, and when no index matches, the Crew page
     shows "Your puck isn't on this crew's channel" and admits nobody —
     it never falls back to index 0.
-15. **A02_AC15** — the 9th distinct joiner is never silently dropped:
+15. **A02_AC15** ◐ (slice C: engine + overflow list; the Crew page's banner is slice B) — the 9th distinct joiner is never silently dropped:
     the Crew page reports the overflow count and lists the untracked
     members; hiding a member frees the slot and the oldest untracked
     member is admitted on its next qualifying packet.
-16. **A02_AC16** — hide unpairs in `ff_crew`, persists per crew code,
+16. **A02_AC16** ◐ (slice C: unpair + persisted hide + no re-admission; the Radar/Map/Inbox/FIND and notification halves are slice B/E) — hide unpairs in `ff_crew`, persists per crew code,
     survives relaunch, blocks re-admission, removes the member from
     Radar/Map/Inbox/FIND and the count, keeps their thread reachable
     under Hidden, and raises no notification. Unhide restores the member
     on their next packet.
-17. **A02_AC17** — migration: an install with existing
+17. **A02_AC17** ◐ (slice C: nothing removed, origin exposed; the banner and the "From before" section are slice B) — migration: an install with existing
     `CrewPairingRecord`s and no crew code keeps every member with its
     colour, shows the one-time banner, and offers no QR/Share; after a
     Join, unseen pre-existing members appear under "From before" and are
@@ -1268,6 +1268,96 @@ someone is, and losing the FIND you started, is a bug with a rationale.
     channel-import control and no ADD TO CREW control.
 
 ---
+
+---
+
+### Slice C implementation notes and deviations (2026-09-13)
+
+Recorded here rather than only in the PR body, because each is a place
+the implementation is not literally what a sentence above says.
+
+1. **`MeshNodeSnapshot` gained one optional `rxMeta: MeshRxMeta?`, not a
+   presence-flagged channel index.** §4.2.1 item 1 asks for the channel
+   index "presence-flagged, so absent never reads as 0", mirroring
+   `mc_rx_meta_t`'s `has_channel_index`. Presence is carried by the
+   optionality of the WHOLE struct instead, and that is the more honest
+   shape on this side: a snapshot with no `rxMeta` is a want_config
+   replay entry, which has no channel field to misread at all, while a
+   snapshot WITH one came off a real `MeshPacket` — where `channel == 0`
+   is not "absent" but the primary, which is exactly where Firefly
+   writes the crew channel (§1.5). `MeshPacket.channel` has proto3
+   implicit presence, so a per-field flag here could only ever have been
+   invented rather than read.
+
+2. **`applyRxMeta` now publishes a snapshot for EVERY packet naming a
+   sender**, not only for one whose RSSI could be attributed to a node
+   the nodeDB already knew. Without this, §4.2.1 item 2's hole is only
+   half closed in the other direction: a `TEXT_MESSAGE_APP` or
+   portnum-269 packet from an id with no nodeDB record produced no
+   `nodeUpdates()` element at all, so AC11's text and 269 cases had
+   nothing to fire on. The published snapshot carries the node's
+   EXISTING record (never a blank one — a consumer that replaces by
+   `num` must not lose a name), plus the packet facts.
+
+3. **"New crew member" is a display fallback, never written into
+   `ff_crew`.** §4.4 already describes it as a display-name order, and
+   `CrewMembershipEngine.displayName(nickname:longName:shortName:)` is
+   where it lives. Writing it into `ff_crew_member_t.long_name` at
+   admission would put a fabricated name in the model that a later real
+   NodeInfo could not be distinguished from.
+
+4. **The gate is installed, not built in.** `CoreStore.membership` is
+   `nil` by default, which keeps the pre-A02 behaviour for compositions
+   that have no crew at all (`CoreStoreTests`, headless consumers);
+   `AppGraph` always installs one, before `start()` and after
+   `CrewPairingRestorer.restore`. A gate that dropped everything for a
+   composition with no membership policy would be a behaviour change
+   dressed up as a safety measure.
+
+5. **AC15's "the OLDEST untracked member is admitted" is packet-driven,
+   not queued.** Freeing a slot admits whichever untracked member sends
+   the next qualifying packet; there is no ordering pass that picks the
+   oldest, because admission has no event of its own to run on. The
+   observable promise — a freed slot is taken, and nobody is silently
+   dropped — is what the test pins.
+
+6. **`CrewMembershipProviding` is slice B's, not slice C's.** Slice B
+   had already declared it (`currentMembers() -> [CrewJoinedMember]`,
+   plus the `PairingCrewMembershipProvider` stub that stands in until
+   this engine is wired), so slice C carries that file byte-for-byte
+   rather than declaring a second protocol of the same name, and
+   `CrewMembershipEngine` conforms to it — sorting newest-join-first per
+   §2.3, with a total order so two admissions inside one millisecond
+   cannot come back in a different order run to run. The gate is its own
+   one-method protocol (`CrewMembershipGating`), because `CoreStore`
+   asks one question and should not be able to see the UI's readout.
+
+7. **Attribution rides on the packet, not on the node record.**
+   Added in review. Widening `applyRxMeta` (note 2) means a crew
+   member's MQTT-bridged and multi-hop packets now reach
+   `CoreStore.apply(nodeUpdate:)`, carrying the node's EXISTING record —
+   whose `hopsAway`/`rssiDbm` are the nodeDB's latched summary of an
+   earlier, DIRECT hearing. Attributing those to the new packet rendered
+   somebody on the far side of a gateway as "standing next to you", with
+   the reading's age re-stamped to zero (measured, PR #306 review:
+   `heardDirect` stayed `true` and `directSignal.ageMs` returned to 0
+   after a `via_mqtt` packet). So `MeshRxMeta` also carries THIS
+   packet's own hop path and THIS packet's own RSSI, and `CoreStore`
+   attributes off those whenever a snapshot came from a packet at all —
+   the rule `ff_shell.c`'s `shell_ev_rx_meta` has always applied on the
+   puck (`m->rx_path == MC_RX_PATH_DIRECT && m->has_rssi`). AC13's "the
+   four `crew.*` conditions are unchanged" is preserved in substance:
+   the replay path (`rxMeta == nil`) keeps the pre-A02 rule exactly, and
+   the packet path only ever REFUSES an attribution the old rule would
+   have made. This also fixes the side effect that a live NodeInfo —
+   which rebuilds a wrapper with no `hops_away` — otherwise cost a
+   member their direct-signal attribution for the rest of the session.
+
+8. **The app's hide list is not capped at `FF_HIDDEN_MAX` (16).** That
+   bound is the puck's DRAM budget (S02's amendment §C); the phone
+   stores hides as JSON per crew code and has no equivalent constraint,
+   so it does not invent one. The puck's honest-failure copy at 16 is
+   unaffected.
 
 ## 8. Open questions (only where a decision changes the work)
 

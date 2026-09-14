@@ -262,7 +262,12 @@ final class AppGraphTests: XCTestCase {
         // not-ready -> ready edge. Same S1 multicast rule as `"text"`
         // above: this is its OWN subscription, not a second reader
         // stealing `core.observe(client:)`'s.
-        XCTAssertEqual(client.subscriptionCount("link"), 2)
+        // A02 slice C adds a THIRD independent `linkState()` subscriber:
+        // `CrewMembershipEngine.observe()`, which re-resolves the crew
+        // channel's index on every reconnect (AC14 — the index is
+        // "inherently a local concept" and dies with the link). Same S1
+        // multicast rule again: its own subscription, stealing nothing.
+        XCTAssertEqual(client.subscriptionCount("link"), 3)
         XCTAssertEqual(client.subscriptionCount("node"), 1)
         XCTAssertEqual(client.subscriptionCount("delivery"), 1)
         XCTAssertEqual(client.subscriptionCount("private"), 1)
@@ -314,6 +319,14 @@ final class AppGraphTests: XCTestCase {
     func testNodeUpdateReachesTheCrewRosterWithItsRealIdentity() async {
         let client = CountingClient()
         let graph = AppGraph(dependencies: dependencies(client: client))
+        // A02 AC13: `AppGraph` now installs a membership gate in front of
+        // `CoreStore.apply(nodeUpdate:)`, so a node that is neither crew
+        // nor admitted by §4.1 never reaches `ff_crew` at all. This test
+        // is about what a CREW MEMBER's snapshot carries into the
+        // roster, so the member is paired first — exactly the §4.6
+        // migration case (a manually paired member keeps working with no
+        // crew code configured at all).
+        graph.crewPairing.pair(nodeID: 0x02E6_06B0)
         await graph.start()
 
         client.yieldNode(MeshNodeSnapshot(
@@ -322,7 +335,12 @@ final class AppGraphTests: XCTestCase {
                                     source: .manual, precisionBits: 32),
             lastHeard: Date(), rssiDbm: -61, snrDb: 6.5, hopsAway: 0))
 
-        await waitUntil { graph.core.crew.count == 1 }
+        // Waits on the SNAPSHOT landing, not on `count == 1` — the
+        // pairing above already made that true, so counting members
+        // would race the very thing this test is about.
+        await waitUntil {
+            graph.core.crew.member(nodeID: 0x02E6_06B0, now: FireflyClock.nowMillis())?.shortName == "FF1"
+        }
         let member = graph.core.crew.member(nodeID: 0x02E6_06B0, now: FireflyClock.nowMillis())
         XCTAssertEqual(member?.shortName, "FF1")
         XCTAssertEqual(member?.longName, "Firefly 1")
@@ -338,12 +356,20 @@ final class AppGraphTests: XCTestCase {
     func testNodeUpdateWithNoNamesLeavesIdentityEmptyRatherThanInventingOne() async {
         let client = CountingClient()
         let graph = AppGraph(dependencies: dependencies(client: client))
+        // Paired first for the same reason as the test above — A02 AC13's
+        // membership gate.
+        graph.crewPairing.pair(nodeID: 99)
         await graph.start()
 
         client.yieldNode(MeshNodeSnapshot(num: 99, shortName: nil, longName: nil, position: nil,
                                            lastHeard: Date(), rssiDbm: nil, snrDb: nil, hopsAway: nil))
 
-        await waitUntil { graph.core.crew.count == 1 }
+        // Same race as the test above: `pair` already made `count == 1`.
+        // The snapshot carries a `lastHeard`, so its arrival is
+        // observable as the member gaining a HEARD presence.
+        await waitUntil {
+            graph.core.crew.member(nodeID: 99, now: FireflyClock.nowMillis())?.heardPresence == .heard
+        }
         let member = graph.core.crew.member(nodeID: 99, now: FireflyClock.nowMillis())
         XCTAssertEqual(member?.shortName, "")
         XCTAssertEqual(member?.longName, "")
@@ -981,12 +1007,13 @@ final class AppGraphTests: XCTestCase {
         XCTAssertEqual(client.disconnectCallCount, 1,
                         "off = disconnect when backgrounded, per the M2 task's own words")
         // The graph's own subscriptions stood down too — re-subscribing
-        // would show up as more `link` subscriptions once restarted. "2"
-        // is both of the graph's OWN `linkState()` readers from this one
-        // `start()` — `core.observe(client:)` and M3's
-        // `observeHistoryOutboxFlush()` (each its own independent S1
-        // subscription) — not a sign either one resubscribed.
-        XCTAssertEqual(client.subscriptionCount("link"), 2)
+        // would show up as more `link` subscriptions once restarted. "3"
+        // is all three of the graph's OWN `linkState()` readers from
+        // this one `start()` — `core.observe(client:)`, M3's
+        // `observeHistoryOutboxFlush()` and A02 slice C's
+        // `crewMembership.observe()` (each its own independent S1
+        // subscription) — not a sign any of them resubscribed.
+        XCTAssertEqual(client.subscriptionCount("link"), 3)
     }
 
     func testBackgroundWithSettingOnDoesNothing() async {
@@ -1017,11 +1044,12 @@ final class AppGraphTests: XCTestCase {
 
         await graph.handleScenePhaseChange(.foreground)
 
-        // The graph's own subscriptions are back — "4" is two
-        // independent `link` readers (`core.observe(client:)` and M3's
-        // `observeHistoryOutboxFlush()`) per `start()`, times two
+        // The graph's own subscriptions are back — "6" is three
+        // independent `link` readers (`core.observe(client:)`, M3's
+        // `observeHistoryOutboxFlush()` and A02 slice C's
+        // `crewMembership.observe()`) per `start()`, times two
         // `start()` calls (launch + this restart)...
-        XCTAssertEqual(client.subscriptionCount("link"), 4)
+        XCTAssertEqual(client.subscriptionCount("link"), 6)
         // ...but nothing auto-reconnected the CLIENT on its own — "off
         // means off, the user taps CONNECT again", same as M1.
         XCTAssertEqual(client.connectCallCount, connectCallsAtLaunch,
@@ -1039,10 +1067,11 @@ final class AppGraphTests: XCTestCase {
 
         await graph.handleScenePhaseChange(.foreground) // never backgrounded — start()'s own idempotency
 
-        // "2" is the graph's own two independent `link` readers from the
-        // ONE `start()` call above (`core.observe(client:)` +
-        // `observeHistoryOutboxFlush()`), not a resubscription.
-        XCTAssertEqual(client.subscriptionCount("link"), 2, "start() is idempotent; foreground must not resubscribe")
+        // "3" is the graph's own three independent `link` readers from
+        // the ONE `start()` call above (`core.observe(client:)`,
+        // `observeHistoryOutboxFlush()` and A02 slice C's
+        // `crewMembership.observe()`), not a resubscription.
+        XCTAssertEqual(client.subscriptionCount("link"), 3, "start() is idempotent; foreground must not resubscribe")
 
         await graph.stop()
     }
