@@ -278,6 +278,17 @@ targets:
       # same shape and the same reason as
       # `FireflyDebugStartDestinationLaunch.swift` just above.
       - path: Firefly/Sources/Crew/FireflyDebugCrewLaunch.swift
+      # `-FireflyDebugNotify`'s parser (DEBUG-only reproduction seam for
+      # `NotificationTapUITests`), same shape and same reason as
+      # `FireflyDebugStartDestinationLaunch.swift` above.
+      - path: Firefly/Sources/FireflyDebugNotifyLaunch.swift
+      # The cold-launch landing rule (`RootLaunchPlan`), split into its
+      # own SwiftUI-free file for the SAME reason `MoreScreenNavigation
+      # .swift` and `Find/FindSegment.swift` above are: so this target
+      # can exercise "a pending deep link wins over the first-launch
+      # default, cover included" without `RootView.swift`'s SwiftUI/
+      # Theme dependency.
+      - path: Firefly/Sources/RootLaunchPlan.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit
