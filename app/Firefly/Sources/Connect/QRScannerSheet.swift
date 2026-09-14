@@ -58,7 +58,16 @@ private struct QRScannerRepresentable: UIViewControllerRepresentable {
 final class QRScannerViewController: UIViewController, @preconcurrency AVCaptureMetadataOutputObjectsDelegate {
     private let onScanned: (String) -> Void
     private let session = AVCaptureSession()
-    private var hasScanned = false
+    /// A02 §3.1: "A failed scan never dismisses the screen" — the inline
+    /// Join scanner (`CrewJoinView`) keeps this controller on screen and
+    /// calling `onScanned` again after an unrecognized payload, so this
+    /// is a THROTTLE (same payload, or any payload within `rescanDelay`)
+    /// rather than the one-shot latch this used to be. `QRScannerSheet`
+    /// (the modal channel-link scanner) is unaffected: its own
+    /// `onScanned` closure calls `dismiss()` on the very first delivery,
+    /// so it never reaches a second one regardless.
+    private var lastScan: (payload: String, at: Date)?
+    private static let rescanDelay: TimeInterval = 1.5
     private var previewLayer: AVCaptureVideoPreviewLayer?
 
     init(onScanned: @escaping (String) -> Void) {
@@ -124,11 +133,14 @@ final class QRScannerViewController: UIViewController, @preconcurrency AVCapture
     func metadataOutput(_ output: AVCaptureMetadataOutput,
                          didOutput metadataObjects: [AVMetadataObject],
                          from connection: AVCaptureConnection) {
-        guard !hasScanned,
-              let object = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
+        guard let object = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
               object.type == .qr,
               let payload = object.stringValue else { return }
-        hasScanned = true
+        let now = Date()
+        if let lastScan, lastScan.payload == payload, now.timeIntervalSince(lastScan.at) < Self.rescanDelay {
+            return
+        }
+        lastScan = (payload, now)
         onScanned(payload)
     }
 }

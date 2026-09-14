@@ -41,6 +41,18 @@ struct FireflyApp: App {
     /// channel rather than two disconnected copies.
     @State private var channelImport: ChannelImportViewModel
     @State private var settings: SettingsViewModel
+    /// A02's one view model (`docs/specs/A02-crew-join.md`) — built with
+    /// its OWN `ChannelImportViewModel` instance (deliberately NOT
+    /// `channelImport` above, which Connect/Settings share): a crew
+    /// Start/Join/Leave prepares and confirms a plan independently of
+    /// whatever the Connect screen's own channel-import section is
+    /// mid-way through, so the two must never contend for one shared
+    /// `applyPlan`.
+    @State private var crew: CrewController
+    /// The Joined/People list seam — `AppGraph.crewMembership` (#306).
+    @State private var membership: any CrewMembershipProviding
+    /// A02 §1.8 — `onOpenURL`'s parsed `firefly://crew…` payload.
+    @State private var incomingCrewLink: CrewScanPayload?
     /// Non-nil in exactly one case: `graph.dependencies.client` came
     /// back a `DemoMeshtasticClient` — i.e. the iOS Simulator AND
     /// `-FireflyDemo`/`FIREFLY_DEMO=1` (`AppDependencies.current()`'s
@@ -55,6 +67,9 @@ struct FireflyApp: App {
     /// this property's own assignment in `init` for what it means and
     /// `RootView.hasKnownRadio`'s doc comment for how it is used.
     let hasKnownRadio: Bool
+    /// A02 §6.1 — whether a crew code is already set, read once at
+    /// construction like `hasKnownRadio` above.
+    let hasCrew: Bool
     /// M2 — read by two independent `.onChange(of: scenePhase)` handlers
     /// below, each owning its own concern: tracks foreground/background
     /// so an inbound FLARE takes over the screen only while the app is
@@ -109,6 +124,30 @@ struct FireflyApp: App {
         // this graph observes.
         let importVM = ChannelImportViewModel(client: graph.dependencies.client)
         _channelImport = State(initialValue: importVM)
+        // A02 — its own `ChannelImportViewModel`, deliberately separate
+        // from `importVM` above (this property's own doc comment).
+        // `CrewProfileStore`/`CrewSnapshotKeychainStore`/`CrewHiddenStore`
+        // are the real, persisted implementations — the stub stack
+        // (`.stub()`, tests) uses the in-memory ones instead, injected
+        // directly rather than through `AppDependencies` (A02 lands
+        // after A01's dependency list was frozen; adding three more
+        // fields there for a feature this self-contained was not worth
+        // widening a shared struct every other slice also constructs).
+        let crewVM = CrewController(
+            client: graph.dependencies.client,
+            profileStore: CrewProfileStore(),
+            snapshotStore: CrewSnapshotKeychainStore(),
+            hiddenStore: CrewHiddenStore())
+        _crew = State(initialValue: crewVM)
+        // Slice C has landed (#306): the Crew page and Start's Joined
+        // list read the REAL `CrewMembershipEngine` — "admitted since
+        // `crewCreatedAt`, newest first" (§2.3) — through the same
+        // `CrewMembershipProviding` seam slice B defined. `CoreStore`
+        // sees only the gate half of this same object, so the list and
+        // the gate can never disagree about who is in the crew.
+        // `PairingCrewMembershipProvider` stays in the module as the
+        // stub for compositions with no graph.
+        _membership = State(initialValue: graph.crewMembership)
         // Slice C's INTEGRATION TASK, now done: this used to construct
         // its own `SettingsStore()` because `AppDependencies.store` was
         // still `InMemorySettingsStore` under both `.stub()` and
@@ -177,6 +216,9 @@ struct FireflyApp: App {
         // fresh simulator run has no radio to already know about.
         self.hasKnownRadio = graph.dependencies.store.string(.lastPeripheralID) != nil
             || FireflyAutoConnectLaunch.requestedPeripheralName() != nil
+        // A02 §6.1 — same "read persisted state once at construction"
+        // convention as `hasKnownRadio` just above.
+        self.hasCrew = crewVM.hasCrew
         // M2: the FLARE takeover's own haptic pulse (S10: "3 long,
         // overrides quiet hours") — late-injected for the same reason
         // `makeRadarViewModel(haptics:)` takes it as a parameter rather
@@ -239,9 +281,30 @@ struct FireflyApp: App {
                 mapFind: { nodeID in radar.startFind(targetNodeID: nodeID) },
                 mapMessage: { _ in },
                 // "app: five-tab bar per design".
-                hasKnownRadio: hasKnownRadio
+                hasKnownRadio: hasKnownRadio,
+                // A02 §2/§3/§5/§6.1.
+                crew: crew,
+                membership: membership,
+                hasCrew: hasCrew,
+                incomingCrewLink: $incomingCrewLink
             )
             .preferredColorScheme(.dark)
+            // A02 §1.8 — `firefly://crew?v=1&code=…&name=…`. Anything
+            // that doesn't classify as a crew link/bare code is dropped
+            // silently here (Join's own scanner already renders "That's
+            // not a Firefly crew code" for a payload a human actually
+            // typed/scanned; a malformed system Open URL call has no
+            // screen to show that message ON).
+            .onOpenURL { url in
+                switch CrewScanPayload.classify(url.absoluteString) {
+                case .crewLink(let link):
+                    incomingCrewLink = .crewLink(link)
+                case .bareCode(let code):
+                    incomingCrewLink = .bareCode(code)
+                case .meshtasticChannelLink, .unrecognized:
+                    break
+                }
+            }
             // M2: `AppGraph.setForegrounded(_:)` is the one thing that
             // decides "takeover, or a local notification instead"
             // (`handleInboundFlare`'s own doc comment) — `.active` is the

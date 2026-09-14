@@ -1,10 +1,11 @@
 //
 //  AdminWriteConfirmationSheet.swift — M3's one confirmation surface,
 //  shared by every admin write this app makes: the Connect screen's
-//  "Apply to node" (channel/LoRa) and Settings' node-name/region writes
+//  "Apply to node" (channel/LoRa), Settings' node-name/region writes
 //  (docs/specs/A01-companion-app.md, M3: "Channel write-back (admin
 //  messages) behind an explicit confirmation" — "behind an explicit
-//  confirmation" applies to all three, not just the channel one).
+//  confirmation" applies to all three, not just the channel one), and,
+//  since A02, Start/Join/Leave a crew.
 //
 //  Owner decision, 2026-09-13 ("Apply-to-radio confirmation sheet"):
 //  the primary thing shown is now ONE plain sentence (`primaryText`,
@@ -29,6 +30,15 @@
 //  `setRegion` do the rest). CONFIRM is disabled while a write is
 //  already in flight, so a second tap cannot start a second concurrent
 //  one.
+//
+//  A02 §2.2/§6.1: a crew flow passes plain-language `changes` (no
+//  "node"/"channel"/"index"/"precision"/"PSK"/"Meshtastic" — AC8) plus
+//  `technicalDetails`, which renders as a "Technical details ›"
+//  disclosure the existing `ChannelApplySummary` lines still populate
+//  verbatim. Every OTHER caller passes no `technicalDetails` (defaults
+//  to `[]`) and keeps rendering exactly as before this addition — its
+//  own `changes` ARE the technical lines, shown directly, no
+//  disclosure.
 //
 import SwiftUI
 

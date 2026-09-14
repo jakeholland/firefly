@@ -117,6 +117,30 @@ struct RootView: View {
     /// meaningful to report yet at the exact moment this view's first
     /// frame renders).
     let hasKnownRadio: Bool
+    /// A02 §2/§3/§5's one view model, shared by the onboarding container,
+    /// the Crew page, and (transitively, via its own `importer`) every
+    /// crew write this app makes. Built once by `FireflyApp.init`, same
+    /// "one instance per process" rule `radar`/`inbox`/`pairing` follow.
+    let crew: CrewController
+    /// The Joined/People list seam (`CrewMembershipProviding`) — the
+    /// real `CrewMembershipEngine` from `AppGraph` (#306).
+    let membership: any CrewMembershipProviding
+    /// A02 §6.1: the SAME "no known radio or no crew" condition A01's
+    /// `hasKnownRadio` alone used to gate, now ALSO gated on a crew code
+    /// being set — read once at construction, same convention
+    /// `hasKnownRadio` already follows.
+    let hasCrew: Bool
+    /// A02 §1.8 — `onOpenURL`'s parsed `firefly://crew…` payload, set by
+    /// `FireflyApp`. Non-nil opens the onboarding container straight on
+    /// Join with it pre-supplied, regardless of `hasCrew`/`hasKnownRadio`
+    /// (tapping a crew link is its own, always-actionable request).
+    @Binding var incomingCrewLink: CrewScanPayload?
+    /// A02 §6.1 — presented instead of "land on More with Connect
+    /// pre-pushed" whenever `!hasKnownRadio || !hasCrew`.
+    @State private var showCrewOnboarding = false
+    /// `-FireflyDemoScreen crew-start|crew-join` — see
+    /// `runInitialDemoScreen()`.
+    @State private var crewOnboardingForceStep: CrewOnboardingContainer.Step?
     @State private var selection: Destination = .more
     /// Which row `MoreScreen` should push into the moment it next
     /// processes it (or, on macOS, the moment a sidebar row changes this
@@ -220,6 +244,36 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: flareTakeover.isActive)
+        .crewOnboardingCover(isPresented: $showCrewOnboarding) {
+            CrewOnboardingContainer(
+                controller: crew,
+                membership: membership,
+                onFinished: {
+                    showCrewOnboarding = false
+                    incomingCrewLink = nil
+                    selection = .find
+                },
+                // PR #308 review, BLOCKING. This closure used to set the
+                // tab only, with the container calling `onFinished()`
+                // straight afterwards to dismiss — and `onFinished`'s
+                // own `selection = .find` then overwrote the `.more`
+                // this line had just set, so §6.1's "Already set up?
+                // Connect your puck" escape hatch dismissed the welcome
+                // and landed on Find, never on the radio picker. It
+                // dismisses itself now, and the container no longer
+                // chains `onFinished()` after it.
+                onConnectPuck: {
+                    showCrewOnboarding = false
+                    incomingCrewLink = nil
+                    selection = .more
+                    moreAutoOpen = .connect
+                },
+                initialJoinPayload: incomingCrewLink,
+                forceStep: crewOnboardingForceStep)
+        }
+        .onChange(of: incomingCrewLink) { _, newValue in
+            if newValue != nil { showCrewOnboarding = true }
+        }
     }
 
     @ViewBuilder
@@ -244,6 +298,7 @@ struct RootView: View {
                 // its rows to push into), which `List(selection:)`'s
                 // own single-value binding cannot express.
                 Section("More") {
+                    moreSidebarRow(.crew, title: "Crew", systemImage: "person.3")
                     moreSidebarRow(.connect, title: "Connect", systemImage: "antenna.radiowaves.left.and.right")
                     moreSidebarRow(.settings, title: "Settings", systemImage: "slider.horizontal.3")
                     moreSidebarRow(.system, title: "System", systemImage: "waveform.path.ecg")
@@ -324,6 +379,7 @@ struct RootView: View {
         case .lineup: LineupScreen(model: lineup)
         case .more: MoreScreen(connect: connect, settings: settings, channelImport: channelImport,
                                 client: client, lineup: lineup, scanner: scanner, pairing: pairing,
+                                crew: crew, membership: membership,
                                 colorblind: settings.colorblindPalette,
                                 autoOpenDiagnosticsInSettings: initialDemoScreen == "diagnostics",
                                 autoOpen: moreAutoOpen,
@@ -390,23 +446,23 @@ struct RootView: View {
         }
     }
 
-    /// "app: five-tab bar per design" — the one place `hasKnownRadio`
-    /// is actually consulted: a radio already known -> land on Radar,
-    /// otherwise land on More with Connect pre-pushed (`MoreScreen`'s
-    /// own `autoOpen`), so a fresh install still reaches Connect with
-    /// zero taps, exactly as a plain launch always has. Runs in its own
-    /// `.task`, separate from `runInitialDemoScreen()`: that one awaits
+    /// "app: five-tab bar per design", A02 §6.1 — the one place
+    /// `hasKnownRadio`/`hasCrew` are actually consulted: both known ->
+    /// land on Find, otherwise show the crew welcome (§6.1's own
+    /// "replaces launch lands on More with Connect pre-pushed" —
+    /// SAME condition, different destination). Runs in its own `.task`,
+    /// separate from `runInitialDemoScreen()`: that one awaits
     /// `demoRunner.waitUntilStarted()` before touching `selection` at
     /// all, so on any launch that also passes `-FireflyDemoScreen`,
     /// THIS synchronous assignment always lands first and the demo
     /// screen's own choice (once it resolves) always wins — never a
     /// race between the two.
     private func applyInitialSelection() {
-        if hasKnownRadio {
+        if hasKnownRadio, hasCrew {
             selection = .find
         } else {
-            selection = .more
-            moreAutoOpen = .connect
+            selection = .find
+            showCrewOnboarding = true
         }
         // "app: Map subscribes to festpack updates" (2026-09-13) —
         // `-FireflyStartTab`/`-FireflyFindSegment`, debug-only
@@ -452,6 +508,24 @@ struct RootView: View {
     /// "diagnostics" themselves (see their own `.task`s) — this only
     /// owns tab selection and the two Radar variants.
     private func runInitialDemoScreen() async {
+        // A02's "welcome" is the one demo screen that needs neither a
+        // `DemoRunner` nor a connected radio — `CrewWelcomeView` renders
+        // off no state at all — so it is handled BEFORE the `guard let
+        // demoRunner` below. "crew-start"/"crew-join"/"crew" all DO need
+        // one (Start/Join mint against `graph.dependencies.client`,
+        // which is `notConnected` until `demoRunner.start()`'s own
+        // `client.connect()` has actually run) — those three are
+        // handled AFTER `await demoRunner.waitUntilStarted()`, same as
+        // every pre-A02 name, not before it. An earlier version of this
+        // function raced exactly this — Start showing "notConnected"
+        // (`ChannelImportViewModel.planErrorMessage`) because its own
+        // `.task` fired before `demoRunner.start()`'s `client.connect()`
+        // had completed — caught by capturing the milestone screenshot
+        // itself, not by inspection.
+        if initialDemoScreen == "welcome" {
+            showCrewOnboarding = true
+            return
+        }
         guard let demoRunner, let initialDemoScreen else { return }
         // `FireflyApp`'s `await graph.start(); await demoRunner?.start()`
         // runs in a SEPARATE `.task` from this one — no ordering
@@ -462,10 +536,35 @@ struct RootView: View {
         // before `start()`'s `location.setFix(world.phoneFix)` has run
         // would have the LATER call silently put the fix right back).
         await demoRunner.waitUntilStarted()
+        // PR #308 review, BLOCKING. `applyInitialSelection()` runs first
+        // and, on a simulator with no crew code stored, raises the
+        // welcome cover (`!hasCrew`). A `-FireflyDemoScreen` name that
+        // picks a TAB therefore used to pick a tab nobody could see:
+        // every demo screenshot except the three crew-onboarding ones
+        // came back as `CrewWelcome`, verified by capturing
+        // radar/inbox/diagnostics and finding all three byte-identical.
+        // That silently broke the milestone-screenshot mechanism this
+        // repo runs its UI review on (AGENTS.md step 5).
+        //
+        // A demo screen name is an explicit instruction about what to
+        // show, so it OVERRIDES the first-launch gate: lower the cover
+        // here, and let the two names that actually want it raise it
+        // again below. "welcome" returns before this line and is
+        // unaffected.
+        showCrewOnboarding = false
         switch initialDemoScreen {
         case "connect":
             selection = .more
             moreAutoOpen = .connect
+        case "crew-start":
+            crewOnboardingForceStep = .start
+            showCrewOnboarding = true
+        case "crew-join":
+            crewOnboardingForceStep = .join
+            showCrewOnboarding = true
+        case "crew":
+            selection = .more
+            moreAutoOpen = .crew
         case "radar":
             selection = .find
             findSegment = .radar

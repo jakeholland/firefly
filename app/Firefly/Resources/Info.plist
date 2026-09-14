@@ -45,17 +45,35 @@
 	     external fix, because the Heltec V3 bench boards have no GNSS at
 	     all (docs/hardware/heltec-v3.md). "Always" is requested only
 	     because a festival's whole point is that the phone is in a
-	     pocket while the mesh keeps working. -->
+	     pocket while the mesh keeps working. A02 §6.2 reword. -->
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Firefly shares your location with your puck so your crew can find you, even with no signal.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>Firefly shares your location with your puck so your crew can find you, even with no signal. Keeping this on in the background means your crew can still find you while your phone is in your pocket.</string>
 
 	<!-- Camera. iOS only — the Connect screen's channel-QR scan sheet
-	     (Slice C, QRScannerSheet.swift). macOS never asks: the same
-	     screen's paste field is the whole story there. -->
+	     and, since A02, the Join-a-crew scanner (QRScannerSheet.swift,
+	     CrewJoinView.swift). macOS never asks: the paste/typed-code
+	     fields are the whole story there. A02 §3.1/§6.2 reword — the
+	     key already shipped, saying "channel"; this is a reword, not a
+	     new key. -->
 	<key>NSCameraUsageDescription</key>
 	<string>Firefly uses the camera to scan your friend's crew code.</string>
+
+	<!-- A02 §1.8 — the app registers no URL scheme before this. A crew's
+	     QR/Share-link payload is `firefly://crew?v=1&code=…&name=…`,
+	     routed by `FireflyApp`'s `onOpenURL` to the Join flow. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>firefly</string>
+			</array>
+		</dict>
+	</array>
 
 	<key>UIBackgroundModes</key>
 	<array>
