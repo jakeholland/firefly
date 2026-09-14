@@ -110,6 +110,45 @@ public enum PresenceTag: String, Sendable, Equatable, CaseIterable {
     /// obligated to mirror every puck screen decision); this computed
     /// property is what proves the split stays a strict refinement of,
     /// never a disagreement with, the shared core vocabulary.
+    /// The plain-language label this tag renders as everywhere it
+    /// appears — Inbox rows, Crew settings, Radar's own presence
+    /// readouts (owner decision, 2026-09-13: "Presence/status words
+    /// everywhere they appear"). `HEARD` is untouched (`"keep LIVE/HERE
+    /// style for fresh"` — the owner's own instruction is that the
+    /// FRESH case is already right, nothing to change); `STALE`/`LOST`/
+    /// `LINKED` drop their raw enum words for plain sentences a
+    /// half-drunk person at 11pm can parse without a legend (UX review,
+    /// persona B: "'LOST' ... reads as 'Taylor is lost' when it
+    /// actually means 'we haven't heard her radio's signal in a
+    /// while'"). `age` is the same `presenceAge`/`heardAgeMS` every
+    /// call site already threads through — never fabricated here.
+    public func plainLabel(age: TimeInterval?) -> String {
+        switch self {
+        case .heard:
+            guard let age else { return rawValue }
+            return "\(rawValue) \(InboxAge.short(age))"
+        case .stale:
+            // The label word is dropped entirely — "just the age" is
+            // the owner's own example ("STALE 6M" -> "6 min ago").
+            // Falls back to the raw word only in the unreached case of
+            // a STALE tag with no age at all (nothing honest to show).
+            guard let age else { return rawValue }
+            return PresenceAge.ago(age)
+        case .lost:
+            // Age is REQUIRED here ("No signal · 40 min") — a LOST tag
+            // always carries one from `ff_crew`'s own freshness bucket
+            // in every real caller; the bare fallback exists only so a
+            // test fixture that genuinely omits it renders something
+            // honest rather than a dangling "·".
+            guard let age else { return "No signal" }
+            return "No signal \u{00B7} \(PresenceAge.words(age))"
+        case .linked:
+            // Paired, never heard — there is no honest age to show, so
+            // none is ever asked for here.
+            return "Paired \u{00B7} not seen yet"
+        }
+    }
+
     public var ffSigviewPresence: ff_sigview_presence_t {
         switch self {
         case .heard, .stale: return FF_PRESENCE_SEEN
@@ -673,23 +712,66 @@ public enum InboxAge {
     }
 }
 
+/// A spelled-out age for presence pills only — "6 min", "40 min",
+/// "2 hr", "3 day" — never `InboxAge.short`'s abbreviated "6M"/"2H"
+/// form, which stays exactly what it is for message timestamps and
+/// every other age this app shows (`InboxAgeTests` still pins that
+/// table unchanged). Owner decision, 2026-09-13: "every presence pill
+/// must carry an age when one exists" — plain enough that a first-time
+/// reader needs no legend ("No signal · 40 min", "6 min ago").
+public enum PresenceAge {
+    public static func words(_ interval: TimeInterval) -> String {
+        let seconds = max(0, Int(interval))
+        if seconds < 60 { return "just now" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes) min" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours) hr" }
+        return "\(hours / 24) day"
+    }
+
+    /// `words(_:)` glued to "ago" — except "just now", where "just now
+    /// ago" would not be English (the same fix
+    /// `RadarViewModel.agoPhrase(for:)` makes for the puck-formatted
+    /// age ladder).
+    public static func ago(_ interval: TimeInterval) -> String {
+        let word = words(interval)
+        return word == "just now" ? word : "\(word) ago"
+    }
+}
+
 /// The single-character glyph `InboxListView`'s member-row avatar
 /// renders — pulled out of that view so the "no `Character("")` trap"
 /// fix (PR #267 review) is unit-testable, not just eyeballed. A paired
 /// member with no identity known yet is a real, reachable state
 /// (`ff_crew_member_t.initial`'s own "'\0' until known" rule — a member
 /// paired straight through `ff_crew_set_paired` with no `NodeInfo` ever
-/// received keeps an empty `displayName`), and
-/// `conversation.displayName.prefix(1)` on an empty string is an empty
-/// `String`, not a `Character` — `Character("")` traps (bug found via
-/// demo mode's Mo, the honest LOST case: paired, never heard, never
-/// named). A blank glyph, never "?", is the same "no invented
-/// placeholder" rule this app follows everywhere else an initial can be
-/// unknown (`RadarSnapshotDot.initial`, `CoreRadarComputing.snapshot
-/// (from:...)`).
+/// received keeps an empty `displayName`).
+///
+/// Owner decision, 2026-09-13 ("Nameless crew rows... a colour and
+/// initial '?' — never a blank label") supersedes the earlier "blank,
+/// never '?'" rule this used to follow: a blank glyph read as a broken
+/// cell to real reviewers (demo mode's Mo, the honest LOST case —
+/// "looks broken... not 'paired but hasn't said anything yet'"), and
+/// "?" is not a fabricated name, just an honest "unknown" glyph, the
+/// same spirit `InboxDisplayName.label(for:)` applies to the row's text
+/// label right below it.
 public enum InboxAvatar {
     public static func avatarGlyph(for conversation: InboxConversationRow) -> String {
-        String(conversation.initial ?? conversation.displayName.first ?? " ")
+        String(conversation.initial ?? conversation.displayName.first ?? "?")
+    }
+}
+
+/// The row's own display label — never a blank name (owner decision,
+/// 2026-09-13: "any row without a name shows 'New crew member'... never
+/// a blank label"). `conversation.displayName` is already "the radio's
+/// short name if known" per `ff_crew_display_name`'s own long-name-else-
+/// short-name rule (`CrewMember`'s own doc comment) — this only
+/// substitutes when NEITHER arrived yet. CREW's own row always carries
+/// a real name ("CREW") and never reaches the fallback.
+public enum InboxDisplayName {
+    public static func label(for conversation: InboxConversationRow) -> String {
+        conversation.displayName.isEmpty ? "New crew member" : conversation.displayName
     }
 }
 

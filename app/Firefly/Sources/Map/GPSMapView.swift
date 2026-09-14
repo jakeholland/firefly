@@ -158,13 +158,13 @@ struct GPSMapView: View {
                 Text(pin.name).font(.headline).foregroundStyle(Color.ffInk)
                 Spacer()
                 Button { onDeselect() } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(Color.ffMuted)
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Color.ffCaption)
                 }
                 .frame(minWidth: 44, minHeight: 44)
             }
             Text("\(source) · \(age)")
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
             // PR #283 review, SHOULD-FIX 4: `model.imperial` — the real
             // resolved Units setting — not a hardcoded `false`, so this
             // card agrees with Radar about which unit system it's in.
@@ -189,14 +189,14 @@ struct GPSMapView: View {
 
     private func offlineFallback(_ text: String) -> some View {
         VStack(spacing: 12) {
-            Image(systemName: "wifi.slash").font(.largeTitle).foregroundStyle(Color.ffMuted)
+            Image(systemName: "wifi.slash").font(.largeTitle).foregroundStyle(Color.ffCaption)
             Text(text)
                 .font(.system(.body, design: .monospaced))
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
                 .multilineTextAlignment(.center)
             Text("Use the FIELD map — it needs no network.")
                 .font(.caption)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.ffBackground)

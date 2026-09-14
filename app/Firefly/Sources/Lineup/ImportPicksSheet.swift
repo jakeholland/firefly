@@ -28,7 +28,7 @@ struct ImportPicksSheet: View {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Paste a settimes.kandiwooks.com share link, or just the code after \"picks=\".")
                     .font(.footnote)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
                 TextField("https://settimes.kandiwooks.com/…", text: $text, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(3...6)

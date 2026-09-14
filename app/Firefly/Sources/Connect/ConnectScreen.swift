@@ -159,12 +159,14 @@ struct ConnectScreen: View {
             if let summary = channelImport.applySummary {
                 AdminWriteConfirmationSheet(
                     title: "APPLY CHANNEL",
-                    // BLOCKING 2 (PR #274 review): every slot's fate, not
-                    // just the ones being written — WRITTEN, then
-                    // DISABLED (replace only), then untouched (add
-                    // only), then the region/preset line if this import
-                    // carried a LoRa config.
-                    changes: summary.channelLines + summary.disabledLines + summary.untouchedLines +
+                    // Owner decision, 2026-09-13: one plain sentence up
+                    // front (`ChannelApplySummary.primarySentence`) —
+                    // every slot's fate (BLOCKING 2, PR #274 review:
+                    // WRITTEN, then DISABLED/replace-only, then
+                    // untouched/add-only, then region/preset) moves
+                    // behind "Technical details", collapsed by default.
+                    primaryText: summary.primarySentence,
+                    technicalDetails: summary.channelLines + summary.disabledLines + summary.untouchedLines +
                              (summary.regionLine.map { [$0] } ?? []),
                     isBusy: channelImport.isApplying,
                     errorMessage: channelImport.applyErrorMessage,
@@ -213,13 +215,13 @@ struct ConnectScreen: View {
             if let lastConnected = connect.lastConnectedLabel {
                 Text(lastConnected)
                     .font(.footnote)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
             }
 
             if let error = connect.lastError {
                 Text(error)
                     .font(.footnote)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
             }
         }
     }
@@ -242,7 +244,12 @@ struct ConnectScreen: View {
     // view model, not here. Only RESCAN stays a top-level button.
 
     private var nodePickerSection: some View {
-        SectionBlock(title: "NEARBY RADIOS") {
+        // "NEARBY RADIOS" -> "YOUR PUCK" (owner decision, 2026-09-13,
+        // Connect screen words): this section is about pairing to the
+        // ONE puck the person owns, not browsing a list of "radios" —
+        // everything else here (rows, RESCAN, DISCONNECT/FORGET) is
+        // untouched, reserved for the A02 crew-join spec.
+        SectionBlock(title: "YOUR PUCK") {
             let rows = RadioListBuilder.rows(discovered: peripherals, connect: connect)
             if rows.isEmpty {
                 radioListEmptyState
@@ -262,7 +269,7 @@ struct ConnectScreen: View {
             if let hint = RadioListBuilder.rememberedRadioHint(rows: rows) {
                 Text(hint)
                     .font(.caption2)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
             }
         }
     }
@@ -274,17 +281,19 @@ struct ConnectScreen: View {
                 ProgressView()
                 Text("Scanning…")
                     .font(.footnote)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
             }
             .frame(minHeight: 44, alignment: .leading)
         } else if scanDidTimeOut {
             Text("No Meshtastic radios found — is it powered on and within range?")
                 .font(.footnote)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
         } else {
-            Text("Tap RESCAN to look for nearby Meshtastic radios.")
+            // Owner decision, 2026-09-13: "your puck", not the
+            // open-source project name Maya's never heard of.
+            Text("Tap RESCAN to find your puck.")
                 .font(.footnote)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
         }
     }
 
@@ -370,7 +379,7 @@ struct ConnectScreen: View {
             if nearby.nodes.isEmpty {
                 Text("Nobody heard yet. This fills in as other radios are heard.")
                     .font(.footnote)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
             } else {
                 // Paired crew first (their own colour + presence), then
                 // strangers by signal tier — `NearbyNodesViewModel
@@ -442,7 +451,7 @@ struct ConnectScreen: View {
                     if result.addMode {
                         Text("Adds to your existing channels — doesn't replace them.")
                             .font(.caption)
-                            .foregroundStyle(Color.ffMuted)
+                            .foregroundStyle(Color.ffCaption)
                     }
                     ForEach(channelImport.precisionWarnings, id: \.self) { warning in
                         Text(warning)
@@ -457,7 +466,7 @@ struct ConnectScreen: View {
                     Text("Shown only — not sent to the radio until you confirm exactly which " +
                          "slots will be written, disabled, or left untouched.")
                         .font(.caption2)
-                        .foregroundStyle(Color.ffMuted)
+                        .foregroundStyle(Color.ffCaption)
                     // M3 — the write path has landed. BLOCKING 1 & 2 (PR
                     // #274 review): tapping this first reads the node's
                     // CURRENT channel table and builds the exact write
@@ -501,7 +510,7 @@ private struct SectionBlock<Content: View>: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title)
                 .font(.system(.caption, design: .monospaced).weight(.bold))
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
             content
         }
         .padding(16)
@@ -548,13 +557,13 @@ private struct RadioRow: View {
                 if let rssi = row.rssiDbm {
                     Text("\(rssi) dBm")
                         .font(.system(.footnote, design: .monospaced))
-                        .foregroundStyle(Color.ffMuted)
+                        .foregroundStyle(Color.ffCaption)
                 }
             }
             if let subtitle = row.subtitle {
                 Text(subtitle)
                     .font(.caption2)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
                     .lineLimit(1)
             }
             HStack(spacing: 12) {
@@ -648,15 +657,15 @@ private struct NearbyRow: View {
                 if let presence = node.presence {
                     Text(presence.rawValue)
                         .font(.caption2)
-                        .foregroundStyle(Color.ffMuted)
+                        .foregroundStyle(Color.ffCaption)
                 } else if let heardAgo = node.heardAgo {
                     Text(heardAgo)
                         .font(.caption2)
-                        .foregroundStyle(Color.ffMuted)
+                        .foregroundStyle(Color.ffCaption)
                 } else {
                     Text(node.tier.label)
                         .font(.caption2)
-                        .foregroundStyle(Color.ffMuted)
+                        .foregroundStyle(Color.ffCaption)
                 }
             }
             Spacer()

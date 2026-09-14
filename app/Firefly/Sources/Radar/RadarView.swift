@@ -91,7 +91,7 @@ struct RadarView: View {
             if let sub = model.subheadline {
                 Text(sub)
                     .font(.footnote)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
                     .multilineTextAlignment(.center)
             }
 
@@ -120,7 +120,7 @@ struct RadarView: View {
             if model.snapshot.mode == .signal, !model.snapshot.signalDots.isEmpty {
                 Text(RadarViewModel.signalRingDisclaimer)
                     .font(.caption2)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
             }
         }
     }
@@ -134,12 +134,12 @@ struct RadarView: View {
     private var positionLines: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let line = model.theirPositionLine {
-                Text(line).font(.caption).foregroundStyle(Color.ffMuted)
+                Text(line).font(.caption).foregroundStyle(Color.ffCaption)
             }
             if let line = model.theirSignalLine {
-                Text(line).font(.caption).foregroundStyle(Color.ffMuted)
+                Text(line).font(.caption).foregroundStyle(Color.ffCaption)
             }
-            Text(model.myPositionLine).font(.caption).foregroundStyle(Color.ffMuted)
+            Text(model.myPositionLine).font(.caption).foregroundStyle(Color.ffCaption)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

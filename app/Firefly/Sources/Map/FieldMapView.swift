@@ -96,7 +96,7 @@ struct FieldMapView: View {
     private var noMapAvailableText: some View {
         Text("No map for this festival yet")
             .font(.system(.footnote, design: .monospaced))
-            .foregroundStyle(Color.ffMuted)
+            .foregroundStyle(Color.ffCaption)
             .multilineTextAlignment(.center)
             .padding(.horizontal, 24)
             .accessibilityIdentifier("Map.Field.NoMap")

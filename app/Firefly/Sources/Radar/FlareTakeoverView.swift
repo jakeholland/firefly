@@ -35,7 +35,7 @@ struct FlareTakeoverView: View {
 
                 Text("auto-dismisses in \(model.remainingSeconds(now: context.date))s")
                     .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
 
                 Spacer()
 
@@ -69,11 +69,11 @@ struct FlareTakeoverView: View {
         } else if let reason = model.noBearingReason {
             Text("no bearing (\(reason))")
                 .font(.system(.callout, design: .monospaced))
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
         } else {
             Text("no bearing — position not known for both of you")
                 .font(.system(.callout, design: .monospaced))
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
         }
     }
 }

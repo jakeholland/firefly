@@ -120,7 +120,7 @@ struct InboxListView: View {
                         .foregroundStyle(Color.ffInk)
                     Text("Pick a nearby radio on Connect to add it to your crew.")
                         .font(.footnote)
-                        .foregroundStyle(Color.ffMuted)
+                        .foregroundStyle(Color.ffCaption)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 32)
                     Button("ADD CREW", action: onPairCrew)
@@ -145,7 +145,7 @@ private struct InboxRow: View {
             avatar
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(conversation.displayName)
+                    Text(InboxDisplayName.label(for: conversation))
                         .font(.system(.body, design: .rounded).weight(.semibold))
                         .foregroundStyle(Color.ffInk)
                     if let presence = conversation.presence {
@@ -155,7 +155,7 @@ private struct InboxRow: View {
                     if let age = conversation.previewAge {
                         Text(InboxAge.short(age))
                             .font(.system(.caption2, design: .monospaced))
-                            .foregroundStyle(Color.ffMuted)
+                            .foregroundStyle(Color.ffCaption)
                     }
                 }
                 HStack(spacing: 6) {
@@ -166,7 +166,7 @@ private struct InboxRow: View {
                     if conversation.previewIsRestored {
                         Text("FROM STORAGE")
                             .font(.system(.caption2, design: .monospaced).weight(.semibold))
-                            .foregroundStyle(Color.ffMuted)
+                            .foregroundStyle(Color.ffCaption)
                     }
                     Text(previewLine)
                         .font(.subheadline)
@@ -240,15 +240,7 @@ private struct PresencePill: View {
         }
     }
 
-    private var label: String {
-        switch presence {
-        case .heard, .stale:
-            guard let age else { return presence.rawValue }
-            return "\(presence.rawValue) \(InboxAge.short(age))"
-        case .lost, .linked:
-            return presence.rawValue
-        }
-    }
+    private var label: String { presence.plainLabel(age: age) }
 
     var body: some View {
         Text(label)
@@ -262,6 +254,12 @@ private struct PresencePill: View {
 
 struct DeliveryStatusTag: View {
     let state: DeliveryState
+    /// The permanent-failure reason, when one is honestly known —
+    /// `ThreadViewModel.dropReasonText(for:)`'s own doc comment. `nil`
+    /// everywhere this tag has no per-message context to draw one from
+    /// (the Inbox row's own summary use), which falls back to a plain
+    /// "Couldn't send" with no invented specifics.
+    var reasonText: String? = nil
 
     private var color: Color {
         switch state {
@@ -271,13 +269,21 @@ struct DeliveryStatusTag: View {
         }
     }
 
+    /// Owner decision, 2026-09-13 ("Delivery words"): `.waiting` reads
+    /// "Sending…"; `NO ACK` -> "Didn't get through" (RESEND stays);
+    /// `DELIVERED` keeps "Delivered", just no longer shouted in caps;
+    /// a permanent-error `DROPPED` names the reason when one is known
+    /// ("Couldn't send · too long", from #294's `payloadTooLarge`), else
+    /// a plain "Couldn't send" — never the raw enum word.
     private var label: String {
         switch state {
-        case .waiting: return "WAITING"
+        case .waiting: return "Sending…"
         case .sent: return "SENT"
-        case .delivered: return "DELIVERED"
-        case .noAck: return "NO ACK"
-        case .dropped: return "DROPPED"
+        case .delivered: return "Delivered"
+        case .noAck: return "Didn't get through"
+        case .dropped:
+            guard let reasonText else { return "Couldn't send" }
+            return "Couldn't send \u{00B7} \(reasonText)"
         }
     }
 

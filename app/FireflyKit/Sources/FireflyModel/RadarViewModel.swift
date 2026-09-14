@@ -729,6 +729,33 @@ public final class RadarViewModel {
         stopFind()
     }
 
+    /// The segment-switch half of `FindSegmentObserving.pauseObserving()`
+    /// (`app/Firefly/Sources/Find/FindSegment.swift`, this app's own
+    /// protocol this method's SIGNATURE exists to satisfy — this file
+    /// stays SwiftUI/app-target-free, same as every other view model
+    /// here, so it does not literally `import`/conform to that
+    /// protocol; `RadarViewModel: FindSegmentObserving`'s trivial
+    /// extension picks this up as the witness by name/signature alone,
+    /// same as `observe()`/`stopObserving()` already are).
+    ///
+    /// Owner decision, 2026-09-13 ("FIND keeps running across Find
+    /// segments"): stops the pump (heading/location mirroring + the
+    /// 1 Hz recompute loop) exactly like `stopObserving()` does, but
+    /// deliberately does NOT call `stopFind()` — an active FIND session
+    /// ticks on its own separate `findLoop` task, independent of
+    /// `recomputeLoop`, and `handlePong` is fed from `AppGraph`'s own
+    /// packet stream, not from anything this pauses, so FIND keeps
+    /// working correctly with the pump stopped. `stopObserving()` (full
+    /// teardown, FIND included) stays exactly what `AppGraph.stop()`
+    /// calls on backgrounding, and what an explicit STOP tap
+    /// (`stopFind()`) does — FIND still ends both those ways, just
+    /// never merely because Radar is not the visible segment right now.
+    public func pauseObserving() {
+        headingObservation?.cancel(); headingObservation = nil
+        locationObservation?.cancel(); locationObservation = nil
+        recomputeLoop?.cancel(); recomputeLoop = nil
+    }
+
     private func recompute() {
         // Re-read the units preference every recompute (1 Hz, plus every
         // heading/fix update) rather than once at construction — see
@@ -854,9 +881,13 @@ public final class RadarViewModel {
         case .stale: return "LAST SEEN \(snapshot.ageText)\(distanceAreaSuffix)"
         case .lost:
             if !snapshot.ageText.isEmpty { return "LAST SEEN \(snapshot.ageText)\(distanceAreaSuffix)" }
+            // Owner decision, 2026-09-13 ("Presence/status words
+            // everywhere they appear"): "NO FIX YET"/"NEAR, NO FIX" are
+            // radio-engineering phrasing for what is, in plain words,
+            // simply no location yet.
             switch snapshot.heardPresence {
-            case .heard, .stale: return "NEAR, NO FIX"
-            case .lost, .never: return "NO FIX YET"
+            case .heard, .stale: return "Near \u{00B7} no location yet"
+            case .lost, .never: return "No location yet"
             }
         case .place: return distanceAreaSuffix.isEmpty ? "FIXED POSITION" : "FIXED POSITION\(distanceAreaSuffix)"
         case .close: return "CLOSE RANGE"
@@ -865,8 +896,9 @@ public final class RadarViewModel {
             if snapshot.signalViaRelay { return "VIA RELAY" }
             // Should be unreachable per S29's mode-resolution rule (a
             // never-heard member always falls back to NOFIX/LOST), but
-            // the renderer stays honest rather than assuming.
-            return "RADIO SILENT"
+            // the renderer stays honest rather than assuming. "RADIO
+            // SILENT" -> "No signal" (owner decision, 2026-09-13).
+            return "No signal"
         }
     }
 
@@ -1006,12 +1038,30 @@ public final class RadarViewModel {
 
     /// The RADIO evidence line (S29) — distinct from `theirPositionLine`:
     /// how we're hearing them right now, never dressed up as distance.
+    ///
+    /// Owner decision, 2026-09-13 ("Radar/Find detail lines"): drop
+    /// "direct" from the primary text entirely (UX review: "'direct'...
+    /// is a total non-word to Maya — she doesn't know there's an
+    /// alternative... this is being contrasted against"); show
+    /// "relayed through <name>" only when relayed — but the core does
+    /// not carry WHICH member relayed a packet (`ff_radar.h`:
+    /// `signal_via_relay`/`via_relay` are booleans, no relay identity),
+    /// so naming one here would be fabricated, not surfaced. Says
+    /// "via relay" instead, honest about the one fact this app actually
+    /// has, never a fictional name (interpretation call, noted in this
+    /// PR's body).
     public var theirSignalLine: String? {
         guard snapshot.signalHeard else { return nil }
-        let who = snapshot.name.isEmpty ? "they" : snapshot.name
-        let path = snapshot.signalViaRelay ? "via relay" : "direct"
-        let tierPart = snapshot.signalTier != .none ? "\(snapshot.signalTier.label.lowercased()) signal, " : ""
-        return "\(who)'s radio: \(tierPart)\(path), heard \(Self.agoPhrase(for: snapshot.signalAgeText))"
+        let who = snapshot.name.isEmpty ? "They" : snapshot.name
+        let when = "heard \(Self.agoPhrase(for: snapshot.signalAgeText))"
+        guard snapshot.signalTier != .none else {
+            // No direct tier to report — either genuinely via relay (a
+            // relayed packet's RSSI belongs to the relay, never the
+            // sender), or heard with no attributable reading at all.
+            let via = snapshot.signalViaRelay ? ", via relay" : ""
+            return "\(who): \(when)\(via)"
+        }
+        return "\(who): \(snapshot.signalTier.label.lowercased()) signal \u{00B7} \(when)"
     }
 
     /// The phone's OWN line: "your position: phone GPS ±4 m; heading:
