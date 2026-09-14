@@ -1707,3 +1707,56 @@ here so the plan is one plan.
 
 **Order:** A → B → (C ∥ E) → D. D depends on A's codec only, so it can
 start as soon as A merges and the bench confirmation is in.
+
+## 10. Amendments
+
+- **2026-09-14, bench finding — ask for a name on admission (the app
+  half).** §4.4 says "when NodeInfo lands, the name updates in place"
+  and left *when* that happens to the sending radio: a node auto-admitted
+  (§4.1) on a Position/Text/`FF_PORTNUM` packet — anything but NodeInfo
+  itself — reads **"New crew member"** until its OWN radio reaches its
+  next periodic NodeInfo broadcast, which Meshtastic schedules on the
+  order of hours. `docs/specs/S02-core-crew.md`'s 2026-09-14 amendment
+  owns the puck's half of the fix and carries the full reasoning, the
+  wire citations and the rate-limit rationale; **this amendment is the
+  companion app's half**, and the two behave identically by design.
+
+  - **The rule.** Immediately after `CrewMembershipEngine` admits a
+    member (`admit(nodeID:)`'s `.paired` branch — never on a refusal,
+    never on the `.full` overflow path), if that member has no display
+    name ON THE ROSTER (`pairing.crew.member(nodeID:)`, never the
+    packet that admitted them — an unhidden member's slot can already
+    carry a name from before they were hidden), the app asks that node
+    directly: `MeshtasticClientProtocol.requestNodeInfo(from:)`,
+    fire-and-forget. §4.1 is untouched — this only ever FOLLOWS a
+    successful admission and never causes one, so hidden / self /
+    via-MQTT / wrong-channel / replay senders are all excluded by
+    construction rather than by a second guard.
+  - **The wire.** A `NODEINFO_APP` packet addressed to that node with
+    `want_response = true`, `want_ack = false`, carrying **this node's
+    own `User`** (the `ownerLongName`/`ownerShortName` the RADIO
+    reported, never a guess, and absent rather than empty when the
+    radio has reported none). The payload is not optional: a real
+    `NodeInfoModule` hands whatever arrives to `NodeDB::updateUser`, so
+    an empty `User` is a claim that this node has no name and blanks
+    the peer's record of us — see `mc_send_nodeinfo_request`'s doc
+    comment (`firmware/meshclient/include/mc_client.h`) for the
+    verified firmware citation. Meshtastic's own iOS client sends its
+    `User` on this exact request (`exchangeUserInfo`).
+  - **Rate limit.** Once per node per ten minutes
+    (`CrewNodeInfoRequestThrottle`, reset with the crew in
+    `configure(crew:)`). An ordinary admission asks once by
+    construction; the limit is the safety net for hide/unhide churn and
+    roster-slot cycling, and it is recorded at the moment the decision
+    is taken, not at send completion.
+  - **The reply** needs no new seam: it arrives as an ordinary live
+    `NODEINFO_APP` packet, is published on `nodeUpdates()` by the
+    existing `.nodeinfoApp` decode case, and names the member through
+    `CoreStore.apply(nodeUpdate:)` -> `crew.setIdentity`. Nothing about
+    §4.4's display-name order or the "never write a fallback into the
+    model" rule changes.
+  - **Tests:** `CrewNodeInfoRequestOnAdmissionTests` (the rule, per
+    clause), `CrewNodeInfoRequestThrottleTests` (the limit, pure),
+    `ClientPositionAndPrivateTests` (the actual bytes on the wire:
+    portnum, `want_response`, `want_ack`, and the `User` payload
+    carrying the radio's own owner names).

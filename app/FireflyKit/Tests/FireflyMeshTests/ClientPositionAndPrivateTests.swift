@@ -40,7 +40,8 @@ final class ClientPositionAndPrivateTests: XCTestCase {
     /// separate files in the same target and the helper is five lines of
     /// injected frames, not a rulebook that could drift.
     private func completeHandshake(transport: LoopbackTransport, client: MeshtasticClient,
-                                   myNodeNum: UInt32 = 48_621_524) async throws {
+                                   myNodeNum: UInt32 = 48_621_524,
+                                   ownerNames: (long: String, short: String)? = nil) async throws {
         func frame(_ build: (inout FromRadio) -> Void) throws -> Data {
             var fr = FromRadio()
             build(&fr)
@@ -53,6 +54,17 @@ final class ClientPositionAndPrivateTests: XCTestCase {
         transport.inject(try frame { $0.myInfo = info })
         transport.inject(try frame { $0.configCompleteID = MeshtasticConfigNonce.onlyConfig })
         try await waitForSentCount(3, on: transport) // want_config(onlyNodeDB)
+        // The radio's own nodeDB entry for THIS node — the one place
+        // the client learns its own owner names (`applyOwnerFromNodeDB`).
+        if let ownerNames {
+            var user = User()
+            user.longName = ownerNames.long
+            user.shortName = ownerNames.short
+            var mine = NodeInfo()
+            mine.num = myNodeNum
+            mine.user = user
+            transport.inject(try frame { $0.nodeInfo = mine })
+        }
         transport.inject(try frame { $0.configCompleteID = MeshtasticConfigNonce.onlyNodeDB })
         try await connectTask.value
     }
@@ -266,5 +278,71 @@ final class ClientPositionAndPrivateTests: XCTestCase {
 
         XCTAssertEqual(client.connectedNodeNum, 48_621_524)
         await client.disconnect()
+    }
+
+    // MARK: - A02 slice C follow-up: NodeInfo-request-on-nameless-admission
+    // (bench finding 2026-09-14, docs/specs/A02-crew-join.md §4.4)
+
+    func testRequestNodeInfoSendsAWantResponseNodeInfoAppPacket() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport)
+
+        try await client.requestNodeInfo(from: 0x02E6_06B0)
+
+        let packet = try decodeSentPacket(transport)
+        XCTAssertEqual(packet.to, 0x02E6_06B0, "addressed to the node being asked, not to the connected node")
+        XCTAssertFalse(packet.wantAck, "an ask, not a guaranteed message — never retried at the mesh level")
+        guard case .decoded(let data) = packet.payloadVariant else { return XCTFail("not a decoded payload") }
+        XCTAssertEqual(data.portnum, .nodeinfoApp)
+        XCTAssertTrue(data.wantResponse,
+                      "REQUIRED for a real NodeInfoModule to answer at all (NodeInfoModule::allocReply)")
+        // The payload is a `User`, and with no owner name reported by
+        // the radio yet it is an EMPTY User — encoded as zero bytes by
+        // proto3 implicit presence, which is "we have said nothing",
+        // not "our name is the empty string".
+        let user = try User(serializedBytes: data.payload)
+        XCTAssertEqual(user.longName, "")
+        XCTAssertEqual(user.shortName, "")
+    }
+
+    /// The payload a REAL peer writes into its nodeDB
+    /// (`NodeDB::updateUser`) must carry the names the radio actually
+    /// reported for us — never an empty `User`, which blanks the peer's
+    /// record of this node. Mirrors firmware's own
+    /// `feat_nodeinfo_request_carries_our_own_user`.
+    func testRequestNodeInfoCarriesTheRadiosOwnOwnerNames() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport)
+
+        try await completeHandshake(transport: transport, client: client,
+                                     ownerNames: (long: "Jake's Puck", short: "JKP"))
+
+        try await client.requestNodeInfo(from: 0x02E6_06B0)
+
+        let packet = try decodeSentPacket(transport, index: transport.sentMessages.count - 1)
+        guard case .decoded(let data) = packet.payloadVariant else { return XCTFail("not a decoded payload") }
+        XCTAssertEqual(data.portnum, .nodeinfoApp)
+        let user = try User(serializedBytes: data.payload)
+        XCTAssertEqual(user.longName, "Jake's Puck")
+        XCTAssertEqual(user.shortName, "JKP")
+        await client.disconnect()
+    }
+
+    func testRequestNodeInfoNeverSetsWantResponseOnOrdinarySends() async throws {
+        // Regression guard for the shared `sendData` helper `sendPosition`/
+        // `sendPrivate`/`requestNodeInfo` all route through: adding the
+        // `wantResponse` parameter must not leak `true` onto the two
+        // existing callers that never asked for it.
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport)
+
+        try await client.sendPosition(fix(), to: 1)
+        try await client.sendPrivate(Data([0x01]), to: 1, wantAck: false)
+
+        for index in 0..<2 {
+            let packet = try decodeSentPacket(transport, index: index)
+            guard case .decoded(let data) = packet.payloadVariant else { return XCTFail("not a decoded payload") }
+            XCTAssertFalse(data.wantResponse, "only requestNodeInfo asks for a response")
+        }
     }
 }

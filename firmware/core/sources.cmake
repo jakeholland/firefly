@@ -66,4 +66,5 @@ set(FF_CORE_SOURCES
     src/ff_hidden.c          # A02 slice D — bounded per-node hide set (S02 amendment 2026-09-13 §C)
     src/ff_admit.c           # A02 slice D — the crew-admission rule, pure (S02 amendment 2026-09-13 §B)
     src/ff_crewstart.c       # A02 slice D2 — puck-initiated crew: START/LEAVE state machine (S02 amendment 2026-09-14)
+    src/ff_nodeinfo_req.c    # bench finding 2026-09-14 — rate-limit state for "ask a nameless crew member for their NodeInfo"
 )

@@ -223,6 +223,20 @@ typedef struct {
      * matched to THIS write. */
     int (*send_admin_set_channel)(void *ctx, uint32_t dest, mc_channel_t const *ch, uint32_t *out_packet_id);
 
+    /* [api] bench finding 2026-09-14 — mirrors `mc_send_nodeinfo_request`'s
+     * signature exactly (mc_client.h). `shell_try_admit`'s "ask a
+     * nameless new member for their NodeInfo" step goes through this,
+     * not a direct `mc_send_nodeinfo_request` call, for the SAME "test
+     * needs a mock, not a live radio" reason every other entry in this
+     * vtable exists. Appended at the END, like every prior addition —
+     * every NAMED initializer in the tree keeps compiling unchanged; the
+     * tree's few POSITIONAL initializers (`-Werror`'s
+     * `-Wmissing-field-initializers`) were updated in the same change
+     * that added this field. May be NULL: `shell_try_admit` checks
+     * before calling through it, so a target/test with nothing bound
+     * here simply never asks — the admission itself is unaffected. */
+    int (*send_nodeinfo_request)(void *ctx, uint32_t dest, uint32_t *out_packet_id);
+
     /* [api] A02 slice D2 — ask the radio to re-send its configuration,
      * i.e. start a fresh `want_config` handshake (`mc_connect`).
      *

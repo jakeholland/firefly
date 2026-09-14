@@ -470,6 +470,32 @@ static void mc_process_mesh_packet(mc_client_t *c, meshtastic_MeshPacket const *
          * does for the same condition (`ni->has_position &&
          * ni->position.has_latitude_i && ni->position.has_longitude_i`,
          * with no else branch at all). */
+    } else if (portnum == (uint32_t)meshtastic_PortNum_NODEINFO_APP) {
+        /* Bench finding 2026-09-14 — see mc_events_t.on_nodeinfo_reply's
+         * own doc comment for why this is a SEPARATE event from
+         * on_node's want_config replay, and mc_user_reply_t's for why
+         * it decodes a narrower type: a live NODEINFO_APP packet's
+         * payload is only a meshtastic_User, nothing else. Fires
+         * regardless of whether THIS device solicited it with
+         * mc_send_nodeinfo_request — a crew member's own unsolicited
+         * periodic re-announcement is just as good an answer. */
+        meshtastic_User user = meshtastic_User_init_zero;
+        pb_istream_t is = pb_istream_from_buffer(d->payload.bytes, d->payload.size);
+        if (!pb_decode(&is, meshtastic_User_fields, &user)) {
+            c->stats.decode_errors++;
+        } else if (c->events.on_nodeinfo_reply != NULL) {
+            mc_user_reply_t out;
+            memset(&out, 0, sizeof(out));
+            if (user.long_name[0] != '\0') {
+                out.has_long_name = true;
+                mc_copy_name(out.long_name, user.long_name);
+            }
+            if (user.short_name[0] != '\0') {
+                out.has_short_name = true;
+                mc_copy_name(out.short_name, user.short_name);
+            }
+            c->events.on_nodeinfo_reply(c->events.user, pkt->from, &out);
+        }
     } else if (portnum == (uint32_t)meshtastic_PortNum_TELEMETRY_APP) {
         /* Diagnostics — see mc_events_t.on_telemetry's own doc comment.
          * `Telemetry` is a oneof over several metric kinds; this library
@@ -518,14 +544,27 @@ static void mc_process_mesh_packet(mc_client_t *c, meshtastic_MeshPacket const *
         pb_istream_t is = pb_istream_from_buffer(d->payload.bytes, d->payload.size);
         if (!pb_decode(&is, meshtastic_AdminMessage_fields, &admin)) {
             c->stats.decode_errors++;
-        } else if (admin.which_payload_variant == meshtastic_AdminMessage_get_owner_response_tag &&
-                   c->events.on_owner != NULL) {
+        } else if (admin.which_payload_variant == meshtastic_AdminMessage_get_owner_response_tag) {
             meshtastic_User const *owner = &admin.payload_variant.get_owner_response;
             char long_name[MC_NAME_MAX];
             char short_name[MC_NAME_MAX];
             mc_copy_name(long_name, owner->long_name);
             mc_copy_name(short_name, owner->short_name);
-            c->events.on_owner(c->events.user, long_name, short_name);
+            /* This library only ever asks `dest == self` (see
+             * mc_send_get_owner_request), so this response is
+             * definitionally our own owner — the freshest statement the
+             * radio has made about it, and the one a later
+             * mc_send_nodeinfo_request should carry. Sticky per field,
+             * same convention as the nodeDB replay above. */
+            if (long_name[0] != '\0') {
+                mc_copy_name(c->my_long_name, long_name);
+            }
+            if (short_name[0] != '\0') {
+                mc_copy_name(c->my_short_name, short_name);
+            }
+            if (c->events.on_owner != NULL) {
+                c->events.on_owner(c->events.user, long_name, short_name);
+            }
         }
     } else if (portnum == (uint32_t)meshtastic_PortNum_ROUTING_APP) {
         /* Confirmation-fix follow-up: the delivery outcome of an earlier
@@ -771,6 +810,25 @@ static void mc_process_from_radio(mc_client_t *c, meshtastic_FromRadio const *fr
                 mc_copy_name(out.short_name, ni->user.short_name);
             }
             out.hw_model = (uint32_t)ni->user.hw_model;
+        }
+
+        /* Bench finding 2026-09-14 — the radio's own nodeDB entry for
+         * THIS node is where this library learns the `User` it puts in
+         * `mc_send_nodeinfo_request`'s payload. Sticky per field (the
+         * same `if (name[0] != '\0')` convention the name writes above
+         * and in ff_shell.c already use): a later report that omits a
+         * name never blanks one already learned, and nothing here is
+         * invented — an unknown name stays "". */
+        if (c->has_my_node_id && ni->num == c->my_node_id && ni->has_user) {
+            if (ni->user.long_name[0] != '\0') {
+                mc_copy_name(c->my_long_name, ni->user.long_name);
+            }
+            if (ni->user.short_name[0] != '\0') {
+                mc_copy_name(c->my_short_name, ni->user.short_name);
+            }
+            if ((uint32_t)ni->user.hw_model != 0u) {
+                c->my_hw_model = (uint32_t)ni->user.hw_model;
+            }
         }
 
         if (ni->has_position && ni->position.has_latitude_i && ni->position.has_longitude_i) {
@@ -1251,6 +1309,51 @@ int mc_send_get_owner_request(mc_client_t *c, uint32_t dest)
      * function's own doc comment (mc_client.h) for why. */
     return mc_send_data_packet_ex(c, dest, (uint32_t)meshtastic_PortNum_ADMIN_APP, payload, os.bytes_written, false,
                                    /*want_response=*/true, NULL);
+}
+
+int mc_send_nodeinfo_request(mc_client_t *c, uint32_t dest, uint32_t *out_packet_id)
+{
+    if (c->state != MC_STATE_READY) {
+        return -1;
+    }
+
+    /* The payload is OUR OWN User, not an empty one — see this
+     * function's doc comment (mc_client.h) for the firmware citation.
+     * `NodeInfoModule::handleReceivedProtobuf` feeds whatever we send
+     * straight to `NodeDB::updateUser`, so an empty User is not a
+     * "payload-free ask": it is a wire claim that this node has no
+     * name, and a peer that has no public key stored for us stores it.
+     * Whatever the radio has told us about our own owner is what goes
+     * on the wire; fields it has never reported stay unset rather than
+     * being invented (CLAUDE.md's honesty rule applies to what we
+     * transmit about ourselves too).
+     *
+     * `User.public_key`/`.id`/`.macaddr` are `pb_callback_t` in this
+     * tree's generated types (mesh.pb.h) — this library can neither
+     * read nor write them, so a peer that already holds our public key
+     * drops this packet's User on its own key-mismatch guard
+     * (`NodeDB::updateUser`) and answers anyway. That is the intended,
+     * harmless outcome: the request's job is the want_response bit,
+     * and its payload's job is to not lie while carrying it.
+     * `User.id` needs no help either — the receiver coerces it from the
+     * packet's own `from`. */
+    meshtastic_User user = meshtastic_User_init_zero;
+    mc_copy_name(user.long_name, c->my_long_name);
+    mc_copy_name(user.short_name, c->my_short_name);
+    user.hw_model = (meshtastic_HardwareModel)c->my_hw_model;
+
+    uint8_t payload[2u * MC_NAME_MAX + 16u];
+    pb_ostream_t os = pb_ostream_from_buffer(payload, sizeof(payload));
+    if (!pb_encode(&os, meshtastic_User_fields, &user)) {
+        return -1;
+    }
+
+    /* want_ack stays false (the value here is the reply's User payload,
+     * not a routing receipt); want_response is the whole point,
+     * mirroring mc_send_get_owner_request's identical bit on a
+     * different module. */
+    return mc_send_data_packet_ex(c, dest, (uint32_t)meshtastic_PortNum_NODEINFO_APP, payload, os.bytes_written,
+                                   /*want_ack=*/false, /*want_response=*/true, out_packet_id);
 }
 
 /* ------------------------------------------------------------------ */

@@ -236,6 +236,13 @@ static void wiring_mc_request_config(void *ctx)
     mc_connect((mc_client_t *)ctx);
 }
 
+/* Bench finding 2026-09-14 — thin wrapper to mc_send_nodeinfo_request,
+ * the same shape as the wrappers above. */
+static int wiring_mc_send_nodeinfo_request(void *ctx, uint32_t dest, uint32_t *out_packet_id)
+{
+    return mc_send_nodeinfo_request((mc_client_t *)ctx, dest, out_packet_id);
+}
+
 void ff_wiring_init_with_sender(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_heard_t *heard,
                                  ff_wiring_sender_t sender, void (*haptic_cb)(void *user), void *haptic_user,
                                  ff_clock_t const *clock)
@@ -262,6 +269,7 @@ void ff_wiring_init(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_hea
     sender.send_get_owner_request = wiring_mc_send_get_owner_request;
     sender.send_admin_set_channel = wiring_mc_set_channel;
     sender.request_config = wiring_mc_request_config;
+    sender.send_nodeinfo_request = wiring_mc_send_nodeinfo_request;
     ff_wiring_init_with_sender(w, feed, crew, heard, sender, haptic_cb, haptic_user, clock);
 }
 

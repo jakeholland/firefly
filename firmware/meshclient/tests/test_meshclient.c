@@ -219,6 +219,14 @@ typedef struct {
     int first_position_seq;
     int first_text_seq;
     int first_private_seq;
+
+    /* Bench finding 2026-09-14 — a LIVE NODEINFO_APP reply, as opposed
+     * to `nodes[]`/`node_count` above (the want_config replay). */
+    struct {
+        uint32_t        from;
+        mc_user_reply_t user;
+    } nodeinfo_replies[8];
+    int nodeinfo_reply_count;
 } events_capture_t;
 
 static void cap_on_state(void *u, mc_state_t s)
@@ -344,6 +352,16 @@ static void cap_on_lora_region(void *u, uint32_t region)
     c->lora_region_count++;
 }
 
+static void cap_on_nodeinfo_reply(void *u, uint32_t from, mc_user_reply_t const *user)
+{
+    events_capture_t *c = (events_capture_t *)u;
+    if (c->nodeinfo_reply_count < (int)(sizeof(c->nodeinfo_replies) / sizeof(c->nodeinfo_replies[0]))) {
+        c->nodeinfo_replies[c->nodeinfo_reply_count].from = from;
+        c->nodeinfo_replies[c->nodeinfo_reply_count].user = *user;
+        c->nodeinfo_reply_count++;
+    }
+}
+
 static mc_events_t make_events(events_capture_t *cap)
 {
     mc_events_t ev;
@@ -359,6 +377,7 @@ static mc_events_t make_events(events_capture_t *cap)
     ev.on_routing_ack = cap_on_routing_ack;
     ev.on_channel = cap_on_channel;
     ev.on_lora_region = cap_on_lora_region;
+    ev.on_nodeinfo_reply = cap_on_nodeinfo_reply;
     ev.user = cap;
     return ev;
 }
@@ -3687,6 +3706,322 @@ static void feat_get_owner_request_fails_when_not_ready(void)
     TEST_ASSERT_EQUAL_UINT32(0u, io.tx_len);
 }
 
+/* -------------------------------------------------------------------- */
+/* Bench finding 2026-09-14 — mc_send_nodeinfo_request, and a LIVE       */
+/* NODEINFO_APP MeshPacket -> on_nodeinfo_reply (as opposed to on_node's */
+/* want_config replay).                                                  */
+/* -------------------------------------------------------------------- */
+
+static void feat_nodeinfo_request_encodes_want_response_on_nodeinfo_app(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    uint32_t packet_id = 0xDEADBEEFu;
+    TEST_ASSERT_EQUAL_INT(0, mc_send_nodeinfo_request(&c, 0x0B0B0B0Bu, &packet_id));
+    TEST_ASSERT_NOT_EQUAL_UINT32(0xDEADBEEFu, packet_id); /* overwritten on success */
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    uint16_t flen = (uint16_t)((io.tx_buf[2] << 8) | io.tx_buf[3]);
+    pb_istream_t is = pb_istream_from_buffer(io.tx_buf + 4, flen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL_INT(meshtastic_ToRadio_packet_tag, tr.which_payload_variant);
+
+    meshtastic_MeshPacket const *pkt = &tr.payload_variant.packet;
+    TEST_ASSERT_EQUAL_UINT32(0x0B0B0B0Bu, pkt->to);
+    TEST_ASSERT_EQUAL_UINT32(packet_id, pkt->id);
+    TEST_ASSERT_FALSE_MESSAGE(pkt->want_ack,
+                              "the value here is the reply's User payload, not a routing receipt");
+    TEST_ASSERT_EQUAL_INT((int)meshtastic_PortNum_NODEINFO_APP, (int)pkt->payload_variant.decoded.portnum);
+    /* The bit NodeInfoModule::allocReply (via MeshModule's generic reply
+     * mechanism) requires to answer at all — see mc_send_nodeinfo_
+     * request's own doc comment (mc_client.h) for the v2.7.26.54e0d8d
+     * citation. */
+    TEST_ASSERT_TRUE_MESSAGE(pkt->payload_variant.decoded.want_response,
+                             "NodeInfoModule only replies to a NODEINFO_APP packet whose want_response bit is set");
+
+    /* The payload is a meshtastic_User. Nothing has told this client its
+     * own owner names yet, so every field is unset — which proto3
+     * encodes as ZERO bytes ("we have said nothing"), never as a claim
+     * that our name is the empty string. */
+    meshtastic_User user = meshtastic_User_init_zero;
+    pb_istream_t uis = pb_istream_from_buffer(pkt->payload_variant.decoded.payload.bytes,
+                                              pkt->payload_variant.decoded.payload.size);
+    TEST_ASSERT_TRUE(pb_decode(&uis, meshtastic_User_fields, &user));
+    TEST_ASSERT_EQUAL_STRING("", user.long_name);
+    TEST_ASSERT_EQUAL_STRING("", user.short_name);
+    TEST_ASSERT_EQUAL_UINT32(0u, pkt->payload_variant.decoded.payload.size);
+}
+
+/* A want_config nodeDB REPLAY frame carrying names (build_nodeinfo_frame
+ * above is the nameless "traffic is flowing" variant) — the only path
+ * this library learns its OWN owner names from. */
+static uint16_t build_named_nodeinfo_replay_frame(uint32_t num, char const *long_name, char const *short_name,
+                                                  uint8_t *out, size_t out_cap)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_node_info_tag;
+    fr.payload_variant.node_info.num = num;
+    fr.payload_variant.node_info.has_user = true;
+    snprintf(fr.payload_variant.node_info.user.long_name, sizeof(fr.payload_variant.node_info.user.long_name), "%s",
+             long_name);
+    snprintf(fr.payload_variant.node_info.user.short_name, sizeof(fr.payload_variant.node_info.user.short_name), "%s",
+             short_name);
+
+    uint8_t payload[160];
+    pb_ostream_t os = pb_ostream_from_buffer(payload, sizeof(payload));
+    if (!pb_encode(&os, meshtastic_FromRadio_fields, &fr)) {
+        return 0;
+    }
+    return mc_frame_encode(out, out_cap, payload, (uint16_t)os.bytes_written);
+}
+
+/* The payload a real peer writes STRAIGHT INTO ITS NODEDB
+ * (NodeInfoModule::handleReceivedProtobuf -> NodeDB::updateUser). An
+ * empty User there is not a payload-free ask: it is a claim that this
+ * node has no name, and a peer holding no public key for us stores it —
+ * blanking the record this whole feature exists to fill in. So the
+ * request must carry what the RADIO said our owner is. */
+static void feat_nodeinfo_request_carries_our_own_user(void)
+{
+    uint8_t frame[300];
+    uint16_t flen = build_named_nodeinfo_replay_frame(0x1234u, "Jake's Puck", "JKP", frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+    /* The replay names our OWN node — the one path this library learns
+     * its owner names from (there is no other honest source). */
+    c.my_node_id = 0x1234u;
+    c.has_my_node_id = true;
+
+    mc_tick(&c, 5);
+    TEST_ASSERT_EQUAL_INT(1, cap.node_count);
+
+    io.tx_len = 0; /* only the request itself is under the microscope */
+    TEST_ASSERT_EQUAL_INT(0, mc_send_nodeinfo_request(&c, 0x0B0B0B0Bu, NULL));
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    uint16_t txlen = (uint16_t)((io.tx_buf[2] << 8) | io.tx_buf[3]);
+    pb_istream_t is = pb_istream_from_buffer(io.tx_buf + 4, txlen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+
+    meshtastic_Data const *d = &tr.payload_variant.packet.payload_variant.decoded;
+    TEST_ASSERT_EQUAL_INT((int)meshtastic_PortNum_NODEINFO_APP, (int)d->portnum);
+    TEST_ASSERT_TRUE(d->want_response);
+
+    meshtastic_User user = meshtastic_User_init_zero;
+    pb_istream_t uis = pb_istream_from_buffer(d->payload.bytes, d->payload.size);
+    TEST_ASSERT_TRUE(pb_decode(&uis, meshtastic_User_fields, &user));
+    TEST_ASSERT_EQUAL_STRING("Jake's Puck", user.long_name);
+    TEST_ASSERT_EQUAL_STRING("JKP", user.short_name);
+}
+
+/* A replay for SOMEBODY ELSE never becomes our own identity — the
+ * mutation this guards is dropping the `ni->num == my_node_id` test. */
+static void feat_nodeinfo_request_never_borrows_another_nodes_name(void)
+{
+    uint8_t frame[300];
+    uint16_t flen = build_named_nodeinfo_replay_frame(0x9999u, "Somebody Else", "SBE", frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+    c.my_node_id = 0x1234u;
+    c.has_my_node_id = true;
+
+    mc_tick(&c, 5);
+    TEST_ASSERT_EQUAL_INT(1, cap.node_count);
+
+    io.tx_len = 0; /* only the request itself is under the microscope */
+    TEST_ASSERT_EQUAL_INT(0, mc_send_nodeinfo_request(&c, 0x0B0B0B0Bu, NULL));
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    uint16_t txlen = (uint16_t)((io.tx_buf[2] << 8) | io.tx_buf[3]);
+    pb_istream_t is = pb_istream_from_buffer(io.tx_buf + 4, txlen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+
+    meshtastic_Data const *d = &tr.payload_variant.packet.payload_variant.decoded;
+    meshtastic_User user = meshtastic_User_init_zero;
+    pb_istream_t uis = pb_istream_from_buffer(d->payload.bytes, d->payload.size);
+    TEST_ASSERT_TRUE(pb_decode(&uis, meshtastic_User_fields, &user));
+    TEST_ASSERT_EQUAL_STRING("", user.long_name);
+    TEST_ASSERT_EQUAL_STRING("", user.short_name);
+}
+
+static void feat_nodeinfo_request_fails_when_not_ready(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+
+    uint32_t packet_id = 0xDEADBEEFu;
+    TEST_ASSERT_EQUAL_INT(-1, mc_send_nodeinfo_request(&c, 1u, &packet_id));
+    TEST_ASSERT_EQUAL_UINT32(0u, io.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(0xDEADBEEFu, packet_id); /* untouched on failure */
+}
+
+/* Builds an inbound live NODEINFO_APP MeshPacket carrying a meshtastic_User
+ * — the shape a real reply (or an unsolicited re-announcement) arrives
+ * as, as opposed to build_nodeinfo_frame's want_config FromRadio.node_info
+ * replay shape (below). */
+static uint16_t build_live_nodeinfo_frame(uint32_t from, char const *long_name, char const *short_name,
+                                          uint8_t *out, size_t out_cap)
+{
+    meshtastic_User user = meshtastic_User_init_zero;
+    if (long_name != NULL) snprintf(user.long_name, sizeof(user.long_name), "%s", long_name);
+    if (short_name != NULL) snprintf(user.short_name, sizeof(user.short_name), "%s", short_name);
+
+    uint8_t payload[128];
+    pb_ostream_t os = pb_ostream_from_buffer(payload, sizeof(payload));
+    TEST_ASSERT_TRUE(pb_encode(&os, meshtastic_User_fields, &user));
+
+    return build_data_packet_frame(from, MC_ADDR_BROADCAST, (uint32_t)meshtastic_PortNum_NODEINFO_APP, payload,
+                                    os.bytes_written, out, out_cap);
+}
+
+static void feat_live_nodeinfo_app_decodes_to_on_nodeinfo_reply(void)
+{
+    uint8_t frame[300];
+    uint16_t flen = build_live_nodeinfo_frame(0x0C0C0C0Cu, "Stranger Danger", "STR", frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    mc_tick(&c, 5);
+
+    mc_stats_t stats = mc_get_stats(&c);
+    TEST_ASSERT_EQUAL_UINT32(1u, stats.frames_ok);
+    TEST_ASSERT_EQUAL_UINT32(0u, stats.decode_errors);
+
+    /* Fires the NEW event, never the replay one — a live packet must
+     * never be mistaken for a want_config nodeDB dump. */
+    TEST_ASSERT_EQUAL_INT(0, cap.node_count);
+    TEST_ASSERT_EQUAL_INT(1, cap.nodeinfo_reply_count);
+    TEST_ASSERT_EQUAL_UINT32(0x0C0C0C0Cu, cap.nodeinfo_replies[0].from);
+    TEST_ASSERT_TRUE(cap.nodeinfo_replies[0].user.has_long_name);
+    TEST_ASSERT_EQUAL_STRING("Stranger Danger", cap.nodeinfo_replies[0].user.long_name);
+    TEST_ASSERT_TRUE(cap.nodeinfo_replies[0].user.has_short_name);
+    TEST_ASSERT_EQUAL_STRING("STR", cap.nodeinfo_replies[0].user.short_name);
+}
+
+static void feat_live_nodeinfo_app_with_no_name_still_fires_with_both_flags_false(void)
+{
+    /* A well-formed User that states neither name (proto3 implicit
+     * presence: "" and "never set" are the same bytes) — a legitimate,
+     * if unusual, reply. Mirrors the Position "well-formed, nothing to
+     * report" precedent EXCEPT that this event still fires (see its own
+     * doc comment in mc_client.h for why: a caller's own "did I get an
+     * answer at all" bookkeeping needs to see it). */
+    uint8_t frame[300];
+    uint16_t flen = build_live_nodeinfo_frame(0x0D0D0D0Du, NULL, NULL, frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    mc_tick(&c, 5);
+
+    mc_stats_t stats = mc_get_stats(&c);
+    TEST_ASSERT_EQUAL_UINT32(0u, stats.decode_errors);
+    TEST_ASSERT_EQUAL_UINT32(0u, stats.decode_skipped);
+    TEST_ASSERT_EQUAL_INT(1, cap.nodeinfo_reply_count);
+    TEST_ASSERT_FALSE(cap.nodeinfo_replies[0].user.has_long_name);
+    TEST_ASSERT_FALSE(cap.nodeinfo_replies[0].user.has_short_name);
+}
+
+static void feat_live_nodeinfo_app_corrupt_protobuf_counts_decode_error(void)
+{
+    /* Genuinely malformed wire data — same technique
+     * S03_debt_position_corrupt_protobuf_counts_decode_error uses: a
+     * varint field tag whose value the stream ends before. */
+    uint8_t const garbage[] = {0x08}; /* field 1, varint wiretype, no value byte follows */
+    uint8_t frame[300];
+    uint16_t flen = build_data_packet_frame(0x0E0E0E0Eu, MC_ADDR_BROADCAST,
+                                             (uint32_t)meshtastic_PortNum_NODEINFO_APP, garbage, sizeof(garbage),
+                                             frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    mc_tick(&c, 5);
+
+    mc_stats_t stats = mc_get_stats(&c);
+    TEST_ASSERT_EQUAL_UINT32(1u, stats.decode_errors);
+    TEST_ASSERT_EQUAL_INT(0, cap.nodeinfo_reply_count);
+}
+
 /* Builds an inbound FromRadio.packet frame on `portnum` carrying `request_id`
  * plus arbitrary payload bytes — the same shape build_data_packet_frame
  * (above) already establishes, extended with request_id since neither
@@ -4864,6 +5199,13 @@ int main(void)
 
     RUN_TEST(feat_get_owner_request_encodes_the_request);
     RUN_TEST(feat_get_owner_request_fails_when_not_ready);
+    RUN_TEST(feat_nodeinfo_request_encodes_want_response_on_nodeinfo_app);
+    RUN_TEST(feat_nodeinfo_request_carries_our_own_user);
+    RUN_TEST(feat_nodeinfo_request_never_borrows_another_nodes_name);
+    RUN_TEST(feat_nodeinfo_request_fails_when_not_ready);
+    RUN_TEST(feat_live_nodeinfo_app_decodes_to_on_nodeinfo_reply);
+    RUN_TEST(feat_live_nodeinfo_app_with_no_name_still_fires_with_both_flags_false);
+    RUN_TEST(feat_live_nodeinfo_app_corrupt_protobuf_counts_decode_error);
     RUN_TEST(feat_get_owner_response_fires_on_owner);
     RUN_TEST(feat_get_owner_response_unset_short_name_reports_empty);
     RUN_TEST(feat_admin_other_variant_is_silently_ignored);

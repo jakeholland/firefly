@@ -82,6 +82,13 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     private var sentTexts: [(String, UInt32, Bool)] = []
     private var sentPositions: [(ExternalPositionFix, UInt32)] = []
     private var sentPrivate: [(Data, UInt32, Bool)] = []
+    /// A02 slice C follow-up — every node id `CrewMembershipEngine`
+    /// (running against this client in demo mode) has asked for a
+    /// NodeInfo. Same "only THIS type is allowed to be fictional" rule
+    /// as the rest of the file: nothing replies to these on its own —
+    /// `DemoRunner` would script a reply the same way it scripts a
+    /// PONG, through `injectNodeUpdate`.
+    private var sentNodeInfoRequests: [UInt32] = []
 
     /// Called synchronously from `sendPrivate`, before the transport
     /// "write" — `DemoRunner` uses this to notice a FIND ping went out
@@ -196,6 +203,17 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
         return packetID
     }
 
+    /// A02 slice C follow-up (bench finding 2026-09-14) — recorded like
+    /// every other send here, nothing fabricated in reply. A demo script
+    /// that wants a nameless demo crew member to get named answers this
+    /// the same way a real reply would: `injectNodeUpdate` with a
+    /// `MeshNodeSnapshot` carrying the name.
+    @discardableResult
+    public func requestNodeInfo(from nodeID: UInt32) async throws -> UInt32 {
+        recordNodeInfoRequest(nodeID)
+        return nextPacket()
+    }
+
     // MARK: - Script injection (DemoRunner's own vocabulary — never
     // used by anything downstream of the client, exactly like the
     // rest of this file: only THIS type is allowed to be fictional).
@@ -214,6 +232,9 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     }
     public var sentPrivateLog: [(Data, UInt32, Bool)] {
         lock.lock(); defer { lock.unlock() }; return sentPrivate
+    }
+    public var sentNodeInfoRequestLog: [UInt32] {
+        lock.lock(); defer { lock.unlock() }; return sentNodeInfoRequests
     }
 
     // MARK: - M3: channel/config write-back — "applies" honestly to the
@@ -304,6 +325,10 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
 
     private func recordPrivate(_ payload: Data, destination: UInt32, wantAck: Bool) {
         lock.lock(); sentPrivate.append((payload, destination, wantAck)); lock.unlock()
+    }
+
+    private func recordNodeInfoRequest(_ nodeID: UInt32) {
+        lock.lock(); sentNodeInfoRequests.append(nodeID); lock.unlock()
     }
 
     /// Same `noasync`-lock reasoning as the record helpers above — sets
