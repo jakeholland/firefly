@@ -38,7 +38,12 @@ are corrections are named as corrections.
 1. **Three days, not thirty minutes.** The link comes back on its own
    after: a brief pocket loss, a radio power cycle, a radio battery
    death and recharge hours later, Bluetooth toggled off and on, a phone
-   reboot, and iOS jettisoning the app from memory.
+   reboot, and iOS jettisoning the app from memory. Two of those come
+   with an iOS 26 asterisk the rest of this spec does not let us wave
+   away — a Bluetooth toggle and an airplane-mode round trip recover
+   only if the process is still alive, and a force-quit does not
+   recover at all (§1.2, §3.13). The goal is stated whole; §3.13 is
+   where it gets honest about the gap.
 2. **The phone tells Bailey something happened.** A FLARE, a DM and a
    crew message that arrive while the app is not on screen produce a
    local notification with the right urgency — a FLARE cutting through a
@@ -82,11 +87,15 @@ way on the bench.
   use background services for their intended purposes". **[Apple]**
   (https://developer.apple.com/app-store/review/guidelines/)
 
-**How long a wake lasts is not documented by Apple.** The widely-cited
-developer figure is ~10 s per BLE wake. **[community]**
-(https://developer.apple.com/forums/thread/114555). Treat it as a
-budget, not a guarantee; exceeding CPU limits in the background is a
-documented termination cause **[Apple]**
+**A wake is about ten seconds.** "Upon being woken up, an app has around
+10 seconds to complete a task. … Apps that spend too much time executing
+in the background can be throttled back by the system or killed."
+**[Apple]** (the Core Bluetooth Programming Guide background page linked
+above; the same figure circulates as developer folklore, e.g.
+https://developer.apple.com/forums/thread/114555, but it is documented
+and does not need the hedge). Treat it as a budget, not a guarantee;
+exceeding CPU limits in the background is a documented termination cause
+**[Apple]**
 (https://developer.apple.com/library/archive/documentation/Performance/Conceptual/EnergyGuide-iOS/WorkLessInTheBackground.html).
 
 ### 1.2 State restoration — and the iOS 26 rule that changes the plan
@@ -99,8 +108,14 @@ documented termination cause **[Apple]**
   `UISceneDelegate`, `launchOptions` is always `nil` on launch, so
   `UIApplicationLaunchOptionsBluetoothCentralsKey` is not available…
   Persist the UID yourself… and pass it to
-  `CBCentralManager(delegate:queue:options:)` **on every launch**."
-  **[Apple]** (same page, and
+  `init(delegate:queue:options:)` **on every launch**." (Apple's own
+  token; at a call site that reads
+  `CBCentralManager(delegate:queue:options:)`.)
+  **[Apple]** (the `CBCentralManagerOptionRestoreIdentifierKey` page —
+  this wording is on the modern reference page only, NOT on the 2013
+  Programming Guide archive, which still tells you to read
+  `UIApplicationLaunchOptionsBluetoothCentralsKey` in
+  `didFinishLaunchingWithOptions:` — and
   https://developer.apple.com/documentation/corebluetooth/central-manager-state-restoration-options).
   This is the documented basis for §3.1: the manager must be constructed
   on every launch, early, by us — the system will not hand it to us.
@@ -132,8 +147,8 @@ documented termination cause **[Apple]**
 | **Force-quit by the user** (swipe up) | **No** |
 | Bluetooth power toggled **in Settings** | **No** |
 | **Control Centre** Bluetooth button toggled | **Yes** |
-| Airplane Mode toggled | **Yes** (if it toggles Bluetooth) |
-| Device restarted | **Yes**, but not until the first unlock after restart |
+| Airplane Mode toggled | **Yes**, but note 3 inverts the obvious reading: "Only if Bluetooth is *not* toggled with Airplane Mode." Note 3 also points at note 5. |
+| Device restarted | **Yes** (note 4) — but if the device requires a passcode, not until the first unlock after the restart |
 
 And the gate: the app is relaunched "**if and only if** it's waiting for
 a specific Bluetooth event or action (like scanning, connecting, or a
@@ -143,17 +158,34 @@ Bluetooth event has occurred." **[Apple]**
 > **⚠ The iOS 26 change, and it lands on this festival.** TN3115 note 5
 > reads: "**Starting in iOS 26 and iPadOS 26, only apps that use
 > AccessorySetupKit to setup Bluetooth accessories will be
-> relaunched.**" **[Apple]** It is attached to the force-quit and
-> Control-Centre-toggle rows. Firefly does not use AccessorySetupKit
+> relaunched.**" **[Apple]** It is attached directly to the force-quit
+> and Control-Centre rows, and note 3 routes it onto the **Airplane
+> Mode** row as well. Firefly does not use AccessorySetupKit
 > (introduced iOS 18,
-> https://developer.apple.com/videos/play/wwdc2024/10203/). The
-> conservative reading — and the one this spec designs against — is that
-> on an iOS 26 phone, **a force-quit is unrecoverable until the user
-> opens the app again**, and a Control Centre Bluetooth toggle may be
-> too. Exactly which rows note 5 narrows is ambiguous in Apple's own
-> wording and is marked **[unverified]**; §6 protocol P5 measures it on
-> Jake's actual phone rather than guessing, and §3.13 says what we do
-> either way.
+> https://developer.apple.com/videos/play/wwdc2024/10203/). What that
+> means, row by row, with the hedging put where it actually belongs:
+>
+> - **Control Centre Bluetooth toggle: not relaunched.** `Yes (note 5)`
+>   plus "only apps that use AccessorySetupKit … will be relaunched"
+>   reads one way only. This is a fact, not a guess, and §3.5/§3.13
+>   design against it. **[Apple]**
+> - **Airplane Mode round trip: not relaunched either**, by the same
+>   reading through note 3. This is the row the spec's Goals promise to
+>   survive, so it is called out rather than buried. **[Apple]**
+> - **Force quit: not relaunched.** The row already said `No` before
+>   iOS 26. Attaching note 5 to an already-`No` row most plausibly
+>   means AccessorySetupKit apps *are* relaunched after a force quit —
+>   a carve-out in the other direction. That is the one genuinely
+>   ambiguous reading here and it is marked **[unverified]** — but it
+>   is **immaterial to Firefly**, which is `No` under either reading.
+>
+> So: on an iOS 26 phone, **a force-quit is unrecoverable until the
+> user opens the app again**, and a Control Centre toggle or an
+> airplane-mode round trip is too unless the process happens to still
+> be alive in memory. §6 protocol P5 measures all three on Jake's
+> actual phone — worth running not because the outcome is in doubt but
+> because a measured "it really does fail" is the evidence §3.13's
+> AccessorySetupKit decision needs. §3.13 says what we do either way.
 
 ### 1.3 A pending connect is the cheapest thing we have
 
@@ -177,15 +209,20 @@ Bluetooth event has occurred." **[Apple]**
   `centralManager(_:didDisconnectPeripheral:timestamp:isReconnecting:error:)`
   to notify the caller about the disconnection." iOS 17.0+. **[Apple]**
   (https://developer.apple.com/documentation/corebluetooth/cbconnectperipheraloptionenableautoreconnect)
-- `isReconnecting` — "A `Bool` indicating whether the central manager
-  **will automatically attempt to reconnect** to the peripheral."
-  `timestamp` — "the specific point in time when the disconnection
-  occurred", which matters because the disconnect may have happened
-  while the app was suspended. **[Apple]**
+- The delegate's own reference page
   (https://developer.apple.com/documentation/corebluetooth/cbcentralmanagerdelegate/centralmanager(_:diddisconnectperipheral:timestamp:isreconnecting:error:))
+  is **declaration-only** — no abstract, no parameter docs, no
+  discussion, in either language variant. So the parameter meanings
+  below are **[community]**, read off the SDK header and the
+  auto-reconnect page above, not quoted from Apple prose: `isReconnecting`
+  is whether the central manager will itself attempt to reconnect, and
+  `timestamp` is when the disconnection actually occurred — which
+  matters because the disconnect may have happened while the app was
+  suspended. Checked 2026-09-14; if Apple fills that page in, re-mark
+  this **[Apple]** and quote it.
 - `isReconnecting == true` → do not call `connect()`; the system owns
-  the retry. `false` → we must re-issue. **[community]** for the
-  sequencing; the semantics are **[Apple]**.
+  the retry. `false` → we must re-issue. **[community]**, both the
+  sequencing and the semantics.
 - Apple documents **no** retry count, backoff or maximum duration for
   system auto-reconnect — **[unverified]**. This is why §3.6 keeps a
   backstop ladder instead of trusting it alone.
@@ -223,7 +260,9 @@ Bluetooth event has occurred." **[Apple]**
 - Since §3.1 constructs a central on **every** launch, including
   background relaunches, the default would let iOS pop a system alert at
   arbitrary moments. Meshtastic-Apple sets it `false` for a measured UX
-  bug (their `BLETransport.swift:118`, issue #2139). §3.5 does the same.
+  bug (their `BLETransport.swift:122-127`, inside
+  `centralManagerOptions(restoreIdentifier:)`; the rationale is the doc
+  comment at `:110-121`). §3.5 does the same.
 
 ### 1.7 Timers do not run while suspended — this is load-bearing
 
@@ -271,8 +310,10 @@ thing about the current background design and nothing in §3 changes it.
 ### 1.9 Core Bluetooth and Swift 6
 
 - `CBCentralManager(delegate:queue:)` with `nil` queue delivers callbacks
-  on the main queue. **[Apple]**
-  (https://developer.apple.com/documentation/corebluetooth/cbcentralmanager)
+  on the main queue: "If the value is `nil`, the central manager
+  dispatches central role events using the main queue." **[Apple]**
+  (https://developer.apple.com/documentation/corebluetooth/cbcentralmanager/init(delegate:queue:)
+  — the statement is on the initialiser pages, not the class page)
   Firefly passes `nil` (`BLETransport.swift:809`).
 - `CBPeripheral`/`CBService`/`CBCharacteristic` are **not** `Sendable`.
   There is no Apple guidance on the correct Swift 6 pattern — the
@@ -299,7 +340,9 @@ thing about the current background design and nothing in §3 changes it.
   - `.passive` — "adds the notification to the notification list without
     lighting up the screen or playing a sound."
   - `.active` — "presents the notification immediately, lights up the
-    screen, and can play a sound." (the default)
+    screen, and can play a sound." That it is the **default** comes from
+    WWDC21 session 10091, not the reference page
+    (https://developer.apple.com/videos/play/wwdc2021/10091/).
   - `.timeSensitive` — "breaks through system notification controls" —
     i.e. Focus and Notification Summary — and "**The user can turn off
     the ability for time sensitive notification interruptions.**"
@@ -338,10 +381,17 @@ thing about the current background design and nothing in §3 changes it.
 - Provisional authorization delivers "**quietly** — they don't interrupt
   the person with a sound or banner, or appear on the lock screen."
   **[Apple]** (same page) — which is why §3.11.5 refuses it for a FLARE.
-- Foreground: if `willPresent` is implemented but returns nothing, "the
-  system behaves as if you had passed
-  `UNNotificationPresentationOptionNone`" — an implemented-but-lazy
-  delegate silently swallows foreground notifications. **[Apple]**
+- Foreground: "**If your delegate does not implement this method**, the
+  system behaves as if you had passed the
+  `UNNotificationPresentationOptionNone` option"; "**If you do not
+  provide a delegate at all** … the system uses the notification's
+  original options." So setting a delegate that omits `willPresent`
+  silently swallows foreground notifications, while having no delegate
+  at all does not — which is exactly the trap S2 walks into the moment
+  it adds an `AppDelegate` for `didReceive` (§3.11.3). Implementing it
+  and never calling the completion handler is a second, separate way to
+  lose the notification; Apple only says "Always execute this block at
+  some point", so that half is **[community]**. **[Apple]**
   (https://developer.apple.com/documentation/usernotifications/unusernotificationcenterdelegate/usernotificationcenter(_:willpresent:withcompletionhandler:))
 - There is a hard limit of **64 pending** notification requests per app —
   stated by an Apple engineer on the forums rather than in the reference
@@ -565,22 +615,68 @@ closes.
 Two changes, both idempotent, so whichever runs first wins and the
 second is a no-op:
 
-1. **`BLETransport.prepareForRestoration()`** — a new `public` method
-   that does nothing but call the existing
-   `ensureCentralManagerExists()` (`BLETransport.swift:807`). The guard
-   there (`guard central == nil`) already makes it safe to call any
-   number of times.
+1. **`BLETransport.prepareForRestoration()`** — a new method that does
+   nothing but construct the central manager, the same construction
+   `ensureCentralManagerExists()` (`BLETransport.swift:807`) already
+   performs. The guard there (`guard central == nil`) already makes it
+   safe to call any number of times.
+
+   **It must be `nonisolated` and synchronous.** `BLETransport` is an
+   `actor` (`:83`) under Swift 6 language mode with
+   `-strict-concurrency=complete` (`Package.swift:35`, `:122`), so a
+   plain `public func` on it is `async` to every caller, and
+   `Task { await transport.prepareForRestoration() }` from
+   `didFinishLaunchingWithOptions` hops off the launch run-loop turn.
+   That is the *same* failure this subsection exists to fix, one order
+   of magnitude smaller: iOS wants a manager with the matching restore
+   identifier to exist during the launch cycle, and "shortly after, on
+   another executor" is not a guarantee. So the `CBCentralManager` is
+   built by a `nonisolated` entry point over a lock-guarded stored
+   reference (the actor's own `central` accesses then read that same
+   reference), and the construction happens **before** the function
+   returns to UIKit. This is a real constraint on the implementation,
+   not a detail: an S1 PR that ships `prepareForRestoration()` as an
+   ordinary actor method has not closed 2.2.1.
+
 2. **An `AppDelegate` via `UIApplicationDelegateAdaptor`** whose
    `application(_:didFinishLaunchingWithOptions:)` calls
    `prepareForRestoration()` on the live transport and kicks
    `AppGraph.start()` (already guarded by its own `started` flag,
    `AppGraph.swift:283`). This is the hook iOS actually guarantees runs
-   on a background relaunch; a SwiftUI `.task` is not.
+   on a background relaunch; a SwiftUI `.task` is not. **Picked over an
+   early `@MainActor` init on purpose**, and `FireflyApp.init()`
+   (`FireflyApp.swift:69`, which already exists) calls
+   `prepareForRestoration()` too as a belt-and-braces second path for
+   the ordering question SwiftUI does not document. The AppDelegate is
+   the primary because it is the only one of the two Apple documents as
+   running on a background relaunch; `init()` is the backstop, not the
+   design.
 
-`FireflyApp.init()` additionally calls `prepareForRestoration()`, as a
-belt-and-braces second path for the ordering question SwiftUI does not
-document. Neither path may call `connect()` — restoration must be
-allowed to adopt the session rather than race a fresh connect.
+   **The delegate needs a handle on the transport, and today it has
+   none.** `AppDependencies` exposes the transport only as
+   `scanner: (any NodeScanning)?` (`AppDependencies.swift:34`), and
+   `NodeScanning` (`PrivateAndPosition.swift:112`) has no such method.
+   So S1 either adds `prepareForRestoration()` to `NodeScanning` — a
+   public-header change, and the S1 PR title therefore carries `[api]`
+   per `CLAUDE.md` — or `AppDependencies` grows a concrete accessor.
+   The protocol addition is the better shape (the macOS default is an
+   empty implementation), but whichever is chosen, it is a spec-level
+   decision and not something to discover mid-PR.
+
+Neither path may call `connect()` — restoration must be allowed to
+adopt the session rather than race a fresh connect.
+
+**One exception to "on every launch", and it is the one
+Meshtastic-Apple found first (§8):** do not construct the manager while
+`CBCentralManager.authorization == .notDetermined` (their
+`BLETransport.swift:83-85`). Constructing it is what raises the system
+Bluetooth prompt, and raising that prompt ahead of Firefly's own
+onboarding is a worse first run than a missed restore. This costs
+nothing: a relaunch that has a session to restore is by definition a
+launch whose authorization was already determined, so the gate never
+fires on the path §3.1 exists for. It fires exactly once, on a fresh
+install before the user has ever connected anything — where there is
+nothing to restore.
 
 **The client has to be listening too.** `MeshtasticClient` moves its
 transport-event subscription out of `connect()`
@@ -599,14 +695,52 @@ On `willRestoreState` with a `.connected` peripheral, the handshake is
 (`BLETransport.swift:1232`) and the client issues `want_config` only
 because *this process* has no nodeDB. Meshtastic-Apple skips both config
 and database on an adopted `.connected` restore
-(`BLETransport.swift:600-604` in their tree); we cannot, because A01
+(`BLETransport.swift:608` in their tree — `connect(… wantConfig: false,
+wantDatabase: false, versionCheck: false)`, in the `.connected` case
+opened at `:602`); we cannot, because A01
 deliberately does not persist the nodeDB (A01, "Why the nodeDB is not
 persisted"). That cost — one `want_config` per background relaunch — is
 accepted and stated, not hidden.
 
-**A `restoreInProgress` flag**, borrowed from Meshtastic-Apple,
-suppresses `handleDiscovered`'s fallback-scan branch and any node-picker
-scan while a restore is being adopted, so the two cannot race.
+**A `restoreInProgress` flag**, borrowed from Meshtastic-Apple
+(their `BLETransport.swift:34`, set `:526`, gating discovery at `:165`,
+`:245`, `:297`, `:353`), suppresses `handleDiscovered`'s fallback-scan
+branch and any node-picker scan while a restore is being adopted, so
+the two cannot race.
+
+**The flag has to be raised on the delegate queue, not inside the
+actor — and this is the subtlest requirement in the spec.** Apple
+guarantees `willRestoreState` is delivered *before* `didUpdateState`
+(§1.2). Firefly does not preserve that ordering:
+`BLEDelegateBridge` hops every callback onto the actor as a **separate
+unstructured `Task`** (`BLEDelegateBridge.swift:82` for the state
+update, `:93` for the restore), and unstructured tasks carry no
+ordering guarantee relative to each other. So
+`handleCentralStateUpdate(.poweredOn)` can reach the actor **before**
+`handleWillRestoreState` does.
+
+That is harmless today, because `handleCentralStateUpdate` is a no-op
+when nobody is waiting (2.2.3). It stops being harmless the moment
+§3.5 gives `.poweredOn` real work: `retrievePeripherals(withIdentifiers:)`
+returns a **different `CBPeripheral` instance** than the one in the
+restore dictionary, `issueConnect` would overwrite `self.peripheral`
+with it, and the restored object would then be released — at which
+point, per §1.2's own cited rule, "deallocating `peripheral` also
+implicitly calls `cancelPeripheralConnection(_:)`" and we have torn
+down the exact connection the restore was adopting. A
+`restoreInProgress` set inside `handleWillRestoreState` cannot prevent
+this, because it is set by the call that lost the race.
+
+So: `BLEDelegateBridge.centralManager(_:willRestoreState:)` sets a
+restore-pending marker **synchronously, on the delegate queue, before
+building its `Task`** — the delegate queue is serial (`queue: nil`, the
+main queue, `BLETransport.swift:809`), so a marker set there is visible
+to every later callback on that queue. `powerStateAction(...)` (§3.5)
+takes it as an input and returns "do nothing, a restore is pending" for
+`.poweredOn` while it is set; `handleWillRestoreState` clears it when
+the adoption is finished or abandoned. Because the decision is already
+being extracted as a pure function, this costs one more parameter and
+one more row in A03_AC4's table.
 
 ### 3.2 The graph must not assume it is on screen
 
@@ -634,6 +768,15 @@ becomes a three-state read: unset → **`true`**; explicitly set → that
 value. `SettingsStoreTests.testBackgroundConnectDefaultsFalseAndRoundTrips`
 is renamed and inverted rather than deleted, so the change is visible in
 the diff of a test whose name states the product decision.
+
+The battery half of the justification is §4.2: in the steady connected
+state this default costs a **0 % scan duty cycle** — an idle BLE link
+with a subscribed notify characteristic, which §1.8 and §4.1 both name
+as the cheapest option available — and the expensive case it used to
+imply (the unbounded rediscovery scan, 2.2.6) is bounded to 3.3 % by
+§3.6 in the same slice. Flipping this default without §3.6 landing
+alongside it would be the one version of this change that is genuinely
+bad for battery, which is why S1 carries both.
 
 Justification, stated plainly: this app's entire purpose is a phone in a
 pocket at a festival. A default that disconnects on screen-lock is a
@@ -665,8 +808,18 @@ fallback. The new signal changes exactly one decision in
 
 | `isReconnecting` | What we do |
 |---|---|
-| `true` | Publish `.disconnected` + `.reconnecting(attempt: 1)`; **do not** call `issueConnect`, **do not** arm a fallback scan. The system is already on it; a second connect is duplicated radio work. |
+| `true` | Publish `.disconnected(reason: "system-reconnecting")`; **do not** call `issueConnect`, **do not** arm a fallback scan. The system is already on it; a second connect is duplicated radio work. |
 | `false` | Exactly today's behaviour: `issueConnect` + the (now bounded, §3.6) fallback ladder. |
+
+Note the vocabulary: `TransportEvent` (`Transport.swift:24`) has four
+cases — `.connecting`, `.ready`, `.received`, `.disconnected(reason:)` —
+and **no** `.reconnecting`. `.reconnecting(attempt:)` is a `LinkState`
+(`MeshtasticClientProtocol.swift:19`) that the *client* derives, and it
+already does so for exactly this event
+(`MeshtasticClient.swift:1535-1536`). The transport's job here is to
+publish a `.disconnected` whose `reason` distinguishes the case; nothing
+in §3 adds a transport event case, and an implementation that tries to
+publish `.reconnecting` from `BLETransport` has misread this table.
 
 `timestamp` is recorded and surfaced as "last heard" (§3.9) — it is a
 real observation, which is the only kind of number this project
@@ -697,18 +850,28 @@ method gains real state handling:
   say "Bluetooth access is off for Firefly" rather than a generic
   failure.
 - **`.resetting`** — treated as a transient loss, not a terminal one:
-  publish `.reconnecting(attempt: 1)` and wait for the next transition.
+  publish `.disconnected(reason: "bluetooth-resetting")` and wait for
+  the next transition. (Same vocabulary note as §3.4: the client turns
+  that into `.reconnecting(attempt: 1)`; the transport has no such
+  event.)
 
 The decision table above is extracted as a pure function,
-`BLETransport.powerStateAction(for:shouldAutoReconnect:hasPreferred:)`,
-so `BLEContractTests` can pin every row with no `CBCentralManager` —
-the same shape `shouldIssueConnect` and `shouldRunReconnectFallbackScan`
-already use.
+`BLETransport.powerStateAction(for:shouldAutoReconnect:hasPreferred:
+restorePending:)`, so `BLEContractTests` can pin every row with no
+`CBCentralManager` — the same shape `shouldIssueConnect` and
+`shouldRunReconnectFallbackScan` already use. The `restorePending`
+parameter is the ordering fix from §3.1: while it is set, `.poweredOn`
+returns "do nothing" rather than `retrievePeripherals` +
+`issueConnect`.
 
 `CBCentralManagerOptionShowPowerAlertKey: false` is **added**, following
-Meshtastic-Apple (their `BLETransport.swift:118`, where the system alert
-blipped `scenePhase` and produced a dismiss/reappear loop — their issue
-#2139). Firefly's Connect screen already says Bluetooth is off in its
+Meshtastic-Apple (their `BLETransport.swift:125`). Their issue #2139 — a
+feature request, opened 2026-07-21 and closed *completed* by their PR
+#2162 two days later — reports the dismiss/reappear loop; the diagnosis
+that the system alert blips `scenePhase` into `appDidBecomeActive()`,
+which restarts discovery and re-triggers the alert, is their own code
+comment (`BLETransport.swift:115-117`), not the issue text. Firefly's
+Connect screen already says Bluetooth is off in its
 own words; a system alert on top of that is a second, worse voice.
 
 `registerForConnectionEvents` is **not** adopted. It solves "wake me
@@ -840,15 +1003,20 @@ age-driven, so a six-hour gap renders as `NO SIGNAL` on its own.
 
 One row, on the Connect screen and repeated in Settings >
 CONNECTIVITY under the toggle. It states what is true right now, in the
-A02 §6.4 register — no jargon, no dBm, no node ids:
+register A02 §6 sets — §6.4's replacement table is what bans the jargon
+(`±6 m`, `−61 dBm`, `!02e5e3d4` are Advanced-only), and **§6.3's
+presence words are the vocabulary for an age**. That second half
+matters: A02 already fixed "heard just now" / "quiet for 6 min" / "not
+heard since 9:40 pm" as the words for how long ago something was heard,
+and this table reuses them rather than inventing a parallel set:
 
 | Condition | Line |
 |---|---|
 | Setting off | **Off** — "Firefly disconnects when you leave the app." |
 | On, link `.ready`, heard < 2 min ago | **On** — "Staying connected in your pocket. Heard your puck just now." |
-| On, link `.ready`, heard 2–10 min ago | **On** — "Staying connected. Last heard 6 min ago." |
-| On, link `.ready`, heard > 10 min ago | **On** — "Connected, but nothing heard for 12 min." |
-| On, reconnecting | **On** — "Lost your puck. Still looking — last heard 40 min ago." |
+| On, link `.ready`, heard 2–10 min ago | **On** — "Staying connected. Quiet for 6 min." |
+| On, link `.ready`, heard > 10 min ago | **On** — "Connected, but not heard since 9:40 pm." |
+| On, reconnecting | **On** — "Lost your puck. Still looking — not heard since 9:40 pm." |
 | On, Bluetooth off | **Paused** — "Bluetooth is off. Turn it on to reach your puck." |
 | On, Bluetooth denied to Firefly | **Paused** — "Firefly can't use Bluetooth. Turn it on in Settings." |
 | On, notifications not allowed | **On** — "Staying connected, but Firefly can't alert you. Turn on notifications." |
@@ -857,7 +1025,11 @@ A02 §6.4 register — no jargon, no dBm, no node ids:
 Rules: the word "connected" appears only when the link is `.ready`. Every
 line that shows an age shows a *measured* age (`lastInboundAt`), and
 renders `UNKNOWN` rather than a guess if there is none — the same rule
-`DiagnosticsViewModel.uptimeLabel` (`:105`) already follows.
+`DiagnosticsViewModel.uptimeLabel`
+(`app/Firefly/Sources/Settings/DiagnosticsViewModel.swift:105`) already
+follows. The three age bands above are A02 §6.3's own bands (< 2 min,
+2–10 min, > 10 min) on purpose: one age vocabulary across Crew, Inbox,
+Radar and this row, not two.
 
 ### 3.11 Local notifications
 
@@ -917,7 +1089,17 @@ stays — it is honest about a name we do not have.
   `rally-<from>-<packetId>`, `msg-<from>-<packetId>`. A repeat of the
   same packet replaces the existing notification instead of adding a
   second one — which is what `UUID().uuidString`
-  (`NotificationSending.swift:94`) prevents today.
+  (`NotificationSending.swift:94`) prevents today. Meshtastic-Apple has
+  the identical bug on their new-node path
+  (`UpdateSwiftData.swift:461`, also `UUID().uuidString`), so this is a
+  shape worth naming rather than a Firefly oversight.
+- **No client-seam change is needed for any of this.** `IncomingText`
+  (`MeshtasticClientProtocol.swift:187`) already carries `to`,
+  `channel`, `packetID` and `rxTime` — which is what makes both the
+  derived identifier above and §3.11.1's DM-vs-crew split implementable
+  without touching a public header. 2.3.16 is a call site that throws
+  the distinction away, not missing data, and S2 must not open an
+  `[api]` PR for it.
 - **`threadIdentifier`** groups per conversation (table above), so a
   chatty crew channel is one stack, not forty banners.
 - **`userInfo`** carries a deep link: `firefly://thread/crew`,
@@ -925,7 +1107,11 @@ stays — it is honest about a name we do not have.
   FLARE. `UNUserNotificationCenterDelegate.userNotificationCenter(_:didReceive:)`
   on the `AppDelegate` (§3.1) routes it into the existing tab/segment
   selection — a FLARE opens Find ▸ Radar with that member selected; a
-  message opens its thread.
+  message opens its thread. These strings are an **in-process routing
+  token**, read straight out of `userInfo` by our own delegate: no
+  `CFBundleURLTypes` registration is involved and S2 is therefore not
+  blocked on A02 §1.8, which registers the `firefly` scheme for a
+  different job (shareable crew links).
 - **Categories and actions.** `FLARE` gets one action, **Find them**
   (foreground, same destination as the tap). `MESSAGE` gets **Reply**
   (`UNTextInputNotificationAction`) — but only once there is a
@@ -945,17 +1131,30 @@ A Settings row, **off by default**, with a start and end time (default
 suggestion 1 am – 9 am when first enabled). While inside the window:
 
 - **FLARE always alerts**, at `.timeSensitive`, sound on. This mirrors
-  the puck exactly — `ff_sound`'s quiet-hours allow-list contains the
-  FLARE events and nothing else
-  (`firmware/core/include/ff_sound.h`, S27 §"quiet hours exempts only
-  the two FLARE events").
+  the puck: `ff_sound_should_play` exempts `FF_SOUND_FLARE_SENT` and
+  `FF_SOUND_FLARE_INCOMING` from quiet hours
+  (`firmware/core/src/ff_sound.c:142`). The code's allow-list also
+  carries a **third** entry, `FF_SOUND_MULTITAP_TICK`, added by
+  fix/quick-flare-detection on 2026-09-03 — so `S27-sounds.md:237`'s
+  "quiet hours exempts only the two FLARE events" is itself stale, and
+  this spec should not repeat it. The third entry has no phone
+  analogue (it is feedback for the puck's 5×HOME gesture), so the
+  phone's allow-list really is the two FLARE events, but it is that
+  because of what the phone can receive, not because the puck's list
+  is two long.
 - **RALLY and DM** alert at `.active` with sound.
 - **Crew messages** drop to `.passive` with no sound: they appear in
   Notification Centre and never light the screen.
 
-The window is evaluated against the phone's own clock at post time, and
-S18's wall-clock-trust rule applies — if the clock is not trusted, quiet
-hours is treated as **off** rather than guessed at.
+The window is evaluated against the phone's own system clock and
+calendar at post time. **S18 does not apply here**, and an earlier draft
+of this line was wrong to invoke it: S18 is the *puck's* wall-clock
+trust latch, which exists because an ESP32 with no RTC boots not knowing
+the time. An iPhone always knows the time — network-set or user-set,
+either way it is the clock the user's own Do Not Disturb schedule runs
+on, and it is the right one to gate quiet hours with. There is no
+phone-side "clock not trusted" state to branch on, and inventing one
+would be a branch no test could reach.
 
 #### 3.11.5 Permission, asked at a moment that can answer
 
@@ -1013,9 +1212,11 @@ property S3 verifies rather than assumes.
 
 *(from §1.2)*
 
-TN3115 note 5 restricts force-quit and Control-Centre-toggle relaunch to
-AccessorySetupKit apps on iOS 26+. Firefly is not one. Three
-consequences, all of them product decisions rather than code:
+TN3115 note 5 restricts relaunch to AccessorySetupKit apps on iOS 26+
+for three of the table's rows: force-quit, the Control Centre Bluetooth
+toggle, and — through note 3 — an Airplane Mode round trip. Firefly is
+not an AccessorySetupKit app. Three consequences, all of them product
+decisions rather than code:
 
 1. **AccessorySetupKit is not adopted in this spec.** It would change
    how a radio is discovered and paired (a system sheet instead of
@@ -1038,7 +1239,12 @@ consequences, all of them product decisions rather than code:
 
 A Bluetooth toggle done **in Settings** never relaunches us (§1.2
 table) — that case is covered only because the app is usually still
-alive in memory, and §3.5 handles it when it is. Stated, not hidden.
+alive in memory, and §3.5 handles it when it is. On iOS 26 the same is
+now true of the **Control Centre** toggle and of **Airplane Mode**: all
+three are handled if and only if the process survived, and the §3.5
+power-state machine is the whole of our answer for them. That is a
+narrower promise than Goal 1 makes for a flight, and it is stated here
+rather than left to be discovered in a field. Stated, not hidden.
 
 ### 3.14 Background task assertions around the notification path
 
@@ -1130,22 +1336,35 @@ runs inside `Firefly.app` and may therefore construct a real
 exists and none will be faked.
 
 1. **A03_AC1** — `BLETransport.prepareForRestoration()` constructs the
-   central manager exactly once, is safe to call repeatedly, and never
-   issues a `connect()` or a scan. **[app-host]** (a second call must
-   not produce a second manager)
+   central manager exactly once, is safe to call repeatedly, never
+   issues a `connect()` or a scan, and **returns with the manager
+   already built** — it is `nonisolated` and synchronous, not an
+   `async` actor method (§3.1). **[app-host]** (a second call must not
+   produce a second manager; the synchronous property is pinned by the
+   signature itself, which is why §3.1 states it as a constraint and
+   not a preference). It does **not** construct a manager while
+   `CBCentralManager.authorization == .notDetermined`.
 2. **A03_AC2** — the iOS central-manager options contain a **fixed**
    restore identifier and `CBCentralManagerOptionShowPowerAlertKey`
-   `false`; the macOS options contain neither. **[unit]** (the options
-   dictionary is already a pure `static var`, `BLETransport.swift:831`)
+   `false`; the macOS options contain neither. **[unit]** — but note
+   that `centralManagerOptions` is `private static var` today
+   (`BLETransport.swift:831`) and `BLEContractTests` imports
+   `FireflyMesh` **without** `@testable` (`BLEContractTests.swift:10`),
+   so this criterion is not reachable as written: S1 must widen it to
+   `internal` and add `@testable import FireflyMesh` to that file, or
+   move A03_AC2 to **[app-host]**. Widening is the cheaper of the two
+   and keeps the criterion radio-free.
 3. **A03_AC3** — a transport `.ready` that arrives with **no**
    `connect()` continuation outstanding starts a handshake and drives
    the client to `.ready`, with the nodeDB rebuilt exactly once.
    **[loopback]** — this is the restoration path's client half (2.2.2)
    and it is the single most important automated test in this spec.
 4. **A03_AC4** — `BLETransport.powerStateAction(for:shouldAutoReconnect:
-   hasPreferred:)` returns, for every `CBManagerState`, exactly the row
-   in §3.5's table; `.poweredOff` never clears `shouldAutoReconnect`.
-   **[unit]**
+   hasPreferred:restorePending:)` returns, for every `CBManagerState`,
+   exactly the row in §3.5's table; `.poweredOff` never clears
+   `shouldAutoReconnect`; and `.poweredOn` with `restorePending == true`
+   returns "do nothing" rather than a reconnect, for every combination
+   of the other two inputs (§3.1's ordering fix). **[unit]**
 5. **A03_AC5** — `BLETransport.reconnectLadderDelay(forAttempt:)` is
    monotonically non-decreasing, reaches the 15-minute cap, stays there
    for every later attempt, and applies jitter within ±20 %. **[unit]**
@@ -1177,8 +1396,10 @@ exists and none will be faked.
     notification request with the same identifier, not two. **[unit]**
 12. **A03_AC12** — inside quiet hours, a FLARE is still
     `.timeSensitive` with sound, a DM is `.active`, and a crew message
-    is `.passive` with no sound; with an untrusted wall clock (S18)
-    quiet hours evaluates as **off**. **[unit]**
+    is `.passive` with no sound; the window is evaluated against an
+    injected `now` and calendar, so a test can place a post on either
+    side of a boundary and across a midnight-spanning window without
+    touching the system clock (§3.11.4). **[unit]**
 13. **A03_AC13** — `UNNotificationSending.post` never calls
     `requestAuthorization`; a spy authorization provider records zero
     requests across any number of posts, in any authorization state.
@@ -1249,10 +1470,80 @@ Grant notifications when the Connect screen asks (§3.11.5).
 Anything P-step that fails gets its device console log attached. A
 failing step is a finding, not a reason to soften the spec.
 
+**What this protocol costs in wall-clock time, stated before anyone
+plans around it.** P1 is ≥ 8 h, P7 is ≥ 4 h plus the reconnect window,
+and P8 is ≥ 12 h **twice** (the run and its control). Those are
+serial — the phone can only be in one state at a time — so the full
+protocol is roughly **three days of elapsed time**, on a schedule that
+has five days left before Lost Lands. It also needs **two radios**
+throughout (the Heltec under test plus a second radio to send from);
+the hardware-test board policy from PR #279 pins the device-side tests
+to `Meshtastic_06b0`, and the sending radio is the other one. See §7.0
+for which P-steps are worth running before the festival and which are
+not.
+
 ## 7. Slices
 
 One spec slice per PR, per `AGENTS.md`. Tier 3 review throughout —
 this is protocol/lifecycle and trust-surface work.
+
+### 7.0 What has to ship before Sep 18, and what does not
+
+*(Added in review. This is a recommendation to the owner, not a
+decision — §9 Q5 asks it directly.)*
+
+Five days. S1 as scoped below touches `BLETransport`, `MeshtasticClient`,
+`AppGraph`, `SettingsStore` and the app target's launch path — by
+`AGENTS.md`'s own rule ("a PR that touches core AND ui AND meshclient is
+three PRs") it is already three or four PRs wearing one slice number,
+and it contains both of this spec's flagged reversals plus its riskiest
+edit. Shipping all of it, reviewed at Tier 3, and then running a
+three-day measurement protocol, does not fit.
+
+The split that does fit:
+
+**Before Sep 18 — S1a, "the phone is awake and it tells you".** Every
+item here is small, independently testable, and closes a hole that
+makes the festival build silently useless:
+
+- §3.3 `backgroundConnectEnabled` defaults **true** (2.4.18). One line;
+  without it nothing else in this spec runs on a fresh install.
+- §3.6 bound the rediscovery scan (2.2.6). The battery bug, and the
+  thing that makes §3.3 safe to flip.
+- §3.2 `isForegrounded` defaults **false** and is seeded (2.3.10).
+  Without it a backgrounded FLARE renders a takeover to nobody.
+- §3.4 `CBConnectPeripheralOptionEnableAutoReconnect` + the iOS 17
+  disconnect delegate (2.2.4, 2.2.5). Small, additive, iOS 17 floor.
+- §3.11.1–§3.11.5, minus quiet hours: interruption levels, RALLY,
+  DM-vs-crew, derived identifiers, thread ids, and permission asked in
+  the foreground (2.3.11–2.3.16). The entitlement is a Jake action; the
+  design degrades honestly to `.active` without it.
+
+**Before Sep 18 if the above lands early — S1b, "restoration".** §3.1
+(launch-time central, `beginListening()`, the `[api]` decision) and
+§3.5 (power-state handling). This is the deepest value in the spec and
+also its riskiest change: §3.1 alters the M1 connect path, and §3.1's
+ordering fix is the kind of thing that is verified on a phone, not in
+CI. If S1a is not merged and green by **Sep 16**, S1b should wait —
+a festival build that reconnects reliably while alive beats one that
+might restore after a jettison and might have broken connecting.
+
+**After the festival — everything else.** §3.8 liveness probe, §3.9 gap
+marker, §3.10's full status-line table (one honest line is worth
+shipping in S1a; the nine-row table is not), §3.12 background pump
+shutdown, §3.14 background task assertions, and all of S3's diagnostics
+counters.
+
+**The P-protocol, cut to what five days allow.** Run **P1** (overnight
+pocket), **P2** (radio power cycle), **P9** (notification behaviour) and
+**P10** (honest status) before the festival — they are the four that
+gate whether the build is worth carrying, and together they cost one
+night plus an hour. **P3** (jettison) only if S1b ships. Defer **P5**,
+**P6**, **P7** and **P8**: P8 alone is 24 h of measurement for a number
+that changes no decision this week, and P5/P6's outcomes are already
+known well enough from §1.2 to design against. Lost Lands itself is a
+three-day P1, with better data than a bench run — take a Settings ▸
+Battery reading each morning and that is P8, for free.
 
 ### S1 — restoration that can actually fire, and a reconnect that survives suspension
 
@@ -1342,10 +1633,12 @@ and `BLEConnection.swift`, with the connect state machine in
   branches on `CBPeripheralState` — the same shape Firefly already has.
   They go further in one way worth taking: an adopted `.connected`
   restore skips `want_config` **and** the database dump entirely (their
-  `:600`). Firefly cannot (no persisted nodeDB, A01), and §3.1 says so
+  `:608`). Firefly cannot (no persisted nodeDB, A01), and §3.1 says so
   rather than pretending.
 - `CBCentralManagerOptionShowPowerAlertKey: false`, for a measured UX bug
-  (their issue #2139). Adopted, §3.5.
+  (their `:125`; issue #2139, closed *completed* by their PR #2162 —
+  the scenePhase diagnosis is their code comment at `:115-117`, not the
+  issue). Adopted, §3.5.
 - A `restoreInProgress` flag suppressing discovery while a restore is
   adopted. Adopted, §3.1.
 - Not creating the central at all while authorization is
@@ -1354,11 +1647,13 @@ and `BLEConnection.swift`, with the connect state machine in
 - Per-step handshake timeouts with a **120 s watchdog on the node-DB
   dump specifically**, because a radio that completes config and never
   sends the completion nonce would otherwise wedge forever (their
-  `Connect.swift:213`). Firefly already has a 120 s `nodeDBPhaseTimeout`
+  `AccessoryManager+Connect.swift:217`, step 5a). Firefly already has a
+  120 s `nodeDBPhaseTimeout`
   (`MeshtasticClient.swift:318`) — same number, arrived at independently,
   which is mildly reassuring.
 - A guard against re-requesting the node dump mid-stream (their
-  `Connect.swift:196`) — two interleaved dumps is a real bug and Firefly
+  `AccessoryManager+Connect.swift:198`) — two interleaved dumps is a
+  real bug and Firefly
   should check it has the same protection.
 - Withdrawing **delivered** as well as pending notifications when a
   message is read. Adopted, §3.11.3.
@@ -1370,14 +1665,19 @@ and `BLEConnection.swift`, with the connect state machine in
 - **No `CBConnectPeripheralOptionEnableAutoReconnect`, and no iOS 17
   disconnect delegate.** Their reconnect is *discovery-driven*: a
   re-advertising radio must be re-discovered by a scan before
-  `connectToPreferredDevice` fires (`AccessoryManager+Discovery.swift:67`),
+  `connectToPreferredDevice` fires (`AccessoryManager+Discovery.swift:72`,
+  its only caller),
   and they scan with `allowDuplicates: true`, which iOS ignores in the
   background (§1.5). That is plausibly the mechanism behind their open
-  issues #722 ("Bluetooth no longer reconnects automatically") and #1171.
+  long-running reconnect complaints such as #722 ("Bluetooth no longer
+  reconnects automatically", closed *not planned*) and #1171 (closed
+  *completed*) — both are closed, so this is inference from their code,
+  not from a live bug report.
   Firefly's pending-connect-first design is the better one and §3.4
   strengthens it further.
 - **No backoff.** Flat `maxRetries = 2`, `retryDelay = .seconds(2)`
-  (`Connect.swift:13`). Firefly's bounded exponential handshake retry
+  (`AccessoryManager+Connect.swift:13-14`). Firefly's bounded
+  exponential handshake retry
   (`MeshtasticClient.swift:294`) is already better, and §3.6 adds the
   ladder they lack.
 - **`interruptionLevel = .timeSensitive` on everything** — a new-node
@@ -1385,23 +1685,43 @@ and `BLEConnection.swift`, with the connect state machine in
   (`LocalNotificationManager.swift:66`). This is the thing that trains
   users to revoke the permission. §3.11.1 differentiates by event
   instead.
-- **No `threadIdentifier` on message notifications**, so a busy channel
-  is a wall of banners. §3.11.3 groups.
-- **`.critical` is shipped as dead code** — the entitlement is present,
-  `Notification.critical` exists, and no call site ever passes `true`.
-  §3.11.1 declines `.critical` outright rather than ship the middle
-  state.
+- **No `threadIdentifier` on the notification path a user actually
+  sees** (`LocalNotificationManager.scheduleNotifications`), so a busy
+  channel is a wall of banners. The only uses of it in their tree are
+  the silent CarPlay read-back reposts
+  (`CarPlaySceneDelegate.swift:634`, `:725`). §3.11.3 groups.
+- **`.critical` is shipped as dead code — and promised to users
+  anyway.** The entitlement is present
+  (`Meshtastic.entitlements:22`), `Notification.critical` exists
+  (`LocalNotificationManager.swift:172`, consumed `:88-90`) and is
+  plumbed through `MeshPackets.swift`, yet every production caller omits
+  the argument and takes the `false` default (`FromRadio.swift:532`,
+  `:622`, `:633`; `AccessoryManager.swift:1020`, `:1037`). Meanwhile
+  onboarding *requests* `.criticalAlert` authorization
+  (`DeviceOnboarding.swift:534`) and the UI copy (`:89`) and
+  `docs/user/getting-started.md:44` both tell the user critical packets
+  will ignore the mute switch and Do Not Disturb. A promise no code
+  keeps is worse than the missing feature. §3.11.1 declines `.critical`
+  outright rather than ship the middle state.
 - **No chunking**; an oversized write is logged with "expect an ATT
-  failure" (`BLEConnection.swift:593`). Firefly already refuses
+  failure" (`BLEConnection.swift:595`; the size test is `:593` and the
+  write proceeds unchunked anyway at `:610`). Firefly already refuses
   oversized payloads upstream (PR #294 finding 2), which is the better
   end of the same problem.
-- **Nothing documented about background behaviour** anywhere in their
-  README or docs. This file is the difference.
+- **Nothing documented about background behaviour.** Their docs are not
+  thin — `docs/developer/transport.md` covers the handshake, pairing
+  timeouts and error classification in detail — but state restoration,
+  `bluetooth-central`, and what happens while the process is suspended
+  appear nowhere in `docs/` or the README. The only user-facing
+  sentence is `docs/user/bluetooth.md:18`: the app "reconnects
+  automatically when the radio is in range." This file is the
+  difference.
 
 Their field note is worth recording verbatim because it is the kind of
 thing only hardware teaches: on a Heltec V4, writes of 8–33 B succeed
 while a 104 B `set_owner` is rejected at a negotiated ATT MTU of 255 —
-buffer exhaustion, not a size limit. Firefly's
+buffer exhaustion, not a size limit (their `BLEConnection.swift:680`,
+written up at `docs/developer/transport.md:84`). Firefly's
 `insufficientResources` retry (`BLETransport.swift:636`) already handles
 exactly this, borrowed from them, and it is correct.
 
@@ -1413,10 +1733,21 @@ exactly this, borrowed from them, and it is correct.
 2. **Quiet-hours default.** Off by default, with 1 am–9 am suggested
    when enabled. Should it instead default **on** for the festival
    build?
-3. **AccessorySetupKit.** §3.13 defers it pending P5's measurement. If
+3. **Crew messages outside quiet hours.** §3.11.1 puts a crew broadcast
+   at `.active` — screen on, sound — and drops it to `.passive` only
+   inside quiet hours. But 2.3.16's own complaint ("a crew channel with
+   eight people on it at 2am is a phone that buzzes all night") is not
+   really about the hour; a busy channel during a set buzzes just as
+   much at 9pm. `threadIdentifier` grouping (§3.11.3) softens the
+   visual pile-up but does not silence anything. Should crew broadcasts
+   be `.passive` **always**, with DMs and FLARE/RALLY carrying the
+   alerting, and the crew stack simply be there when Bailey looks?
+4. **AccessorySetupKit.** §3.13 defers it pending P5's measurement. If
    P5 shows force-quit really is unrecoverable on iOS 26, is a Connect
    screen rewrite acceptable before Sep 18, or does the sentence in
    §3.13(2) have to carry it this year?
-4. **The `beginListening()` change** (§3.1) touches the M1 connect path.
+5. **The `beginListening()` change** (§3.1) touches the M1 connect path.
    Acceptable risk a week out, or should S1 ship the restoration half
-   behind a launch flag first?
+   behind a launch flag first? (§7.0's recommended cut answers "split
+   it out, after the festival" — this question asks whether that is
+   the call.)
