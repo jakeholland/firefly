@@ -86,12 +86,13 @@ final class FireflyUITests: XCTestCase {
         app.launchArguments = ["-FireflyDemo"]
         app.launch()
 
-        // No radio is bonded in demo/simulator mode
-        // (`RootView.hasKnownRadio`), so launch lands on More with
-        // Connect already pushed (`MoreScreen`'s own `autoOpen` doc
-        // comment) — no tap needed to see it first, same as this
-        // screen's old "Connect is RootView's initial `selection`"
-        // behavior before the five-tab rewrite.
+        // A02 §6.1: no known radio AND no crew code -> the crew welcome
+        // replaces "launch lands on More with Connect pre-pushed" as
+        // the zero-known-radio destination. "Connect your puck" is the
+        // escape hatch back to the plain radio picker, which is what
+        // the rest of this walk (predating A02) still exercises.
+        assertScreen("Screen.CrewWelcome", in: app)
+        tapWhenHittable(app.descendants(matching: .any)["CrewWelcome.ConnectPuck"])
         assertScreen("Screen.Connect", in: app)
 
         tapDestination("Find", in: app)
@@ -235,8 +236,15 @@ final class FireflyUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
+        // A02 §6.1 — same destination change as the iOS smoke test
+        // above: a fresh launch with no known radio and no crew code
+        // shows the crew welcome first; "Connect your puck" reaches the
+        // plain radio picker this test originally asserted on directly.
+        XCTAssertTrue(app.descendants(matching: .any)["Screen.CrewWelcome"].waitForExistence(timeout: Self.uiTimeout),
+                      "Screen.CrewWelcome did not appear on launch")
+        app.descendants(matching: .any)["CrewWelcome.ConnectPuck"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["Screen.Connect"].waitForExistence(timeout: Self.uiTimeout),
-                      "Screen.Connect did not appear on launch")
+                      "Screen.Connect did not appear after tapping Connect your puck")
     }
     #endif
 }

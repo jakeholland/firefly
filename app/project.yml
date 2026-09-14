@@ -247,6 +247,10 @@ targets:
       # existed. SwiftUI/FireflyModel-free, same as every other file in
       # this list, so it belongs here on the merits too.
       - path: Firefly/Sources/FireflyDebugStartDestinationLaunch.swift
+      # A02's one view model (`CrewController.swift`'s own header
+      # comment) — SwiftUI-free (Observation only), same reasoning as
+      # every other file in this list.
+      - path: Firefly/Sources/Crew/CrewController.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit

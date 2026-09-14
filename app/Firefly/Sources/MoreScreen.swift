@@ -47,6 +47,11 @@ struct MoreScreen: View {
     let lineup: LineupViewModel
     let scanner: (any NodeScanning)?
     let pairing: CrewPairingController
+    /// A02 §5's Crew page — appended after `pairing`, same
+    /// append-only convention every field on this screen already
+    /// follows.
+    let crew: CrewController
+    let membership: any CrewMembershipProviding
     let colorblind: Bool
     /// Demo-only (`-FireflyDemoScreen diagnostics`, `RootView`'s own
     /// mapping) — forwarded to `SettingsScreen` exactly as it was when
@@ -92,6 +97,11 @@ struct MoreScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
+                MoreBlock {
+                    MoreRow(title: "CREW", subtitle: crew.profile?.humanName ?? "You're not on a crew yet",
+                            systemImage: "person.3",
+                            identifier: "MoreRow.Crew") { open(.crew) }
+                }
                 MoreBlock {
                     MoreRow(title: "CONNECT", subtitle: connect.headerStatusText,
                             systemImage: "antenna.radiowaves.left.and.right",
@@ -144,6 +154,10 @@ struct MoreScreen: View {
     @ViewBuilder
     private func destination(for row: Row) -> some View {
         switch row {
+        case .crew:
+            CrewScreen(controller: crew, membership: membership, pairing: pairing, connect: connect,
+                       client: client, channelImport: channelImport, scanner: scanner,
+                       colorblind: colorblind)
         case .connect:
             ConnectScreen(connect: connect, client: client, channelImport: channelImport,
                           scanner: scanner, pairing: pairing, colorblind: colorblind)
