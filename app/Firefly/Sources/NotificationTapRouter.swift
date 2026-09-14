@@ -57,13 +57,28 @@ import UserNotifications
 /// both load-bearing:
 ///
 ///  - The completion handler parameters below are typed
-///    `@escaping @Sendable`, matching the SDK's ACTUAL declaration
-///    (`UNUserNotificationCenterDelegate`'s completion-handler
-///    requirements are `@Sendable`, confirmed against the SDK's
-///    generated interface) — omitting `@Sendable` doesn't just fail to
-///    compile, it fails to even MATCH the `optional` protocol
-///    requirement (a silent "nearly matches" warning instead of a
-///    conformance), so UIKit would never call the method at all.
+///    `@escaping @Sendable`. What that buys is narrower than an
+///    earlier draft of this comment claimed, and the difference is
+///    worth having straight (PR #318 review, all three measured on
+///    Xcode 26.6 / Swift 6.3.3 against the macOS 26.5 SDK, not
+///    reasoned):
+///     * Dropping `@Sendable` while still handing the closure to
+///       `runOnMainActor` is a hard COMPILE ERROR, not a warning:
+///       "sending 'completionHandler' risks causing data races". That
+///       is the only reason the annotation has to be here.
+///     * It is NOT part of ObjC requirement matching. Dropping it
+///       (and calling the handler inline, so nothing is sent across
+///       isolation) compiles clean with no "nearly matches" warning,
+///       and the emitted object file still carries the right selector.
+///       So `@Sendable` is not what keeps UIKit calling us.
+///     * What DOES keep UIKit calling us is the selector itself —
+///       `userNotificationCenter:willPresentNotification:withCompletion
+///       Handler:` and `…:didReceiveNotificationResponse:withCompletion
+///       Handler:`. Both requirements are `optional`, so a signature
+///       that only nearly matches would compile and simply never be
+///       called. Verify by name after touching either declaration:
+///       `strings <NotificationTapRouter.o> | grep userNotificationCenter`
+///       must list both selectors.
 ///  - `runOnMainActor(_:)` below is the ONE place that hop happens, so
 ///    a plain `@MainActor () -> Void` (non-`@Sendable`) work closure is
 ///    fine there: the captures inside it (`completionHandler` itself,
