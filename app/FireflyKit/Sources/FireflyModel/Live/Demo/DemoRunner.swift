@@ -103,13 +103,24 @@ public final class DemoRunner {
             }
         }
 
-        try? await client.connect()
-
-        // Taylor, Dana, Sam: real crew, paired the moment they are
-        // known — through the real `CrewPairingController`, the exact
-        // tap Connect's Nearby "ADD TO CREW" makes (this file's header
-        // comment). Each gets a distinct colour, first free index in
-        // roster order.
+        // Taylor, Dana, Sam: real crew, paired through the real
+        // `CrewPairingController` — the exact tap Connect's Nearby "ADD
+        // TO CREW" makes (this file's header comment). Each gets a
+        // distinct colour, first free index in roster order.
+        //
+        // Paired BEFORE `connect()` as of A02 slice C, and the ordering
+        // is now load-bearing rather than incidental: `AppGraph`
+        // installs a membership gate in front of `CoreStore.apply
+        // (nodeUpdate:)` (A02 AC13), so a node that is not yet crew when
+        // its snapshot is drained never reaches `ff_crew` at all. The
+        // scripted nodeDB dump goes out during `connect()`, and pairing
+        // afterwards left whether Taylor ever got a position depending
+        // on which of two tasks the scheduler ran first — it passed
+        // ordinarily and failed under a thread sanitizer, which is
+        // exactly the kind of "works on my machine" ordering this repo
+        // has been bitten by before. The live app has no equivalent
+        // race: `CrewPairingRestorer.restore` runs in `AppGraph.init`,
+        // before anything can observe a client.
         graph.crewPairing.pair(nodeID: DemoCrew.taylor)
         graph.crewPairing.pair(nodeID: DemoCrew.dana)
         graph.crewPairing.pair(nodeID: DemoCrew.sam)
@@ -117,6 +128,8 @@ public final class DemoRunner {
         // Mo: paired, never heard — the one honest RADAR_LOST case
         // (this file's header comment). No nodeDB entry, ever.
         graph.crewPairing.pair(nodeID: DemoCrew.mo)
+
+        try? await client.connect()
 
         // CAMP: an asserted landmark, seeded the same way a real
         // "somebody typed this in" position would be

@@ -120,6 +120,15 @@ public struct DemoWorld: Sendable {
         // radio has heard packets from but who was never named
         // (`CoreStore.apply(nodeUpdate:)`'s own "nothing is
         // synthesized" rule).
+        //
+        // As of A02 slice C this stranger no longer reaches `ff_crew` at
+        // all: the membership gate (AC13) admits only crew, and the demo
+        // bundle configures no crew code, so nothing auto-admits either.
+        // That is the intended end state, not a loss — §4.7 moves
+        // strangers out of the crew roster entirely and into "People my
+        // puck hears", which is fed by `NearbyNodesViewModel`'s own
+        // `nodeUpdates()` subscription (untouched by the gate). This
+        // node still lists on Connect exactly as before.
         let stranger = MeshNodeSnapshot(
             num: DemoCrew.stranger, shortName: nil, longName: nil, position: nil,
             lastHeard: now, rssiDbm: -102, snrDb: -6.5, hopsAway: 0)

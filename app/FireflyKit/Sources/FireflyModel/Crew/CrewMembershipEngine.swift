@@ -319,6 +319,54 @@ public final class CrewMembershipEngine: CrewMembershipGating, CrewMembershipPro
 
     // MARK: - Membership readout
 
+    /// `CrewMembershipProviding` (slice B's seam) — "admitted since the
+    /// crew was created, newest first" (§2.3), which is what the Start
+    /// screen's *Joined · N* list and the Crew page's People list both
+    /// render.
+    ///
+    /// Honest about every unknown, per that type's own doc comments:
+    /// `displayName` is `nil` (never a fabricated string, and never a
+    /// hex id) until some name has actually arrived — slice B renders
+    /// §4.4's "New crew member" for it; `joinedAtMs` is `nil` for a
+    /// member this phone never observed joining, which is every
+    /// grandfathered §4.6 member and every member restored from
+    /// persistence before a packet.
+    ///
+    /// Hidden members are absent, because hiding unpairs them (§4.5) —
+    /// there is no separate filter to forget to apply.
+    public func currentMembers() -> [CrewJoinedMember] {
+        let nowMs = FireflyClock.nowMillis()
+        let joined = Dictionary(joinedSinceCreated.map { ($0.nodeID, $0.joinedAt) },
+                                 uniquingKeysWith: { first, _ in first })
+        let rows = pairing.pairedRecords().map { record -> CrewJoinedMember in
+            let member = pairing.crew.member(nodeID: record.nodeID, now: nowMs)
+            let meshName = (member?.displayName.isEmpty ?? true) ? nil : member?.displayName
+            let joinedAt = joined[record.nodeID]
+            return CrewJoinedMember(
+                id: record.nodeID,
+                displayName: record.nickname ?? meshName,
+                colorIndex: record.colorIndex,
+                joinedAtMs: joinedAt.map { UInt64(($0.timeIntervalSince1970 * 1000).rounded()) },
+                heardPresence: member?.heardPresence ?? .never)
+        }
+        // Newest join first; members with no observed join time (§4.6's
+        // "From before", and anything restored before a packet) sort
+        // last rather than being given an invented timestamp to sort by.
+        // A TOTAL order, deliberately: `sorted(by:)` is not stable in
+        // Swift, so two members admitted inside the same millisecond
+        // would otherwise come back in an arbitrary order that differs
+        // run to run (caught by this file's own test under a thread
+        // sanitizer). Ties fall back to the node id.
+        return rows.sorted {
+            switch ($0.joinedAtMs, $1.joinedAtMs) {
+            case let (l?, r?): return l == r ? $0.id < $1.id : l > r
+            case (nil, _?): return false
+            case (_?, nil): return true
+            case (nil, nil): return $0.id < $1.id
+            }
+        }
+    }
+
     public var members: [CrewMembershipRecord] {
         let joined = Dictionary(joinedSinceCreated.map { ($0.nodeID, $0.joinedAt) },
                                  uniquingKeysWith: { first, _ in first })

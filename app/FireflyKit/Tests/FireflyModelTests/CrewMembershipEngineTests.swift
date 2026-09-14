@@ -50,14 +50,31 @@ final class CrewMembershipEngineTests: XCTestCase {
         let stream: AsyncStream<MeshNodeSnapshot>
     }
 
+    /// A clock that advances one second per read — so two admissions in
+    /// the same test are ordered by construction rather than by how fast
+    /// the machine happened to be. Sendable box, because the engine
+    /// takes a `@Sendable` closure.
+    private final class SteppingClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var step = 0
+        func next() -> Date {
+            lock.lock(); defer { lock.unlock() }
+            step += 1
+            return Date(timeIntervalSince1970: 1_780_000_000 + TimeInterval(step))
+        }
+    }
+
     private func makeHarness(pairingStore: InMemoryCrewPairingStore = InMemoryCrewPairingStore(),
-                             localState: InMemoryCrewLocalStateStore = InMemoryCrewLocalStateStore())
+                             localState: InMemoryCrewLocalStateStore = InMemoryCrewLocalStateStore(),
+                             clock: SteppingClock? = nil)
         -> Harness {
         let transport = LoopbackTransport()
         let client = MeshtasticClient(transport: transport)
         let core = CoreStore()
         let pairing = CrewPairingController(crew: core.crew, store: pairingStore)
-        let engine = CrewMembershipEngine(pairing: pairing, store: localState, client: client)
+        let engine = clock.map {
+            CrewMembershipEngine(pairing: pairing, store: localState, client: client, now: $0.next)
+        } ?? CrewMembershipEngine(pairing: pairing, store: localState, client: client)
         core.membership = engine
         return Harness(transport: transport, client: client, core: core, pairing: pairing,
                        pairingStore: pairingStore, localState: localState, engine: engine,
@@ -654,6 +671,48 @@ final class CrewMembershipEngineTests: XCTestCase {
         }
         XCTAssertEqual(h.pairingStore.records().first { $0.nodeID == 8002 }?.colorIndex, 1,
                         "colours are preserved from the persisted record")
+    }
+
+    // MARK: - CrewMembershipProviding (slice B's seam)
+
+    func testCurrentMembersReportsJoinersNewestFirstWithFromBeforeLast() async throws {
+        let pairingStore = InMemoryCrewPairingStore()
+        pairingStore.upsert(CrewPairingRecord(nodeID: 9001, colorIndex: 4, nickname: "Older Friend"))
+        let h = makeHarness(pairingStore: pairingStore, clock: SteppingClock())
+        CrewPairingRestorer.restore(from: pairingStore, into: h.core.crew)
+        try await completeHandshake(h)
+        h.engine.configure(crew: Self.crew)
+        h.engine.applyChannelTable([crewChannel(at: 0)])
+
+        h.transport.inject(try packetFrame(from: 9002, channel: Self.crewIndex, portnum: .nodeinfoApp,
+                                           payload: try userPayload(long: "First Joiner")))
+        try await pump(h)
+        h.transport.inject(try packetFrame(from: 9003, channel: Self.crewIndex, portnum: .textMessageApp,
+                                           payload: Data("hi".utf8)))
+        try await pump(h)
+
+        let rows = h.engine.currentMembers()
+        XCTAssertEqual(rows.map(\.id), [9003, 9002, 9001],
+                        "newest join first; the member with no observed join time sorts last")
+        XCTAssertEqual(rows[0].displayName, nil,
+                        "admitted by a text, no NodeInfo yet — nil, never a fabricated name or a hex id")
+        XCTAssertEqual(rows[1].displayName, "First Joiner")
+        XCTAssertEqual(rows[2].displayName, "Older Friend", "the local nickname wins")
+        XCTAssertNil(rows[2].joinedAtMs, "this phone never observed them join")
+        XCTAssertNotNil(rows[0].joinedAtMs)
+        XCTAssertEqual(rows[2].colorIndex, 4, "the persisted colour is preserved")
+    }
+
+    func testCurrentMembersOmitsHiddenMembers() async throws {
+        let h = try await connectedCrewHarness()
+        h.transport.inject(try packetFrame(from: 9004, channel: Self.crewIndex, portnum: .nodeinfoApp,
+                                           payload: try userPayload(long: "Straggler")))
+        try await pump(h)
+        XCTAssertEqual(h.engine.currentMembers().map(\.id), [9004])
+
+        h.engine.hide(nodeID: 9004)
+        XCTAssertTrue(h.engine.currentMembers().isEmpty,
+                       "hiding unpairs, so there is no separate filter to forget to apply")
     }
 
     // MARK: - §4.4's display-name order

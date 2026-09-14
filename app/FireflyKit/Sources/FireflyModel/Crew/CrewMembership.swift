@@ -1,24 +1,27 @@
 //
-//  CrewMembershipProviding.swift — the seam A02 slice B's Start screen
-//  and Crew page read, and the seam slice C's engine implements.
+//  CrewMembership.swift — the vocabulary A02 slice B's Start screen and
+//  Crew page share with slice C's admission engine, plus the ONE
+//  question `CoreStore` asks per packet.
 //
-//  Two protocols, deliberately separate because they have two different
-//  callers and two different lifetimes:
+//  `CrewMembershipProviding` itself is NOT declared here: slice B owns
+//  it, in `CrewMembershipProviding.swift` next door (its read-only
+//  `currentMembers()` seam and the `PairingCrewMembershipProvider` stub
+//  that stands in until this engine is wired). That file is carried on
+//  this branch byte-for-byte as slice B wrote it so the two branches
+//  converge with no merge conflict, and `CrewMembershipEngine` conforms
+//  to that protocol rather than inventing a second one.
 //
-//   * `CrewMembershipGating` is what `CoreStore` holds. It answers ONE
-//     question, synchronously, for every node snapshot that arrives:
-//     "may this node's data reach `ff_crew` at all?" — the membership
-//     gate `docs/specs/A02-crew-join.md` AC13 puts in front of
-//     `CoreStore.apply(nodeUpdate:)`.
-//   * `CrewMembershipProviding` is what the UI reads: who is in the
-//     crew, who joined since it was created, who the roster could not
-//     fit, and the hide/unhide actions. No SwiftUI here — slice B owns
-//     every screen; this file owns only the vocabulary the two slices
-//     have to agree on.
+//  What IS here: `CrewMembershipGating` — what `CoreStore` holds, which
+//  answers one synchronous question for every node snapshot that
+//  arrives ("may this node's data reach `ff_crew` at all?"), the
+//  membership gate `docs/specs/A02-crew-join.md` AC13 puts in front of
+//  `CoreStore.apply(nodeUpdate:)` — and the value types the Crew page
+//  needs beyond a member list: the crew channel, where it sits on this
+//  radio, why somebody is in the roster, and who did not fit.
 //
-//  Both are `@MainActor`: the crew roster is `ff_crew_t`, and every
-//  `ff_*` context in this app lives in one isolation domain (A01's
-//  threading model).
+//  Everything is `@MainActor`: the crew roster is `ff_crew_t`, and
+//  every `ff_*` context in this app lives in one isolation domain
+//  (A01's threading model).
 //
 import FireflyMesh
 import Foundation
@@ -149,30 +152,4 @@ public protocol CrewMembershipGating: AnyObject {
     /// Admission is a side effect of answering: the node is paired, given
     /// a colour and persisted before this returns.
     func admits(_ snapshot: MeshNodeSnapshot) -> Bool
-}
-
-/// What slice B's Crew page and Start screen read.
-@MainActor
-public protocol CrewMembershipProviding: AnyObject {
-    /// The crew channel this engine admits on, or `nil` when no crew
-    /// code is configured (§4.6's pre-A02 install).
-    var crewChannel: CrewChannelIdentity? { get }
-    /// Where that channel sits on this radio — see `CrewChannelStatus`.
-    var channelStatus: CrewChannelStatus { get }
-    /// Every current crew member, in roster order.
-    var members: [CrewMembershipRecord] { get }
-    /// Auto-admissions on the current crew code, oldest first.
-    var joinedSinceCreated: [CrewJoinEvent] { get }
-    /// Qualified, but the roster is full (§4.3). Empty in the normal
-    /// case; non-empty is what drives the Crew page's overflow banner.
-    var untracked: [UntrackedCrewMember] { get }
-    /// Hidden ids, in the order they were hidden.
-    var hidden: [UInt32] { get }
-    func isHidden(_ nodeID: UInt32) -> Bool
-    /// Hide = unpair + remember (§4.5). Local to this phone, never
-    /// transmitted, and it frees a roster slot.
-    func hide(nodeID: UInt32)
-    /// Unhide. The member comes back on their next qualifying packet —
-    /// nothing is fabricated to make them reappear immediately.
-    func unhide(nodeID: UInt32)
 }

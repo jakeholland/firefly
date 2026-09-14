@@ -1321,7 +1321,18 @@ the implementation is not literally what a sentence above says.
    observable promise — a freed slot is taken, and nobody is silently
    dropped — is what the test pins.
 
-6. **The app's hide list is not capped at `FF_HIDDEN_MAX` (16).** That
+6. **`CrewMembershipProviding` is slice B's, not slice C's.** Slice B
+   had already declared it (`currentMembers() -> [CrewJoinedMember]`,
+   plus the `PairingCrewMembershipProvider` stub that stands in until
+   this engine is wired), so slice C carries that file byte-for-byte
+   rather than declaring a second protocol of the same name, and
+   `CrewMembershipEngine` conforms to it — sorting newest-join-first per
+   §2.3, with a total order so two admissions inside one millisecond
+   cannot come back in a different order run to run. The gate is its own
+   one-method protocol (`CrewMembershipGating`), because `CoreStore`
+   asks one question and should not be able to see the UI's readout.
+
+7. **The app's hide list is not capped at `FF_HIDDEN_MAX` (16).** That
    bound is the puck's DRAM budget (S02's amendment §C); the phone
    stores hides as JSON per crew code and has no equivalent constraint,
    so it does not invent one. The puck's honest-failure copy at 16 is
