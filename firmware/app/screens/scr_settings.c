@@ -1215,6 +1215,29 @@ _Static_assert(FF_CREW_ROW_H >= FF_THEME_MIN_HIT_PX, "crew rows must clear the 4
 #define FF_CREW_ACTION_PILL_W FF_SETTINGS_VALUE_PILL_W
 #define FF_CREW_ACTION_GAP    FF_SETTINGS_VALUE_GAP
 
+/* [api] A02 slice D — the PAIRED row's action is **HIDE**, and REMOVE is
+ * gone from this row. Both halves of that are decisions, so both are
+ * written down (AGENTS.md: note the interpretation).
+ *
+ * WHY REMOVE GOES. A02 §4.7 retires the add/remove vocabulary outright:
+ * having the code IS membership, so "remove" cannot mean what it used
+ * to. Concretely, under auto-crew a plain unpair is not permanent — the
+ * person's next qualifying packet re-admits them (see
+ * `shell_try_admit`'s own comment, ff_shell.c). A button that silently
+ * undoes itself a few seconds later is worse than no button, and it is
+ * exactly the confidently-wrong control this project refuses elsewhere.
+ * `FF_INTENT_CREW_UNPAIR` itself stays — the bench console and the
+ * intent tests still exercise it — it is just no longer offered here.
+ *
+ * WHY NOT BOTH. Two 74 px pills side by side were tried and shipped a
+ * measurable regression: `polish/puck-plain-faces` (#303) had just
+ * replaced "LOST" with "NO SIGNAL 15 MIN", and the narrowed label column
+ * truncated it to "NO SIGNA...". One control at the page's existing
+ * FF_CREW_ACTION_PILL_W keeps that wording legible, which is the whole
+ * point of #303.
+ *
+ * The HIDE pill reuses FF_CREW_ACTION_PILL_W above — no new geometry. */
+
 static void settings_crew_back_cb(lv_event_t *e)
 {
     (void)e;
@@ -1230,11 +1253,29 @@ static void settings_crew_pair_cb(lv_event_t *e)
     ff_intent_emit(&in);
 }
 
-static void settings_crew_unpair_cb(lv_event_t *e)
+/* [api] A02 slice D — the CREW page's three new controls. Same
+ * pure-renderer shape as PAIR/UNPAIR above: the row carries the target
+ * node id, the intent carries it to the shell, and the shell decides. */
+static void settings_crew_hide_cb(lv_event_t *e)
 {
     uintptr_t node = (uintptr_t)lv_event_get_user_data(e);
-    ff_intent_t in = {.kind = FF_INTENT_CREW_UNPAIR, .u = {0}};
+    ff_intent_t in = {.kind = FF_INTENT_CREW_HIDE, .u = {0}};
     in.u.node_id = (uint32_t)node;
+    ff_intent_emit(&in);
+}
+
+static void settings_crew_unhide_cb(lv_event_t *e)
+{
+    uintptr_t node = (uintptr_t)lv_event_get_user_data(e);
+    ff_intent_t in = {.kind = FF_INTENT_CREW_UNHIDE, .u = {0}};
+    in.u.node_id = (uint32_t)node;
+    ff_intent_emit(&in);
+}
+
+static void settings_crew_show_code_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_SETTINGS_OPEN_CREW_CODE, .u = {0}};
     ff_intent_emit(&in);
 }
 
@@ -1345,9 +1386,99 @@ static void settings_crew_build_paired_row(lv_obj_t *list, int32_t rel_y, int32_
     lv_obj_t *top_lbl = settings_crew_row_labels(row, label_w, top, status, color);
     lv_label_set_recolor(top_lbl, has_tag);
 
-    settings_make_pill(row, "REMOVE", row_w - FF_CREW_ACTION_PILL_W, (FF_CREW_ROW_H - FF_SETTINGS_ROW_H) / 2,
-                       FF_CREW_ACTION_PILL_W, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_STALE_AMBER,
-                       0, settings_crew_unpair_cb, (void *)(uintptr_t)m->node_id);
+    settings_make_pill(row, "HIDE", row_w - FF_CREW_ACTION_PILL_W, (FF_CREW_ROW_H - FF_SETTINGS_ROW_H) / 2,
+                       FF_CREW_ACTION_PILL_W, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
+                       FF_THEME_COLOR_STALE_AMBER, 0, settings_crew_hide_cb,
+                       (void *)(uintptr_t)m->node_id);
+}
+
+/* [api] A02 slice D — one HIDDEN-section row. Same two-line shape as a
+ * PAIRED row minus the presence chip: a hidden node is deliberately NOT
+ * in the roster (hide is unpair + remember), so there is no presence to
+ * report and inventing one would be a claim about somebody the wearer
+ * asked not to see. The subtitle says what hiding actually does, in the
+ * words the amendment uses, so the wearer is never guessing whether
+ * their messages still arrive. */
+static void settings_crew_build_hidden_row(lv_obj_t *list, int32_t rel_y, int32_t row_w,
+                                            ff_app_crew_hidden_row_t const *h)
+{
+    lv_obj_t *row = lv_obj_create(list);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, row_w, FF_CREW_ROW_H);
+    lv_obj_set_pos(row, 0, rel_y);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    int32_t const label_w = row_w - FF_CREW_ACTION_PILL_W - FF_CREW_ACTION_GAP;
+
+    char top[FF_APP_NAME_LEN + 4];
+    if (h->has_name && h->name[0] != '\0') {
+        snprintf(top, sizeof(top), "%s", h->name);
+    } else {
+        snprintf(top, sizeof(top), "#%s", h->short_id);
+    }
+
+    settings_crew_row_labels(row, label_w, top, "off your radar", FF_THEME_COLOR_DIM);
+
+    settings_make_pill(row, "UNHIDE", row_w - FF_CREW_ACTION_PILL_W, (FF_CREW_ROW_H - FF_SETTINGS_ROW_H) / 2,
+                       FF_CREW_ACTION_PILL_W, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_AMBER,
+                       0, settings_crew_unhide_cb, (void *)(uintptr_t)h->node_id);
+}
+
+/* [api] A02 slice D — one NOT TRACKED row: a sender that proved it holds
+ * the crew key but arrived at a full 8/8 roster. Carries its REAL
+ * last-heard age (never "just now" filler) and no action of its own —
+ * the way to make room is to hide somebody, which is what the section's
+ * caption says. */
+static void settings_crew_build_overflow_row(lv_obj_t *list, int32_t rel_y, int32_t row_w,
+                                              ff_app_crew_heard_row_t const *h)
+{
+    lv_obj_t *row = lv_obj_create(list);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, row_w, FF_CREW_ROW_H);
+    lv_obj_set_pos(row, 0, rel_y);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    char age_buf[16];
+    ff_fmt_age(age_buf, sizeof(age_buf), h->age_ms);
+    char status[32];
+    snprintf(status, sizeof(status), "heard %s", age_buf);
+
+    /* A02 §4.3/§4.4 — these people ARE crew (they proved possession of
+     * the key); they are only untracked because the roster is full. The
+     * spec is explicit for exactly this row: "with their name if
+     * NodeInfo arrived, `New crew member` otherwise", and §4.4's rule is
+     * absolute — "Never blank, never a hex id, on any screen". The hex
+     * fallback below it in HEARD is right for a stranger and wrong here:
+     * it reads as a fault, and it is the only thing on this page that
+     * makes a crew member look like a radio. */
+    char top[FF_APP_NAME_LEN + 4];
+    if (h->has_name && h->name[0] != '\0') {
+        snprintf(top, sizeof(top), "%s", h->name);
+    } else {
+        snprintf(top, sizeof(top), "NEW CREW MEMBER");
+    }
+
+    settings_crew_row_labels(row, row_w, top, status, FF_THEME_COLOR_STALE_AMBER);
+}
+
+/* A wrapped caption under a section header — the honest "why is this
+ * here / what do I do" line. Returns the y past it. */
+static int32_t settings_crew_caption(lv_obj_t *list, int32_t y, int32_t row_w, char const *text)
+{
+    lv_obj_t *lbl = lv_label_create(list);
+    lv_obj_set_pos(lbl, 0, y);
+    lv_obj_set_width(lbl, row_w);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_font(lbl, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(lbl, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_update_layout(lbl);
+    int32_t const h = lv_obj_get_height(lbl);
+    return y + (h > 0 ? h : FF_SETTINGS_ROW_H) + FF_SETTINGS_ROW_GAP;
 }
 
 static void settings_crew_build_heard_row(lv_obj_t *list, int32_t rel_y, int32_t row_w,
@@ -1469,11 +1600,54 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
                     * one of the two lists is ever built at a time per subview. */
 
     int32_t y = 0;
+
+    /* [api] A02 slice D — SHOW CODE. A full-width pill above the lists,
+     * present whether or not a code has resolved: the face it opens says
+     * "no crew code yet" with the reason, which teaches more than a
+     * control that silently does nothing. */
+    settings_make_pill(list, "SHOW CODE", 0, y, row_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
+                       FF_THEME_COLOR_AMBER, 2, settings_crew_show_code_cb, NULL);
+    y += FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP;
+
     y = settings_build_section_header(list, y, row_w, "PAIRED", /*first=*/true);
     for (uint8_t i = 0; i < cw->paired_count; i++) {
         settings_crew_build_paired_row(list, y, row_w, &cw->paired[i]);
         y += FF_CREW_ROW_STEP;
     }
+
+    /* [api] A02 slice D §E — NOT TRACKED. Only ever built when there IS
+     * an overflow: an empty section here would imply a cap problem that
+     * does not exist. */
+    if (cw->overflow_count > 0u) {
+        char hdr[32];
+        snprintf(hdr, sizeof(hdr), "NOT TRACKED (%u)", (unsigned)cw->overflow_count);
+        y = settings_build_section_header(list, y, row_w, hdr, /*first=*/false);
+        y = settings_crew_caption(list, y, row_w,
+                                   "More people are on this crew than your puck can track (8 is "
+                                   "the limit). Hide someone to make room.");
+        for (uint8_t i = 0; i < cw->overflow_count; i++) {
+            settings_crew_build_overflow_row(list, y, row_w, &cw->overflow[i]);
+            y += FF_CREW_ROW_STEP;
+        }
+    }
+
+    /* [api] A02 slice D §C — HIDDEN. Same rule: no section when nobody
+     * is hidden. */
+    if (cw->hidden_count > 0u) {
+        char hdr[32];
+        snprintf(hdr, sizeof(hdr), "HIDDEN (%u)", (unsigned)cw->hidden_count);
+        y = settings_build_section_header(list, y, row_w, hdr, /*first=*/false);
+        if (cw->hidden_full) {
+            y = settings_crew_caption(list, y, row_w,
+                                       "You've hidden as many people as your puck can remember "
+                                       "(16). Unhide someone first.");
+        }
+        for (uint8_t i = 0; i < cw->hidden_count; i++) {
+            settings_crew_build_hidden_row(list, y, row_w, &cw->hidden[i]);
+            y += FF_CREW_ROW_STEP;
+        }
+    }
+
     y = settings_build_section_header(list, y, row_w, "HEARD", /*first=*/false);
     if (cw->heard_count == 0) {
         settings_crew_build_heard_empty(list, y, row_w, cw->link_connected);
@@ -1486,6 +1660,171 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
     }
 
     lv_obj_update_layout(list);
+}
+
+/* A02 slice D — SHOW CODE needs LVGL's optional QR widget. Both targets
+ * ask for it (firmware/lv_conf.h; targets/esp32s3/sdkconfig.defaults),
+ * but on ESP-IDF `sdkconfig.defaults` only seeds a sdkconfig that does
+ * not exist yet: a board configured BEFORE this change still carries
+ * `# CONFIG_LV_USE_QRCODE is not set`, that file wins, and the build
+ * dies six lines deep in implicit-declaration errors that name LVGL
+ * rather than the config. Say it once, in words that name the fix.
+ * (Measured on the bring-up board's own sdkconfig, 2026-09-13.) */
+#if !defined(LV_USE_QRCODE) || LV_USE_QRCODE == 0
+#error "A02 slice D needs LV_USE_QRCODE. ESP-IDF: an EXISTING firmware/targets/esp32s3/sdkconfig overrides sdkconfig.defaults, so a board configured before this change still has it off - enable it in `idf.py menuconfig` (Component config -> LVGL configuration -> 3rd party libraries -> QR code), or delete that sdkconfig and rebuild. Sim: see firmware/lv_conf.h."
+#endif
+
+/* ---------------------------------------------------------------------
+ * SHOW CODE face — A02 slice D (docs/specs/S02-core-crew.md's 2026-09-13
+ * amendment §D; the copy and the link format are A02 §1.8's)
+ * ---------------------------------------------------------------------
+ *
+ *        [ QR of firefly://crew?v=1&code=FIRE-4K9M7X ]
+ *
+ *                    FIRE-4K9M7X
+ *
+ *        Anyone who scans or types this is in your crew.
+ *                        [ BACK ]
+ *
+ * The code is DERIVED from the radio's own channel name (A02 §1.3 makes
+ * `ChannelSettings.name` and the canonical code the same 11 bytes), so
+ * there is no second source of truth and nothing extra to persist. A
+ * channel name that is not a valid code reads as "no crew code yet" —
+ * never rendered as one, because a fabricated code on this face is a
+ * code somebody will type into their phone and then stand around
+ * wondering why nobody appeared.
+ *
+ * Geometry, against the round 412 glass — MEASURED off the committed
+ * golden, not eyeballed. The `lv_qrcode` canvas is 190 px and carries a
+ * 6 px light border as its quiet zone, so the white ground the camera
+ * actually sees is 190 + 2*6 = 202 px square (confirmed: the near-white
+ * bounding box in `crew_show_code.png` is exactly 202x202 at y=34). That
+ * leaves the code line, the caption and a real 44 px BACK target room
+ * below it inside the circle. `lv_qrcode` draws into a canvas of exactly
+ * the size it is given, so the module size is whatever 190 / (modules +
+ * 2*quiet-zone) works out to for this payload's version — LVGL handles
+ * that; what matters here is that the dark-on-light polarity is NOT
+ * inverted (a scanner expects dark modules on a light ground, and a
+ * clever dark-theme QR is a QR that does not scan).
+ *
+ * The square is centred on the GLASS (FF_THEME_GLASS_CX = 208), not on
+ * the 412 pixel array (206). That 2 px is not cosmetic: the panel sits
+ * ~5 px left of the bezel's optical centre (ff_theme.h), and a 202 px
+ * square hung off the panel centre puts its top-LEFT corner at
+ * r = 200.5 from the glass centre — outside FF_THEME_GLASS_R, which is
+ * itself already pulled 3 px in from the measured 203. Centred on the
+ * glass both top corners land at r = 199.5 and the asymmetry is gone.
+ * Pinned by the assert below rather than by the golden, because a golden
+ * is a pixel-diff against itself and would happily keep a corner over
+ * the bezel lip forever.
+ * ------------------------------------------------------------------- */
+#define FF_CREWCODE_QR_PX     190
+#define FF_CREWCODE_QR_BORDER 6 /* the QR's own quiet zone, in its light colour */
+#define FF_CREWCODE_QR_BOX    (FF_CREWCODE_QR_PX + 2 * FF_CREWCODE_QR_BORDER)
+/* TOP_MID aligns on the pixel array's centre; this nudges to the glass's. */
+#define FF_CREWCODE_QR_DX     (FF_THEME_GLASS_CX - FF_THEME_PUCK_PX / 2)
+#define FF_CREWCODE_QR_Y      34
+#define FF_CREWCODE_CODE_Y    (FF_CREWCODE_QR_Y + FF_CREWCODE_QR_PX + 14)
+#define FF_CREWCODE_CAPTION_Y (FF_CREWCODE_CODE_Y + 46)
+#define FF_CREWCODE_BTN_W     120
+#define FF_CREWCODE_BTN_H     FF_SETTINGS_ROW_H
+#define FF_CREWCODE_BTN_Y     326
+
+_Static_assert(FF_CREWCODE_QR_PX <= 220, "A02 slice D: the QR must stay <= 220px to fit the round glass");
+/* The QR's light ground must stay INSIDE the glass, corners included —
+ * the quiet zone is part of the symbol, and a scanner that loses it
+ * loses the symbol. Its top corners are the worst case; stated as
+ * arithmetic, the same way the BACK pill's containment is below. */
+_Static_assert((FF_CREWCODE_QR_BOX / 2) * (FF_CREWCODE_QR_BOX / 2) +
+                       (FF_THEME_GLASS_CY - FF_CREWCODE_QR_Y) * (FF_THEME_GLASS_CY - FF_CREWCODE_QR_Y) <=
+                   FF_THEME_GLASS_R * FF_THEME_GLASS_R,
+               "SHOW CODE's QR (quiet zone included) must stay inside FF_THEME_GLASS_R");
+_Static_assert(FF_CREWCODE_BTN_H >= FF_THEME_MIN_HIT_PX, "SHOW CODE's BACK button must clear the 44px hit floor");
+/* The BACK pill's lowest corners have to stay inside the glass. At its
+ * bottom edge the inscribed chord is
+ * 2*sqrt(R^2 - (y - R)^2) = 2*sqrt(206^2 - 168^2) ~= 238 px, so 120 fits
+ * with ~59 px of margin each side. Stated as arithmetic rather than
+ * eyeballed off a render, because a render can be wrong by exactly the
+ * amount nobody notices until the hardware's bezel eats it. */
+_Static_assert(FF_CREWCODE_BTN_Y + FF_CREWCODE_BTN_H <= 374,
+               "SHOW CODE's BACK button must stay inside the round glass");
+
+static void settings_crew_code_back_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_BACK, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_build_crew_code_page(lv_obj_t *parent, ff_app_crew_page_t const *cw)
+{
+    lv_obj_t *puck = lv_obj_create(parent);
+    lv_obj_remove_style_all(puck);
+    lv_obj_set_size(puck, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_align(puck, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(puck, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(puck, lv_color_hex(FF_THEME_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(puck, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(puck, 0, 0);
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE);
+
+    bool const have_code = (cw->crew_code[0] != '\0') && (cw->invite_url[0] != '\0');
+
+    if (have_code) {
+        /* Dark modules on a light ground, always. The rest of this app
+         * is a dark theme; a QR is not decoration, it is something a
+         * phone camera has to read in a dark field, and inverting it to
+         * match the theme would make it fail on a good fraction of
+         * scanners. */
+        lv_obj_t *qr = lv_qrcode_create(puck);
+        lv_qrcode_set_size(qr, FF_CREWCODE_QR_PX);
+        lv_qrcode_set_dark_color(qr, lv_color_hex(0x000000));
+        lv_qrcode_set_light_color(qr, lv_color_hex(0xFFFFFF));
+        lv_qrcode_update(qr, cw->invite_url, strlen(cw->invite_url));
+        lv_obj_align(qr, LV_ALIGN_TOP_MID, FF_CREWCODE_QR_DX, FF_CREWCODE_QR_Y);
+        /* A quiet zone in the QR's own light colour: the module pattern
+         * has to be surrounded by light, and the puck behind it is
+         * near-black. */
+        lv_obj_set_style_border_color(qr, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_border_width(qr, FF_CREWCODE_QR_BORDER, 0);
+        lv_obj_clear_flag(qr, LV_OBJ_FLAG_CLICKABLE);
+
+        lv_obj_t *code = lv_label_create(puck);
+        lv_label_set_text(code, cw->crew_code);
+        lv_obj_set_style_text_font(code, FF_THEME_FONT_DISTANCE, 0); /* the biggest face there is */
+        lv_obj_set_style_text_color(code, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+        lv_obj_set_style_text_letter_space(code, 2, 0);
+        lv_obj_align(code, LV_ALIGN_TOP_MID, 0, FF_CREWCODE_CODE_Y);
+        lv_obj_clear_flag(code, LV_OBJ_FLAG_CLICKABLE);
+
+        lv_obj_t *cap = lv_label_create(puck);
+        lv_obj_set_width(cap, FF_THEME_PUCK_PX - 120);
+        lv_label_set_long_mode(cap, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(cap, "Anyone who scans or types this is in your crew.");
+        lv_obj_set_style_text_font(cap, FF_THEME_FONT_CHIP, 0);
+        lv_obj_set_style_text_color(cap, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+        lv_obj_set_style_text_align(cap, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(cap, LV_ALIGN_TOP_MID, 0, FF_CREWCODE_CAPTION_Y);
+        lv_obj_clear_flag(cap, LV_OBJ_FLAG_CLICKABLE);
+    } else {
+        /* The honest empty state. No QR, no placeholder code, and a
+         * reason — a blank square with "----" under it would look like a
+         * bug, and a fabricated code would be worse than one. */
+        lv_obj_t *msg = lv_label_create(puck);
+        lv_obj_set_width(msg, FF_THEME_PUCK_PX - 140);
+        lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(msg, "No crew code yet - start one on the phone");
+        lv_obj_set_style_text_font(msg, FF_THEME_FONT_HEADLINE, 0);
+        lv_obj_set_style_text_color(msg, lv_color_hex(FF_THEME_COLOR_INK), 0);
+        lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(msg, LV_ALIGN_CENTER, 0, -20);
+        lv_obj_clear_flag(msg, LV_OBJ_FLAG_CLICKABLE);
+    }
+
+    settings_make_pill(puck, "BACK", (FF_THEME_PUCK_PX - FF_CREWCODE_BTN_W) / 2, FF_CREWCODE_BTN_Y,
+                       FF_CREWCODE_BTN_W, FF_CREWCODE_BTN_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_MUTED,
+                       2, settings_crew_code_back_cb, NULL);
 }
 
 /* ---------------------------------------------------------------------
@@ -2395,6 +2734,11 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
      * CREW/COMPASS_CAL/NAME_EDIT just above. */
     if (settings->subview == FF_SETTINGS_SUB_DIAGNOSTICS) {
         settings_build_diag_page(parent, &settings->diag);
+        return;
+    }
+    /* [api] A02 slice D — SHOW CODE, same shape again. */
+    if (settings->subview == FF_SETTINGS_SUB_CREW_CODE) {
+        settings_build_crew_code_page(parent, &settings->crew);
         return;
     }
 

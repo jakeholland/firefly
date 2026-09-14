@@ -69,7 +69,10 @@
 #include "ff_shell.h"
 
 #include "ff_beat.h" /* S31 — FF_BEAT_LOUD_THRESHOLD, for the music.loudness render-key bucket pin */
+#include "ff_admit.h"    /* A02 slice D */
 #include "ff_crew.h"
+#include "ff_crewcode.h" /* A02 slice D — the shared code/PSK codec */
+#include "ff_hidden.h"   /* A02 slice D — FF_HIDDEN_MAX */
 #include "ff_feed.h"
 #include "ff_geo.h" /* SELFPOS — ff_geo_project, for an independent "my_pos equals the packet" check */
 #include "ff_heard.h"
@@ -2829,7 +2832,7 @@ static void SELFPOS_AC2_self_position_manual_not_adopted_by_default(void)
 static void SELFPOS_AC3_self_position_manual_adopted_under_dev_trust_all(void)
 {
     /* The SAME bench/field affordance the sim's --dev-trust-all and the
-     * device's CONFIG_FF_DEV_TRUST_CHANNEL already gate the crew-roster
+     * dev harness's own --dev-trust-all gates the crew-roster
      * auto-pair with — a MANUAL/asserted self position is adopted only
      * here, never on a shipping puck by default (AC2 above). */
     harness_init(100000u, false);
@@ -3873,7 +3876,7 @@ static void S16_AC6_nodeinfo_plus_position_via_real_transport_produce_zero_feed_
  *
  * This exercises `sh->dev_trust_all` and `shell_ev_node`'s NodeInfo
  * auto-pair branch directly, via `ff_shell_dev_trust_all` — the SAME
- * field and branch `CONFIG_FF_DEV_TRUST_CHANNEL` compiles into a device
+ * field and branch that `CONFIG_FF_DEV_TRUST_CHANNEL` used to compile into a device
  * build and `app_main.c` flips at boot (ff_shell.h's dev/field-stopgap
  * doc comment). There is no separate device-side logic to pin: this
  * test IS the coverage for "flag on -> auto-pairs on NodeInfo only" on
@@ -3882,7 +3885,10 @@ static void S16_AC6_nodeinfo_plus_position_via_real_transport_produce_zero_feed_
  * slot_one_heard_entry` and `S16_AC5c_position_from_non_roster_node_is_
  * dropped_and_noted` above, neither of which ever calls
  * `ff_shell_dev_trust_all` — the roster stays untouched by inbound
- * traffic exactly as it does in a `CONFIG_FF_DEV_TRUST_CHANNEL=n` build.
+ * traffic exactly as it did in a `CONFIG_FF_DEV_TRUST_CHANNEL=n` build
+ * (A02 slice D deleted that option; the device behaviour it approximated
+ * is now `ff_shell_set_auto_crew` + `ff_admit`, tested in this file's own
+ * S02_AC11 group).
  */
 static void S16_AC6_dev_trust_all_auto_pairs_on_nodeinfo_only(void)
 {
@@ -11232,6 +11238,649 @@ static void S31_music_loudness_never_dirties_render_key(void)
         "glass renders it (S31 polish, owner feedback on PR #245)");
 }
 
+/* =================================================================== */
+/* A02 slice D — auto crew on the crew channel                          */
+/* (docs/specs/S02-core-crew.md's 2026-09-13 amendment,                 */
+/*  S02_AC11 / AC12 / AC13 / AC15 — the SHELL half; the pure rule, the  */
+/*  hide set and the codec are pinned in core's own suites)             */
+/* =================================================================== */
+
+/* The canonical fixture code (docs/specs/fixtures/A02-crew-codes.json
+ * vector 1). Its PSK is DERIVED here rather than transcribed, so this
+ * file pins the shell's behaviour and never becomes a second, driftable
+ * copy of the vector table. */
+#define A02_CODE "FIRE-4K9M7X"
+
+/* A multi-key store. The file's own mem_store_t deliberately ignores
+ * `key` (one settings blob is all it ever had to hold); the hide list
+ * lives under its OWN key (`ff.hid.<symbols>`), so a single-slot store
+ * would have the two silently overwrite each other and the persistence
+ * test would be asserting nothing. */
+typedef struct {
+    struct {
+        char    key[24];
+        uint8_t buf[256];
+        size_t  len;
+        bool    present;
+    } slots[4];
+} a02_store_t;
+
+static a02_store_t A02_STORE;
+
+static int a02_get(void *io, char const *key, void *buf, size_t n)
+{
+    a02_store_t *st = (a02_store_t *)io;
+    for (size_t i = 0; i < sizeof(st->slots) / sizeof(st->slots[0]); i++) {
+        if (!st->slots[i].present || strcmp(st->slots[i].key, key) != 0) continue;
+        if (st->slots[i].len > n) return -1;
+        memcpy(buf, st->slots[i].buf, st->slots[i].len);
+        return (int)st->slots[i].len;
+    }
+    return -1;
+}
+
+static int a02_set(void *io, char const *key, void const *buf, size_t n)
+{
+    a02_store_t *st = (a02_store_t *)io;
+    size_t const nslots = sizeof(st->slots) / sizeof(st->slots[0]);
+    size_t free_slot = nslots;
+    for (size_t i = 0; i < nslots; i++) {
+        if (st->slots[i].present && strcmp(st->slots[i].key, key) == 0) {
+            free_slot = i;
+            break;
+        }
+        if (!st->slots[i].present && free_slot == nslots) free_slot = i;
+    }
+    if (free_slot == nslots || n > sizeof(st->slots[0].buf)) return -1;
+    snprintf(st->slots[free_slot].key, sizeof(st->slots[free_slot].key), "%s", key);
+    memcpy(st->slots[free_slot].buf, buf, n);
+    st->slots[free_slot].len = n;
+    st->slots[free_slot].present = true;
+    return (int)n;
+}
+
+/** Bring up a shell wired to the multi-key store above. `keep` preserves
+ *  what a previous run persisted, which is what a reboot looks like. */
+static void a02_harness_init(uint32_t t0_ms, bool keep)
+{
+    if (!keep) memset(&A02_STORE, 0, sizeof(A02_STORE));
+    memset(&H, 0, sizeof(H));
+    H.clk.t = t0_ms;
+    H.clock.now_ms = fake_now;
+    H.clock.user = &H.clk;
+    H.store.get = a02_get;
+    H.store.set = a02_set;
+    H.store.io = &A02_STORE;
+
+    ff_shell_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.clock = &H.clock;
+    cfg.store = &H.store;
+    cfg.haptic = spy_haptic;
+    cfg.haptic_user = &H.haptic;
+    cfg.play_sound = spy_play_sound;
+    cfg.play_sound_user = &H.sound;
+    cfg.pack = &H.pack;
+    cfg.toks = H.toks;
+    cfg.ntoks = FP_MAX_TOKENS;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&H.shell, &cfg));
+    H.ev = ff_shell_events(&H.shell);
+}
+
+/** Deliver one channel-table row, as a want_config reply would. */
+static void a02_inject_channel(uint8_t index, char const *name, uint8_t const *psk, uint8_t psk_len,
+                                bool primary)
+{
+    mc_channel_t ch;
+    memset(&ch, 0, sizeof(ch));
+    ch.index = index;
+    snprintf(ch.name, sizeof(ch.name), "%s", name);
+    if (psk != NULL && psk_len > 0u) {
+        memcpy(ch.psk, psk, psk_len);
+        ch.psk_len = psk_len;
+    }
+    ch.is_primary = primary;
+    H.ev.on_channel(H.ev.user, &ch);
+}
+
+/** The real crew channel: the canonical code, keyed with the key that
+ *  code derives. Derived, never transcribed — see A02_CODE. */
+static void a02_inject_crew_channel(uint8_t index)
+{
+    uint8_t psk[FF_CREWCODE_PSK_LEN];
+    TEST_ASSERT_TRUE(ff_crewcode_psk(A02_CODE, psk));
+    a02_inject_channel(index, A02_CODE, psk, sizeof(psk), index == 0u);
+}
+
+/** One rx-meta carrying everything the admission rule reads. */
+static void a02_inject_meta(uint32_t from, bool has_chan, uint32_t chan, bool via_mqtt, bool has_portnum,
+                             uint32_t portnum)
+{
+    mc_rx_meta_t m;
+    memset(&m, 0, sizeof(m));
+    m.rx_path = MC_RX_PATH_DIRECT;
+    m.has_channel_index = has_chan;
+    m.channel_index = chan;
+    m.via_mqtt = via_mqtt;
+    m.has_portnum = has_portnum;
+    m.portnum = portnum;
+    H.ev.on_rx_meta(H.ev.user, from, &m);
+}
+
+/** The shape that SHOULD admit: decrypted NodeInfo on the crew index. */
+static void a02_inject_qualifying(uint32_t from)
+{
+    a02_inject_meta(from, true, 0u, false, true, 4u /* NODEINFO_APP */);
+}
+
+/** Everything a connected puck on a crew channel has established. */
+static void a02_connect_on_crew(void)
+{
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    a02_inject_crew_channel(0u);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+}
+
+static ff_app_crew_page_t const *a02_crew_page(void)
+{
+    (void)ff_shell_intent(&H.shell, &(ff_intent_t){.kind = FF_INTENT_SETTINGS_OPEN_CREW, .u = {0}});
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    return &ff_shell_view(&H.shell)->settings.crew;
+}
+
+/* --- S02_AC11: admission ------------------------------------------- */
+
+static void S02_AC11_qualifying_packet_admits_and_assigns_a_colour(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+
+    TEST_ASSERT_EQUAL_UINT8(0, ff_shell_crew(&H.shell)->count);
+    a02_inject_qualifying(STRANGER);
+
+    ff_crew_member_t const *m = member(STRANGER);
+    TEST_ASSERT_NOT_NULL(m);
+    TEST_ASSERT_TRUE(m->paired);
+    /* Membership and NOTHING else (amendment §F): no position is
+     * invented, and the name stays honestly empty until a real NodeInfo
+     * carries one. */
+    TEST_ASSERT_FALSE(m->has_pos);
+    TEST_ASSERT_EQUAL_STRING("", m->name);
+    /* The sender is in the roster now, so it must NOT also be sitting in
+     * the heard list as a stranger. */
+    TEST_ASSERT_FALSE(ff_heard_contains(ff_shell_heard(&H.shell), STRANGER));
+}
+
+static void S02_AC11_each_of_the_four_portnums_admits(void)
+{
+    uint32_t const portnums[] = {4u /* NodeInfo */, 3u /* Position */, 1u /* Text */, FF_PORTNUM};
+    for (size_t i = 0; i < sizeof(portnums) / sizeof(portnums[0]); i++) {
+        a02_harness_init(100000u, false);
+        a02_connect_on_crew();
+        a02_inject_meta(STRANGER, true, 0u, false, true, portnums[i]);
+        TEST_ASSERT_NOT_NULL(member(STRANGER));
+        TEST_ASSERT_TRUE(member(STRANGER)->paired);
+    }
+}
+
+/* Each of the following is the SAME qualifying packet with exactly one
+ * thing changed, so a green test can only mean the clause under test did
+ * the rejecting. */
+
+static void S02_AC11_another_channel_index_admits_nobody(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    a02_inject_meta(STRANGER, true, 1u, false, true, 4u);
+    TEST_ASSERT_NULL(member(STRANGER));
+    TEST_ASSERT_TRUE(ff_heard_contains(ff_shell_heard(&H.shell), STRANGER));
+}
+
+static void S02_AC11_via_mqtt_admits_nobody(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    a02_inject_meta(STRANGER, true, 0u, /*via_mqtt=*/true, true, 4u);
+    TEST_ASSERT_NULL(member(STRANGER));
+}
+
+static void S02_AC11_telemetry_admits_nobody_but_still_refreshes_a_member(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+
+    /* Telemetry from a stranger: no admission. */
+    a02_inject_meta(STRANGER, true, 0u, false, true, 67u /* TELEMETRY_APP */);
+    TEST_ASSERT_NULL(member(STRANGER));
+
+    /* Positive control on the same shell, same path: telemetry from an
+     * ALREADY-paired member still refreshes presence. Without this the
+     * test above would pass for a shell that ignored telemetry
+     * entirely — the "a haptic that never fires" proxy, in another
+     * costume. */
+    a02_inject_qualifying(DANA);
+    TEST_ASSERT_NOT_NULL(member(DANA));
+    advance(30000u);
+    a02_inject_meta(DANA, true, 0u, false, true, 67u);
+    TEST_ASSERT_TRUE(member(DANA)->has_heard);
+    TEST_ASSERT_EQUAL_UINT32(H.clk.t, member(DANA)->last_heard_ms);
+}
+
+static void S02_AC11_our_own_id_admits_nobody(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    a02_inject_qualifying(MY_ID);
+    TEST_ASSERT_NULL(member(MY_ID));
+    TEST_ASSERT_EQUAL_UINT8(0, ff_shell_crew(&H.shell)->count);
+}
+
+static void S02_AC11_an_encrypted_packet_admits_nobody(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    /* No decoded payload: no portnum, and no usable channel index
+     * either (the field carries the channel hash on that path). */
+    a02_inject_meta(STRANGER, false, 0u, false, false, 0u);
+    TEST_ASSERT_NULL(member(STRANGER));
+}
+
+static void S02_AC11_the_want_config_nodeinfo_replay_admits_nobody(void)
+{
+    /* THE one that matters most. The replay is a synthesized nodeDB
+     * dump, not a live packet: it cannot prove the node was ever heard
+     * on our channel, and it reaches the shell through `on_node`, which
+     * is deliberately not where admission lives. Nothing guards this
+     * explicitly — it falls out of the routing — so this test is the
+     * only thing standing between that design and a future refactor
+     * that "helpfully" admits from on_node too. */
+    a02_harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    a02_inject_crew_channel(0u);
+
+    for (int i = 0; i < 5; i++) {
+        inject_node(STRANGER + (uint32_t)i, "WHO", U_EVENING);
+        inject_node_with_position(STRANGER2 + (uint32_t)i, U_EVENING, 39.0, -82.0);
+    }
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    TEST_ASSERT_EQUAL_UINT8(0, ff_shell_crew(&H.shell)->count);
+
+    /* Positive control: the SAME node admits the instant it sends a
+     * real packet, so the assertion above is about the replay and not
+     * about this shell being unable to admit anyone at all. */
+    a02_inject_qualifying(STRANGER);
+    TEST_ASSERT_NOT_NULL(member(STRANGER));
+}
+
+static void S02_AC11_auto_crew_off_admits_nobody(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    TEST_ASSERT_TRUE(ff_shell_auto_crew(&H.shell)); /* the shipped default */
+
+    ff_shell_set_auto_crew(&H.shell, false);
+    uint32_t const portnums[] = {4u, 3u, 1u, FF_PORTNUM};
+    for (size_t i = 0; i < sizeof(portnums) / sizeof(portnums[0]); i++) {
+        a02_inject_meta(STRANGER, true, 0u, false, true, portnums[i]);
+    }
+    TEST_ASSERT_EQUAL_UINT8(0, ff_shell_crew(&H.shell)->count);
+
+    /* Back on, and the very next packet admits: the flag gates
+     * admission, it does not permanently poison the sender. */
+    ff_shell_set_auto_crew(&H.shell, true);
+    a02_inject_qualifying(STRANGER);
+    TEST_ASSERT_NOT_NULL(member(STRANGER));
+}
+
+static void S02_AC11_existing_paired_members_survive_the_switch(void)
+{
+    /* Migration (amendment §A): turning auto-crew off must not delete
+     * anyone's crew, in either direction. */
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    ff_shell_set_auto_crew(&H.shell, false);
+    TEST_ASSERT_NOT_NULL(member(DANA));
+    TEST_ASSERT_TRUE(member(DANA)->paired);
+    ff_shell_set_auto_crew(&H.shell, true);
+    TEST_ASSERT_TRUE(member(DANA)->paired);
+}
+
+/* --- S02_AC12: index resolution ------------------------------------ */
+
+static void S02_AC12_no_matching_channel_admits_nobody_and_reports_no_code(void)
+{
+    a02_harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    /* A perfectly ordinary radio: a public primary and a secondary,
+     * neither of them a crew channel. */
+    a02_inject_channel(0u, "LongFast", NULL, 0u, true);
+    a02_inject_channel(1u, "admin", NULL, 0u, false);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    uint32_t idx = 0xFFFFu;
+    TEST_ASSERT_FALSE(ff_shell_crew_channel_index(&H.shell, &idx));
+    TEST_ASSERT_EQUAL_STRING("", ff_shell_crew_code(&H.shell));
+
+    /* Never a fallback to 0 — which is exactly where the crew normally
+     * lives, and therefore exactly the mistake that would admit every
+     * stranger on the public channel. */
+    a02_inject_meta(STRANGER, true, 0u, false, true, 4u);
+    TEST_ASSERT_NULL(member(STRANGER));
+
+    ff_app_crew_page_t const *cw = a02_crew_page();
+    TEST_ASSERT_EQUAL_STRING("", cw->crew_code);
+    TEST_ASSERT_EQUAL_STRING("", cw->invite_url);
+}
+
+static void S02_AC12_resolves_at_a_nonzero_index(void)
+{
+    a02_harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    a02_inject_channel(0u, "LongFast", NULL, 0u, true);
+    a02_inject_crew_channel(3u);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    uint32_t idx = 0xFFFFu;
+    TEST_ASSERT_TRUE(ff_shell_crew_channel_index(&H.shell, &idx));
+    TEST_ASSERT_EQUAL_UINT32(3u, idx);
+    TEST_ASSERT_EQUAL_STRING(A02_CODE, ff_shell_crew_code(&H.shell));
+
+    /* Index 3 admits; index 0 — the public primary on this radio — does
+     * not. This is the pair that makes "never assume 0" a measurement. */
+    a02_inject_meta(STRANGER, true, 3u, false, true, 4u);
+    TEST_ASSERT_NOT_NULL(member(STRANGER));
+    a02_inject_meta(STRANGER2, true, 0u, false, true, 4u);
+    TEST_ASSERT_NULL(member(STRANGER2));
+}
+
+static void S02_AC12_name_alone_is_not_enough(void)
+{
+    /* Anyone can name a channel FIRE-4K9M7X in the stock app without
+     * holding the key. Matching on the name alone would hand the crew to
+     * whoever typed the right six characters. */
+    a02_harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    uint8_t wrong[FF_CREWCODE_PSK_LEN];
+    memset(wrong, 0x5A, sizeof(wrong));
+    a02_inject_channel(0u, A02_CODE, wrong, sizeof(wrong), true);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    TEST_ASSERT_FALSE(ff_shell_crew_channel_index(&H.shell, NULL));
+    TEST_ASSERT_EQUAL_STRING("", ff_shell_crew_code(&H.shell));
+    a02_inject_meta(STRANGER, true, 0u, false, true, 4u);
+    TEST_ASSERT_NULL(member(STRANGER));
+}
+
+static void S02_AC12_a_short_psk_is_not_a_crew_key(void)
+{
+    /* Meshtastic's 1-byte psk is shorthand for a well-known default key.
+     * A crew key is always the full 32 derived bytes. */
+    a02_harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    uint8_t one = 0x01u;
+    a02_inject_channel(0u, A02_CODE, &one, 1u, true);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    TEST_ASSERT_FALSE(ff_shell_crew_channel_index(&H.shell, NULL));
+}
+
+static void S02_AC12_the_index_is_re_resolved_on_reconnect(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    TEST_ASSERT_TRUE(ff_shell_crew_channel_index(&H.shell, NULL));
+
+    /* The link drops and re-handshakes. Until this handshake's own
+     * channel table arrives, the index is unknown and nothing is
+     * admitted — a cached index must never outlive the table it came
+     * from, because a reboot or an admin write is exactly what precedes
+     * a handshake. */
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    TEST_ASSERT_FALSE(ff_shell_crew_channel_index(&H.shell, NULL));
+    a02_inject_meta(STRANGER, true, 0u, false, true, 4u);
+    TEST_ASSERT_NULL(member(STRANGER));
+
+    /* The code, which is display-only, deliberately survives: it is the
+     * last thing the radio actually told us, and blanking the SHOW CODE
+     * face for the length of a reconnect buys no honesty. */
+    TEST_ASSERT_EQUAL_STRING(A02_CODE, ff_shell_crew_code(&H.shell));
+
+    a02_inject_crew_channel(2u); /* re-provisioned to a different slot */
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    uint32_t idx = 0u;
+    TEST_ASSERT_TRUE(ff_shell_crew_channel_index(&H.shell, &idx));
+    TEST_ASSERT_EQUAL_UINT32(2u, idx);
+}
+
+/* --- S02_AC13: hide ------------------------------------------------- */
+
+static void S02_AC13_hide_unpairs_frees_a_slot_and_blocks_readmission(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    a02_inject_qualifying(DANA);
+    TEST_ASSERT_TRUE(member(DANA)->paired);
+
+    TEST_ASSERT_TRUE(ff_shell_crew_hide(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_crew_hidden(&H.shell, DANA));
+    ff_crew_member_t const *m = member(DANA);
+    TEST_ASSERT_TRUE(m == NULL || !m->paired); /* unpaired: the slot is free */
+
+    /* Never silently re-admitted by their very next packet — the whole
+     * reason the admission rule consults the hide list rather than the
+     * renderer filtering hidden rows out. */
+    a02_inject_qualifying(DANA);
+    m = member(DANA);
+    TEST_ASSERT_TRUE(m == NULL || !m->paired);
+}
+
+static void S02_AC13_unhiding_restores_eligibility_not_membership(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    a02_inject_qualifying(DANA);
+    TEST_ASSERT_TRUE(ff_shell_crew_hide(&H.shell, DANA, true));
+
+    TEST_ASSERT_TRUE(ff_shell_crew_hide(&H.shell, DANA, false));
+    TEST_ASSERT_FALSE(ff_shell_crew_hidden(&H.shell, DANA));
+    /* Not re-paired by the tap itself: a UI action never asserts
+     * something the radio has not said since. */
+    ff_crew_member_t const *m = member(DANA);
+    TEST_ASSERT_TRUE(m == NULL || !m->paired);
+
+    /* The next qualifying packet admits them through the same rule as
+     * everyone else. */
+    a02_inject_qualifying(DANA);
+    TEST_ASSERT_TRUE(member(DANA)->paired);
+}
+
+static void S02_AC13_hides_survive_a_reboot_and_are_keyed_per_crew(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    a02_inject_qualifying(DANA);
+    TEST_ASSERT_TRUE(ff_shell_crew_hide(&H.shell, DANA, true));
+
+    /* Reboot: a brand-new shell over the SAME store. */
+    a02_harness_init(500000u, /*keep=*/true);
+    a02_connect_on_crew();
+    TEST_ASSERT_TRUE(ff_shell_crew_hidden(&H.shell, DANA));
+    a02_inject_qualifying(DANA);
+    ff_crew_member_t const *m = member(DANA);
+    TEST_ASSERT_TRUE(m == NULL || !m->paired);
+
+    /* A DIFFERENT crew has its own hide list — the record is keyed by
+     * crew code, which is what makes leaving and rejoining restore the
+     * hides you had rather than inheriting somebody else's. */
+    a02_harness_init(900000u, /*keep=*/true);
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    uint8_t psk2[FF_CREWCODE_PSK_LEN];
+    TEST_ASSERT_TRUE(ff_crewcode_psk("FIRE-ZZZZZZ", psk2));
+    a02_inject_channel(0u, "FIRE-ZZZZZZ", psk2, sizeof(psk2), true);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    TEST_ASSERT_FALSE(ff_shell_crew_hidden(&H.shell, DANA));
+
+    /* ...and coming back to the first crew restores its own hides. */
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    a02_inject_crew_channel(0u);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    TEST_ASSERT_TRUE(ff_shell_crew_hidden(&H.shell, DANA));
+}
+
+static void S02_AC13_a_full_hide_list_fails_honestly(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    for (uint32_t i = 0; i < FF_HIDDEN_MAX; i++) {
+        TEST_ASSERT_TRUE(ff_shell_crew_hide(&H.shell, 0x70000u + i, true));
+    }
+    /* Refuses rather than evicting: a hide is a user decision, and
+     * silently forgetting one puts somebody back on the wearer's radar
+     * without being asked. */
+    TEST_ASSERT_FALSE(ff_shell_crew_hide(&H.shell, 0x80000u, false + true));
+    TEST_ASSERT_FALSE(ff_shell_crew_hidden(&H.shell, 0x80000u));
+    TEST_ASSERT_TRUE(ff_shell_crew_hidden(&H.shell, 0x70000u));
+
+    ff_app_crew_page_t const *cw = a02_crew_page();
+    TEST_ASSERT_TRUE(cw->hidden_full);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)FF_HIDDEN_MAX, cw->hidden_count);
+}
+
+static void S02_AC13_hidden_rows_are_projected_with_an_honest_identity(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    a02_inject_qualifying(DANA);
+    inject_node(DANA, "DANA", U_EVENING);
+    a02_inject_qualifying(STRANGER); /* never sent a NodeInfo */
+
+    TEST_ASSERT_TRUE(ff_shell_crew_hide(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_crew_hide(&H.shell, STRANGER, true));
+
+    ff_app_crew_page_t const *cw = a02_crew_page();
+    TEST_ASSERT_EQUAL_UINT8(2u, cw->hidden_count);
+    TEST_ASSERT_EQUAL_UINT32(DANA, cw->hidden[0].node_id);
+    TEST_ASSERT_TRUE(cw->hidden[0].has_name);
+    TEST_ASSERT_EQUAL_STRING("DANA", cw->hidden[0].name);
+    /* Never blank, never a fabricated name: the honest node-id fallback. */
+    TEST_ASSERT_EQUAL_UINT32(STRANGER, cw->hidden[1].node_id);
+    TEST_ASSERT_FALSE(cw->hidden[1].has_name);
+    TEST_ASSERT_TRUE(strlen(cw->hidden[1].short_id) > 0u);
+}
+
+/* --- S02_AC15: overflow -------------------------------------------- */
+
+static void S02_AC15_a_ninth_joiner_is_not_dropped_silently(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+
+    for (uint32_t i = 0; i < FF_CREW_MAX; i++) {
+        a02_inject_qualifying(0x90000u + i);
+    }
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)FF_CREW_MAX, ff_shell_crew(&H.shell)->count);
+
+    advance(5000u);
+    a02_inject_qualifying(STRANGER);
+    TEST_ASSERT_NULL(member(STRANGER));
+
+    /* Surfaced, with a REAL last-heard age, not dropped and not faked. */
+    advance(7000u);
+    ff_app_crew_page_t const *cw = a02_crew_page();
+    TEST_ASSERT_EQUAL_UINT8(1u, cw->overflow_count);
+    TEST_ASSERT_EQUAL_UINT32(STRANGER, cw->overflow[0].node_id);
+    TEST_ASSERT_EQUAL_UINT32(7000u, cw->overflow[0].age_ms);
+
+    /* Hiding someone frees a slot, and the next packet admits them. */
+    TEST_ASSERT_TRUE(ff_shell_crew_hide(&H.shell, 0x90000u, true));
+    a02_inject_qualifying(STRANGER);
+    TEST_ASSERT_NOT_NULL(member(STRANGER));
+    TEST_ASSERT_TRUE(member(STRANGER)->paired);
+
+    cw = a02_crew_page();
+    TEST_ASSERT_EQUAL_UINT8(0u, cw->overflow_count); /* no longer untracked */
+}
+
+static void S02_AC15_a_merely_nearby_stranger_is_not_listed_as_untracked(void)
+{
+    /* The proxy this closes: "everything in ff_heard" would fill the NOT
+     * TRACKED list with ordinary festival RF, claiming those people hold
+     * the crew key when nothing says they do. */
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    for (uint32_t i = 0; i < FF_CREW_MAX; i++) a02_inject_qualifying(0x90000u + i);
+
+    a02_inject_meta(STRANGER2, true, 1u, false, true, 4u); /* another channel */
+    ff_app_crew_page_t const *cw = a02_crew_page();
+    TEST_ASSERT_EQUAL_UINT8(0u, cw->overflow_count);
+    TEST_ASSERT_TRUE(ff_heard_contains(ff_shell_heard(&H.shell), STRANGER2));
+}
+
+/* --- S02_AC14 (shell half): the code and its invite link ------------ */
+
+static void S02_AC14_the_code_and_invite_url_come_from_the_channel_name(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+
+    ff_app_crew_page_t const *cw = a02_crew_page();
+    TEST_ASSERT_EQUAL_STRING(A02_CODE, cw->crew_code);
+    /* Byte-for-byte what core builds — the same function the app uses
+     * against the same fixture, never a second copy composed here. */
+    char want[FF_CREWCODE_URL_MAX];
+    TEST_ASSERT_TRUE(ff_crewcode_invite_url(A02_CODE, NULL, want, sizeof(want)) > 0u);
+    TEST_ASSERT_EQUAL_STRING(want, cw->invite_url);
+    TEST_ASSERT_EQUAL_STRING("firefly://crew?v=1&code=" A02_CODE, cw->invite_url);
+}
+
+static void S02_AC14_show_code_opens_from_the_crew_page(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+
+    /* Through the real route, because BACK's subview rule is gated on
+     * actually being ON the Settings face. */
+    (void)ff_shell_intent(&H.shell, &(ff_intent_t){.kind = FF_INTENT_OPEN_SETTINGS, .u = {0}});
+    (void)ff_shell_intent(&H.shell, &(ff_intent_t){.kind = FF_INTENT_SETTINGS_OPEN_CREW, .u = {0}});
+    (void)ff_shell_intent(&H.shell,
+                           &(ff_intent_t){.kind = FF_INTENT_SETTINGS_OPEN_CREW_CODE, .u = {0}});
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SETTINGS_SUB_CREW_CODE, ff_shell_view(&H.shell)->settings.subview);
+
+    /* BACK falls through the generic "any non-LIST settings subview
+     * returns to LIST" rule — no dedicated case, and this pins that. */
+    (void)ff_shell_intent(&H.shell, &(ff_intent_t){.kind = FF_INTENT_BACK, .u = {0}});
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SETTINGS_SUB_LIST, ff_shell_view(&H.shell)->settings.subview);
+}
+
+static void S02_AC14_hide_and_unhide_intents_route_to_the_shell(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    a02_inject_qualifying(DANA);
+
+    ff_intent_t hide = {.kind = FF_INTENT_CREW_HIDE, .u = {0}};
+    hide.u.node_id = DANA;
+    (void)ff_shell_intent(&H.shell, &hide);
+    TEST_ASSERT_TRUE(ff_shell_crew_hidden(&H.shell, DANA));
+
+    ff_intent_t unhide = {.kind = FF_INTENT_CREW_UNHIDE, .u = {0}};
+    unhide.u.node_id = DANA;
+    (void)ff_shell_intent(&H.shell, &unhide);
+    TEST_ASSERT_FALSE(ff_shell_crew_hidden(&H.shell, DANA));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -11573,6 +12222,32 @@ int main(void)
     RUN_TEST(S29_pong_from_wrong_node_does_not_update_find);
     RUN_TEST(S29_pong_trend_crossing_fires_warmer_haptic_and_sound);
     RUN_TEST(S29_pong_trend_crossing_fires_colder_haptic_twice);
+
+    RUN_TEST(S02_AC11_qualifying_packet_admits_and_assigns_a_colour);
+    RUN_TEST(S02_AC11_each_of_the_four_portnums_admits);
+    RUN_TEST(S02_AC11_another_channel_index_admits_nobody);
+    RUN_TEST(S02_AC11_via_mqtt_admits_nobody);
+    RUN_TEST(S02_AC11_telemetry_admits_nobody_but_still_refreshes_a_member);
+    RUN_TEST(S02_AC11_our_own_id_admits_nobody);
+    RUN_TEST(S02_AC11_an_encrypted_packet_admits_nobody);
+    RUN_TEST(S02_AC11_the_want_config_nodeinfo_replay_admits_nobody);
+    RUN_TEST(S02_AC11_auto_crew_off_admits_nobody);
+    RUN_TEST(S02_AC11_existing_paired_members_survive_the_switch);
+    RUN_TEST(S02_AC12_no_matching_channel_admits_nobody_and_reports_no_code);
+    RUN_TEST(S02_AC12_resolves_at_a_nonzero_index);
+    RUN_TEST(S02_AC12_name_alone_is_not_enough);
+    RUN_TEST(S02_AC12_a_short_psk_is_not_a_crew_key);
+    RUN_TEST(S02_AC12_the_index_is_re_resolved_on_reconnect);
+    RUN_TEST(S02_AC13_hide_unpairs_frees_a_slot_and_blocks_readmission);
+    RUN_TEST(S02_AC13_unhiding_restores_eligibility_not_membership);
+    RUN_TEST(S02_AC13_hides_survive_a_reboot_and_are_keyed_per_crew);
+    RUN_TEST(S02_AC13_a_full_hide_list_fails_honestly);
+    RUN_TEST(S02_AC13_hidden_rows_are_projected_with_an_honest_identity);
+    RUN_TEST(S02_AC15_a_ninth_joiner_is_not_dropped_silently);
+    RUN_TEST(S02_AC15_a_merely_nearby_stranger_is_not_listed_as_untracked);
+    RUN_TEST(S02_AC14_the_code_and_invite_url_come_from_the_channel_name);
+    RUN_TEST(S02_AC14_show_code_opens_from_the_crew_page);
+    RUN_TEST(S02_AC14_hide_and_unhide_intents_route_to_the_shell);
 
     return UNITY_END();
 }

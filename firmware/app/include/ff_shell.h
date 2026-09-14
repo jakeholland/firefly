@@ -84,21 +84,36 @@
  * the sender up read-only first and drops it — noting it in `ff_heard` —
  * when it is not already a roster member.
  *
- * `ff_shell_pair()` is the one entry point that may grow the roster, and
- * it is not reachable from the radio — with ONE deliberate, compile-gated
- * exception, `ff_shell_dev_trust_all` (S16 AC6, slice b2), which makes an
- * inbound NodeInfo auto-pair its sender. That affordance is compiled in
- * for a SIM build unconditionally (`ffsim --dev-trust-all` turns it on
- * at runtime), and for a DEVICE build only when
- * `CONFIG_FF_DEV_TRUST_CHANNEL=y` — a bench/field stopgap
- * (docs/hardware/comms-brain.md) for auto-pairing every node heard on
- * the private crew channel while the real pairing UI (S12) is still
- * unbuilt, off by default and never meant to ship on. With neither gate
- * set (every device build until an operator opts in) the branch, the
- * field and the setter are compiled out entirely, not merely defaulted
- * off, so the sentence above holds without exception. See
- * `ff_shell_dev_trust_all`'s own doc comment near the foot of this
- * header for exactly what each gate does and does not turn on.
+ * **AMENDED, 2026-09-13 (A02 slice D, docs/specs/S02-core-crew.md's
+ * amendment of that date).** The policy sentence above was written when
+ * membership had no definition other than "a user said so". A02 gives it
+ * one: **possession of the crew channel's key is membership.** A node
+ * the radio delivered to us DECRYPTED on our crew channel has proved it
+ * holds 32 bytes that only came from someone who had the crew code —
+ * a strictly stronger claim than "the radio said so", and the claim the
+ * roster may now grow on. The policy is therefore:
+ *
+ *   > The roster grows from an explicit user action, or from proof of
+ *   > the crew key — and from nothing else.
+ *
+ * The second half is `ff_admit` (core, pure, six clauses, one test per
+ * clause), evaluated in `shell_ev_rx_meta` and acted on through
+ * `shell_pair` — so there is still exactly ONE place in `ff_shell.c`
+ * where a roster slot is created. It is on `on_rx_meta` and not
+ * `on_node` for a load-bearing reason: the `want_config` NodeInfo replay
+ * is a synthesized nodeDB dump, not a live packet, and cannot prove the
+ * node was ever heard on our channel. It admits nobody, and that falls
+ * out of the routing rather than needing its own guard.
+ *
+ * `ff_shell_set_auto_crew` turns that half off (`FF_CREW_AUTO_ON_CHANNEL`,
+ * Kconfig default **y** — this is the shipped behaviour, not a stopgap).
+ * `CONFIG_FF_DEV_TRUST_CHANNEL`, which used to be the compile-gated
+ * exception here, is **deleted**: keeping a second, differently-named
+ * gate for behaviour that is now the default is precisely the drift that
+ * Kconfig's own "never ship on by default" help text would have
+ * inherited. `ff_shell_dev_trust_all` survives as a SIM-ONLY single-node
+ * dev-harness affordance — see its own doc comment near the foot of this
+ * header.
  *
  * ---------------------------------------------------------------------
  * POSITION AGES — never "now"
@@ -642,8 +657,23 @@ typedef struct {
  * ~776 B headroom, back in this budget's own usual ~600 B-1 KB range. A
  * ~41.5 KB static shell remains comfortable in the S3's 512 KB SRAM;
  * this stays a runaway-growth tripwire, not a hardware limit.
+ *
+ * RAISED 41.5 KB -> 44.5 KB for A02 slice D (docs/specs/S02-core-crew.md's
+ * 2026-09-13 amendment), deliberately, per this comment's own
+ * instruction. Almost all of it is `ff_app_state_t` growth landing
+ * TWICE, the way most raises in this history do: the CREW page gained a
+ * HIDDEN section, a NOT TRACKED overflow section and the crew code plus
+ * its invite URL (~1.3 KB, see that struct's own budget comment in
+ * ff_app_state.h), doubled by the `view`/`prev_key` render-key pair. The
+ * shell's own new fields are a rounding error beside it: an `ff_hidden_t`
+ * (68 B), a `FF_HEARD_MAX` overflow-id array (64 B), two 12-byte code
+ * strings and three scalars. Measured, not estimated: sizeof(shell_t)
+ * is 44,496 B against the old 42,496 B budget (a hard compile failure).
+ * 44.5 KB (45,568 B) clears it with ~1 KB headroom, in this budget's
+ * usual range. Still comfortable in the S3's 512 KB SRAM; still a
+ * tripwire, not a hardware limit.
  */
-#define FF_SHELL_BYTES 42496u
+#define FF_SHELL_BYTES 45568u
 
 /** Alignment of the opaque payload. 8 covers every member the shell
  *  holds today (the widest are `double` inside `ff_latlon_t` and
@@ -879,25 +909,17 @@ mc_events_t ff_shell_events(ff_shell_t *sh);
  * ff_shell_pair — the explicit user pairing action, and **the only entry
  * point that may grow the paired roster**.
  *
- * Not reachable from the radio: nothing in `ff_shell.c`'s seven inbound
- * callbacks calls this directly — except the `ff_shell_dev_trust_all`
- * auto-pair branch, which is routed through this SAME function body
- * (`shell_pair` internally) so there remains exactly one audited growth
- * path. That branch is compiled in for a sim build unconditionally
- * (`ffsim --dev-trust-all`), and for a device build ONLY when
- * `CONFIG_FF_DEV_TRUST_CHANNEL=y` — a bench/field stopgap
- * (docs/hardware/comms-brain.md) for the Sep 18-20 field test while the
- * real pairing UI (S12) is unbuilt: it auto-pairs every node heard on
- * the private crew channel. The Kconfig option defaults to n and, like
- * the sim-only gate, is compiled out (not merely defaulted off) when
- * unset. With both gates off — every device build shipped without an
- * operator explicitly opting in — the roster only grows via this
- * function called from a user action, and the sentence above holds
- * without exception. The pairing UI (S12), `--dev-trust-all`, and
- * `CONFIG_FF_DEV_TRUST_CHANNEL` (via `ff_shell_dev_trust_all`, called
- * from `app_main.c` at boot) are its callers. See
- * `ff_shell_dev_trust_all`'s own doc comment for exactly what each gate
- * turns on.
+ * Not reachable from the radio DIRECTLY: nothing in `ff_shell.c`'s
+ * inbound callbacks calls this. Two internal paths share its body
+ * (`shell_pair`) so that there remains exactly one audited place a
+ * roster slot is created:
+ *  - the A02 auto-crew admission in `shell_ev_rx_meta`, gated on
+ *    `ff_admit` (see THE ROSTER TRUST POLICY's 2026-09-13 amendment at
+ *    the top of this header — this is a policy change, not a bypass);
+ *  - `ff_shell_dev_trust_all`'s NodeInfo auto-pair, sim-only.
+ *
+ * `ff_shell_crew_hide` also routes its unpair through this same body,
+ * for the same reason.
  *
  * Returns true if `node_id` now has the requested paired state; false if
  * `sh` is NULL, or the roster is full (`FF_CREW_MAX`, no eviction in v1)
@@ -1242,8 +1264,11 @@ void ff_shell_home_press(ff_shell_t *sh, uint32_t now_ms, bool deliver);
  * a self Position/NodeInfo whose `loc_source` is MC_LOC_INTERNAL/
  * MC_LOC_EXTERNAL (a measurement) is adopted unconditionally;
  * MC_LOC_MANUAL (an assertion, not a measurement — mc_loc_source_t's own
- * doc comment) only under the same dev/bench gate `--dev-trust-all` /
- * CONFIG_FF_DEV_TRUST_CHANNEL already use for the crew roster.
+ * doc comment) only under the sim's `--dev-trust-all` dev-harness gate
+ * (A02 slice D: the device half of that gate,
+ * CONFIG_FF_DEV_TRUST_CHANNEL, is gone — a shipping puck now never
+ * adopts a typed-in point as if it were where the wearer is standing,
+ * under any configuration).
  *
  * This function stays the explicit, unconditional path for a caller that
  * genuinely knows the answer out of band — targets/sim's `--pack`
@@ -1967,60 +1992,133 @@ bool ff_shell_keep_awake(ff_app_state_t const *view, bool touch_cal_running);
 bool ff_shell_take_wake(ff_shell_t *shell);
 
 /* ---------------------------------------------------------------------
- * ff_shell_dev_trust_all — compiled in for a sim build unconditionally,
- * and for a device build only when CONFIG_FF_DEV_TRUST_CHANNEL=y
+ * [api] A02 slice D — auto crew on the crew channel
+ * (docs/specs/S02-core-crew.md's 2026-09-13 amendment)
+ * ------------------------------------------------------------------- */
+
+/**
+ * ff_shell_set_auto_crew — turn the A02 admission rule on or off.
+ *
+ * Replaces `ff_shell_dev_trust_all`'s device half. **On by default**
+ * (`ff_shell_init`; the esp32s3 target re-states it at boot from
+ * `CONFIG_FF_CREW_AUTO_ON_CHANNEL`, Kconfig default y) — this is the
+ * shipped behaviour, not a stopgap, which is why it is a plain runtime
+ * field and not a compile gate like its predecessor.
+ *
+ * With it off, NOTHING the radio says grows the roster, by any route:
+ * `ff_admit` returns `FF_ADMIT_NO_DISABLED` before evaluating a single
+ * other clause, and the pre-A02 policy ("explicit user action only")
+ * holds exactly as it did.
+ *
+ * What it does NOT change: hidden ids stay hidden, already-paired
+ * members stay paired (migration — an existing crew survives the switch
+ * in both directions), and nothing is transmitted either way.
+ */
+void ff_shell_set_auto_crew(ff_shell_t *sh, bool enabled);
+
+/** Whether auto-crew is on. NULL-safe (false). */
+bool ff_shell_auto_crew(ff_shell_t const *sh);
+
+/**
+ * ff_shell_crew_code — the crew code this puck is on, DERIVED from its
+ * own channel name (A02 §1.3: the Meshtastic channel name IS the
+ * canonical code, so there is no second source of truth and nothing
+ * extra persisted).
+ *
+ * Returns "" — never a fabricated or partial code — when no channel in
+ * the radio's table both is named like a code AND carries the key that
+ * name derives. Screens render that as "no crew code yet", with the
+ * reason. Never NULL, so callers may `strcmp` it directly.
+ */
+char const *ff_shell_crew_code(ff_shell_t const *sh);
+
+/**
+ * ff_shell_crew_channel_index — which index the crew channel occupies on
+ * THIS radio, resolved by name-and-PSK match against the channel table
+ * the `want_config` handshake delivers.
+ *
+ * Returns false, writing nothing, when it has not been resolved — which
+ * includes the whole of every handshake, since the index is cleared and
+ * rebuilt per link. **There is deliberately no fallback to 0.** Index 0
+ * is the slot Firefly writes the crew to, so "assume 0 when unsure"
+ * would silently treat the public channel as the crew on any radio
+ * provisioned by hand; `MeshPacket.channel` is "inherently a local
+ * concept" (mesh.proto) and must be looked up, never guessed.
+ */
+bool ff_shell_crew_channel_index(ff_shell_t const *sh, uint32_t *out_index);
+
+/**
+ * ff_shell_crew_hide — hide (or unhide) a node id.
+ *
+ * **Hide is unpair + remember**, local to this puck, never transmitted.
+ * Nobody is told they were hidden: on a mesh where possession of the
+ * crew key IS membership there is no "kick" to perform, and a UI that
+ * implied one would be lying about what the radio is doing. Hiding frees
+ * a roster slot — deliberately the same mechanism as the 8-slot cap,
+ * which is the whole reason hiding is useful to a crew of nine — and the
+ * hide list is what stops the admission rule from re-admitting them on
+ * their very next packet.
+ *
+ * Unhiding restores ELIGIBILITY, not membership: the next qualifying
+ * packet re-admits them through the same rule as everyone else, so no UI
+ * tap ever asserts something the radio has not said since.
+ *
+ * Persisted per crew code, so leaving a crew and rejoining restores the
+ * hides you had.
+ *
+ * Returns false when the hide list is full (`FF_HIDDEN_MAX`) and the id
+ * is not already on it — the honest failure, never an eviction of
+ * somebody else's hide. Also false for a NULL shell or a 0 node id.
+ */
+bool ff_shell_crew_hide(ff_shell_t *sh, uint32_t node_id, bool hidden);
+
+/** Whether `node_id` is currently hidden. NULL-safe (false). */
+bool ff_shell_crew_hidden(ff_shell_t const *sh, uint32_t node_id);
+
+/* ---------------------------------------------------------------------
+ * ff_shell_dev_trust_all — SIM ONLY
  * ---------------------------------------------------------------------
- * Unlike the rest of the "Sim-only dev affordances" section below, this
- * one function has a SECOND, narrower gate: the esp32s3 target's
- * `app_main.c` calls it at boot, guarded by
- * `CONFIG_FF_DEV_TRUST_CHANNEL` (firmware/targets/esp32s3/main/
- * Kconfig.projbuild, default n), to auto-pair every node heard on the
- * mesh link as a bench/field stopgap (docs/hardware/comms-brain.md)
- * while the real pairing UI (S12) is unbuilt — the Meshtastic channel is
- * private, so channel membership is the crew (S04's pairing v1 rule).
- * With BOTH `FF_TARGET_SIM` undefined and `CONFIG_FF_DEV_TRUST_CHANNEL`
- * unset (every device build until an operator opts in) there is no
- * declaration, no field, and no branch — a caller fails to COMPILE,
- * which is the same "compiled out, not defaulted off" demand the rest
- * of this section documents: a runtime flag would ship the auto-pair
- * branch into device firmware, one stray default change from being
- * live. `targets/sim/main.c` additionally carries an #error guard so a
- * sim build that loses `FF_TARGET_SIM` fails loudly instead of silently
+ * This used to have a second, device-side gate
+ * (`CONFIG_FF_DEV_TRUST_CHANNEL`) for auto-pairing every node heard on
+ * the private crew channel, as a field stopgap while S12's pairing UI
+ * was unbuilt. A02 slice D makes that the PRODUCT's behaviour
+ * (`ff_shell_set_auto_crew` above, default on, gated on real proof of
+ * the crew key rather than on the link itself), so the Kconfig symbol is
+ * deleted rather than deprecated in place.
+ *
+ * What remains is genuinely sim-only and genuinely not a product
+ * behaviour, and it is one thing wearing three hats: the dockerized dev
+ * meshtasticd is a SINGLE node that is also what `on_my_info` reports as
+ * our own id (firmware/tools/dev/crew_sim.py's verified-constraints
+ * note: the harness's one node plays every role), and it is on no crew
+ * channel at all. So the harness needs the self filter suspended, the
+ * host clock offered to the wall latch (`ff_shell_dev_wall_observe`),
+ * and a NodeInfo auto-pair that does not ask which channel the packet
+ * came in on. None of those is meaningful against a real comms brain.
+ *
+ * With `FF_TARGET_SIM` undefined there is no declaration, no field and
+ * no branch — a device-target caller fails to COMPILE.
+ * `targets/sim/main.c` additionally carries an #error guard so a sim
+ * build that loses `FF_TARGET_SIM` fails loudly instead of silently
  * parsing a flag that does nothing.
  * ------------------------------------------------------------------- */
-#if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
+#if defined(FF_TARGET_SIM)
 
 /**
  * ff_shell_dev_trust_all — auto-pair every inbound NodeInfo's sender
- * into the roster, treating the link itself as the trust boundary.
- * Off by default in every build; turned on by `ffsim --dev-trust-all`
- * (sim) or by `app_main.c` at boot when `CONFIG_FF_DEV_TRUST_CHANNEL=y`
- * (device bench/field stopgap). Logs a line naming itself at startup
- * either way — the device line is exactly
- * `"firefly: DEV_TRUST_CHANNEL on — auto-pairing every heard node"`.
+ * into the roster, treating the link itself as the trust boundary, and
+ * suspend the self filter. Off by default; turned on by
+ * `ffsim --dev-trust-all`.
  *
  * NodeInfo ONLY, never a bare Position (pairing on the most untrusted
- * packet on the mesh is this spec's headline defect, and neither gate
- * gets to reintroduce it), routed through `shell_pair` — the SAME
- * audited body `ff_shell_pair` calls — so there remains exactly one
+ * packet on the mesh is S16's headline defect, and neither this nor
+ * auto-crew gets to reintroduce it), routed through `shell_pair` — the
+ * SAME audited body `ff_shell_pair` calls — so there remains exactly one
  * place a roster slot is created, regardless of which caller reached it.
- *
- * A SIM build ALSO gets two more effects that a device build under
- * `CONFIG_FF_DEV_TRUST_CHANNEL` deliberately does NOT: the self filter
- * is suspended, and the host's clock is offered to the wall latch (see
- * `ff_shell_dev_wall_observe` below). Both exist solely because the
- * dockerized dev meshtasticd is a SINGLE node that is also what
- * `on_my_info` reports as our own id (firmware/tools/dev/crew_sim.py's
- * verified-constraints note: the harness's one node plays every role) —
- * a real device build talks to a real, distinct comms-brain node id, so
- * there is no such quirk to work around, and `CONFIG_FF_DEV_TRUST_CHANNEL`
- * only ever reaches the NodeInfo auto-pair effect. Recorded as an S16
- * AC6 amendment (the sim's extra effects go beyond the AC's wording, and
- * are deliberately not carried to the device gate).
  */
 void ff_shell_dev_trust_all(ff_shell_t *sh, bool enabled);
 
-#endif /* FF_TARGET_SIM || CONFIG_FF_DEV_TRUST_CHANNEL */
+#endif /* FF_TARGET_SIM */
 
 /* ---------------------------------------------------------------------
  * Sim-only dev affordances (S16 AC6, slice b2) — COMPILED OUT on device,

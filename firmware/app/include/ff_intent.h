@@ -571,6 +571,28 @@ typedef enum {
      * BACK — cancelling its live session — and DIAGNOSTICS has no
      * analogous in-progress state to cancel). No payload. */
     FF_INTENT_SETTINGS_OPEN_DIAGNOSTICS,
+
+    /* [api] A02 slice D (docs/specs/S02-core-crew.md's 2026-09-13
+     * amendment) — the three new CREW-page controls.
+     *
+     * CREW_HIDE/CREW_UNHIDE carry the target node id in `u.node_id`, the
+     * same convention CREW_PAIR/CREW_UNPAIR above already use, and route
+     * through `ff_shell_crew_hide` — which is unpair + remember, NOT a
+     * second roster path (`shell_pair` is still the only place the
+     * roster changes shape). Hiding is local to this puck and never
+     * transmitted: nobody is told they were hidden, because on a mesh
+     * where possession of the crew key IS membership there is no "kick"
+     * to perform and a UI implying one would be lying about what the
+     * radio is doing.
+     *
+     * SETTINGS_OPEN_CREW_CODE is the CREW page's "SHOW CODE" pill —
+     * same "a row, a bare intent, the shell decides" shape as
+     * SETTINGS_OPEN_CREW. It opens the face whether or not a code has
+     * been resolved; the face itself says "no crew code yet" rather
+     * than the pill silently doing nothing, so the wearer learns WHY. */
+    FF_INTENT_CREW_HIDE,
+    FF_INTENT_CREW_UNHIDE,
+    FF_INTENT_SETTINGS_OPEN_CREW_CODE,
 } ff_intent_kind_t;
 
 /**

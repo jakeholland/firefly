@@ -1,0 +1,11 @@
+{
+  "fixture": "crew_show_code",
+  "face": "settings",
+  "settings": {
+    "my_name": "DANA",
+    "subview": "crew_code",
+    "crew": {
+      "crew_code": "FIRE-4K9M7X"
+    }
+  }
+}

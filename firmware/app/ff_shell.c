@@ -16,7 +16,10 @@
 #include "ff_batt.h" /* S25 slice c — battery gauge: honest mV -> percent + display filter */
 #include "ff_beat.h" /* S31 — Music/Swarm beat/loudness detector */
 #include "ff_build_info.h" /* DIAGNOSTICS — FF_BUILD_GIT_SHA / FF_BUILD_DATE */
+#include "ff_admit.h" /* A02 slice D — the crew-admission rule (pure core) */
+#include "ff_crewcode.h" /* A02 slice D — crew code codec + invite link */
 #include "ff_find.h" /* S29 PR2 — FIND mode session state machine */
+#include "ff_hidden.h" /* A02 slice D — the per-node hide set */
 #include "ff_geo.h"
 #include "ff_meshname.h" /* NAME in Settings — charset sanitize + short-name derivation */
 #include "ff_multitap.h" /* S10 quick flare — the N-presses-within-a-window counter FSM */
@@ -720,19 +723,72 @@ typedef struct {
     bool      has_beat_input_ms;   /* false until ff_shell_set_beat_input's first call, so that call's dt_ms is never a fabricated gap */
     uint32_t  last_beat_input_ms;
 
-#if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
-    /* --dev-trust-all (S16 AC6), and its device-side mirror
-     * CONFIG_FF_DEV_TRUST_CHANNEL (bench/field stopgap for the crew
-     * roster while S12's pairing UI is unbuilt — see ff_shell.h's
-     * ff_shell_dev_trust_all doc comment and docs/hardware/comms-brain.md).
-     * Deliberately inside the guard rather than an always-present field
-     * defaulted false: the spec demands the affordance be COMPILED OUT
-     * when neither gate is set, and a field that exists is a field one
-     * stray write away from mattering. The shell's footprint differs by
-     * one bool depending on target/Kconfig; the _Static_assert below
-     * bounds all of them. */
+#if defined(FF_TARGET_SIM)
+    /* `ffsim --dev-trust-all` (S16 AC6) — the SINGLE-NODE DEV HARNESS
+     * affordance, and nothing else since A02 slice D.
+     *
+     * It used to have a device-side mirror, `CONFIG_FF_DEV_TRUST_CHANNEL`,
+     * which auto-paired every node heard on the private crew channel as
+     * a field stopgap. That behaviour is now the product's
+     * (`ff_shell_set_auto_crew` + the admission rule), so the Kconfig
+     * gate is DELETED rather than deprecated in place — keeping a
+     * second, differently-named gate for behaviour that is now the
+     * default is exactly the drift the S02 2026-09-13 amendment calls
+     * out.
+     *
+     * What is left is genuinely sim-only and genuinely not a product
+     * behaviour: the dockerized dev meshtasticd is ONE node that is also
+     * what `on_my_info` reports as our own id, so the harness needs the
+     * self filter suspended, the host clock offered to the wall latch,
+     * and a NodeInfo auto-pair that does not care which channel the
+     * packet arrived on (the harness has no crew channel to be on).
+     * Compiled out entirely on device — a field that exists is a field
+     * one stray write away from mattering. */
     bool dev_trust_all;
 #endif
+
+    /* ---------------------------------------------------------------
+     * A02 slice D — auto crew on the crew channel
+     * (docs/specs/S02-core-crew.md's 2026-09-13 amendment).
+     * ------------------------------------------------------------- */
+
+    /* The product behaviour, on by default (`FF_CREW_AUTO_ON_CHANNEL`,
+     * Kconfig default y). NOT compile-gated, unlike the sim field above:
+     * this is what the puck ships doing, and a shipped behaviour lives
+     * in a plain field. */
+    bool auto_crew;
+
+    /* The crew channel, resolved from the radio's OWN channel table by
+     * name-and-PSK match — never assumed to be index 0
+     * (`MeshPacket.channel` is "inherently a local concept").
+     *
+     * `crew_index_known` is cleared on every handshake and rebuilt from
+     * that handshake's Channel replies, so a cached index can never
+     * outlive the table it came from. `crew_code` deliberately is NOT
+     * cleared there: it is the last thing the radio actually told us its
+     * channel was named, it is display-only, and blanking the SHOW CODE
+     * face for the ~20 ms of every reconnect would be a flicker with no
+     * honesty gained. Admission, which is the half that can go wrong,
+     * refuses until the index is re-resolved. */
+    bool     crew_index_known;
+    uint32_t crew_index;
+    char     crew_code[FF_CREWCODE_LEN + 1u];
+
+    /* The hide set (§C) and the crew code its persisted record belongs
+     * to. `hidden_code` is "" until a crew channel resolves; when it
+     * changes, the list is reloaded from that crew's own store key, so
+     * leaving a crew and rejoining restores the hides you had. */
+    ff_hidden_t hidden;
+    char        hidden_code[FF_CREWCODE_LEN + 1u];
+
+    /* NOT TRACKED (§E) — senders that passed every admission clause but
+     * arrived at a full 8/8 paired roster. Remembered so the CREW page
+     * can say so out loud instead of dropping them silently; the ids
+     * themselves still live in `heard`, which is where their honest
+     * last-heard age comes from. Bounded and oldest-dropped, like every
+     * other list in this file that untrusted RF can fill. */
+    uint32_t overflow_ids[FF_HEARD_MAX];
+    uint8_t  overflow_count;
 
     /* --- S18 slice b: settle-then-age the cold-boot replay burst (#50) --
      * The want_config replay streams cached positions while the wall latch
@@ -1014,16 +1070,14 @@ static bool shell_pos_is_gps_evidence(mc_loc_source_t loc_source)
  * traffic" and the dev loop could exercise nothing. The harness's one
  * node plays every role — see ff_shell.h's dev-affordances section.
  *
- * This suspension stays FF_TARGET_SIM-only DELIBERATELY, even though
- * `dev_trust_all` itself is also compiled in on a device build under
- * CONFIG_FF_DEV_TRUST_CHANNEL (see that field's comment and
- * ff_shell_dev_trust_all's doc comment): a real puck's own node id and a
- * real crew member's comms-brain node id are genuinely distinct, so
- * there is no single-node-plays-every-role quirk to work around on
- * device, and suspending the self filter there would be an unreviewed
- * behavior change with no purpose. CONFIG_FF_DEV_TRUST_CHANNEL therefore
- * shares the field and the NodeInfo auto-pair branch below with
- * `--dev-trust-all`, but never reaches this early return.
+ * This suspension is FF_TARGET_SIM-only, and since A02 slice D so is
+ * the whole of `dev_trust_all`: a real puck's own node id and a real
+ * crew member's comms-brain node id are genuinely distinct, so there is
+ * no single-node-plays-every-role quirk to work around on device. The
+ * device behaviour that used to share this field
+ * (CONFIG_FF_DEV_TRUST_CHANNEL's NodeInfo auto-pair) is now the product
+ * rule in `shell_try_admit`, which has nothing to do with the self
+ * filter — it has its own explicit not-us clause.
  */
 static bool shell_drop_as_self(shell_t const *sh, uint32_t node_id)
 {
@@ -1061,11 +1115,12 @@ static bool shell_drop_as_self(shell_t const *sh, uint32_t node_id)
  *  - MC_LOC_INTERNAL/MC_LOC_EXTERNAL are measurements — adopted always.
  *  - MC_LOC_MANUAL is an assertion with no measurement behind it at any
  *    age ("not something to draw a live bearing off by default") —
- *    adopted only under the SAME dev/bench gate the sim's
- *    --dev-trust-all / device CONFIG_FF_DEV_TRUST_CHANNEL already use for
- *    the crew roster (`dev_trust_all`, guarded identically to every other
- *    read of that field in this file). A shipping puck never adopts a
- *    typed-in point as if it were where the wearer is standing.
+ *    adopted only under the sim's own `--dev-trust-all` dev-harness
+ *    gate (`dev_trust_all`, guarded identically to every other read of
+ *    that field in this file). A shipping puck never adopts a typed-in
+ *    point as if it were where the wearer is standing — and since A02
+ *    slice D removed the device half of that gate, there is no device
+ *    configuration in which it could.
  *  - MC_LOC_UNKNOWN ("didn't say") is adopted never, either direction —
  *    same reading mc_loc_source_t gives MC_LOC_UNKNOWN everywhere else
  *    in this file.
@@ -1086,8 +1141,10 @@ static void shell_maybe_adopt_my_pos(shell_t *sh, mc_position_t const *p, uint32
     if (p->loc_source == MC_LOC_INTERNAL || p->loc_source == MC_LOC_EXTERNAL) {
         adopt = true;
     } else if (p->loc_source == MC_LOC_MANUAL) {
-#if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
+#if defined(FF_TARGET_SIM)
         adopt = sh->dev_trust_all;
+#else
+        (void)sh;
 #endif
     }
     if (!adopt) return;
@@ -1158,9 +1215,9 @@ static void shell_sync_paired_settings(shell_t *sh)
 
 /**
  * The one internal path that may grow the roster — ff_shell_pair's body,
- * shared with the dev-trust-all auto-pair branch in shell_ev_node (sim
- * always; device only under CONFIG_FF_DEV_TRUST_CHANNEL) so all of them
- * go through a single audited place.
+ * shared with the A02 auto-crew admission (`shell_try_admit`) and with
+ * the sim-only dev-trust-all auto-pair branch in shell_ev_node, so all
+ * of them go through a single audited place.
  */
 static bool shell_pair(shell_t *sh, uint32_t node_id, bool paired)
 {
@@ -1215,6 +1272,259 @@ static bool shell_pair(shell_t *sh, uint32_t node_id, bool paired)
      * one place that needs to). */
     shell_sync_paired_settings(sh);
 
+    return true;
+}
+
+/* ---------------------------------------------------------------------
+ * A02 slice D — the crew channel, the hide set, and admission
+ * (docs/specs/S02-core-crew.md's 2026-09-13 amendment)
+ * ------------------------------------------------------------------- */
+
+/**
+ * shell_hidden_load — (re)load the hide list for `code` from the store.
+ *
+ * Keyed per crew code, so leaving a crew and rejoining restores the
+ * hides you had rather than silently putting everyone back on the
+ * wearer's radar. A missing or corrupt record loads EMPTY — `ff_hidden_
+ * deserialize` already guarantees "reject into empty, never partially
+ * trusted", and this function adds nothing to that.
+ *
+ * `code` == "" (not on a crew channel) means there is no list to load,
+ * which is a different thing from an empty one: the set is cleared and
+ * `hidden_code` left empty, so the next resolution reloads rather than
+ * believing it already has the right list.
+ */
+static void shell_hidden_load(shell_t *sh, char const *code)
+{
+    ff_hidden_init(&sh->hidden);
+    sh->hidden_code[0] = '\0';
+    if (code == NULL || !ff_crewcode_valid(code)) return;
+
+    shell_copy_str(sh->hidden_code, sizeof(sh->hidden_code), code);
+    if (sh->store == NULL || sh->store->get == NULL) return;
+
+    char key[FF_HIDDEN_KEY_MAX];
+    if (!ff_hidden_key(code, key, sizeof(key))) return;
+
+    uint8_t blob[FF_HIDDEN_BLOB_LEN];
+    int const n = sh->store->get(sh->store->io, key, blob, sizeof(blob));
+    if (n < 0) return; /* absent: empty, not an error */
+    (void)ff_hidden_deserialize(&sh->hidden, blob, (size_t)n);
+}
+
+/** Persist the hide list under the current crew code. A no-op with no
+ * store or no resolved code — there is nowhere honest to put it. */
+static void shell_hidden_save(shell_t const *sh)
+{
+    if (sh->store == NULL || sh->store->set == NULL) return;
+    char key[FF_HIDDEN_KEY_MAX];
+    if (!ff_hidden_key(sh->hidden_code, key, sizeof(key))) return;
+
+    uint8_t blob[FF_HIDDEN_BLOB_LEN];
+    size_t const n = ff_hidden_serialize(&sh->hidden, blob, sizeof(blob));
+    if (n == 0u) return;
+    (void)sh->store->set(sh->store->io, key, blob, n);
+}
+
+/**
+ * shell_overflow_note / _forget — the NOT TRACKED set (§E).
+ *
+ * A sender that passed every admission clause but met a full 8/8 paired
+ * roster is remembered here so the CREW page can say so out loud. The
+ * ids themselves stay in `heard` (bounded, LRU-evicted, and where their
+ * honest last-heard age comes from); this is only the "would have been
+ * crew" mark, which `heard` alone cannot express — a merely-nearby
+ * stranger is in `heard` too, and listing them as untracked crew would
+ * be a claim about their key that we cannot make.
+ *
+ * Bounded and oldest-dropped rather than failing: unlike a hide, this is
+ * an observation, not a user decision, so forgetting the oldest one is
+ * honest (it is also still in `heard`, or already evicted from there).
+ */
+static void shell_overflow_note(shell_t *sh, uint32_t node_id)
+{
+    for (uint8_t i = 0; i < sh->overflow_count; i++) {
+        if (sh->overflow_ids[i] == node_id) return;
+    }
+    if (sh->overflow_count >= FF_HEARD_MAX) {
+        for (uint8_t i = 0; i + 1u < sh->overflow_count; i++) {
+            sh->overflow_ids[i] = sh->overflow_ids[i + 1u];
+        }
+        sh->overflow_count--;
+    }
+    sh->overflow_ids[sh->overflow_count++] = node_id;
+}
+
+static void shell_overflow_forget(shell_t *sh, uint32_t node_id)
+{
+    for (uint8_t i = 0; i < sh->overflow_count; i++) {
+        if (sh->overflow_ids[i] != node_id) continue;
+        for (uint8_t j = i; j + 1u < sh->overflow_count; j++) {
+            sh->overflow_ids[j] = sh->overflow_ids[j + 1u];
+        }
+        sh->overflow_count--;
+        return;
+    }
+}
+
+/**
+ * shell_crew_hide — hide is **unpair + remember** (amendment §C).
+ *
+ * Deliberately the same mechanism as the cap: hiding a member frees a
+ * roster slot, which is the whole reason hiding is useful to a crew of
+ * nine, and the hide list is what stops the admission rule from
+ * re-admitting them on their very next packet.
+ *
+ * Nothing is transmitted. Nobody is told. On a mesh where possession of
+ * the crew key IS membership there is no "kick" to perform, and a UI
+ * that implied one would be lying about what the radio is doing.
+ *
+ * Returns false when the hide list is FULL and `node_id` is not already
+ * on it — the honest failure the CREW page renders in words, never an
+ * eviction of somebody else's hide.
+ */
+static bool shell_crew_hide(shell_t *sh, uint32_t node_id, bool hidden)
+{
+    if (node_id == 0u) return false;
+
+    if (hidden) {
+        if (!ff_hidden_add(&sh->hidden, node_id)) return false;
+        /* Unpair through the one audited roster path, exactly as a
+         * REMOVE would — this is not a second way to change the roster,
+         * it is the existing one plus a memory. */
+        (void)shell_pair(sh, node_id, false);
+        shell_overflow_forget(sh, node_id);
+    } else {
+        if (!ff_hidden_remove(&sh->hidden, node_id)) return false;
+        /* Deliberately NOT re-paired here. Unhiding restores their
+         * eligibility, not their membership: the next qualifying packet
+         * admits them through the same rule everyone else went through,
+         * so the roster never grows from a UI tap asserting something
+         * the radio has not said since. */
+    }
+    shell_hidden_save(sh);
+    return true;
+}
+
+/**
+ * shell_ev_channel — one row of the radio's channel table, from
+ * want_config (amendment §B clause 2).
+ *
+ * Resolves which index the crew channel occupies on THIS radio, by
+ * matching the channel's NAME against the crew-code alphabet AND its PSK
+ * against the key that name derives. Both halves matter:
+ *
+ *  - name alone is not enough — anyone can name a channel `FIRE-4K9M7X`
+ *    without holding the key, and admitting on that would hand the crew
+ *    to whoever typed the right six characters into the stock app;
+ *  - PSK alone is not enough either — Meshtastic's on-air channel hash
+ *    folds the name (A02 §1.3), so two radios agreeing on a key but not
+ *    a name never hear each other anyway.
+ *
+ * Never falls back to index 0. A radio with no matching channel admits
+ * nobody, and the CREW page says "your puck isn't on this crew's
+ * channel" rather than quietly treating the public channel as the crew.
+ */
+static void shell_ev_channel(void *u, mc_channel_t const *ch)
+{
+    shell_t *sh = (shell_t *)u;
+    if (sh == NULL || ch == NULL) return;
+
+    /* A crew channel's key is always the full 32 bytes this codec
+     * derives (A02 §1.5, AES256). A 0/1/16-byte psk is some other kind
+     * of channel — Meshtastic's 1-byte shorthand for a well-known
+     * default key, say — and cannot be the crew's. */
+    if (ch->psk_len != FF_CREWCODE_PSK_LEN) return;
+    if (!ff_crewcode_valid(ch->name)) return;
+
+    uint8_t want[FF_CREWCODE_PSK_LEN];
+    if (!ff_crewcode_psk(ch->name, want)) return;
+    if (memcmp(want, ch->psk, sizeof(want)) != 0) {
+        /* Named like a crew code, keyed like something else. Not our
+         * crew, and deliberately not reported as one — this is the
+         * "anyone can pick the name" case above. */
+        return;
+    }
+
+    sh->crew_index_known = true;
+    sh->crew_index = ch->index;
+    shell_copy_str(sh->crew_code, sizeof(sh->crew_code), ch->name);
+
+    /* Reload the hide list iff the crew actually changed, so an ordinary
+     * reconnect costs no store read and an in-place hide made since the
+     * last handshake is not clobbered by a stale record. */
+    if (strcmp(sh->hidden_code, sh->crew_code) != 0) {
+        shell_hidden_load(sh, sh->crew_code);
+        /* A different crew's overflow marks mean nothing here. */
+        sh->overflow_count = 0u;
+    }
+}
+
+/**
+ * shell_try_admit — the roster-growth half of the admission rule.
+ *
+ * Called from `shell_ev_rx_meta` for any sender that is not currently a
+ * PAIRED roster member — which includes an existing but unpaired slot,
+ * not only a completely unknown id. That matters in both directions and
+ * is worth stating plainly:
+ *  - it is what lets an UNHIDDEN person come back: hiding unpairs them,
+ *    so their slot survives, and an admission gated on "no slot at all"
+ *    would leave them permanently invisible with nothing to explain why;
+ *  - the consequence, flagged rather than hidden: under auto-crew a
+ *    plain unpair (`FF_INTENT_CREW_UNPAIR`) is NOT permanent — the next
+ *    qualifying packet re-admits them. That is the honest reading of
+ *    "possession of the crew key is membership", and it is exactly why
+ *    HIDE (unpair + remember) exists as the control that actually
+ *    sticks, and why the CREW page's PAIRED row now offers HIDE and no
+ *    longer offers REMOVE: a button that silently undoes itself is
+ *    worse than no button. UNPAIR stays in the intent API for the bench
+ *    console and its tests; it is simply not on that row.
+ *
+ * Everything it decides lives in core (`ff_admit`, pure and
+ * exhaustively tested clause by clause); everything it DOES routes
+ * through `shell_pair`, so there is still exactly one place in this file
+ * where the roster grows.
+ *
+ * Records membership and NOTHING else (amendment §F): no position, no
+ * name, no time, no freshness. The caller's existing `ff_crew_on_heard`
+ * leg stamps the heard time from the same packet a moment later, which
+ * is a real observation; this function invents nothing.
+ *
+ * Returns true iff `node_id` is now a paired roster member.
+ */
+static bool shell_try_admit(shell_t *sh, uint32_t from, mc_rx_meta_t const *m)
+{
+    ff_admit_in_t in;
+    memset(&in, 0, sizeof(in));
+    in.auto_crew_enabled = sh->auto_crew;
+    /* `on_rx_meta` fires for encrypted packets too; a decoded payload is
+     * what proves the radio held the key, and `has_portnum` is precisely
+     * "there was a decoded payload". */
+    in.decrypted = m->has_portnum;
+    in.crew_index_known = sh->crew_index_known;
+    in.crew_index = sh->crew_index;
+    in.has_channel_index = m->has_channel_index;
+    in.channel_index = m->channel_index;
+    in.from = from;
+    in.has_my_node_id = sh->has_my_node_id;
+    in.my_node_id = sh->my_node_id;
+    in.hidden = ff_hidden_contains(&sh->hidden, from);
+    in.via_mqtt = m->via_mqtt;
+    in.has_portnum = m->has_portnum;
+    in.portnum = m->portnum;
+
+    if (ff_admit(&in) != FF_ADMIT_YES) return false;
+
+    if (!shell_pair(sh, from, true)) {
+        /* A genuinely full 8/8 paired roster. The ninth joiner is NOT
+         * dropped silently (amendment §E forbids it): they are marked
+         * untracked, stay in `heard` for their honest last-heard age,
+         * and are admitted on their next packet once a member is
+         * hidden. */
+        shell_overflow_note(sh, from);
+        return false;
+    }
+    shell_overflow_forget(sh, from);
     return true;
 }
 
@@ -1635,6 +1945,21 @@ static void shell_ev_state(void *u, mc_state_t s)
         break;
     case MC_STATE_HANDSHAKE:
         sh->link = FF_SHELL_LINK_RECONNECTING;
+        /* A02 slice D (S02 2026-09-13 amendment §B clause 2) — the crew
+         * INDEX is resolved per link and must not outlive the channel
+         * table it came from: every handshake re-sends that table, and a
+         * handshake happens after exactly the events that can have
+         * changed it (a reboot, an admin write, a re-provision). Cleared
+         * here; rebuilt by `shell_ev_channel` from this handshake's own
+         * Channel replies. Until it is, `ff_admit` refuses everything —
+         * which is the safe direction, and the whole reason index 0 is
+         * never assumed.
+         *
+         * `crew_code` is deliberately NOT cleared: it is display-only,
+         * it is the last thing the radio actually told us its channel
+         * was named, and blanking the SHOW CODE face for the ~20 ms of
+         * every reconnect would be a flicker that buys no honesty. */
+        sh->crew_index_known = false;
         /* fix/audio-init-order-seed-silence: every want_config handshake
          * (cold boot AND every later reconnect — see shell_settle_replay's
          * own comment, "run EXACTLY once per handshake") replays cached
@@ -1809,16 +2134,21 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
 
     if (shell_drop_as_self(sh, n->node_num)) return; /* never treat our own traffic as inbound */
 
-#if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
-    /* --dev-trust-all (S16 AC6) / CONFIG_FF_DEV_TRUST_CHANNEL (its device
-     * bench/field mirror, docs/hardware/comms-brain.md): auto-pair on
-     * NodeInfo, and on NodeInfo ONLY — a bare Position must still not
-     * grow the roster, even under either affordance (pairing on the most
+#if defined(FF_TARGET_SIM)
+    /* `ffsim --dev-trust-all` (S16 AC6) — SIM ONLY since A02 slice D.
+     *
+     * The device mirror (CONFIG_FF_DEV_TRUST_CHANNEL) is gone: what it
+     * existed to do — grow the roster from the crew channel — is now the
+     * product's own behaviour, decided by `ff_admit` on live packets in
+     * `shell_ev_rx_meta` rather than on a nodeDB replay here. What
+     * survives is the harness affordance: the dockerized dev meshtasticd
+     * is a single node with no crew channel at all, so it needs a
+     * channel-agnostic way to appear as a crew member.
+     *
+     * Still NodeInfo ONLY, and still routed through `shell_pair` — a
+     * bare Position must never grow the roster (pairing on the most
      * untrusted packet on the mesh is the exact defect S16 exists to
-     * close; neither affordance gets to reintroduce it). Routed through
-     * shell_pair, the same single audited growth path ff_shell_pair
-     * uses. Compiled out entirely when BOTH gates are absent — see
-     * ff_shell.h's dev-affordances section. */
+     * close, and neither this nor auto-crew gets to reintroduce it). */
     if (sh->dev_trust_all) {
         (void)shell_pair(sh, n->node_num, true); /* roster full -> falls through to heard, below */
     }
@@ -2282,9 +2612,34 @@ static void shell_ev_rx_meta(void *u, uint32_t from, mc_rx_meta_t const *m)
      * churn under real festival RF volume). It still never grows the
      * roster. */
     ff_crew_member_t const *sender = ff_crew_find(&sh->crew, from);
-    if (sender == NULL) {
-        ff_heard_note(&sh->heard, from, now);
-        return;
+    if (sender == NULL || !sender->paired) {
+        /* A02 slice D (docs/specs/S02-core-crew.md's 2026-09-13
+         * amendment) — THE POLICY CHANGE. The roster used to grow from
+         * an explicit user action and nothing else; it now also grows
+         * from proof of the crew key, which is a strictly stronger claim
+         * than "the radio said so": a node the radio decrypted on our
+         * crew channel holds 32 bytes that only came from someone who
+         * had the code.
+         *
+         * The decision is `ff_admit`'s (core, pure, one clause per way
+         * this can go wrong); the growth is `shell_pair`'s, the same
+         * audited path every other caller uses. Note this sits on
+         * `on_rx_meta` and NOT on `on_node`, which is what keeps the
+         * want_config NodeInfo REPLAY from admitting anyone: the replay
+         * is a synthesized nodeDB dump that never traverses this
+         * callback, and it could not prove the node was heard on our
+         * channel even if it did. No extra guard is needed for that; a
+         * test pins it. */
+        if (!shell_try_admit(sh, from, m)) {
+            /* Only a sender with no roster slot at all belongs in
+             * `heard` — an existing, unpaired slot is already tracked,
+             * and noting it here would double-count it (the pre-A02
+             * behaviour this branch replaced, preserved exactly). */
+            if (sender == NULL) ff_heard_note(&sh->heard, from, now);
+            return;
+        }
+        sender = ff_crew_find(&sh->crew, from);
+        if (sender == NULL) return; /* unreachable: shell_pair just created it */
     }
 
     /* PAIRED is required, not a nicety — same trust rule ff_wiring.c's
@@ -3008,6 +3363,67 @@ static void shell_project_crew_page(shell_t const *sh, uint32_t now_ms, ff_app_s
     }
 
     cw->link_connected = (sh->link == FF_SHELL_LINK_CONNECTED);
+
+    /* ---------------------------------------------------------------
+     * A02 slice D — the code, the hidden section, the overflow section
+     * (docs/specs/S02-core-crew.md's 2026-09-13 amendment §C/§D/§E).
+     * ------------------------------------------------------------- */
+
+    /* The code is DERIVED from the radio's own channel name — no second
+     * source of truth and nothing extra persisted (§D). "" when this
+     * puck is not on a crew channel, which the screen renders as "no
+     * crew code yet" rather than as a fabricated code. The invite link
+     * is built here, by the same core function the app uses against the
+     * same fixture, so the screen stays a pure renderer and there is
+     * exactly one place the link is composed. */
+    shell_copy_str(cw->crew_code, sizeof(cw->crew_code), sh->crew_code);
+    (void)ff_crewcode_invite_url(sh->crew_code, NULL, cw->invite_url, sizeof(cw->invite_url));
+
+    uint8_t const hidden_n = ff_hidden_count(&sh->hidden);
+    for (uint8_t i = 0; i < hidden_n && cw->hidden_count < FF_HIDDEN_MAX; i++) {
+        uint32_t const id = ff_hidden_at(&sh->hidden, i);
+        if (id == 0u) continue;
+        ff_app_crew_hidden_row_t *row = &cw->hidden[cw->hidden_count++];
+        row->node_id = id;
+        /* A hidden person usually WAS crew, so their name is most likely
+         * on their (now unpaired) roster slot rather than in the
+         * heard-name cache — hiding does not delete the slot, it only
+         * unpairs it. Check there first, then fall back to the cache,
+         * then to the honest node-id short form. Never blank, never
+         * invented. */
+        ff_crew_member_t const *hm = ff_crew_find(&sh->crew, id);
+        char const *name = (hm != NULL) ? ff_crew_display_name(hm) : "";
+        if (name[0] == '\0') name = shell_heard_name_lookup(sh, id);
+        row->has_name = (name[0] != '\0');
+        shell_copy_str(row->name, sizeof(row->name), name);
+        shell_short_id(id, row->short_id, sizeof(row->short_id));
+    }
+    cw->hidden_full = (hidden_n >= FF_HIDDEN_MAX);
+
+    /* NOT TRACKED (§E): a sender that passed every admission clause but
+     * met a full 8/8 roster. Rendered only while we can still state an
+     * HONEST last-heard age for them — i.e. while they are still in
+     * `heard`. Once `heard` has evicted them we have no age to show and
+     * no business claiming they are still out there, so the row goes
+     * rather than freezing at its last value. */
+    for (uint8_t i = 0; i < sh->overflow_count && cw->overflow_count < FF_APP_CREW_HEARD_MAX; i++) {
+        uint32_t const id = sh->overflow_ids[i];
+        ff_heard_entry_t const *he = NULL;
+        uint8_t const n = ff_heard_count(&sh->heard);
+        for (uint8_t k = 0; k < n; k++) {
+            ff_heard_entry_t const *e = ff_heard_at(&sh->heard, k);
+            if (e != NULL && e->node_id == id) { he = e; break; }
+        }
+        if (he == NULL) continue;
+
+        ff_app_crew_heard_row_t *row = &cw->overflow[cw->overflow_count++];
+        row->node_id = id;
+        char const *name = shell_heard_name_lookup(sh, id);
+        row->has_name = (name[0] != '\0');
+        shell_copy_str(row->name, sizeof(row->name), name);
+        shell_short_id(id, row->short_id, sizeof(row->short_id));
+        row->age_ms = now_ms - he->last_heard_ms;
+    }
 }
 
 /**
@@ -4351,6 +4767,13 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
      * the least-surprising initial value (ACTIVE), overwritten on the
      * caller's very first ff_shell_set_screen_awake call. */
     sh->screen_awake = true;
+
+    /* A02 slice D — the SHIPPED default (S02 2026-09-13 amendment §A:
+     * `FF_CREW_AUTO_ON_CHANNEL`, Kconfig default y). The esp32s3 target
+     * re-states it from Kconfig at boot; a sim/test build gets the
+     * product behaviour without having to remember to ask for it, which
+     * is the point of a default. */
+    sh->auto_crew = true;
     /* fix/audio-init-order-seed-silence: unmuted at init — the caller
      * (ff_demo_seed, or this file's own handshake/settle pair) mutes for
      * a bounded window and always unmutes again; see the field's own doc
@@ -4938,6 +5361,7 @@ mc_events_t ff_shell_events(ff_shell_t *sh_pub)
     ev.on_telemetry = shell_ev_telemetry; /* DIAGNOSTICS */
     ev.on_owner = shell_ev_owner; /* confirmation-fix follow-up */
     ev.on_routing_ack = shell_ev_routing_ack; /* confirmation-fix follow-up */
+    ev.on_channel = shell_ev_channel; /* [api] A02 slice D — crew-index resolution */
     ev.user = shell_of(sh_pub);
     return ev;
 }
@@ -6374,6 +6798,44 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         (void)ff_shell_pair(sh_pub, in->u.node_id, false);
         return;
 
+    case FF_INTENT_CREW_HIDE:
+        /* A02 slice D — the CREW page's HIDE control. Hide is unpair +
+         * remember (`shell_crew_hide`), deliberately the same mechanism
+         * as the 8-slot cap: it frees a roster slot, which is the whole
+         * reason hiding is useful to a crew of nine. Nothing is
+         * transmitted and nobody is told.
+         *
+         * A FULL hide list makes this a no-op, and that is visible
+         * rather than silent: the page's `hidden_full` flag renders
+         * "You've hidden as many people as your puck can remember (16).
+         * Unhide someone first." — the same shape `roster_full` already
+         * uses for ADD. */
+        if (takeover_up) return;
+        (void)shell_crew_hide(sh, in->u.node_id, true);
+        return;
+
+    case FF_INTENT_CREW_UNHIDE:
+        /* A02 slice D — the HIDDEN section's UNHIDE control. Restores
+         * eligibility, NOT membership: the next qualifying packet
+         * re-admits them through the same rule everyone else went
+         * through, so a UI tap never asserts something the radio has not
+         * said since. */
+        if (takeover_up) return;
+        (void)shell_crew_hide(sh, in->u.node_id, false);
+        return;
+
+    case FF_INTENT_SETTINGS_OPEN_CREW_CODE:
+        /* A02 slice D — the CREW page's SHOW CODE pill. Same "a control,
+         * a bare intent, the shell decides" shape as
+         * FF_INTENT_SETTINGS_OPEN_CREW. Opens the face whether or not a
+         * code has resolved: the face itself says "no crew code yet"
+         * with the reason, which teaches more than a pill that silently
+         * does nothing. BACK returns to the plain list through
+         * FF_INTENT_BACK's existing generic subview rule. */
+        if (takeover_up) return;
+        sh->settings_subview = FF_SETTINGS_SUB_CREW_CODE;
+        return;
+
     case FF_INTENT_COMPASS_CAL_START:
         /* S12 step 3 — the Settings "CALIBRATE COMPASS" row / the bench
          * console's `cal start`. Gated on the takeover like every other
@@ -7150,12 +7612,10 @@ bool ff_shell_pair(ff_shell_t *sh_pub, uint32_t node_id, bool paired)
 {
     if (sh_pub == NULL) return false;
 
-    /* THE one place a roster slot may be created (shell_pair, shared —
-     * on sim always, and on device only when CONFIG_FF_DEV_TRUST_CHANNEL
-     * is set — with the opt-in --dev-trust-all / DEV_TRUST_CHANNEL
-     * NodeInfo branch). Reachable only from a user action on a device
-     * built with that Kconfig option off (the shipping default); nothing
-     * in the seven inbound callbacks calls it there. */
+    /* THE one place a roster slot may be created (`shell_pair`, shared
+     * with A02's `shell_try_admit` and the sim-only --dev-trust-all
+     * NodeInfo branch). This public entry point itself is reachable only
+     * from a user action; nothing in the inbound callbacks calls it. */
     return shell_pair(shell_of(sh_pub), node_id, paired);
 }
 
@@ -7577,11 +8037,10 @@ uint32_t ff_shell_replay_overflow_count(ff_shell_t const *sh_pub)
 }
 
 /* ---------------------------------------------------------------------
- * ff_shell_dev_trust_all — sim always, device under
- * CONFIG_FF_DEV_TRUST_CHANNEL. See ff_shell.h's doc comment for the
- * exact split between what the two gates enable.
+ * ff_shell_dev_trust_all — SIM ONLY (A02 slice D removed the device
+ * mirror; see the field's own comment in shell_t and ff_shell.h).
  * ------------------------------------------------------------------- */
-#if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
+#if defined(FF_TARGET_SIM)
 
 void ff_shell_dev_trust_all(ff_shell_t *sh_pub, bool enabled)
 {
@@ -7589,7 +8048,48 @@ void ff_shell_dev_trust_all(ff_shell_t *sh_pub, bool enabled)
     shell_of(sh_pub)->dev_trust_all = enabled;
 }
 
-#endif /* FF_TARGET_SIM || CONFIG_FF_DEV_TRUST_CHANNEL */
+#endif /* FF_TARGET_SIM */
+
+/* ---------------------------------------------------------------------
+ * A02 slice D — auto crew on the crew channel
+ * ------------------------------------------------------------------- */
+
+void ff_shell_set_auto_crew(ff_shell_t *sh_pub, bool enabled)
+{
+    if (sh_pub == NULL) return;
+    shell_of(sh_pub)->auto_crew = enabled;
+}
+
+bool ff_shell_auto_crew(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? false : shell_of_const(sh_pub)->auto_crew;
+}
+
+char const *ff_shell_crew_code(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? "" : shell_of_const(sh_pub)->crew_code;
+}
+
+bool ff_shell_crew_channel_index(ff_shell_t const *sh_pub, uint32_t *out_index)
+{
+    if (sh_pub == NULL) return false;
+    shell_t const *sh = shell_of_const(sh_pub);
+    if (!sh->crew_index_known) return false;
+    if (out_index != NULL) *out_index = sh->crew_index;
+    return true;
+}
+
+bool ff_shell_crew_hide(ff_shell_t *sh_pub, uint32_t node_id, bool hidden)
+{
+    if (sh_pub == NULL) return false;
+    return shell_crew_hide(shell_of(sh_pub), node_id, hidden);
+}
+
+bool ff_shell_crew_hidden(ff_shell_t const *sh_pub, uint32_t node_id)
+{
+    if (sh_pub == NULL) return false;
+    return ff_hidden_contains(&shell_of_const(sh_pub)->hidden, node_id);
+}
 
 /* ---------------------------------------------------------------------
  * Sim-only dev affordances (S16 AC6, slice b2) — see ff_shell.h. No

@@ -42,6 +42,7 @@
 #include "unity.h"
 
 #include "ff_app_state.h"
+#include "ff_crewcode.h" /* [api] A02 slice D — the invite link the SHOW CODE face encodes */
 #include "ff_intent.h"
 #include "ff_radar.h"
 #include "ff_settings.h" /* FF_SHARE_LIVE/_ZONES/_GHOST, for the settings-face share-mode tests */
@@ -3354,7 +3355,14 @@ static void s12_build_crew_page_with_one_of_each(ff_app_crew_page_t *cw)
     cw->heard[0].age_ms = 12000;
 }
 
-static void S12_crew_remove_real_tap_emits_unpair_with_node_id(void)
+/* A02 slice D: this row's action used to be REMOVE / FF_INTENT_CREW_UNPAIR.
+ * A02 §4.7 retires that vocabulary — under auto-crew a plain unpair is not
+ * permanent (the next qualifying packet re-admits), so HIDE is the control
+ * that actually sticks. The test is retargeted rather than deleted: the
+ * PROPERTY it pins (the paired row's action reports the right intent with
+ * the right node id, from a real tap through the real dispatch) is
+ * unchanged; only which intent that is has moved. */
+static void S12_crew_hide_real_tap_emits_hide_with_node_id(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
@@ -3364,21 +3372,24 @@ static void S12_crew_remove_real_tap_emits_unpair_with_node_id(void)
     ff_scr_settings_build(lv_screen_active(), &s);
     lv_obj_update_layout(lv_screen_active());
 
-    lv_obj_t *remove = find_button_with_label(lv_screen_active(), "REMOVE");
-    TEST_ASSERT_NOT_NULL(remove);
+    /* And REMOVE is genuinely gone, not merely unlabelled. */
+    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "REMOVE"));
+
+    lv_obj_t *hide = find_button_with_label(lv_screen_active(), "HIDE");
+    TEST_ASSERT_NOT_NULL(hide);
     lv_area_t a;
-    lv_obj_get_coords(remove, &a);
+    lv_obj_get_coords(hide, &a);
 
     tap_at((a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2);
 
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_CREW_UNPAIR, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_INTENT_CREW_HIDE, s_spy.last.kind);
     TEST_ASSERT_EQUAL_UINT32(S12_PAIRED_NODE, s_spy.last.u.node_id);
 }
 
 /* Corner taps too — same S99_compose_send_full_area_tap rationale: a
  * hit trap shrunk to the label text would still pass a center tap. */
-static void S12_crew_remove_full_area_tap_emits_unpair_exactly_once(void)
+static void S12_crew_hide_full_area_tap_emits_hide_exactly_once(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
@@ -3388,10 +3399,10 @@ static void S12_crew_remove_full_area_tap_emits_unpair_exactly_once(void)
     ff_scr_settings_build(lv_screen_active(), &s);
     lv_obj_update_layout(lv_screen_active());
 
-    lv_obj_t *remove = find_button_with_label(lv_screen_active(), "REMOVE");
-    TEST_ASSERT_NOT_NULL(remove);
+    lv_obj_t *hide = find_button_with_label(lv_screen_active(), "HIDE");
+    TEST_ASSERT_NOT_NULL(hide);
     lv_area_t a;
-    lv_obj_get_coords(remove, &a);
+    lv_obj_get_coords(hide, &a);
 
     int32_t const pts[4][2] = {
         {a.x1 + 1, a.y1 + 1},
@@ -3404,7 +3415,7 @@ static void S12_crew_remove_full_area_tap_emits_unpair_exactly_once(void)
         memset(&s_spy, 0, sizeof(s_spy));
         tap_at(pts[i][0], pts[i][1]);
         TEST_ASSERT_EQUAL_INT_MESSAGE(1, s_spy.count, names[i]);
-        TEST_ASSERT_EQUAL_MESSAGE(FF_INTENT_CREW_UNPAIR, s_spy.last.kind, names[i]);
+        TEST_ASSERT_EQUAL_MESSAGE(FF_INTENT_CREW_HIDE, s_spy.last.kind, names[i]);
     }
 }
 
@@ -3486,7 +3497,7 @@ static void S12_crew_empty_state_has_no_add_or_remove_controls(void)
     ff_scr_settings_build(lv_screen_active(), &s);
 
     TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "ADD"));
-    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "REMOVE"));
+    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "HIDE")); /* A02 slice D: was REMOVE */
     TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "No crew yet. Add people from HEARD once your radio is on."));
 }
 
@@ -3977,6 +3988,171 @@ static void PL_inbox_crew_chip_drag_off_emits_nothing(void)
                                    "a slide-off of the CREW thread's OMW chip must never commit CANNED_REPLY");
 }
 
+/* =================================================================== */
+/* [api] A02 slice D — the CREW page's new controls and the SHOW CODE   */
+/* face (docs/specs/S02-core-crew.md's 2026-09-13 amendment, S02_AC14)  */
+/* =================================================================== */
+
+#define A02_HIDDEN_NODE 0x00004003u
+
+static void A02_crew_unhide_tap_emits_unhide_with_node_id(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+    s12_build_crew_page_with_one_of_each(&s.crew);
+    s.crew.hidden_count = 1;
+    s.crew.hidden[0].node_id = A02_HIDDEN_NODE;
+    s.crew.hidden[0].has_name = true;
+    strncpy(s.crew.hidden[0].name, "NEV", sizeof(s.crew.hidden[0].name) - 1);
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *unhide = find_button_with_label(lv_screen_active(), "UNHIDE");
+    TEST_ASSERT_NOT_NULL(unhide);
+    lv_area_t a;
+    lv_obj_get_coords(unhide, &a);
+    tap_at((a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2);
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_CREW_UNHIDE, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_UINT32(A02_HIDDEN_NODE, s_spy.last.u.node_id);
+}
+
+static void A02_show_code_tap_emits_open_crew_code(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+    s12_build_crew_page_with_one_of_each(&s.crew);
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *btn = find_button_with_label(lv_screen_active(), "SHOW CODE");
+    TEST_ASSERT_NOT_NULL(btn);
+    lv_area_t a;
+    lv_obj_get_coords(btn, &a);
+    tap_at((a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2);
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTINGS_OPEN_CREW_CODE, s_spy.last.kind);
+}
+
+static void A02_show_code_is_offered_even_with_no_code_resolved(void)
+{
+    /* The pill is present whether or not a code resolved — the face it
+     * opens explains WHY there is no code, which teaches more than a
+     * control that silently does nothing. */
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+    s.crew.link_connected = false;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    TEST_ASSERT_NOT_NULL(find_button_with_label(lv_screen_active(), "SHOW CODE"));
+}
+
+static void A02_an_untracked_crew_member_is_never_shown_as_a_hex_id(void)
+{
+    /* A02 §4.3 spells this row out — "with their name if NodeInfo
+     * arrived, `New crew member` otherwise" — and §4.4's rule is
+     * absolute: "Never blank, never a hex id, on any screen". These
+     * people proved possession of the crew key; they are untracked only
+     * because the roster is full. A `#8f60` here reads as a fault, and
+     * it is the one thing on this page that makes a crew member look
+     * like a radio. (The HEARD list's hex fallback is unaffected: a node
+     * that never proved the key is a radio, and saying so is honest.) */
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+    s.crew.overflow_count = 1;
+    s.crew.overflow[0].node_id = 0x11118f60u;
+    s.crew.overflow[0].has_name = false;
+    s.crew.overflow[0].name[0] = '\0';
+    strncpy(s.crew.overflow[0].short_id, "8f60", sizeof(s.crew.overflow[0].short_id) - 1);
+    s.crew.overflow[0].age_ms = 60000u;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "NOT TRACKED (1)"));
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "NEW CREW MEMBER"));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "#8f60"));
+
+    /* And a name, when there IS one, still wins over the fallback.
+     * Fresh screen: ff_scr_settings_build appends to whatever is already
+     * on it, so a stale label from the build above would satisfy the
+     * negative assertion below for the wrong reason. */
+    lv_obj_clean(lv_screen_active());
+    s.crew.overflow[0].has_name = true;
+    strncpy(s.crew.overflow[0].name, "NEV", sizeof(s.crew.overflow[0].name) - 1);
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "NEV"));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "NEW CREW MEMBER"));
+}
+
+static void A02_crew_page_omits_empty_hidden_and_overflow_sections(void)
+{
+    /* An empty NOT TRACKED section would imply a cap problem that does
+     * not exist; an empty HIDDEN section would imply the wearer hid
+     * somebody. Neither is built when there is nothing in it. */
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+    s12_build_crew_page_with_one_of_each(&s.crew);
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "UNHIDE"));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "HIDDEN (1)"));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "NOT TRACKED (1)"));
+}
+
+static void S02_AC14_show_code_face_renders_the_code_and_a_back_control(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW_CODE;
+    snprintf(s.crew.crew_code, sizeof(s.crew.crew_code), "%s", "FIRE-4K9M7X");
+    TEST_ASSERT_TRUE(ff_crewcode_invite_url(s.crew.crew_code, NULL, s.crew.invite_url,
+                                             sizeof(s.crew.invite_url)) > 0u);
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "FIRE-4K9M7X"));
+
+    lv_obj_t *back = find_button_with_label(lv_screen_active(), "BACK");
+    TEST_ASSERT_NOT_NULL(back);
+    lv_area_t a;
+    lv_obj_get_coords(back, &a);
+    tap_at((a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2);
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_BACK, s_spy.last.kind);
+}
+
+static void S02_AC14_show_code_face_says_no_code_rather_than_faking_one(void)
+{
+    /* An invalid/empty channel name renders "no crew code", never a
+     * fabricated code — a made-up code on this face is a code somebody
+     * types into their phone and then stands around wondering why
+     * nobody appeared. */
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW_CODE;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "No crew code yet - start one on the phone"));
+    /* Nothing on this face may read like a code: the whole `FIRE-`
+     * tag is absent, not merely the six symbols. */
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "FIRE-4K9M7X"));
+    TEST_ASSERT_NOT_NULL(find_button_with_label(lv_screen_active(), "BACK"));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -4085,8 +4261,8 @@ int main(void)
     RUN_TEST(S_name_edit_back_emits_back_intent);
 
     RUN_TEST(S12_settings_crew_row_emits_open_crew_intent);
-    RUN_TEST(S12_crew_remove_real_tap_emits_unpair_with_node_id);
-    RUN_TEST(S12_crew_remove_full_area_tap_emits_unpair_exactly_once);
+    RUN_TEST(S12_crew_hide_real_tap_emits_hide_with_node_id);
+    RUN_TEST(S12_crew_hide_full_area_tap_emits_hide_exactly_once);
     RUN_TEST(S12_crew_add_real_tap_emits_pair_with_node_id);
     RUN_TEST(S12_crew_heard_add_disabled_when_roster_full);
     RUN_TEST(S12_crew_back_button_emits_back_intent);
@@ -4112,6 +4288,14 @@ int main(void)
     RUN_TEST(PL_power_off_tap_emits_power_off);
     RUN_TEST(PL_inbox_chip_drag_off_emits_nothing);
     RUN_TEST(PL_inbox_crew_chip_drag_off_emits_nothing);
+
+    RUN_TEST(A02_crew_unhide_tap_emits_unhide_with_node_id);
+    RUN_TEST(A02_show_code_tap_emits_open_crew_code);
+    RUN_TEST(A02_show_code_is_offered_even_with_no_code_resolved);
+    RUN_TEST(A02_an_untracked_crew_member_is_never_shown_as_a_hex_id);
+    RUN_TEST(A02_crew_page_omits_empty_hidden_and_overflow_sections);
+    RUN_TEST(S02_AC14_show_code_face_renders_the_code_and_a_back_control);
+    RUN_TEST(S02_AC14_show_code_face_says_no_code_rather_than_faking_one);
 
     return UNITY_END();
 }

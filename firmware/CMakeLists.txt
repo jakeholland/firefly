@@ -26,16 +26,14 @@ endif()
 # this define ever goes missing from a sim build (the failure mode where
 # the flag parses but the affordance was silently compiled away).
 #
-# A SECOND, narrower gate exists purely on the esp32s3 side:
-# CONFIG_FF_DEV_TRUST_CHANNEL (firmware/targets/esp32s3/main/
-# Kconfig.projbuild), off by default, opts a device build INTO just the
-# NodeInfo-only auto-pair branch of that same sim affordance (not the
-# self-filter suspension or host-clock wall latch, which stay
-# FF_TARGET_SIM-only — see ff_shell.h's ff_shell_dev_trust_all doc
-# comment). It is a bench/field stopgap for the roster-trust policy
-# (docs/hardware/comms-brain.md), not a target selector, so it plays no
-# part in this FF_TARGET_SIM define — ESP-IDF's own Kconfig machinery
-# supplies it to app/ff_shell.c only when CONFIG_FF_DEV_TRUST_CHANNEL=y.
+# There used to be a SECOND, narrower gate on the esp32s3 side
+# (CONFIG_FF_DEV_TRUST_CHANNEL) opting a device build into the same
+# affordance's NodeInfo auto-pair. A02 slice D deleted it: growing the
+# crew from the crew channel is now the product's own behaviour, decided
+# by core's `ff_admit` on proof of the crew key rather than on the link
+# itself, and gated by a runtime bool from CONFIG_FF_CREW_AUTO_ON_CHANNEL
+# (default y) — not a compile switch. So FF_TARGET_SIM is once again the
+# only gate this file has anything to say about.
 if(FF_TARGET STREQUAL "sim")
     add_compile_definitions(FF_TARGET_SIM=1)
 endif()

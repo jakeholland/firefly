@@ -62,4 +62,7 @@ set(FF_CORE_SOURCES
     src/ff_beat.c             # S31 — Music/Swarm beat/loudness detector (auto-ranging + onset)
     src/ff_swarm.c            # S31 — Music/Swarm 60-particle deterministic simulation
     src/ff_wav.c              # 2026-09-09 amendment (fix/s31-beat-real-captures) — pure RIFF/WAVE parser, shared by beat_sim_replay + test_beat_captures
+    src/ff_crewcode.c        # A02 slice D — crew code codec + HKDF-SHA256 PSK derivation (docs/specs/A02-crew-join.md §1)
+    src/ff_hidden.c          # A02 slice D — bounded per-node hide set (S02 amendment 2026-09-13 §C)
+    src/ff_admit.c           # A02 slice D — the crew-admission rule, pure (S02 amendment 2026-09-13 §B)
 )

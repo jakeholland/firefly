@@ -384,6 +384,15 @@ Renamed to Lineup/Inbox on 2026-09-01 — see S26 Nav model Amendments; this spe
   > dev/bench gate `--dev-trust-all` / `CONFIG_FF_DEV_TRUST_CHANNEL`
   > already use for the crew-roster auto-pair (`sh->dev_trust_all`);
   > `MC_LOC_UNKNOWN` never adopts, either direction.
+  >
+  > **Amended 2026-09-13 (A02 slice D).** `CONFIG_FF_DEV_TRUST_CHANNEL`
+  > is deleted — auto-crew is now the product behaviour, decided by
+  > `ff_admit` on proof of the crew key rather than on the link
+  > (`docs/specs/S02-core-crew.md`'s amendment of that date). The
+  > `MC_LOC_MANUAL` adoption above therefore survives ONLY under the
+  > sim's `--dev-trust-all`; no device configuration adopts a typed-in
+  > point as the wearer's position any more. AC6 itself is unchanged:
+  > `--dev-trust-all` keeps its single-node-harness meaning.
 
   Deliberately checked via `shell_is_self`, NOT `shell_drop_as_self`:
   whether a packet is treated as our own echo for CREW/FEED purposes

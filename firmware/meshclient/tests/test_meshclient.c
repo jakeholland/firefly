@@ -203,6 +203,10 @@ typedef struct {
     } rx_metas[8];
     int rx_meta_count;
 
+    /* [api] A02 slice D — the want_config channel table. */
+    mc_channel_t channels[8];
+    int channel_count;
+
     /* Monotonic counter stamped by every callback that participates in the
      * on_rx_meta ordering guarantee, so a test can assert "meta first". */
     int seq_next;
@@ -319,6 +323,14 @@ static void cap_on_routing_ack(void *u, uint32_t request_id, bool ok)
     }
 }
 
+static void cap_on_channel(void *u, mc_channel_t const *ch)
+{
+    events_capture_t *c = (events_capture_t *)u;
+    if (c->channel_count < (int)(sizeof(c->channels) / sizeof(c->channels[0]))) {
+        c->channels[c->channel_count++] = *ch;
+    }
+}
+
 static mc_events_t make_events(events_capture_t *cap)
 {
     mc_events_t ev;
@@ -332,6 +344,7 @@ static mc_events_t make_events(events_capture_t *cap)
     ev.on_rx_meta = cap_on_rx_meta;
     ev.on_owner = cap_on_owner;
     ev.on_routing_ack = cap_on_routing_ack;
+    ev.on_channel = cap_on_channel;
     ev.user = cap;
     return ev;
 }
@@ -4000,6 +4013,303 @@ static void feat_two_consecutive_set_owner_round_trips_in_one_session_both_confi
 
 /* -------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------- */
+/* [api] A02 slice D — rx-meta's three new facts, and the channel table  */
+/* (docs/specs/S02-core-crew.md's 2026-09-13 amendment §B)               */
+/* -------------------------------------------------------------------- */
+
+/* Encode callbacks, mirroring the decode side in mc_client.c: the two
+ * ChannelSettings fields this library cares about are unbounded in
+ * channel.proto and therefore pb_callback_t in the generated code. */
+typedef struct {
+    uint8_t const *data;
+    size_t         len;
+} a02_blob_t;
+
+static bool a02_enc_bytes(pb_ostream_t *stream, pb_field_t const *field, void *const *arg)
+{
+    a02_blob_t const *b = (a02_blob_t const *)(*arg);
+    if (b == NULL || b->len == 0u) return true; /* absent, not empty */
+    if (!pb_encode_tag_for_field(stream, field)) return false;
+    return pb_encode_string(stream, b->data, b->len);
+}
+
+/* A `FromRadio.channel` frame, with an honest name/psk on the wire. */
+static uint16_t a02_build_channel_frame(uint8_t index, char const *name, uint8_t const *psk,
+                                         size_t psk_len, bool primary, uint8_t *out, size_t out_cap)
+{
+    a02_blob_t name_blob = {(uint8_t const *)name, (name != NULL) ? strlen(name) : 0u};
+    a02_blob_t psk_blob = {psk, psk_len};
+
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_channel_tag;
+    fr.payload_variant.channel.index = (int32_t)index;
+    fr.payload_variant.channel.role =
+        primary ? meshtastic_Channel_Role_PRIMARY : meshtastic_Channel_Role_SECONDARY;
+    fr.payload_variant.channel.has_settings = true;
+    fr.payload_variant.channel.settings.name.funcs.encode = a02_enc_bytes;
+    fr.payload_variant.channel.settings.name.arg = &name_blob;
+    fr.payload_variant.channel.settings.psk.funcs.encode = a02_enc_bytes;
+    fr.payload_variant.channel.settings.psk.arg = &psk_blob;
+
+    uint8_t buf[200];
+    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+    if (!pb_encode(&os, meshtastic_FromRadio_fields, &fr)) return 0;
+    return mc_frame_encode(out, out_cap, buf, (uint16_t)os.bytes_written);
+}
+
+/* A data packet with the extra MeshPacket fields the admission rule
+ * reads. build_data_packet_frame's signature deliberately stays as it
+ * is — every existing caller means "defaults", and widening it would
+ * have quietly changed what a dozen other tests are asserting about. */
+static uint16_t a02_build_packet_frame(uint32_t from, uint32_t channel, bool via_mqtt,
+                                        bool pki_encrypted, uint32_t portnum, uint8_t *out,
+                                        size_t out_cap)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+    fr.payload_variant.packet.from = from;
+    fr.payload_variant.packet.to = MC_ADDR_BROADCAST;
+    fr.payload_variant.packet.channel = channel;
+    fr.payload_variant.packet.via_mqtt = via_mqtt;
+    fr.payload_variant.packet.pki_encrypted = pki_encrypted;
+    fr.payload_variant.packet.which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    fr.payload_variant.packet.payload_variant.decoded.portnum = (meshtastic_PortNum)portnum;
+    fr.payload_variant.packet.payload_variant.decoded.payload.size = 1u;
+    fr.payload_variant.packet.payload_variant.decoded.payload.bytes[0] = 0x42u;
+
+    uint8_t buf[300];
+    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+    if (!pb_encode(&os, meshtastic_FromRadio_fields, &fr)) return 0;
+    return mc_frame_encode(out, out_cap, buf, (uint16_t)os.bytes_written);
+}
+
+static void a02_feed(uint8_t const *frame, uint16_t len, events_capture_t *cap)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = len;
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    memset(cap, 0, sizeof(*cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io},
+             make_events(cap), &clock);
+    c.state = MC_STATE_READY;
+    mc_tick(&c, 10u);
+}
+
+static void A02_rx_meta_carries_channel_index_mqtt_and_portnum(void)
+{
+    uint8_t frame[300];
+    uint16_t const len = a02_build_packet_frame(0x0A0A0A0Au, 3u, false, false,
+                                                 (uint32_t)meshtastic_PortNum_TEXT_MESSAGE_APP,
+                                                 frame, sizeof(frame));
+    TEST_ASSERT_TRUE(len > 0);
+
+    events_capture_t cap;
+    a02_feed(frame, len, &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.rx_meta_count);
+    TEST_ASSERT_TRUE(cap.rx_metas[0].meta.has_channel_index);
+    TEST_ASSERT_EQUAL_UINT32(3u, cap.rx_metas[0].meta.channel_index);
+    TEST_ASSERT_FALSE(cap.rx_metas[0].meta.via_mqtt);
+    TEST_ASSERT_TRUE(cap.rx_metas[0].meta.has_portnum);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)meshtastic_PortNum_TEXT_MESSAGE_APP,
+                              cap.rx_metas[0].meta.portnum);
+}
+
+static void A02_rx_meta_channel_zero_is_present_not_absent(void)
+{
+    /* proto3 implicit presence means a packet on the PRIMARY channel
+     * serializes `channel` as nothing at all — and mesh.proto states
+     * outright that "If unset, packet was on the primary channel". So 0
+     * here is a real reading, not a default. Getting this backwards
+     * would make the crew channel (normally index 0) admit nobody,
+     * which is the exact inverse of the bug the presence flag exists to
+     * prevent, and just as silent. */
+    uint8_t frame[300];
+    uint16_t const len = a02_build_packet_frame(0x0A0A0A0Au, 0u, false, false,
+                                                 (uint32_t)meshtastic_PortNum_POSITION_APP,
+                                                 frame, sizeof(frame));
+    TEST_ASSERT_TRUE(len > 0);
+
+    events_capture_t cap;
+    a02_feed(frame, len, &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.rx_meta_count);
+    TEST_ASSERT_TRUE(cap.rx_metas[0].meta.has_channel_index);
+    TEST_ASSERT_EQUAL_UINT32(0u, cap.rx_metas[0].meta.channel_index);
+}
+
+static void A02_rx_meta_via_mqtt_is_reported_unfolded(void)
+{
+    /* rx_path already folds via_mqtt into INDIRECT — but plenty of
+     * ordinary relayed LoRa packets are INDIRECT too, and the admission
+     * rule needs the un-folded fact. */
+    uint8_t frame[300];
+    uint16_t const len = a02_build_packet_frame(0x0A0A0A0Au, 0u, true, false,
+                                                 (uint32_t)meshtastic_PortNum_NODEINFO_APP,
+                                                 frame, sizeof(frame));
+    TEST_ASSERT_TRUE(len > 0);
+
+    events_capture_t cap;
+    a02_feed(frame, len, &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.rx_meta_count);
+    TEST_ASSERT_TRUE(cap.rx_metas[0].meta.via_mqtt);
+    TEST_ASSERT_EQUAL_INT(MC_RX_PATH_INDIRECT, cap.rx_metas[0].meta.rx_path);
+}
+
+static void A02_rx_meta_pki_dm_reports_no_channel_index(void)
+{
+    /* A PKI-encrypted DM proves possession of a key PAIR, not of the
+     * crew channel's key. Its `channel` is 0 on the wire, which is the
+     * crew's usual slot — so reporting it present would admit anyone who
+     * could DM this puck. */
+    uint8_t frame[300];
+    uint16_t const len = a02_build_packet_frame(0x0A0A0A0Au, 0u, false, true,
+                                                 (uint32_t)meshtastic_PortNum_TEXT_MESSAGE_APP,
+                                                 frame, sizeof(frame));
+    TEST_ASSERT_TRUE(len > 0);
+
+    events_capture_t cap;
+    a02_feed(frame, len, &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.rx_meta_count);
+    TEST_ASSERT_FALSE(cap.rx_metas[0].meta.has_channel_index);
+    TEST_ASSERT_EQUAL_UINT32(0u, cap.rx_metas[0].meta.channel_index); /* zeroed, not stale */
+}
+
+static void A02_rx_meta_encrypted_packet_reports_no_index_and_no_portnum(void)
+{
+    /* An encrypted-variant packet carries the channel HASH in that field
+     * (mesh.pb.h says so), not an index — a hash that happened to equal
+     * the crew's index would otherwise admit a sender we could not even
+     * decrypt. And there is no decoded payload, so no portnum. */
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+    fr.payload_variant.packet.from = 0x0B0B0B0Bu;
+    fr.payload_variant.packet.to = MC_ADDR_BROADCAST;
+    fr.payload_variant.packet.channel = 0u; /* the hash, which happens to be 0 */
+    fr.payload_variant.packet.which_payload_variant = meshtastic_MeshPacket_encrypted_tag;
+
+    uint8_t buf[200];
+    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+    TEST_ASSERT_TRUE(pb_encode(&os, meshtastic_FromRadio_fields, &fr));
+    uint8_t frame[300];
+    uint16_t const len = mc_frame_encode(frame, sizeof(frame), buf, (uint16_t)os.bytes_written);
+    TEST_ASSERT_TRUE(len > 0);
+
+    events_capture_t cap;
+    a02_feed(frame, len, &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.rx_meta_count);
+    TEST_ASSERT_FALSE(cap.rx_metas[0].meta.has_channel_index);
+    TEST_ASSERT_FALSE(cap.rx_metas[0].meta.has_portnum);
+}
+
+static void A02_channel_table_is_delivered_with_name_and_psk(void)
+{
+    uint8_t psk[32];
+    for (int i = 0; i < 32; i++) psk[i] = (uint8_t)(0xA0 + i);
+
+    uint8_t frame[300];
+    uint16_t const len = a02_build_channel_frame(0u, "FIRE-4K9M7X", psk, sizeof(psk), true, frame,
+                                                  sizeof(frame));
+    TEST_ASSERT_TRUE(len > 0);
+
+    events_capture_t cap;
+    a02_feed(frame, len, &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.channel_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, cap.channels[0].index);
+    TEST_ASSERT_EQUAL_STRING("FIRE-4K9M7X", cap.channels[0].name);
+    TEST_ASSERT_EQUAL_UINT8(32u, cap.channels[0].psk_len);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(psk, cap.channels[0].psk, sizeof(psk));
+    TEST_ASSERT_TRUE(cap.channels[0].is_primary);
+}
+
+static void A02_channel_at_a_nonzero_index_keeps_its_index(void)
+{
+    /* The whole reason this event exists: a radio provisioned by CLI or
+     * the stock app can hold the crew channel anywhere, and the index is
+     * "inherently a local concept". Never assume 0. */
+    uint8_t psk[16];
+    memset(psk, 0x5A, sizeof(psk));
+    uint8_t frame[300];
+    uint16_t const len = a02_build_channel_frame(5u, "FIRE-ZZZZZZ", psk, sizeof(psk), false, frame,
+                                                  sizeof(frame));
+    TEST_ASSERT_TRUE(len > 0);
+
+    events_capture_t cap;
+    a02_feed(frame, len, &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.channel_count);
+    TEST_ASSERT_EQUAL_UINT8(5u, cap.channels[0].index);
+    TEST_ASSERT_EQUAL_STRING("FIRE-ZZZZZZ", cap.channels[0].name);
+    TEST_ASSERT_EQUAL_UINT8(16u, cap.channels[0].psk_len);
+    TEST_ASSERT_FALSE(cap.channels[0].is_primary);
+}
+
+static void A02_channel_with_no_psk_reports_none_not_zeros(void)
+{
+    /* `psk_len == 0` is "this channel stated no key", which must not be
+     * confused with an all-zero 32-byte key — a crew-index match against
+     * a fabricated zero key could succeed for the wrong channel. */
+    uint8_t frame[300];
+    uint16_t const len = a02_build_channel_frame(1u, "LongFast", NULL, 0u, false, frame,
+                                                  sizeof(frame));
+    TEST_ASSERT_TRUE(len > 0);
+
+    events_capture_t cap;
+    a02_feed(frame, len, &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.channel_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, cap.channels[0].psk_len);
+    TEST_ASSERT_EQUAL_STRING("LongFast", cap.channels[0].name);
+}
+
+static void A02_oversized_channel_name_reports_no_name_rather_than_truncating(void)
+{
+    /* Longer than Meshtastic's own 11-byte budget, so not a Firefly crew
+     * channel and not describable by mc_channel_t. Reported with an
+     * EMPTY name — truncating would produce a name that is not the
+     * channel's name, which a name-and-PSK match could then match on. */
+    uint8_t frame[300];
+    uint16_t const len = a02_build_channel_frame(2u, "a-very-long-channel-name", NULL, 0u, false,
+                                                  frame, sizeof(frame));
+    TEST_ASSERT_TRUE(len > 0);
+
+    events_capture_t cap;
+    a02_feed(frame, len, &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.channel_count);
+    TEST_ASSERT_EQUAL_STRING("", cap.channels[0].name);
+    TEST_ASSERT_EQUAL_UINT8(2u, cap.channels[0].index);
+}
+
+static void A02_channel_event_is_optional(void)
+{
+    /* Every existing caller installs no on_channel. Nothing may crash,
+     * and the frame must still be accounted for. */
+    uint8_t frame[300];
+    uint16_t const len = a02_build_channel_frame(0u, "FIRE-4K9M7X", NULL, 0u, true, frame,
+                                                  sizeof(frame));
+    TEST_ASSERT_TRUE(len > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = len;
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+    mc_events_t ev = make_events(&cap);
+    ev.on_channel = NULL;
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, ev, &clock);
+    c.state = MC_STATE_READY;
+    mc_tick(&c, 10u);
+    TEST_ASSERT_EQUAL_UINT32(1u, mc_get_stats(&c).frames_ok);
+    TEST_ASSERT_EQUAL_INT(0, cap.channel_count);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -4130,6 +4440,17 @@ int main(void)
     RUN_TEST(feat_routing_nak_reports_not_ok);
     RUN_TEST(feat_send_text_direct_packet_id_matches_a_later_routing_ack);
     RUN_TEST(feat_two_consecutive_set_owner_round_trips_in_one_session_both_confirm);
+
+    RUN_TEST(A02_rx_meta_carries_channel_index_mqtt_and_portnum);
+    RUN_TEST(A02_rx_meta_channel_zero_is_present_not_absent);
+    RUN_TEST(A02_rx_meta_via_mqtt_is_reported_unfolded);
+    RUN_TEST(A02_rx_meta_pki_dm_reports_no_channel_index);
+    RUN_TEST(A02_rx_meta_encrypted_packet_reports_no_index_and_no_portnum);
+    RUN_TEST(A02_channel_table_is_delivered_with_name_and_psk);
+    RUN_TEST(A02_channel_at_a_nonzero_index_keeps_its_index);
+    RUN_TEST(A02_channel_with_no_psk_reports_none_not_zeros);
+    RUN_TEST(A02_oversized_channel_name_reports_no_name_rather_than_truncating);
+    RUN_TEST(A02_channel_event_is_optional);
 
     return UNITY_END();
 }

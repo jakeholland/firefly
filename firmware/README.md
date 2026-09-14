@@ -158,9 +158,20 @@ criteria-numbered per spec (`SNN_ACX_description`), per `AGENTS.md`.
   (exact `FF_CTL_MAX_LINE` boundary, oversized-line resync) and command
   dispatch (every command's success path and guard paths), plus a real
   loopback-socket end-to-end pass.
+- `test_crewcode` / `test_hidden` / `test_admit` (A02 slice D) — the
+  crew code and the key it derives, the per-node hide set, and the
+  admission rule. `test_crewcode` reads its vectors at runtime from
+  `docs/specs/fixtures/A02-crew-codes.json`, the SAME file the app's
+  Swift `CrewCodeTests` reads, so the two implementations cannot drift
+  apart without one of them going red. `test_admit` has exactly one
+  "everything passes" fixture and mutates one field per test, and
+  asserts the REASON rather than a bool — a rule that rejects the MQTT
+  case for the wrong reason passes a bool-only test and ships the bug.
 - `test_shell` (S16 slice b1) — `app/ff_shell.h`, the running
   application: the roster trust policy across all seven `mc_events_t`
-  callbacks (unknown senders reach `ff_heard`, never the paired roster),
+  callbacks (unknown senders reach `ff_heard`, never the paired roster;
+  since A02 slice D a sender that proves possession of the crew channel's
+  key is admitted, through the same single audited `shell_pair` path),
   position ages that come from `rx_time`/`last_heard` and never from the
   local clock (the reconnect-replay defect), haptic-vs-quiet-hours
   composition, and the dirty bit computed over the *rendered* projection.

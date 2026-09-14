@@ -26,6 +26,8 @@
 #include <stdlib.h>
 
 #include "ff_crew.h" /* FF_CREW_MAX — radar.dots[] cap, see fx_parse_radar_dots below */
+#include "ff_crewcode.h" /* [api] A02 slice D — crew_code validation + the derived invite URL */
+#include "ff_hidden.h" /* [api] A02 slice D — FF_HIDDEN_MAX, the hidden-row cap */
 #include "ff_settings.h" /* FF_BRIGHTNESS_DEFAULT_PCT — settings.brightness_pct default (#100) */
 
 /* Input-size / token-arena budget. Fixtures are small, hand-authored
@@ -1122,6 +1124,7 @@ static const fx_enum_entry_t fx_settings_subview_table[] = {
     {"compass_cal", FF_SETTINGS_SUB_COMPASS_CAL},   /* S12 step 3 */
     {"name_edit", FF_SETTINGS_SUB_NAME_EDIT},       /* NAME in Settings */
     {"diagnostics", FF_SETTINGS_SUB_DIAGNOSTICS},   /* DIAGNOSTICS */
+    {"crew_code", FF_SETTINGS_SUB_CREW_CODE},       /* [api] A02 slice D — SHOW CODE */
 };
 
 /* DIAGNOSTICS — ff_app_diag_t's five small boundary-translated enums
@@ -1213,6 +1216,77 @@ static ff_fixture_result_t fx_parse_crew_page(fx_ctx_t const *c, int obj_i, ff_a
             if (fx_obj_get(c, row_i, "presence_age_ms", &kt)) row->presence_age_ms = (uint32_t)fx_num(c, kt, 0.0);
 
             cw->paired_count++;
+            idx = fx_skip(c, row_i);
+        }
+    }
+
+    /* [api] A02 slice D — the crew code, and the HIDDEN/NOT TRACKED
+     * sections (docs/specs/S02-core-crew.md's 2026-09-13 amendment).
+     *
+     * The invite URL is DERIVED here from `crew_code`, never authored:
+     * on a real puck it is built by `ff_crewcode_invite_url` from the
+     * same code, and letting a fixture state the two independently would
+     * let a golden pin a QR that disagrees with the code printed under
+     * it — the exact confidently-wrong render this page exists to
+     * avoid. A `crew_code` that is not a valid code leaves BOTH empty,
+     * which is the honest "no crew code yet" state. */
+    if (fx_obj_get(c, obj_i, "crew_code", &t)) {
+        char raw[FF_CREWCODE_LEN + 1u];
+        fx_copy_str(c, t, raw, sizeof(raw));
+        if (ff_crewcode_valid(raw)) {
+            memcpy(cw->crew_code, raw, sizeof(raw));
+            (void)ff_crewcode_invite_url(cw->crew_code, NULL, cw->invite_url, sizeof(cw->invite_url));
+        }
+    }
+    if (fx_obj_get(c, obj_i, "hidden_full", &t)) cw->hidden_full = fx_bool(c, t, false);
+
+    int hidden_i;
+    if (fx_obj_get(c, obj_i, "hidden", &hidden_i) && !fx_is_null(c, hidden_i)) {
+        jsmntok_t const *at = &c->toks[hidden_i];
+        if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
+        if (at->size > (int)FF_HIDDEN_MAX) return FF_FIXTURE_ERR_TOO_BIG;
+        int idx = hidden_i + 1;
+        for (int i = 0; i < at->size; i++) {
+            int row_i = idx;
+            ff_app_crew_hidden_row_t *row = &cw->hidden[cw->hidden_count];
+            memset(row, 0, sizeof(*row));
+
+            int kt;
+            if (fx_obj_get(c, row_i, "node_id", &kt)) row->node_id = (uint32_t)fx_num(c, kt, 0.0);
+            /* `has_name` DERIVED from the key being present — the same
+             * convention the HEARD rows below already use. */
+            if (fx_obj_get(c, row_i, "name", &kt)) {
+                row->has_name = true;
+                fx_copy_str(c, kt, row->name, sizeof(row->name));
+            }
+            if (fx_obj_get(c, row_i, "short_id", &kt)) fx_copy_str(c, kt, row->short_id, sizeof(row->short_id));
+
+            cw->hidden_count++;
+            idx = fx_skip(c, row_i);
+        }
+    }
+
+    int overflow_i;
+    if (fx_obj_get(c, obj_i, "overflow", &overflow_i) && !fx_is_null(c, overflow_i)) {
+        jsmntok_t const *at = &c->toks[overflow_i];
+        if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
+        if (at->size > FF_APP_CREW_HEARD_MAX) return FF_FIXTURE_ERR_TOO_BIG;
+        int idx = overflow_i + 1;
+        for (int i = 0; i < at->size; i++) {
+            int row_i = idx;
+            ff_app_crew_heard_row_t *row = &cw->overflow[cw->overflow_count];
+            memset(row, 0, sizeof(*row));
+
+            int kt;
+            if (fx_obj_get(c, row_i, "node_id", &kt)) row->node_id = (uint32_t)fx_num(c, kt, 0.0);
+            if (fx_obj_get(c, row_i, "name", &kt)) {
+                row->has_name = true;
+                fx_copy_str(c, kt, row->name, sizeof(row->name));
+            }
+            if (fx_obj_get(c, row_i, "short_id", &kt)) fx_copy_str(c, kt, row->short_id, sizeof(row->short_id));
+            if (fx_obj_get(c, row_i, "age_ms", &kt)) row->age_ms = (uint32_t)fx_num(c, kt, 0.0);
+
+            cw->overflow_count++;
             idx = fx_skip(c, row_i);
         }
     }
@@ -2221,6 +2295,20 @@ static void fw_crew_heard_row(fw_cur_t *w, ff_app_crew_heard_row_t const *h)
     fw_fmt(w, ",\"age_ms\":%u}", (unsigned)h->age_ms);
 }
 
+/* [api] A02 slice D — the HIDDEN row's mirror. Same round-trip contract
+ * as the two above. */
+static void fw_crew_hidden_row(fw_cur_t *w, ff_app_crew_hidden_row_t const *h)
+{
+    fw_fmt(w, "{\"node_id\":%u", (unsigned)h->node_id);
+    if (h->has_name) {
+        fw_raw(w, ",\"name\":");
+        fw_json_str(w, h->name);
+    }
+    fw_raw(w, ",\"short_id\":");
+    fw_json_str(w, h->short_id);
+    fw_raw(w, "}");
+}
+
 static void fw_now_row(fw_cur_t *w, ff_app_now_row_t const *r)
 {
     fw_raw(w, "{\"artist\":");
@@ -2607,6 +2695,24 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     for (uint8_t i = 0; i < s->settings.crew.heard_count; i++) {
         if (i > 0) fw_raw(&w, ",");
         fw_crew_heard_row(&w, &s->settings.crew.heard[i]);
+    }
+    /* [api] A02 slice D. `invite_url` is deliberately NOT dumped: it is
+     * derived from `crew_code` by one core function, so emitting it
+     * would create a second thing a ctl consumer could read them out of
+     * agreement from — and the loader derives it back rather than
+     * parsing it. */
+    fw_raw(&w, "],\"crew_code\":");
+    fw_json_str(&w, s->settings.crew.crew_code);
+    fw_raw(&w, s->settings.crew.hidden_full ? ",\"hidden_full\":true" : ",\"hidden_full\":false");
+    fw_raw(&w, ",\"hidden\":[");
+    for (uint8_t i = 0; i < s->settings.crew.hidden_count; i++) {
+        if (i > 0) fw_raw(&w, ",");
+        fw_crew_hidden_row(&w, &s->settings.crew.hidden[i]);
+    }
+    fw_raw(&w, "],\"overflow\":[");
+    for (uint8_t i = 0; i < s->settings.crew.overflow_count; i++) {
+        if (i > 0) fw_raw(&w, ",");
+        fw_crew_heard_row(&w, &s->settings.crew.overflow[i]);
     }
     fw_raw(&w, "]}");
 

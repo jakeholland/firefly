@@ -571,3 +571,48 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_swarm COMMAND test_swarm)
 endif()
+
+# A02 slice D — core/crewcode: the crew code codec + its HKDF-SHA256 key
+# derivation (docs/specs/A02-crew-join.md §1).
+#
+# FF_CREWCODE_FIXTURE points at the SHARED fixture the app's Swift tests
+# also read (docs/specs/fixtures/A02-crew-codes.json) — one file, two
+# languages, no drift, the discipline §1.9 asks for. The test links
+# ff-jsmn to parse it; core itself stays zero-dependency (the header is
+# test-only, exactly as targets/sim uses it).
+if(FF_BUILD_TESTS)
+    add_executable(test_crewcode
+        tests/test_crewcode.c
+    )
+    target_compile_definitions(test_crewcode PRIVATE
+        FF_CREWCODE_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/../../docs/specs/fixtures/A02-crew-codes.json"
+    )
+    target_link_libraries(test_crewcode PRIVATE ff-core ff-jsmn unity)
+    ff_apply_warnings(test_crewcode)
+
+    add_test(NAME test_crewcode COMMAND test_crewcode)
+endif()
+
+# A02 slice D — core/hidden: the bounded per-node hide set
+# (docs/specs/S02-core-crew.md's 2026-09-13 amendment §C, S02_AC13).
+if(FF_BUILD_TESTS)
+    add_executable(test_hidden
+        tests/test_hidden.c
+    )
+    target_link_libraries(test_hidden PRIVATE ff-core unity)
+    ff_apply_warnings(test_hidden)
+
+    add_test(NAME test_hidden COMMAND test_hidden)
+endif()
+
+# A02 slice D — core/admit: the crew-admission rule, pure
+# (docs/specs/S02-core-crew.md's 2026-09-13 amendment §B, S02_AC11/AC12).
+if(FF_BUILD_TESTS)
+    add_executable(test_admit
+        tests/test_admit.c
+    )
+    target_link_libraries(test_admit PRIVATE ff-core unity)
+    ff_apply_warnings(test_admit)
+
+    add_test(NAME test_admit COMMAND test_admit)
+endif()

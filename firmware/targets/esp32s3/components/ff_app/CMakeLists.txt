@@ -40,46 +40,22 @@ idf_component_register(
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)
 
-# CONFIG_FF_DEV_TRUST_CHANNEL (Kconfig.projbuild, default n) gates the
-# device-side dev/field auto-pair stopgap in ff_shell.c/.h — see
-# ff_shell.h's ff_shell_dev_trust_all doc comment.
-#
-# ff_shell.c currently DOES see this macro without any help from here:
-# its own `#include <stdio.h>` resolves (esp-idf's newlib platform
-# include path wins over the toolchain's own copy) into a chain that
-# reaches components/newlib/platform_include/sys/lock.h, which
-# unconditionally `#include "sdkconfig.h"` — and once any header in a
-# translation unit pulls that in, every CONFIG_* macro is visible for
-# the rest of the file, ff_shell.c's own `#if defined(CONFIG_FF_
-# DEV_TRUST_CHANNEL)` guards included. Verified with `-H` against this
-# component's own compile_commands.json entry (see this option's PR body
-# for the full include trace).
-#
-# That is an ACCIDENT of ff_shell.c happening to include <stdio.h> for
-# an unrelated reason, not a documented guarantee — ESP-IDF does NOT
-# force-include sdkconfig.h for every component (confirmed against
-# tools/cmake/kconfig.cmake: SDKCONFIG_HEADER is recorded as a build
-# property and handed to whichever files #include it themselves, never
-# injected as a global -include/-imacros flag). A future edit that drops
-# or reorders that #include would silently revert this option to
-# "compiled out" with no build error — exactly the silent-regression
-# failure mode this repo's own FF_TARGET_SIM discipline exists to avoid
-# (firmware/CMakeLists.txt's own comment on that flag, and targets/sim/
-# main.c's #error guard for the mirror case). So the definition is
-# ALSO supplied explicitly and unconditionally here, PRIVATE to this
-# component only (ff_shell.c is the sole file in it that reads the
-# macro), making the intent a property of the build graph instead of an
-# incidental header side effect:
-if(CONFIG_FF_DEV_TRUST_CHANNEL)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE CONFIG_FF_DEV_TRUST_CHANNEL=1)
-endif()
+# A02 slice D: CONFIG_FF_DEV_TRUST_CHANNEL is GONE. Its replacement,
+# CONFIG_FF_CREW_AUTO_ON_CHANNEL (Kconfig.projbuild, default y), is read
+# by main/app_main.c — which is in the `main` component, not this one —
+# and passed to the shell as a runtime bool through
+# ff_shell_set_auto_crew(). So there is deliberately nothing to define
+# here: ff_shell.c has no `#if` on it at all, which is the point. A
+# shipped behaviour is a plain field; only a compiled-out affordance
+# needs a macro, and the one that is left (FF_TARGET_SIM) is not a
+# device concern.
 
 # CONFIG_FF_DEBUG_CONSOLE (Kconfig.projbuild, default n) gates the
 # bench/debug console's debug-only shell API (ff_shell.c/.h's
 # `#if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEBUG_CONSOLE)`
 # section) and ff_debug_console.c's whole body. Same accidental-but-
-# relied-upon visibility question as CONFIG_FF_DEV_TRUST_CHANNEL above
-# (ff_shell.c's own <stdio.h> include; ff_debug_console.c includes it
+# relied-upon visibility question the deleted CONFIG_FF_DEV_TRUST_CHANNEL
+# raised (ff_shell.c's own <stdio.h> include; ff_debug_console.c includes it
 # too, for the same snprintf reason) — supplied explicitly here for the
 # same "property of the build graph, not an incidental header side
 # effect" reason, PRIVATE to this component (both files that read the

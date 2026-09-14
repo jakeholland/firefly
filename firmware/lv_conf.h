@@ -66,4 +66,20 @@
  * plainly cannot do. Corrected.) */
 #define LV_USE_ARC 1
 
+/* A02 slice D (docs/specs/S02-core-crew.md's 2026-09-13 amendment, §D) —
+ * Settings -> CREW -> SHOW CODE renders the crew code as an `lv_qrcode`
+ * of its `firefly://crew?...` invite link.
+ *
+ * `LV_USE_QRCODE` defaults to 0, so that line is what makes the widget
+ * exist at all. `LV_USE_CANVAS` already defaults to 1 here (and, measured
+ * rather than assumed, on the ESP-IDF target too — see the corrected note
+ * in targets/esp32s3/sdkconfig.defaults, which found the amendment's
+ * "canvas defaults off under Kconfig" claim does not hold for the LVGL
+ * this project pins). It is stated anyway, on both targets, as a PIN:
+ * `lv_qrcode`'s widget class derives from `lv_canvas_class`
+ * (lvgl/src/libs/qrcode/lv_qrcode.c), and a hard dependency is better
+ * written down than inherited from an upstream default. */
+#define LV_USE_QRCODE 1
+#define LV_USE_CANVAS 1
+
 #endif /* LV_CONF_H */
