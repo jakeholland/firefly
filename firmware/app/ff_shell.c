@@ -2006,9 +2006,16 @@ static bool shell_try_admit(shell_t *sh, uint32_t from, mc_rx_meta_t const *m)
      * have a name" (an unhidden member's slot can already carry one from
      * before it was hidden, in which case this must NOT ask again). */
     ff_crew_member_t const *admitted = ff_crew_find(&sh->crew, from);
+    /* Every precondition that is NOT about the rate limit is checked
+     * BEFORE ff_nodeinfo_req_should_send, because that call RECORDS the
+     * attempt on a true return (see its doc comment). Asking it first
+     * and discovering afterwards that there is no sender bound at all
+     * would burn the ten-minute window on a request that was never even
+     * attempted — a target/test with nothing bound here must simply
+     * never ask, not "ask once, invisibly, and then go quiet". */
     if (admitted != NULL && admitted->name[0] == '\0' &&
-        ff_nodeinfo_req_should_send(&sh->nodeinfo_req, from, shell_now(sh)) &&
-        sh->wiring.sender.send_nodeinfo_request != NULL) {
+        sh->wiring.sender.send_nodeinfo_request != NULL &&
+        ff_nodeinfo_req_should_send(&sh->nodeinfo_req, from, shell_now(sh))) {
         (void)sh->wiring.sender.send_nodeinfo_request(sh->wiring.sender.ctx, from, NULL);
     }
     return true;

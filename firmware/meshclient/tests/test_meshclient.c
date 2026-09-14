@@ -3747,7 +3747,136 @@ static void feat_nodeinfo_request_encodes_want_response_on_nodeinfo_app(void)
      * citation. */
     TEST_ASSERT_TRUE_MESSAGE(pkt->payload_variant.decoded.want_response,
                              "NodeInfoModule only replies to a NODEINFO_APP packet whose want_response bit is set");
-    TEST_ASSERT_EQUAL_UINT32(0u, pkt->payload_variant.decoded.payload.size); /* empty payload — the bit is the ask */
+
+    /* The payload is a meshtastic_User. Nothing has told this client its
+     * own owner names yet, so every field is unset — which proto3
+     * encodes as ZERO bytes ("we have said nothing"), never as a claim
+     * that our name is the empty string. */
+    meshtastic_User user = meshtastic_User_init_zero;
+    pb_istream_t uis = pb_istream_from_buffer(pkt->payload_variant.decoded.payload.bytes,
+                                              pkt->payload_variant.decoded.payload.size);
+    TEST_ASSERT_TRUE(pb_decode(&uis, meshtastic_User_fields, &user));
+    TEST_ASSERT_EQUAL_STRING("", user.long_name);
+    TEST_ASSERT_EQUAL_STRING("", user.short_name);
+    TEST_ASSERT_EQUAL_UINT32(0u, pkt->payload_variant.decoded.payload.size);
+}
+
+/* A want_config nodeDB REPLAY frame carrying names (build_nodeinfo_frame
+ * above is the nameless "traffic is flowing" variant) — the only path
+ * this library learns its OWN owner names from. */
+static uint16_t build_named_nodeinfo_replay_frame(uint32_t num, char const *long_name, char const *short_name,
+                                                  uint8_t *out, size_t out_cap)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_node_info_tag;
+    fr.payload_variant.node_info.num = num;
+    fr.payload_variant.node_info.has_user = true;
+    snprintf(fr.payload_variant.node_info.user.long_name, sizeof(fr.payload_variant.node_info.user.long_name), "%s",
+             long_name);
+    snprintf(fr.payload_variant.node_info.user.short_name, sizeof(fr.payload_variant.node_info.user.short_name), "%s",
+             short_name);
+
+    uint8_t payload[160];
+    pb_ostream_t os = pb_ostream_from_buffer(payload, sizeof(payload));
+    if (!pb_encode(&os, meshtastic_FromRadio_fields, &fr)) {
+        return 0;
+    }
+    return mc_frame_encode(out, out_cap, payload, (uint16_t)os.bytes_written);
+}
+
+/* The payload a real peer writes STRAIGHT INTO ITS NODEDB
+ * (NodeInfoModule::handleReceivedProtobuf -> NodeDB::updateUser). An
+ * empty User there is not a payload-free ask: it is a claim that this
+ * node has no name, and a peer holding no public key for us stores it —
+ * blanking the record this whole feature exists to fill in. So the
+ * request must carry what the RADIO said our owner is. */
+static void feat_nodeinfo_request_carries_our_own_user(void)
+{
+    uint8_t frame[300];
+    uint16_t flen = build_named_nodeinfo_replay_frame(0x1234u, "Jake's Puck", "JKP", frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+    /* The replay names our OWN node — the one path this library learns
+     * its owner names from (there is no other honest source). */
+    c.my_node_id = 0x1234u;
+    c.has_my_node_id = true;
+
+    mc_tick(&c, 5);
+    TEST_ASSERT_EQUAL_INT(1, cap.node_count);
+
+    io.tx_len = 0; /* only the request itself is under the microscope */
+    TEST_ASSERT_EQUAL_INT(0, mc_send_nodeinfo_request(&c, 0x0B0B0B0Bu, NULL));
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    uint16_t txlen = (uint16_t)((io.tx_buf[2] << 8) | io.tx_buf[3]);
+    pb_istream_t is = pb_istream_from_buffer(io.tx_buf + 4, txlen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+
+    meshtastic_Data const *d = &tr.payload_variant.packet.payload_variant.decoded;
+    TEST_ASSERT_EQUAL_INT((int)meshtastic_PortNum_NODEINFO_APP, (int)d->portnum);
+    TEST_ASSERT_TRUE(d->want_response);
+
+    meshtastic_User user = meshtastic_User_init_zero;
+    pb_istream_t uis = pb_istream_from_buffer(d->payload.bytes, d->payload.size);
+    TEST_ASSERT_TRUE(pb_decode(&uis, meshtastic_User_fields, &user));
+    TEST_ASSERT_EQUAL_STRING("Jake's Puck", user.long_name);
+    TEST_ASSERT_EQUAL_STRING("JKP", user.short_name);
+}
+
+/* A replay for SOMEBODY ELSE never becomes our own identity — the
+ * mutation this guards is dropping the `ni->num == my_node_id` test. */
+static void feat_nodeinfo_request_never_borrows_another_nodes_name(void)
+{
+    uint8_t frame[300];
+    uint16_t flen = build_named_nodeinfo_replay_frame(0x9999u, "Somebody Else", "SBE", frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+    c.my_node_id = 0x1234u;
+    c.has_my_node_id = true;
+
+    mc_tick(&c, 5);
+    TEST_ASSERT_EQUAL_INT(1, cap.node_count);
+
+    io.tx_len = 0; /* only the request itself is under the microscope */
+    TEST_ASSERT_EQUAL_INT(0, mc_send_nodeinfo_request(&c, 0x0B0B0B0Bu, NULL));
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    uint16_t txlen = (uint16_t)((io.tx_buf[2] << 8) | io.tx_buf[3]);
+    pb_istream_t is = pb_istream_from_buffer(io.tx_buf + 4, txlen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+
+    meshtastic_Data const *d = &tr.payload_variant.packet.payload_variant.decoded;
+    meshtastic_User user = meshtastic_User_init_zero;
+    pb_istream_t uis = pb_istream_from_buffer(d->payload.bytes, d->payload.size);
+    TEST_ASSERT_TRUE(pb_decode(&uis, meshtastic_User_fields, &user));
+    TEST_ASSERT_EQUAL_STRING("", user.long_name);
+    TEST_ASSERT_EQUAL_STRING("", user.short_name);
 }
 
 static void feat_nodeinfo_request_fails_when_not_ready(void)
@@ -5071,6 +5200,8 @@ int main(void)
     RUN_TEST(feat_get_owner_request_encodes_the_request);
     RUN_TEST(feat_get_owner_request_fails_when_not_ready);
     RUN_TEST(feat_nodeinfo_request_encodes_want_response_on_nodeinfo_app);
+    RUN_TEST(feat_nodeinfo_request_carries_our_own_user);
+    RUN_TEST(feat_nodeinfo_request_never_borrows_another_nodes_name);
     RUN_TEST(feat_nodeinfo_request_fails_when_not_ready);
     RUN_TEST(feat_live_nodeinfo_app_decodes_to_on_nodeinfo_reply);
     RUN_TEST(feat_live_nodeinfo_app_with_no_name_still_fires_with_both_flags_false);

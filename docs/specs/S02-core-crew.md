@@ -899,6 +899,22 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
   hours-scale periodic interval this feature exists to shortcut, long
   enough that a reply (or its absence) has had time to show up.
 
+  **The request carries our own `User`, never an empty payload.**
+  `NodeInfoModule::handleReceivedProtobuf` does not merely check the
+  `want_response` bit: it decodes the request's payload as a
+  `meshtastic_User` and hands it to `NodeDB::updateUser`, which
+  overwrites the peer's stored record of the sender with it (the one
+  escape being the PKI guard, which drops a `User` that doesn't carry
+  the public key the peer already holds — and replies anyway). So an
+  "empty ask" is not payload-free: it is a wire claim that this node has
+  no name, which any peer without our key on file believes, blanking the
+  very name this feature exists to exchange. The names sent are the ones
+  the RADIO last reported for its own owner (the want_config nodeDB
+  entry for `my_node_id`, refreshed by a `get_owner_response`) — never
+  invented, and absent rather than empty when the radio has said
+  nothing. Meshtastic's own clients send their `User` on this exact
+  request (`Meshtastic-Apple`'s `exchangeUserInfo`).
+
   `[api]` — `firmware/meshclient/include/mc_client.h`:
   ```c
   int mc_send_nodeinfo_request(mc_client_t *c, uint32_t dest, uint32_t *out_packet_id);
@@ -957,9 +973,11 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
     A live reply names the member through the existing display-name
     read path. Mirrored at the meshclient layer
     (`firmware/meshclient/tests/test_meshclient.c`): the outgoing
-    packet's `want_response` bit and empty payload; a live NODEINFO_APP
-    packet decodes to `on_nodeinfo_reply` and never `on_node`; a
-    corrupt payload counts `decode_errors` and fires nothing.
+    packet's `want_response` bit and its own-`User` payload (including
+    that it is the RADIO's reported owner and never another node's
+    name); a live NODEINFO_APP packet decodes to `on_nodeinfo_reply`
+    and never `on_node`; a corrupt payload counts `decode_errors` and
+    fires nothing.
 
   App-side counterpart: `docs/specs/A02-crew-join.md` owns the
   equivalent product rule for the companion app

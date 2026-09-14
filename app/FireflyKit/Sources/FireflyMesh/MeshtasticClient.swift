@@ -706,7 +706,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
 
     /// A02 slice C follow-up (bench finding 2026-09-14,
     /// `docs/specs/A02-crew-join.md` §4.4) — see this method's own
-    /// doc comment on `MeshtasticClientProtocol`. Empty payload,
+    /// doc comment on `MeshtasticClientProtocol`.
     /// `want_ack = false` (an ask, not a guaranteed message — nothing
     /// here would retry a lost REQUEST the way `sendAdminRequest`'s
     /// `want_ack = true` covers a lost admin one; a missed ask is simply
@@ -715,9 +715,28 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// packet), `want_response = true` — the one bit that makes a real
     /// `NodeInfoModule` answer at all, same mechanism
     /// `sendAdminRequest`'s own doc comment cites for `AdminModule`.
+    ///
+    /// The payload is OUR OWN `User`, never an empty one, for the
+    /// reason `mc_send_nodeinfo_request` documents in full on the puck:
+    /// `NodeInfoModule::handleReceivedProtobuf` hands whatever we send
+    /// to `NodeDB::updateUser`, so an "empty ask" is a wire claim that
+    /// this node has no name — which a peer holding no public key for
+    /// us stores, blanking the very name this exchange exists to
+    /// establish. The names are the ones the RADIO reported for its own
+    /// owner (`nodeConfig.ownerLongName`/`ownerShortName`, from the
+    /// handshake's nodeDB entry for `myNodeNum` or a confirmed
+    /// `setOwner`); one the radio has never reported is left unset
+    /// rather than guessed at, and an unset name encodes as absent
+    /// (proto3) rather than as a claim of emptiness. Meshtastic's own
+    /// iOS client does the same thing for the same request
+    /// (`exchangeUserInfo`).
     @discardableResult
     public func requestNodeInfo(from nodeID: UInt32) async throws -> UInt32 {
-        try await sendData(Data(), portnum: .nodeinfoApp, to: nodeID, wantAck: false, wantResponse: true)
+        var user = User()
+        if let longName = nodeConfig.ownerLongName, !longName.isEmpty { user.longName = longName }
+        if let shortName = nodeConfig.ownerShortName, !shortName.isEmpty { user.shortName = shortName }
+        let payload = (try? user.serializedData()) ?? Data()
+        return try await sendData(payload, portnum: .nodeinfoApp, to: nodeID, wantAck: false, wantResponse: true)
     }
 
     /// The one packet-minting/writing path `sendPosition`, `sendPrivate`

@@ -872,6 +872,19 @@ typedef struct mc_client {
     uint32_t my_node_id;
     bool has_my_node_id;
 
+    /* Our OWN owner names and hardware model, as most recently reported
+     * by the radio itself (the want_config nodeDB entry for
+     * `my_node_id`, refreshed by an `AdminMessage.get_owner_response`).
+     * Radio-sourced, never invented: each stays "" / UNSET until the
+     * radio says otherwise, and a later report that omits a field never
+     * blanks a name already learned. Read by
+     * `mc_send_nodeinfo_request`, whose payload IS a `meshtastic_User`
+     * that the peer writes straight into its nodeDB — see that
+     * function's doc comment for why an EMPTY one is not an option. */
+    char     my_long_name[MC_NAME_MAX];
+    char     my_short_name[MC_NAME_MAX];
+    uint32_t my_hw_model;
+
     uint32_t want_config_id;
     uint32_t rng_state;
     uint32_t next_packet_id;
@@ -1138,8 +1151,8 @@ int mc_send_set_owner(mc_client_t *c, uint32_t dest, char const *long_name, char
 int mc_send_get_owner_request(mc_client_t *c, uint32_t dest);
 
 /**
- * mc_send_nodeinfo_request — `[api]` bench finding 2026-09-14: send an
- * empty-payload `NODEINFO_APP` packet to `dest` with
+ * mc_send_nodeinfo_request — `[api]` bench finding 2026-09-14: send a
+ * `NODEINFO_APP` packet to `dest` carrying THIS node's own `User` with
  * `meshtastic_Data.want_response = true`, asking it to reply with its
  * own `User` right away instead of waiting for its next periodic
  * NodeInfo broadcast (Meshtastic's stock interval is hours-scale — see
@@ -1170,13 +1183,36 @@ int mc_send_get_owner_request(mc_client_t *c, uint32_t dest);
  * with the bit unset is silently answered with nothing" rule, a
  * different module.
  *
- * The request's own payload is empty: `NodeInfoModule` decodes it as a
- * `meshtastic_User` (all fields default/zero) purely to run its
- * `is_licensed` sanity check against its own `owner.is_licensed`, which
- * an all-zero (unlicensed) request always satisfies for an unlicensed
- * or default-configured node — this library does not need to (and does
- * not) populate any field of the request itself; the payload's only job
- * is carrying the `want_response` bit.
+ * **The payload is our own `User`, and must never be an empty one.**
+ * `NodeInfoModule::handleReceivedProtobuf` does not merely inspect the
+ * request's payload for the `want_response` bit's sake — it decodes it
+ * as a `meshtastic_User` and hands it to `NodeDB::updateUser`, which
+ * overwrites the peer's stored record for our node with it (the one
+ * escape is the PKI guard: a peer that already holds a 32-byte public
+ * key for us drops any `User` that doesn't carry the matching key, and
+ * replies anyway). So an "empty ask" is not payload-free — it is a wire
+ * claim that this node has no name, and any peer without our key on
+ * file believes it, blanking the very name this feature exists to
+ * exchange. Sending our own names instead is also what Meshtastic's own
+ * clients do for this exact request (`Meshtastic-Apple`'s
+ * `exchangeUserInfo`, `NODEINFO_APP` + `wantResponse`, payload = the
+ * local `User`).
+ *
+ * The names come from `mc_client_t.my_long_name`/`my_short_name` — what
+ * the RADIO last said about its own owner (its want_config nodeDB entry
+ * for `my_node_id`, refreshed by a `get_owner_response`), never
+ * anything this library invented. Before the radio has said anything
+ * they are empty, and an empty name is encoded as absent (proto3
+ * implicit presence) rather than as a claim of emptiness.
+ *
+ * `is_licensed` is sent false, and `NodeInfoModule` discards the `User`
+ * of a request whose `is_licensed` differs from its OWN owner's — so a
+ * licensed (HAM) peer learns nothing from this payload. It still
+ * REPLIES (the reply is `MeshModule::callModules`' job, run before that
+ * module return value is even looked at), which is what this call is
+ * for. Accepted, not worked around: this library has no honest way to
+ * know the wearer's licence status, and inventing one to satisfy a
+ * remote check would be a lie about a legal fact.
  *
  * Rides `NODEINFO_APP` (portnum 4). `want_ack` is false — the value of
  * this call is the reply's `User` payload

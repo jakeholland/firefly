@@ -11639,9 +11639,10 @@ static void NIR_named_member_readmission_never_requests(void)
     a02_connect_on_crew();
 
     /* Admit and name DANA BEFORE the spy is bound, so the initial
-     * nameless admission (nothing to call through yet — no sender
-     * bound at all) cannot be mistaken for the readmission this test
-     * actually checks. */
+     * nameless admission (which goes to ff_shell_init's own mc-backed
+     * sender, whose client is not READY in this harness, and is
+     * therefore invisible here) cannot be mistaken for the readmission
+     * this test actually checks. */
     a02_inject_qualifying(DANA);
     inject_node(DANA, "DANA", 100u); /* replay-shaped naming, existing precedent */
     TEST_ASSERT_EQUAL_STRING("DANA", member(DANA)->name);
@@ -11713,6 +11714,45 @@ static void NIR_rate_limit_honoured(void)
     H.clk.t += 10u * 60u * 1000u; /* FF_NODEINFO_REQ_RATE_LIMIT_MS */
     a02_inject_qualifying(STRANGER);
     TEST_ASSERT_EQUAL_INT(2, NIRS.calls);
+}
+
+/* The rate limit must only ever be spent on a request that was actually
+ * attempted. `ff_nodeinfo_req_should_send` RECORDS on a true return, so
+ * asking it BEFORE checking that a `send_nodeinfo_request` exists would
+ * burn ten minutes on a node nobody ever asked. Reachable: a sender
+ * bound with only some of its entries filled in is exactly what the sim
+ * bench's own fixtures do (`test_ctl_quick_flare.c`'s partial
+ * `ff_wiring_sender_t`), and `ff_wiring_sender_t.send_nodeinfo_request`
+ * is documented as "may be NULL". */
+static void NIR_no_sender_bound_never_burns_the_rate_limit(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+
+    /* A partial sender — nothing bound for NodeInfo requests at all. */
+    ff_wiring_sender_t partial;
+    memset(&partial, 0, sizeof(partial));
+    ff_shell_set_sender(&H.shell, partial);
+
+    a02_inject_qualifying(STRANGER);
+    TEST_ASSERT_TRUE(member(STRANGER)->paired);
+    TEST_ASSERT_EQUAL_STRING("", member(STRANGER)->name);
+
+    /* Bind a real sender and re-admit well INSIDE the ten-minute
+     * window: this is the first chance to ask, so it must be taken. */
+    nir_bind();
+    ff_intent_t hide = {.kind = FF_INTENT_CREW_HIDE, .u = {0}};
+    hide.u.node_id = STRANGER;
+    ff_intent_t unhide = {.kind = FF_INTENT_CREW_UNHIDE, .u = {0}};
+    unhide.u.node_id = STRANGER;
+    (void)ff_shell_intent(&H.shell, &hide);
+    (void)ff_shell_intent(&H.shell, &unhide);
+
+    H.clk.t += 60u * 1000u;
+    a02_inject_qualifying(STRANGER);
+    TEST_ASSERT_TRUE(member(STRANGER)->paired);
+    TEST_ASSERT_EQUAL_INT(1, NIRS.calls);
+    TEST_ASSERT_EQUAL_UINT32(STRANGER, NIRS.last_dest);
 }
 
 static void NIR_reply_names_the_member(void)
@@ -13142,6 +13182,7 @@ int main(void)
     RUN_TEST(NIR_named_member_readmission_never_requests);
     RUN_TEST(NIR_replay_never_requests);
     RUN_TEST(NIR_rate_limit_honoured);
+    RUN_TEST(NIR_no_sender_bound_never_burns_the_rate_limit);
     RUN_TEST(NIR_reply_names_the_member);
     RUN_TEST(S02_AC12_no_matching_channel_admits_nobody_and_reports_no_code);
     RUN_TEST(S02_AC12_resolves_at_a_nonzero_index);

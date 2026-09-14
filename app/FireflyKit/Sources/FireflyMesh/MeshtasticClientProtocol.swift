@@ -441,10 +441,13 @@ public protocol MeshtasticClientProtocol: AnyObject, Sendable {
     /// `CrewMembershipEngine` calls this once per successful admission
     /// of a still-nameless member, rate-limited to once per node per
     /// ten minutes (`CrewNodeInfoRequestThrottle`, `FireflyModel`).
-    /// Sends an EMPTY payload on `NODEINFO_APP` with
+    /// Sends THIS node's own `User` on `NODEINFO_APP` with
     /// `want_response = true` and `want_ack = false` — a genuine ask,
     /// not a guaranteed message, mirroring firmware's own
-    /// `mc_send_nodeinfo_request` (`firmware/meshclient`):
+    /// `mc_send_nodeinfo_request` (`firmware/meshclient`), whose doc
+    /// comment carries the full reasoning for why the payload is our
+    /// `User` and never an empty one (the peer writes it straight into
+    /// its nodeDB, so an empty one blanks its record of us):
     /// `NodeInfoModule::allocReply` (verified against
     /// meshtastic/firmware tag `v2.7.26.54e0d8d`,
     /// `src/modules/NodeInfoModule.cpp`) replies with its own `User` to
