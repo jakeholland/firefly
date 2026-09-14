@@ -1726,11 +1726,52 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         }
 
         switch data.portnum {
+        case .nodeinfoApp:
+            // A02 slice C (`docs/specs/A02-crew-join.md` §4.2.1 item 4):
+            // this case did not exist, so a LIVE NodeInfo broadcast fell
+            // through `default:` and was dropped — `.nodeInfo` only ever
+            // reached `NodeDB` down the `FromRadio` nodeDB REPLAY path,
+            // which is exactly the path §4.2 refuses to admit crew from.
+            // AC11's NodeInfo case had nothing to fire on until this.
+            //
+            // The payload of a `NODEINFO_APP` packet is a `User`, not a
+            // `NodeInfo` — the nodeDB record is the radio's own wrapper
+            // around it. So the wrapper is rebuilt here from what this
+            // packet actually proves: the sender's `num` (from the
+            // packet, never the payload — `User.id` is a self-declared
+            // string and a node may not set it) and the names it just
+            // announced. Nothing else is filled in: no position, no
+            // hops, no via_mqtt claim — `NodeDB.apply(nodeInfo:)` keeps
+            // whatever it already held for those.
+            guard let user = try? User(serializedBytes: data.payload) else { return }
+            var info = NodeInfo()
+            info.num = pkt.from
+            info.user = user
+            // #294's rule (AGENTS.md's standing brief; `CoreStore
+            // .plausibleTimestamp`'s own doc comment): a timestamp from
+            // a foreign clock is a CLAIM, and one AHEAD of our clock is
+            // not a measurement — `ff_crew`'s unsigned age arithmetic
+            // turns even a few seconds of forward skew into ~49 days.
+            // Refused here rather than clamped, so the snapshot simply
+            // carries no `lastHeard` from this packet and the downstream
+            // three-tier resolution falls through to `observedAt` — the
+            // one timestamp measured by the device the user is holding.
+            if let rx = Self.plausibleRxTime(pkt) {
+                info.lastHeard = UInt32(rx.timeIntervalSince1970)
+            }
+            // A live packet IS an observation: it arrived here, now.
+            nodeHub.yield(nodeDB.apply(nodeInfo: info, observedAt: Date())
+                .carrying(Self.rxMetaFacts(for: pkt)))
+
         case .positionApp:
             guard let pb = try? Position(serializedBytes: data.payload) else { return }
             let rxTime: Date? = pkt.hasRxTime ? Date(timeIntervalSince1970: TimeInterval(pkt.rxTime)) : nil
             if let snapshot = nodeDB.apply(position: pb, from: pkt.from, rxTime: rxTime) {
-                nodeHub.yield(snapshot)
+                // A02 slice C: carries the packet facts too, so a live
+                // position snapshot is never mistaken for a replay entry
+                // by a consumer reading `rxMeta` (`MeshRxMeta`'s own doc
+                // comment — nil means "not from a packet").
+                nodeHub.yield(snapshot.carrying(Self.rxMetaFacts(for: pkt)))
             }
 
         case .routingApp:
@@ -1824,10 +1865,66 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         return (rssi, snr, path, direct)
     }
 
+    /// The packet-level facts A02 §4.1's admission rule is stated in
+    /// terms of, read straight off the wire with no interpretation —
+    /// see `MeshRxMeta`. `portnum` is `nil` for a packet that did not
+    /// reach us decrypted, because such a packet HAS no portnum.
+    static func rxMetaFacts(for pkt: MeshPacket) -> MeshRxMeta {
+        let decodedPortnum: Int32? = {
+            if case .decoded(let d) = pkt.payloadVariant { return Int32(d.portnum.rawValue) }
+            return nil
+        }()
+        return MeshRxMeta(from: pkt.from, channelIndex: pkt.channel, viaMQTT: pkt.viaMqtt,
+                          portnum: decodedPortnum, decrypted: decodedPortnum != nil)
+    }
+
+    /// `MeshPacket.rx_time` — OUR radio's own reception stamp — only
+    /// when it is a plausible measurement. Mirrors `CoreStore
+    /// .plausibleTimestamp`'s two rejections (nothing ahead of our
+    /// clock; nothing from before Meshtastic existed) rather than
+    /// re-deciding them: that function lives in `FireflyModel`, which
+    /// depends on THIS module, so the rule is duplicated here by hand
+    /// and must be kept in step with it. Deliberately applied only to
+    /// the NodeInfo path this slice adds — the existing `.positionApp`
+    /// path passes `rx_time` through untouched and is gated downstream
+    /// by `CoreStore` exactly as it was before, and widening that here
+    /// would be a behaviour change outside this slice.
+    static func plausibleRxTime(_ pkt: MeshPacket, now: Date = Date()) -> Date? {
+        guard pkt.hasRxTime else { return nil }
+        let stamp = Date(timeIntervalSince1970: TimeInterval(pkt.rxTime))
+        guard stamp <= now else { return nil }
+        // 2020-01-01 UTC — `CoreStore.earliestPlausibleTimestamp`.
+        guard stamp.timeIntervalSince1970 >= 1_577_836_800 else { return nil }
+        return stamp
+    }
+
     private func applyRxMeta(for pkt: MeshPacket) {
         let meta = rxMeta(for: pkt)
+        let facts = Self.rxMetaFacts(for: pkt)
+        // A02 slice C: a snapshot is now published for EVERY packet
+        // naming a sender, not only for one whose RSSI could be
+        // attributed. That is not extra noise, it is the event this
+        // client already claimed to fire ("on_rx_meta fires before any
+        // payload event, for any packet naming a sender") finally
+        // becoming observable: before this, a TEXT_MESSAGE_APP or
+        // portnum-269 packet from an id with no nodeDB record produced
+        // no `nodeUpdates()` element at all, so A02 §4.1's admission
+        // rule had nothing to run on and a joiner whose first packet
+        // was a message could never be admitted.
+        //
+        // What is published is deliberately the node's EXISTING record
+        // carrying the new packet facts, never a blank one: a consumer
+        // that replaces by `num` (`NearbyNodesViewModel.apply(_:)`)
+        // must not lose a name to a packet that carried none.
         if let snapshot = nodeDB.applyRxMeta(from: pkt.from, rssiDbm: meta.rssiDbm, snrDb: meta.snrDb, path: meta.path) {
-            nodeHub.yield(snapshot)
+            nodeHub.yield(snapshot.carrying(facts))
+            return
+        }
+        let observedAt = Date()
+        if let existing = nodeDB.node(pkt.from) {
+            nodeHub.yield(existing.carrying(facts, observedAt: observedAt))
+        } else {
+            nodeHub.yield(.unidentified(num: pkt.from, rxMeta: facts, observedAt: observedAt))
         }
     }
 

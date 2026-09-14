@@ -48,6 +48,29 @@ public final class CoreStore {
     /// `ff_find_t` would be a second session, and S29 allows exactly one.
     public let find = FindBridge()
 
+    /// A02 slice C (AC13): the MEMBERSHIP GATE in front of
+    /// `apply(nodeUpdate:)`. A node that is neither already crew nor
+    /// being admitted by A02 §4.1 is not fed into `ff_crew` at all —
+    /// which is what stops a replayed nodeDB of 200 strangers from
+    /// populating the roster (issue #266's remaining app-side live
+    /// exposure; the core half landed 2026-09-11).
+    ///
+    /// `nil` means NO GATE, and that is the honest default rather than
+    /// an oversight: a composition with no crew — `CoreStoreTests`, the
+    /// demo bundle, any headless consumer — has no membership policy to
+    /// enforce, and silently dropping every node for it would be a
+    /// behaviour change dressed up as a safety measure. The live graph
+    /// (`AppGraph`) always sets one.
+    ///
+    /// Held STRONGLY on purpose. A weak reference here would fail OPEN —
+    /// the gate silently disappearing and every stranger flowing back
+    /// into `ff_crew` — the moment a caller forgot to retain the engine,
+    /// which is exactly the kind of quiet policy loss this slice exists
+    /// to close. There is no cycle to avoid: the engine reaches
+    /// `CrewPairingController` -> `CrewStore`, and `CrewStore` holds no
+    /// reference back to this type.
+    public var membership: (any CrewMembershipGating)?
+
     private var linkObservation: Task<Void, Never>?
     private var nodeObservation: Task<Void, Never>?
     private var deliveryObservation: Task<Void, Never>?
@@ -141,6 +164,16 @@ public final class CoreStore {
     /// real friends" ceiling `ff_heard_t` exists on the firmware side to
     /// avoid — see #273 before building one.
     public func apply(nodeUpdate: MeshNodeSnapshot) {
+        // A02 AC13 — the gate, and it is in FRONT of everything below
+        // rather than folded into the four `crew.*` conditions further
+        // down. Those conditions are a FRESHNESS policy ("is this datum
+        // a measurement we can honestly date?") written out at length
+        // below, and they are deliberately left untouched by this slice:
+        // a membership decision and a freshness decision are different
+        // questions, and merging them would mean either could be
+        // "fixed" by loosening the other.
+        if let membership, !membership.admits(nodeUpdate) { return }
+
         let nowDate = Date()
 
         // Identity first: the roster slot has to exist and carry
