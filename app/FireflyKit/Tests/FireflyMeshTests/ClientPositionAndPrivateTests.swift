@@ -267,4 +267,41 @@ final class ClientPositionAndPrivateTests: XCTestCase {
         XCTAssertEqual(client.connectedNodeNum, 48_621_524)
         await client.disconnect()
     }
+
+    // MARK: - A02 slice C follow-up: NodeInfo-request-on-nameless-admission
+    // (bench finding 2026-09-14, docs/specs/A02-crew-join.md §4.4)
+
+    func testRequestNodeInfoSendsAnEmptyWantResponseNodeInfoAppPacket() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport)
+
+        try await client.requestNodeInfo(from: 0x02E6_06B0)
+
+        let packet = try decodeSentPacket(transport)
+        XCTAssertEqual(packet.to, 0x02E6_06B0, "addressed to the node being asked, not to the connected node")
+        XCTAssertFalse(packet.wantAck, "an ask, not a guaranteed message — never retried at the mesh level")
+        guard case .decoded(let data) = packet.payloadVariant else { return XCTFail("not a decoded payload") }
+        XCTAssertEqual(data.portnum, .nodeinfoApp)
+        XCTAssertTrue(data.payload.isEmpty, "the request carries no User of its own — it is asking for one")
+        XCTAssertTrue(data.wantResponse,
+                      "REQUIRED for a real NodeInfoModule to answer at all (NodeInfoModule::allocReply)")
+    }
+
+    func testRequestNodeInfoNeverSetsWantResponseOnOrdinarySends() async throws {
+        // Regression guard for the shared `sendData` helper `sendPosition`/
+        // `sendPrivate`/`requestNodeInfo` all route through: adding the
+        // `wantResponse` parameter must not leak `true` onto the two
+        // existing callers that never asked for it.
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport)
+
+        try await client.sendPosition(fix(), to: 1)
+        try await client.sendPrivate(Data([0x01]), to: 1, wantAck: false)
+
+        for index in 0..<2 {
+            let packet = try decodeSentPacket(transport, index: index)
+            guard case .decoded(let data) = packet.payloadVariant else { return XCTFail("not a decoded payload") }
+            XCTAssertFalse(data.wantResponse, "only requestNodeInfo asks for a response")
+        }
+    }
 }

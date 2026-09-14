@@ -470,6 +470,32 @@ static void mc_process_mesh_packet(mc_client_t *c, meshtastic_MeshPacket const *
          * does for the same condition (`ni->has_position &&
          * ni->position.has_latitude_i && ni->position.has_longitude_i`,
          * with no else branch at all). */
+    } else if (portnum == (uint32_t)meshtastic_PortNum_NODEINFO_APP) {
+        /* Bench finding 2026-09-14 — see mc_events_t.on_nodeinfo_reply's
+         * own doc comment for why this is a SEPARATE event from
+         * on_node's want_config replay, and mc_user_reply_t's for why
+         * it decodes a narrower type: a live NODEINFO_APP packet's
+         * payload is only a meshtastic_User, nothing else. Fires
+         * regardless of whether THIS device solicited it with
+         * mc_send_nodeinfo_request — a crew member's own unsolicited
+         * periodic re-announcement is just as good an answer. */
+        meshtastic_User user = meshtastic_User_init_zero;
+        pb_istream_t is = pb_istream_from_buffer(d->payload.bytes, d->payload.size);
+        if (!pb_decode(&is, meshtastic_User_fields, &user)) {
+            c->stats.decode_errors++;
+        } else if (c->events.on_nodeinfo_reply != NULL) {
+            mc_user_reply_t out;
+            memset(&out, 0, sizeof(out));
+            if (user.long_name[0] != '\0') {
+                out.has_long_name = true;
+                mc_copy_name(out.long_name, user.long_name);
+            }
+            if (user.short_name[0] != '\0') {
+                out.has_short_name = true;
+                mc_copy_name(out.short_name, user.short_name);
+            }
+            c->events.on_nodeinfo_reply(c->events.user, pkt->from, &out);
+        }
     } else if (portnum == (uint32_t)meshtastic_PortNum_TELEMETRY_APP) {
         /* Diagnostics — see mc_events_t.on_telemetry's own doc comment.
          * `Telemetry` is a oneof over several metric kinds; this library
@@ -1251,6 +1277,18 @@ int mc_send_get_owner_request(mc_client_t *c, uint32_t dest)
      * function's own doc comment (mc_client.h) for why. */
     return mc_send_data_packet_ex(c, dest, (uint32_t)meshtastic_PortNum_ADMIN_APP, payload, os.bytes_written, false,
                                    /*want_response=*/true, NULL);
+}
+
+int mc_send_nodeinfo_request(mc_client_t *c, uint32_t dest, uint32_t *out_packet_id)
+{
+    /* Empty payload — see this function's own doc comment (mc_client.h)
+     * for why NodeInfoModule needs nothing in the request beyond the
+     * want_response bit on Data itself. want_ack stays false (the value
+     * here is the reply's User payload, not a routing receipt); want_response
+     * is the whole point, mirroring mc_send_get_owner_request's identical
+     * bit on a different module. */
+    return mc_send_data_packet_ex(c, dest, (uint32_t)meshtastic_PortNum_NODEINFO_APP, NULL, 0, /*want_ack=*/false,
+                                   /*want_response=*/true, out_packet_id);
 }
 
 /* ------------------------------------------------------------------ */

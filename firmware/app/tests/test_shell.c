@@ -7118,7 +7118,7 @@ static void S24_demo_loopback_seam_makes_out_items_appear(void)
     ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell))); /* refused -> no OUT item */
 
-    ff_wiring_sender_t loop = {s24d_loop_send_text, s24d_loop_send_private, NULL, NULL, NULL, NULL, NULL};
+    ff_wiring_sender_t loop = {s24d_loop_send_text, s24d_loop_send_private, NULL, NULL, NULL, NULL, NULL, NULL};
     ff_shell_set_sender(&H.shell, loop);
     ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell))); /* accepted -> OUT item appears */
@@ -7909,7 +7909,7 @@ static void flare_wire_spy_install(bool accept)
 {
     memset(&S, 0, sizeof(S));
     S.accept = accept;
-    ff_wiring_sender_t const sender = {flare_wire_spy_send_text, flare_wire_spy_send_private, &S, NULL, NULL, NULL, NULL};
+    ff_wiring_sender_t const sender = {flare_wire_spy_send_text, flare_wire_spy_send_private, &S, NULL, NULL, NULL, NULL, NULL};
     ff_shell_set_sender(&H.shell, sender);
 }
 
@@ -11566,6 +11566,168 @@ static void S02_AC11_existing_paired_members_survive_the_switch(void)
     TEST_ASSERT_TRUE(member(DANA)->paired);
 }
 
+/* --- bench finding 2026-09-14: NodeInfo request on nameless admission,
+ * and the live reply naming a member (shell_try_admit / shell_ev_
+ * nodeinfo_reply) ----------------------------------------------------- */
+
+/* A recording "radio" for send_nodeinfo_request — same shape as every
+ * other wire spy in this file (d2_wire_spy_t below, name_wire_spy_t
+ * elsewhere). */
+typedef struct {
+    int      calls;
+    uint32_t last_dest;
+} nir_wire_spy_t;
+
+static nir_wire_spy_t NIRS;
+
+static int nir_spy_send_nodeinfo_request(void *ctx, uint32_t dest, uint32_t *out_packet_id)
+{
+    (void)ctx;
+    NIRS.calls++;
+    NIRS.last_dest = dest;
+    if (out_packet_id != NULL) *out_packet_id = 0x7788u;
+    return 0;
+}
+
+/** Bind the spy sender, nothing else — deliberately NOT folded into
+ *  a02_harness_init, same discipline d2_bind documents for its own
+ *  sender. Callers that want to isolate a SPECIFIC admission's request
+ *  (rather than an earlier one) bind this AFTER that earlier admission. */
+static void nir_bind(void)
+{
+    memset(&NIRS, 0, sizeof(NIRS));
+    ff_wiring_sender_t sender;
+    memset(&sender, 0, sizeof(sender));
+    sender.send_nodeinfo_request = nir_spy_send_nodeinfo_request;
+    ff_shell_set_sender(&H.shell, sender);
+}
+
+/** A live NODEINFO_APP reply's User fields — mc_events_t.on_nodeinfo_
+ *  reply's exact shape (mc_user_reply_t), as opposed to inject_node's
+ *  want_config replay shape (mc_nodeinfo_t). */
+static void nir_inject_reply(uint32_t node, char const *short_name, char const *long_name)
+{
+    mc_user_reply_t u;
+    memset(&u, 0, sizeof(u));
+    if (short_name != NULL) {
+        u.has_short_name = true;
+        strncpy(u.short_name, short_name, sizeof(u.short_name) - 1);
+    }
+    if (long_name != NULL) {
+        u.has_long_name = true;
+        strncpy(u.long_name, long_name, sizeof(u.long_name) - 1);
+    }
+    H.ev.on_nodeinfo_reply(H.ev.user, node, &u);
+}
+
+static void NIR_nameless_admission_requests_nodeinfo_once(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    nir_bind();
+
+    a02_inject_qualifying(STRANGER);
+    TEST_ASSERT_NOT_NULL(member(STRANGER));
+    TEST_ASSERT_EQUAL_STRING("", member(STRANGER)->name);
+    TEST_ASSERT_EQUAL_INT(1, NIRS.calls);
+    TEST_ASSERT_EQUAL_UINT32(STRANGER, NIRS.last_dest);
+}
+
+static void NIR_named_member_readmission_never_requests(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+
+    /* Admit and name DANA BEFORE the spy is bound, so the initial
+     * nameless admission (nothing to call through yet — no sender
+     * bound at all) cannot be mistaken for the readmission this test
+     * actually checks. */
+    a02_inject_qualifying(DANA);
+    inject_node(DANA, "DANA", 100u); /* replay-shaped naming, existing precedent */
+    TEST_ASSERT_EQUAL_STRING("DANA", member(DANA)->name);
+
+    nir_bind();
+
+    /* Hide unpairs DANA (§4.5) without touching the roster slot's name
+     * — "hide = unpair + remember", not erase. Unhide, then a fresh
+     * qualifying packet re-admits through shell_try_admit a second
+     * time — the readmission this test is actually about. */
+    ff_intent_t hide = {.kind = FF_INTENT_CREW_HIDE, .u = {0}};
+    hide.u.node_id = DANA;
+    (void)ff_shell_intent(&H.shell, &hide);
+    ff_intent_t unhide = {.kind = FF_INTENT_CREW_UNHIDE, .u = {0}};
+    unhide.u.node_id = DANA;
+    (void)ff_shell_intent(&H.shell, &unhide);
+
+    a02_inject_qualifying(DANA);
+    TEST_ASSERT_TRUE(member(DANA)->paired);
+    TEST_ASSERT_EQUAL_STRING("DANA", member(DANA)->name); /* still named */
+    TEST_ASSERT_EQUAL_INT(0, NIRS.calls);
+}
+
+static void NIR_replay_never_requests(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    nir_bind();
+
+    /* The want_config NodeInfo REPLAY for a node never admitted at all
+     * — shell_ev_node never routes through shell_try_admit (S02
+     * amendment §B), so there is no roster slot to check a name
+     * against and nothing to send. Mirrors S02_AC11_the_want_config_
+     * nodeinfo_replay_admits_nobody's own fixture. */
+    inject_node(STRANGER, "GHOST", 100u);
+    TEST_ASSERT_NULL(member(STRANGER));
+    TEST_ASSERT_EQUAL_INT(0, NIRS.calls);
+}
+
+static void NIR_rate_limit_honoured(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    nir_bind();
+
+    a02_inject_qualifying(STRANGER);
+    TEST_ASSERT_EQUAL_INT(1, NIRS.calls);
+
+    /* Hide + unhide WITHOUT ever naming STRANGER — still nameless, so
+     * only the rate limit stands between re-admission and a second
+     * request. */
+    ff_intent_t hide = {.kind = FF_INTENT_CREW_HIDE, .u = {0}};
+    hide.u.node_id = STRANGER;
+    ff_intent_t unhide = {.kind = FF_INTENT_CREW_UNHIDE, .u = {0}};
+    unhide.u.node_id = STRANGER;
+    (void)ff_shell_intent(&H.shell, &hide);
+    (void)ff_shell_intent(&H.shell, &unhide);
+
+    /* Well inside the 10-minute window: re-admission must NOT ask again. */
+    H.clk.t += 60u * 1000u;
+    a02_inject_qualifying(STRANGER);
+    TEST_ASSERT_TRUE(member(STRANGER)->paired);
+    TEST_ASSERT_EQUAL_INT(1, NIRS.calls);
+
+    /* Past the window: hide/unhide once more, then a fresh qualifying
+     * packet is due to ask again. */
+    (void)ff_shell_intent(&H.shell, &hide);
+    (void)ff_shell_intent(&H.shell, &unhide);
+    H.clk.t += 10u * 60u * 1000u; /* FF_NODEINFO_REQ_RATE_LIMIT_MS */
+    a02_inject_qualifying(STRANGER);
+    TEST_ASSERT_EQUAL_INT(2, NIRS.calls);
+}
+
+static void NIR_reply_names_the_member(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    a02_inject_qualifying(STRANGER);
+    TEST_ASSERT_EQUAL_STRING("", member(STRANGER)->name);
+    TEST_ASSERT_EQUAL_STRING("", member(STRANGER)->long_name);
+
+    nir_inject_reply(STRANGER, "STR", "Stranger Danger");
+    TEST_ASSERT_EQUAL_STRING("STR", member(STRANGER)->name);
+    TEST_ASSERT_EQUAL_STRING("Stranger Danger", member(STRANGER)->long_name);
+}
+
 /* --- S02_AC12: index resolution ------------------------------------ */
 
 static void S02_AC12_no_matching_channel_admits_nobody_and_reports_no_code(void)
@@ -12976,6 +13138,11 @@ int main(void)
     RUN_TEST(S02_AC11_the_want_config_nodeinfo_replay_admits_nobody);
     RUN_TEST(S02_AC11_auto_crew_off_admits_nobody);
     RUN_TEST(S02_AC11_existing_paired_members_survive_the_switch);
+    RUN_TEST(NIR_nameless_admission_requests_nodeinfo_once);
+    RUN_TEST(NIR_named_member_readmission_never_requests);
+    RUN_TEST(NIR_replay_never_requests);
+    RUN_TEST(NIR_rate_limit_honoured);
+    RUN_TEST(NIR_reply_names_the_member);
     RUN_TEST(S02_AC12_no_matching_channel_admits_nobody_and_reports_no_code);
     RUN_TEST(S02_AC12_resolves_at_a_nonzero_index);
     RUN_TEST(S02_AC12_name_alone_is_not_enough);

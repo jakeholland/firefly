@@ -704,16 +704,33 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         return try await sendData(payload, portnum: portnum, to: destination, wantAck: effectiveWantAck)
     }
 
-    /// The one packet-minting/writing path `sendPosition` and
-    /// `sendPrivate` share. Deliberately NOT shared with `sendText`:
-    /// that one additionally mints an outbox id, publishes
+    /// A02 slice C follow-up (bench finding 2026-09-14,
+    /// `docs/specs/A02-crew-join.md` §4.4) — see this method's own
+    /// doc comment on `MeshtasticClientProtocol`. Empty payload,
+    /// `want_ack = false` (an ask, not a guaranteed message — nothing
+    /// here would retry a lost REQUEST the way `sendAdminRequest`'s
+    /// `want_ack = true` covers a lost admin one; a missed ask is simply
+    /// not due again for another `CrewNodeInfoRequestThrottle.rateLimit`
+    /// once the throttle allows a retry from the next qualifying
+    /// packet), `want_response = true` — the one bit that makes a real
+    /// `NodeInfoModule` answer at all, same mechanism
+    /// `sendAdminRequest`'s own doc comment cites for `AdminModule`.
+    @discardableResult
+    public func requestNodeInfo(from nodeID: UInt32) async throws -> UInt32 {
+        try await sendData(Data(), portnum: .nodeinfoApp, to: nodeID, wantAck: false, wantResponse: true)
+    }
+
+    /// The one packet-minting/writing path `sendPosition`, `sendPrivate`
+    /// and `requestNodeInfo` share. Deliberately NOT shared with
+    /// `sendText`: that one additionally mints an outbox id, publishes
     /// WAITING/SENT/DROPPED and registers a `pendingSends` entry so a
     /// routing ack can find it — none of which applies here.
     private func sendData(_ payload: Data, portnum: PortNum, to destination: UInt32,
-                          wantAck: Bool) async throws -> UInt32 {
+                          wantAck: Bool, wantResponse: Bool = false) async throws -> UInt32 {
         var data = DataMessage()
         data.portnum = portnum
         data.payload = payload
+        if wantResponse { data.wantResponse = true }
 
         // Same wire limit as `sendText`'s (no delivery bookkeeping to
         // resolve here — see this method's own doc comment). Firefly's

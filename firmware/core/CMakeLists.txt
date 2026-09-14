@@ -628,3 +628,18 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_crewstart COMMAND test_crewstart)
 endif()
+
+# Bench finding 2026-09-14 — core/nodeinfo_req: the rate-limit state
+# behind "ask a nameless crew member for their NodeInfo" (see
+# ff_nodeinfo_req.h). Pure C11, no I/O — the decision and its bounded
+# per-node memory; the actual send lives in app/ff_shell.c +
+# meshclient/mc_client.c.
+if(FF_BUILD_TESTS)
+    add_executable(test_nodeinfo_req
+        tests/test_nodeinfo_req.c
+    )
+    target_link_libraries(test_nodeinfo_req PRIVATE ff-core unity)
+    ff_apply_warnings(test_nodeinfo_req)
+
+    add_test(NAME test_nodeinfo_req COMMAND test_nodeinfo_req)
+endif()

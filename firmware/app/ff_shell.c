@@ -24,6 +24,7 @@
 #include "ff_geo.h"
 #include "ff_meshname.h" /* NAME in Settings — charset sanitize + short-name derivation */
 #include "ff_multitap.h" /* S10 quick flare — the N-presses-within-a-window counter FSM */
+#include "ff_nodeinfo_req.h" /* bench finding 2026-09-14 — NodeInfo-request rate limit */
 #include "ff_notify.h" /* S26(d) — the notification queue */
 #include "ff_proto.h"
 #include "ff_radar.h"
@@ -813,6 +814,13 @@ typedef struct {
      * other list in this file that untrusted RF can fill. */
     uint32_t overflow_ids[FF_HEARD_MAX];
     uint8_t  overflow_count;
+
+    /* Bench finding 2026-09-14 — rate-limit state behind "ask a
+     * nameless newly-admitted member for their NodeInfo" (see
+     * shell_try_admit and core/include/ff_nodeinfo_req.h). Pure,
+     * bounded, unit-tested independently of everything else in this
+     * struct. */
+    ff_nodeinfo_req_t nodeinfo_req;
 
     /* ---------------------------------------------------------------
      * A02 slice D2 — the puck STARTS a crew
@@ -1937,6 +1945,23 @@ static ff_shell_crew_op_status_t shell_crew_op_status(shell_t const *sh)
  * leg stamps the heard time from the same packet a moment later, which
  * is a real observation; this function invents nothing.
  *
+ * Bench finding, 2026-09-14: a member admitted here on a Position/Text/
+ * `FF_PORTNUM` packet (i.e. not NodeInfo itself) stays nameless —
+ * "New crew member"/`NAME?` (§4.4) — until its OWN radio gets around to
+ * its next periodic NodeInfo broadcast, which Meshtastic schedules
+ * hours apart. On a SUCCESSFUL, freshly-granted admission of a member
+ * with no name yet, this function asks directly instead of waiting:
+ * `ff_nodeinfo_req_should_send` (core, pure, rate-limited to once per
+ * node per ten minutes — see its own doc comment for why) gates a
+ * `send_nodeinfo_request` through the same `ff_wiring_sender_t` seam
+ * every other outbound admin/request call in this file already goes
+ * through. Never for an already-named member (checked on the roster
+ * slot `shell_pair` just created/reused, not on the inbound packet —
+ * an admission via Position/Text carries no name to check against in
+ * the first place), and never on the want_config replay by
+ * construction: this function is reachable only from the live
+ * `shell_ev_rx_meta` path, exactly like the admission decision above it.
+ *
  * Returns true iff `node_id` is now a paired roster member.
  */
 static bool shell_try_admit(shell_t *sh, uint32_t from, mc_rx_meta_t const *m)
@@ -1972,6 +1997,20 @@ static bool shell_try_admit(shell_t *sh, uint32_t from, mc_rx_meta_t const *m)
         return false;
     }
     shell_overflow_forget(sh, from);
+
+    /* Bench finding 2026-09-14 (see this function's own doc comment) —
+     * ask for a name now rather than waiting for the next periodic
+     * broadcast. Looked up fresh off the roster (not off `from` alone):
+     * this is the member `shell_pair` just admitted/re-admitted, and
+     * `m->name` is the one honest source for "does this member already
+     * have a name" (an unhidden member's slot can already carry one from
+     * before it was hidden, in which case this must NOT ask again). */
+    ff_crew_member_t const *admitted = ff_crew_find(&sh->crew, from);
+    if (admitted != NULL && admitted->name[0] == '\0' &&
+        ff_nodeinfo_req_should_send(&sh->nodeinfo_req, from, shell_now(sh)) &&
+        sh->wiring.sender.send_nodeinfo_request != NULL) {
+        (void)sh->wiring.sender.send_nodeinfo_request(sh->wiring.sender.ctx, from, NULL);
+    }
     return true;
 }
 
@@ -2742,6 +2781,58 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
     /* n->rx_path is a nodeDB SUMMARY with no timestamp (mc_client.h), so
      * it is deliberately not used to attribute RSSI. That question is
      * per-packet and is answered in shell_ev_rx_meta. */
+}
+
+/**
+ * shell_ev_nodeinfo_reply — bench finding 2026-09-14:
+ * `mc_events_t.on_nodeinfo_reply`, a LIVE NodeInfo packet (as opposed
+ * to `shell_ev_node`'s want_config REPLAY, above). This is the answer
+ * `ff_wiring_sender_t.send_nodeinfo_request` solicited (or a crew
+ * member's own unsolicited re-announcement — the payload cannot tell
+ * the two apart, and both are equally honest).
+ *
+ * Records a name and NOTHING else: no position, no time, no freshness
+ * — a live NodeInfo's payload (`mc_user_reply_t`) carries none of
+ * those, unlike the replay's full `mc_nodeinfo_t`. Writes onto an
+ * EXISTING roster slot, paired or merely-heard, mirroring
+ * `shell_ev_node`'s own name-write exactly (same `shell_member` lookup,
+ * same "never blank a previously-learned name back to empty" `if
+ * (name[0] != '\0')` guard); a miss updates the heard-name cache
+ * instead (S12/S04's `shell_heard_name_note`), the same treatment
+ * `shell_ev_node` gives a replay it cannot place.
+ *
+ * Deliberately does NOT call `shell_try_admit` or touch
+ * `sh->nodeinfo_req`: this packet is the ANSWER to an admission
+ * already granted (holding a roster slot at all already proved this
+ * sender decrypted our crew channel — see A02 §4.1's clause 1), not
+ * itself grounds for one, and re-arming the request throttle here would
+ * let a chatty node's own periodic NodeInfo silently reset a limit that
+ * exists to bound how often THIS device asks.
+ */
+static void shell_ev_nodeinfo_reply(void *u, uint32_t from, mc_user_reply_t const *user)
+{
+    shell_t *sh = (shell_t *)u;
+    if (sh == NULL || user == NULL || from == 0u) return;
+    if (shell_drop_as_self(sh, from)) return; /* our own echoed reply names nobody new */
+
+    char const *name = user->has_short_name ? user->short_name : (user->has_long_name ? user->long_name : "");
+    char const *long_name = user->has_long_name ? user->long_name : "";
+
+    ff_crew_member_t *m = shell_member(sh, from);
+    if (m == NULL) {
+        shell_heard_name_note(sh, from, name); /* no-op if name is "" */
+        return;
+    }
+
+    if (name[0] != '\0') {
+        shell_copy_str(m->name, sizeof(m->name), name);
+        m->initial = name[0];
+    }
+    /* Sticky, same convention as `name` just above — see shell_ev_node's
+     * identical guard on `long_name` for the full reasoning. */
+    if (long_name[0] != '\0') {
+        shell_copy_str(m->long_name, sizeof(m->long_name), long_name);
+    }
 }
 
 /**
@@ -5307,6 +5398,7 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
 
     ff_crew_init(&sh->crew, sh->clock);
     ff_heard_init(&sh->heard);
+    ff_nodeinfo_req_init(&sh->nodeinfo_req); /* bench finding 2026-09-14 */
     ff_feed_init(&sh->feed);
     ff_flare_init(&sh->flare);
     ff_multitap_init(&sh->multitap); /* S10 quick flare */
@@ -5891,6 +5983,7 @@ mc_events_t ff_shell_events(ff_shell_t *sh_pub)
 
     ev.on_state = shell_ev_state;
     ev.on_node = shell_ev_node;
+    ev.on_nodeinfo_reply = shell_ev_nodeinfo_reply; /* bench finding 2026-09-14 — live NodeInfo naming */
     ev.on_position = shell_ev_position;
     ev.on_text = shell_ev_text;
     ev.on_private = shell_ev_private;

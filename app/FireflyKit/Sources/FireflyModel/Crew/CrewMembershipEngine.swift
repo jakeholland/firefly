@@ -103,6 +103,12 @@ public final class CrewMembershipEngine: CrewMembershipGating, CrewMembershipPro
     private var hiddenSet: Set<UInt32> = []
     private var linkObservation: Task<Void, Never>?
     private var resolveTask: Task<Void, Never>?
+    /// Bench finding 2026-09-14 (§4.4) — see `CrewNodeInfoRequestThrottle`'s
+    /// own header comment. Scoped to one crew, same as
+    /// `admissionCounters`/`lastAdmissionAtMs`: reset in `configure(crew:)`
+    /// so a stale entry from a PREVIOUS crew's member id can never
+    /// suppress a legitimate first ask on a new one.
+    private var nodeInfoRequestThrottle = CrewNodeInfoRequestThrottle()
 
     public init(pairing: CrewPairingController,
                 store: any CrewLocalStateStoring,
@@ -161,6 +167,7 @@ public final class CrewMembershipEngine: CrewMembershipGating, CrewMembershipPro
         // silently resets a live session's counts.
         admissionCounters = CrewAdmissionCounters()
         lastAdmissionAtMs = nil
+        nodeInfoRequestThrottle = CrewNodeInfoRequestThrottle()
         channelStatus = crew == nil ? .noCrew : .resolving
         resolveCrewChannelIndex()
     }
@@ -340,12 +347,59 @@ public final class CrewMembershipEngine: CrewMembershipGating, CrewMembershipPro
             recordJoin(nodeID: nodeID)
             admissionCounters.admitted += 1
             lastAdmissionAtMs = UInt64((now().timeIntervalSince1970 * 1000).rounded())
+            requestNodeInfoIfNameless(nodeID: nodeID)
             return true
         case .full:
             // NOT a silent drop — that is the behaviour §4.3 forbids.
             noteUntracked(nodeID: nodeID)
             admissionCounters.refusedRosterFull += 1
             return false
+        }
+    }
+
+    /// Bench finding 2026-09-14 (§4.4, mirroring firmware's
+    /// `shell_try_admit`): right after a successful admission, ask the
+    /// member directly for its NodeInfo rather than waiting for its own
+    /// periodic broadcast (Meshtastic's stock interval is on the order
+    /// of hours).
+    ///
+    /// "Nameless" is read fresh off the ROSTER (`pairing.crew.member`),
+    /// never off the packet that triggered this admission — same as
+    /// firmware's own comment on `shell_try_admit`: an UNHIDDEN member's
+    /// slot can already carry a name from before it was hidden (hide =
+    /// unpair, never erase — `CrewPairingController.unpair`'s own doc
+    /// comment: it removes the persisted record but never touches
+    /// `ff_crew`'s name fields, and `pair(nodeID:)` re-finds the SAME
+    /// `ff_crew` slot by node id rather than recreating one), in which
+    /// case this must NOT ask again. That fact lives on the roster, not
+    /// on whatever packet happened to re-admit them — a Position or Text
+    /// re-admission carries no name to check in the first place.
+    ///
+    /// Corollary, carried over from firmware unchanged and worth stating
+    /// rather than quietly "fixing": `CoreStore.apply(nodeUpdate:)`
+    /// writes `crew.setIdentity` from the admitting snapshot only AFTER
+    /// `admits(_:)` returns, so a FRESH admission via a live NodeInfo
+    /// packet itself still reads as nameless here and does ask — one
+    /// harmless, rate-limited request whose answer the admitting packet
+    /// already made redundant. `shell_try_admit` has the identical
+    /// ordering (rx-meta admits before the portnum-specific payload
+    /// names) and makes the identical call; this keeps the two
+    /// implementations in the same place rather than inventing a
+    /// snapshot-inspecting shortcut firmware does not have.
+    private func requestNodeInfoIfNameless(nodeID: UInt32) {
+        let member = pairing.crew.member(nodeID: nodeID, now: FireflyClock.nowMillis())
+        guard member?.displayName.isEmpty ?? true else { return }
+        guard nodeInfoRequestThrottle.shouldSend(nodeID: nodeID, now: now()) else { return }
+        // Fire-and-forget, same discipline `ThreadViewModel`'s FLARE/
+        // FIND pings already follow for an ask nobody is blocked on: the
+        // reply (or its absence) arrives on `nodeUpdates()` through the
+        // ordinary live-NodeInfo decode path, not through this call's
+        // return value. A failed send is swallowed deliberately — see
+        // `CrewNodeInfoRequestThrottle.shouldSend(nodeID:now:)`'s own
+        // doc comment on why the throttle already recorded the attempt
+        // regardless of whether the radio call below succeeds.
+        Task { [weak self] in
+            _ = try? await self?.client.requestNodeInfo(from: nodeID)
         }
     }
 
