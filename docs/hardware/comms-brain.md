@@ -133,9 +133,21 @@ from the code:
 
 ```
 # Provision a radio by hand onto crew code FIRE-4K9M7X
-# (PSK and URL from docs/specs/fixtures/A02-crew-codes.json — never retyped by hand)
-meshtastic --ch-set name FIRE-4K9M7X --ch-set psk base64:dDzJg7oyaJL7kbZwC5/z0I1+ACVos/J420MkSiSecdo= --ch-index 0
+# (PSK from docs/specs/fixtures/A02-crew-codes.json — never retyped by hand)
+meshtastic --ch-index 0 \
+           --ch-set name FIRE-4K9M7X \
+           --ch-set psk base64:dDzJg7oyaJL7kbZwC5/z0I1+ACVos/J420MkSiSecdo= \
+           --ch-set module_settings.position_precision 32
 ```
+
+The `position_precision` line is not optional and not decoration: A02
+§1.5 requires the crew channel to state 32 explicitly. `--ch-set` edits
+the slot in place, so a radio whose index 0 already carries a precision
+(0, or a km-scale value from a previous import) keeps it unless this
+line overwrites it — the crew would be encrypted, mutually audible, and
+silently sharing positions truncated to a grid. Do not rely on the
+"absent means 32" firmware default; absent is only absent on a *fresh*
+slot.
 
 or, equivalently and preferably, import the crew's Meshtastic link
 (Firefly app → Crew → Advanced → **Copy Meshtastic link**), which

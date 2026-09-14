@@ -17,10 +17,12 @@
 ## Motivation
 
 Two independent UX reviews walked the shipped app as a first-time
-festival user (`/private/tmp/claude-501/ux-maya/REVIEW.md`, Maya, 27,
-never heard of Meshtastic; `/private/tmp/claude-501/ux-deshawn/
-REVIEW.md`, Deshawn, 34, organising eight people at Lost Lands). They
-independently reached the same two conclusions:
+festival user (Maya, 27, never heard of Meshtastic; Deshawn, 34,
+organising eight people at Lost Lands). Both reviews were **session
+artifacts under `/private/tmp`, not repo files** — they are gone with
+the next reboot, so everything either one is relied on for is
+reproduced below rather than cited to a path. They independently
+reached the same two conclusions:
 
 1. **There is no way to create or share a crew from inside this app.**
    Connect's CHANNEL card only *imports* a link. Per
@@ -112,7 +114,13 @@ form or fails. In order:
 1. Trim whitespace; uppercase.
 2. Strip all spaces and `-`.
 3. Strip a leading `FIRE` if present (so `FIRE-4K9M7X`, `fire 4k9m7x`
-   and `4k9m7x` are the same code).
+   and `4k9m7x` are the same code). This runs **before** step 4, so the
+   tag is matched literally. Consequence, pinned rather than
+   discovered: a crew whose six symbols are `F1RE9X` parses correctly
+   from the full spelling (`FIRE-FIRE9X` → strip tag → `FIRE9X` →
+   alias → `F1RE9X`), but the tagless spelling `FIRE9X` is rejected
+   rather than guessed at. Six-box entry (§3.2) prints `FIRE-` as a
+   fixed prefix, so this only ever reaches pasted text.
 4. Apply Crockford's decoding aliases: `I` → `1`, `L` → `1`, `O` → `0`.
    `U` is **not** aliased — it is rejected, so a typo lands on an error
    rather than silently on somebody else's crew.
@@ -129,8 +137,11 @@ surfaces within seconds.
 
 Meshtastic does not put a channel index on the air. A `MeshPacket`
 carries a one-byte **channel hash**, and the firmware computes that hash
-from **the channel name XOR the PSK** (`Channels::generateHash`); the
-receiving radio uses it to pick which channel to try decrypting with.
+as an XOR-fold of the channel *name* bytes XORed with an XOR-fold of the
+*PSK* bytes — `xorHash(name) ^ xorHash(psk)`, `Channels::generateHash`
+in meshtastic/firmware, which is **not in this checkout** (§1.9's bench
+task is what actually confirms it); the receiving radio uses the byte to
+pick which channel to try decrypting with.
 `meshtastic/channel.proto`'s own comment makes the consequence explicit:
 two people who agree on a name but not on a key "can't talk", and the
 symmetric case is just as true — two people who agree on a key but not
@@ -238,6 +249,13 @@ says, in full, *"Your crew code keeps this crew private from other
 people at the festival. It is not strong enough to stop someone who
 really wants in. Don't put anything on here you'd mind a determined
 stranger reading."*
+
+**Collisions between crews.** Two independently minted codes collide
+with probability 2^-30. A festival with 1 000 live Firefly crews has a
+~4.7 x 10^-4 chance that *any* two of them share a code (birthday bound,
+n^2/2N); at 10 000 crews it is ~4.7%. That is the honest number, and it
+is a stated fact rather than something a test can assert — see AC4,
+which used to try.
 
 **Why not more bits.** 6 symbols is pinned by the 11-byte channel-name
 limit (§1.3), and the `FIRE-` tag is worth its 5 characters: it is what
@@ -394,16 +412,30 @@ crews.
 (`U` is rejected, never aliased), `FIRE-` and `""` all fail parsing.
 No partial result, no fallback code.
 
-> **Bench confirmation required before slice B merges.** The claim that
-> `Channels::generateHash` mixes the channel *name* into the hash byte
-> comes from the Meshtastic firmware, which is not in this checkout —
-> what *is* in this checkout and was read is `mesh.proto`'s `channel`
-> field comment ("contains the 'channel hash' instead of the index")
-> and `channel.proto`'s "BobsChan" comment. The design depends on it, so
-> slice A's bench task is: set two radios to the same PSK with
-> **different** names and confirm they cannot hear each other, then to
-> the same name and confirm they can. If that comes back the other way,
-> §1.3's identity is unnecessary but harmless and the spec stands.
+> **Bench confirmation required before slice B merges.** Keeping the
+> two apart, because only one of them is checkable here:
+>
+> *Verified in this checkout* (`app/FireflyKit/Sources/MeshtasticProto/`,
+> the pinned generator's output): `ChannelSettings.name` is "A SHORT
+> name that will be packed into the URL. **Less than 12 bytes**"
+> (`channel.pb.swift`) — so `FIRE-` + 6 = 11 is exactly the budget.
+> `MeshPacket.channel` delivered to a *client* is the **index**, not the
+> hash: "Very briefly, while sending and receiving deep inside the
+> device Router code, this field instead contains the 'channel hash'…
+> This 'trick' is only used while the payload_variant is an 'encrypted'"
+> (`mesh.pb.swift`). §4.1 clause 2 relies on that and is safe.
+> `MeshPacket.via_mqtt` exists (field 14, same file).
+>
+> *NOT verified here*: that `Channels::generateHash` folds the channel
+> **name** into the hash byte at all. That function lives in
+> meshtastic/firmware, which this repo does not vendor. `channel.proto`'s
+> "BobsChan" comment describes only the *display* letter
+> (`0x41 + [xor all bytes of the psk] modulo 26`) and is **not**
+> evidence for the on-air hash — do not cite it as if it were. So slice
+> A's bench task is: set two radios to the same PSK with **different**
+> names and confirm they cannot hear each other, then to the same name
+> and confirm they can. If it comes back the other way, §1.3's identity
+> is unnecessary but harmless and the spec stands unchanged.
 
 ---
 
@@ -574,9 +606,13 @@ accepts **three** payload shapes, in this order:
 Anything else: *"That's not a Firefly crew code."* The camera keeps
 running; a failed scan never dismisses the screen.
 
-Camera permission string (new — the app has none today):
-`NSCameraUsageDescription` = **"Firefly uses the camera to scan your
-friend's crew code."**
+Camera permission string. The app **already ships**
+`NSCameraUsageDescription` (`app/Firefly/Resources/Info.plist`), today
+reading *"Firefly uses the camera to scan a crew's channel QR code."* —
+which says "channel". It is **reworded**, not added, to: **"Firefly uses
+the camera to scan your friend's crew code."** What *is* new is
+`CFBundleURLTypes`: the repo has no URL-scheme registration at all
+today, so §1.8's `firefly://` scheme is a genuine Info.plist addition.
 
 ### 3.2 Typing
 
@@ -693,8 +729,20 @@ Precisely, all of the following, on the same packet:
 3. `from != 0` and `from != connectedNodeNum`.
 4. `from` is not on the hide list (§4.5).
 5. `via_mqtt == false`.
-6. The portnum is one of **`NODEINFO_APP`, `POSITION_APP`,
-   `TEXT_MESSAGE_APP`, or Firefly's own `PRIVATE_APP` (269)**.
+6. The portnum is one of **`NODEINFO_APP` (4), `POSITION_APP` (3),
+   `TEXT_MESSAGE_APP` (1), or Firefly's own private portnum
+   `FF_PORTNUM` = **269** (`firmware/core/include/ff_proto.h`).
+
+   > **269 is not `PRIVATE_APP`.** In `portnums.proto` (verified in
+   > this checkout, `MeshtasticProto/portnums.pb.swift`)
+   > `PRIVATE_APP = 256` and `ATAK_FORWARDER = 257`; 269 is not a named
+   > enumerator at all. It is a value Firefly picked inside the
+   > documented private range 256–511, and it arrives on the wire as
+   > `PortNum.UNRECOGNIZED(269)` — which `MeshtasticClient.handle(
+   > meshPacket:)` already matches on `rawValue`, pinned by
+   > `WireFormatTests.testFireflyPortnumSurvivesAsUnrecognized`. Every
+   > implementation must match 269 by raw value; matching the
+   > `PRIVATE_APP` case would silently admit nobody.
 
 ### 4.2 What does *not* admit anyone
 
@@ -709,16 +757,70 @@ Precisely, all of the following, on the same packet:
   admits a new one. Admission should ride on a packet type that carries
   identity or intent, and NodeInfo follows within minutes anyway.
 - **The `want_config` NodeInfo replay.** This is the important one. The
-  nodeDB dump is a synthesized snapshot, not a live `MeshPacket`; it
-  carries no channel index, so it cannot prove the node was ever heard
-  on *our* channel. It must not admit anyone, exactly as S02's
-  2026-09-07 amendment already ruled for presence: replay is not
-  evidence. On the puck this falls out of routing admission through
-  `on_rx_meta` (which replay does not traverse); in the app,
-  `CoreStore.apply(nodeUpdate:)` must gain the same gate — today it
-  calls `crew.onPosition`/`onRSSI`/`onHeard`/`setIdentity`
-  unconditionally for every node snapshot, which is the exact hole
-  issue #266 was filed about.
+  nodeDB dump is a synthesized snapshot, not a live `MeshPacket`, and it
+  cannot prove the node was ever heard on *our* channel. It must not
+  admit anyone, exactly as S02's 2026-09-07 amendment already ruled for
+  presence: replay is not evidence.
+
+  > **Not because "it carries no channel index"** — an earlier draft of
+  > this spec said that and it is false. `NodeInfo` *does* have a
+  > `channel` field (`mesh.proto` field 7, verified in this checkout):
+  > *"local channel index we heard that node on. **Only populated if its
+  > not the default channel**."* Which is precisely why it is useless
+  > here: Firefly writes the crew channel at index 0, the primary, so
+  > the field is left unset for exactly the nodes we care about and is
+  > indistinguishable from unset-for-a-stranger-on-LongFast. It is also
+  > a latched summary — the radio's memory of a past hearing, stamped by
+  > a clock the summary itself defines — not an observation. Two
+  > independent reasons; neither is "the field is missing."
+
+  On the puck this falls out of routing admission through `on_rx_meta`,
+  which the replay does not traverse. **In the app it does not fall out
+  of anything**, and slice C has more work than "add a gate":
+
+#### 4.2.1 What the app's client cannot tell us yet — slice C is `[api]`
+
+Read before estimating slice C. Verified against
+`app/FireflyKit/Sources/FireflyMesh/` on this branch's base:
+
+1. **`MeshNodeSnapshot` carries no channel index and no `via_mqtt`.**
+   It is the app's only per-node event
+   (`MeshtasticClientProtocol.swift`), and clauses 2 and 5 of §4.1 are
+   unimplementable from it. It must gain them — presence-flagged, so
+   absent never reads as 0 — mirroring the `mc_rx_meta_t` addition
+   S02's amendment already specifies for the puck. This makes **slice C
+   an `[api]` PR**, same as slice D.
+2. **`applyRxMeta(for:)` yields a snapshot for every packet from any
+   non-zero sender**, on any channel, at any portnum, `via_mqtt` or
+   not, and that snapshot flows into `CoreStore.apply(nodeUpdate:)` →
+   `crew.onHeard`/`onRSSI` → `ff_crew_upsert`'s find-or-create. That,
+   not a missing freshness check, is the live admission hole. (Since
+   the 2026-09-11 bounded-unpaired-LRU amendment it can no longer
+   *starve* paired members, which is the half of issue #266 that is
+   closed; it still populates the roster with strangers, which is the
+   half AC13 closes.)
+3. **The four `crew.*` calls in `CoreStore.apply(nodeUpdate:)` are
+   already conditional**, and deliberately so — each is gated on the
+   datum being present and plausible, with the reasoning written out at
+   length in that file (the honest-freshness three-tier rule from the
+   hardening QA pass). Do **not** touch those conditions. The gate slice
+   C adds is a *membership* gate in front of the whole function: a node
+   that is neither already crew nor being admitted by §4.1 is not fed at
+   all.
+4. **There is no live `NODEINFO_APP` decode path.**
+   `MeshtasticClient.handle(meshPacket:)` switches on
+   `.positionApp`/`.routingApp`/`.adminApp`/`.textMessageApp` and
+   raw-value 269, and `default: break`s everything else. Live NodeInfo
+   *packets* are dropped; `.nodeInfo` only arrives on the `FromRadio`
+   nodeDB path — i.e. the replay §4.1 refuses to admit from. So AC11's
+   NodeInfo case has nothing to fire on today: slice C must add the
+   `.nodeinfoApp` case. Until it does, a joiner is admitted by their
+   first Position or Text, which is slower but not wrong.
+5. Already fine: `IncomingText` and `IncomingPrivate` both carry
+   `channel: pkt.channel` today, and `currentChannelTable()` exists and
+   returns `[Channel]` with `index`, `settings.name` and `settings.psk`
+   — so §4.2's name-and-PSK resolution is implementable from
+   `want_config`'s Channel replies with no new API.
 
 **Which index is "the crew index".** Normally 0 — that is what Firefly
 writes (§1.5). But a radio provisioned by CLI or by the stock app (the
@@ -925,7 +1027,8 @@ re-installing.
 | `NSBluetoothPeripheralUsageDescription` | (same) |
 | `NSLocationWhenInUseUsageDescription` | Firefly shares your location with your puck so your crew can find you, even with no signal. |
 | `NSLocationAlwaysAndWhenInUseUsageDescription` | (same, plus) Keeping this on in the background means your crew can still find you while your phone is in your pocket. |
-| `NSCameraUsageDescription` *(new)* | Firefly uses the camera to scan your friend's crew code. |
+| `NSCameraUsageDescription` *(reworded — the key already ships, saying "channel")* | Firefly uses the camera to scan your friend's crew code. |
+| `CFBundleURLTypes` *(new — the app registers no URL scheme today)* | the `firefly` scheme, §1.8 |
 
 ### 6.3 Presence words
 
@@ -1036,9 +1139,34 @@ someone is, and losing the FIND you started, is a bug with a rationale.
    exactly; `ChannelURL.parse` of that URL round-trips to an identical
    `ChannelSet`. `position_precision` is present and 32 in every case;
    `lora_config` is absent in every case.
-4. **A02_AC4** — code generation draws from the CSPRNG, produces only
-   alphabet symbols, and over 100 000 generated codes yields no
-   duplicates and a per-symbol distribution within 1% of uniform.
+4. **A02_AC4** — code generation is correct **and its test is
+   deterministic**. Three parts, none of them a sampling test:
+   (a) generation draws its 30 bits from the platform CSPRNG
+   (`SecRandomCopyBytes` / `esp_random`) and never from a seeded,
+   time-derived or node-derived source — pinned by injecting a
+   recording randomness source, not by statistics;
+   (b) the 30-bit integer → code encoding is a **bijection**, pinned at
+   both endpoints by the fixture (`0` → `FIRE-000000`, `2^30 - 1` →
+   `FIRE-ZZZZZZ`) and by an exhaustive per-position sweep: for each of
+   the 6 positions, all 32 symbols are reachable and each maps back to
+   exactly its own 5 bits, so no symbol is ever favoured;
+   (c) `parse(generate())` round-trips to the generated code, and every
+   generated code is 6 symbols all drawn from the alphabet.
+
+   > **The obvious version of this criterion is broken and was in this
+   > spec until review.** It read: *"over 100 000 generated codes yields
+   > no duplicates and a per-symbol distribution within 1% of uniform."*
+   > Both halves fail against a **perfectly uniform CSPRNG**. Measured,
+   > 20 trials of 100 000 codes from `secrets.randbits(30)`: a duplicate
+   > appeared in **20/20** (birthday bound over a 2^30 space predicts
+   > `1 - e^(-n^2/2N)` = 99.05%), and "every symbol within 1% of
+   > uniform" passed **0/20** (1% of the per-symbol mean 18 750 is
+   > 1.39σ, and 32 buckets must all land inside it: ~0.3%). This is the
+   > house proxy-check failure (`docs/review/code-review.md` item 6) in
+   > its purest form — a test whose passing measures luck, and here
+   > mostly measures bad luck. Collision probability is a **property of
+   > 30 bits**, stated as a fact in §1.6, not something a test run can
+   > assert.
 5. **A02_AC5** — the deep link round-trips: `CrewInvite.encode` produces
    vector 1's link byte for byte (parameter order fixed); `parse`
    rejects `v=2`, a missing `code`, a malformed code, and a `name`
@@ -1071,19 +1199,27 @@ someone is, and losing the FIND you started, is a bug with a rationale.
 **Auto-membership**
 
 11. **A02_AC11** — a decrypted `NODEINFO_APP`/`POSITION_APP`/
-    `TEXT_MESSAGE_APP`/`PRIVATE_APP` packet on the crew index from an
-    unknown id admits that id as crew, assigns the next free colour, and
-    persists a `CrewPairingRecord` — without any user action.
+    `TEXT_MESSAGE_APP`/`FF_PORTNUM` (269, matched by raw value — §4.1
+    clause 6) packet on the crew index from an unknown id admits that id
+    as crew, assigns the next free colour, and persists a
+    `CrewPairingRecord` — without any user action.
 12. **A02_AC12** — none of the following admit anyone: the same packet
     on another channel index; the same packet with `via_mqtt == true`; a
     `TELEMETRY_APP` packet; a `want_config` NodeInfo replay entry; a
     packet from our own `connectedNodeNum`; a packet from a hidden id.
     Each is its own test.
-13. **A02_AC13** — `CoreStore.apply(nodeUpdate:)` no longer calls
-    `crew.onPosition`/`onRSSI`/`onHeard`/`setIdentity` for a node that is
-    neither already crew nor being admitted by AC11 — a replayed nodeDB
-    of 200 strangers leaves the roster untouched (issue #266's live
-    exposure, closed here).
+13. **A02_AC13** — a **membership gate in front of**
+    `CoreStore.apply(nodeUpdate:)` drops any node that is neither
+    already crew nor being admitted by AC11, so a replayed nodeDB of 200
+    strangers leaves `ff_crew` untouched (issue #266's app-side live
+    exposure — the core half landed 2026-09-11 and the issue is closed;
+    this is the remaining exposure, §4.2.1 item 2). The four existing
+    `crew.*` conditions inside that function are **unchanged** — a test
+    asserts a crew member with an implausible timestamp is still not fed
+    (§4.2.1 item 3), so the gate cannot be "fixed" by loosening them.
+    `Nearby`'s own dictionary (`NearbyNodesViewModel`, its own
+    `nodeUpdates()` subscription) is untouched, so §4.7's "People my
+    puck hears" still has its data.
 14. **A02_AC14** — crew index resolution matches on name **and** PSK,
     re-resolves on reconnect, and when no index matches, the Crew page
     shows "Your puck isn't on this crew's channel" and admits nobody —
@@ -1112,9 +1248,18 @@ someone is, and losing the FIND you started, is a bug with a rationale.
 19. **A02_AC19** — presence copy matches §6.3 exactly at the 2 min and
     10 min boundaries (inclusive toward STALE, S02's convention); the
     string "LOST" appears in no user-facing string in the app bundle
-    (enforced by a test over `Localizable`/literal copy).
-20. **A02_AC20** — "NO ACK" appears nowhere; the tag reads "Didn't get
-    through" and keeps its RESEND.
+    (enforced by a test over `Localizable`/literal copy). Scope it to
+    **rendered** copy: `InboxViewModel`'s `case lost = "LOST"` is an
+    enum raw value and stays — the criterion is that no view renders it,
+    not that the four letters vanish from the source.
+20. **A02_AC20** — "NO ACK" appears in no **rendered** string; the tag
+    reads "Didn't get through" and keeps its RESEND. Same scoping as
+    AC19 and for the same reason: `InboxListView`'s
+    `case .noAck: return "NO ACK"` is the one line that changes, while
+    the phrase stays in doc comments in `MeshtasticClient.swift` and
+    `DemoMeshtasticClient.swift` that describe the delivery *state
+    machine*. A test that greps the whole source tree fails on those
+    comments and teaches the next person to delete documentation.
 21. **A02_AC21** — starting a FIND, then switching Radar → Map → Field →
     Inbox → back, leaves the session running with unchanged elapsed
     time and ping cadence, and the FIND banner visible on every Find
@@ -1187,9 +1332,13 @@ Each slice is a PR. Bench = the two Heltec V3 boards
   milestone-demo rule: welcome, start, join-scan, join-confirm, crew
   page.
 
-### Slice C — auto-membership in the app (`feat/a02c-auto-crew`)
-- Crew-index resolution; the admission gate in `CoreStore`; the hide
-  list; the overflow list and banner; migration.
+### Slice C — auto-membership in the app (`feat/a02c-auto-crew`) `[api]`
+- `MeshNodeSnapshot` gains a presence-flagged channel index and
+  `via_mqtt`; `MeshtasticClient.handle(meshPacket:)` gains a
+  `.nodeinfoApp` case. Both `[api]` — see §4.2.1, and do not start this
+  slice without reading it.
+- Crew-index resolution; the membership gate in front of `CoreStore`;
+  the hide list; the overflow list and banner; migration.
 - **Tests:** AC11–AC17. All loopback — `StubMeshtasticClient` can
   synthesize every packet shape, including `via_mqtt` and a 200-node
   replay. **Bench** for one end-to-end confirmation: board 2 joins,

@@ -434,17 +434,28 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
   3. `from` is neither 0 nor our own node id;
   4. `from` is not on the hide list (§C);
   5. `via_mqtt == false`;
-  6. the portnum is `NODEINFO_APP`, `POSITION_APP`, `TEXT_MESSAGE_APP`
-     or Firefly's `PRIVATE_APP` (269).
+  6. the portnum is `NODEINFO_APP` (4), `POSITION_APP` (3),
+     `TEXT_MESSAGE_APP` (1) or Firefly's own private portnum
+     `FF_PORTNUM` = 269 (`firmware/core/include/ff_proto.h`).
+     **269 is not `PRIVATE_APP`** — in `portnums.proto`
+     `PRIVATE_APP = 256` and `ATAK_FORWARDER = 257`; 269 is simply a
+     value Firefly picked inside the documented private range 256-511
+     and must be matched by raw value (A02 §4.1 clause 6).
 
   Deliberately **not** admitting: `TELEMETRY_APP` (it refreshes an
   existing member's presence through the existing unconditional
   `ff_crew_on_heard` call, but carries neither identity nor intent);
   any other channel index; anything via MQTT; and — the one that
   matters most here — the **`want_config` NodeInfo replay**. The replay
-  is a synthesized nodeDB dump, not a live `MeshPacket`; it carries no
-  channel index, so it cannot prove the node was ever heard on our
-  channel. This is the same ruling this spec's 2026-09-07 amendment
+  is a synthesized nodeDB dump, not a live `MeshPacket`, and cannot
+  prove the node was ever heard on our channel. Note *why*, because the
+  obvious reason is wrong: `NodeInfo` does carry a `channel` field
+  (`mesh.proto` field 7), but it is *"only populated if its not the
+  default channel"* — and Firefly's crew channel IS the primary at
+  index 0, so the field is unset for exactly the nodes in question and
+  is indistinguishable from unset-for-a-stranger. It is also a latched
+  summary rather than an observation. This is the same ruling this
+  spec's 2026-09-07 amendment
   already made for presence ("the boot/reconnect NodeInfo REPLAY path…
   does not flow through `on_rx_meta`"), applied to admission, and it
   falls out of routing admission through `shell_ev_rx_meta` rather than
@@ -540,10 +551,27 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
                         [ BACK ]
   ```
 
-  - QR rendering uses LVGL's own `lv_qrcode` (`LV_USE_QRCODE 1` in both
-    `lv_conf.h`s — sim and device; LVGL is pinned at v9.5.0 in
-    `firmware/CMakeLists.txt` and v9 in `idf_component.yml`, and
-    `lv_qrcode` is core in v9, so no new dependency).
+  - QR rendering uses LVGL's own `lv_qrcode`. **Verified present** in
+    the pinned LVGL — `src/libs/qrcode/{lv_qrcode.c,qrcodegen.c}` with
+    `lv_qrcode_create`/`set_size`/`set_dark_color`/`update`, in both
+    v9.5.0 pinned by `firmware/CMakeLists.txt` (sim) and the 9.5.0 the
+    ESP-IDF component manager resolves from `^9.2.0`
+    (`targets/esp32s3/dependencies.lock`). No new dependency. But it is
+    **off by default and enabled in two different places**, which is the
+    sdkconfig trap S15 already paid for once:
+
+    | Target | Where | What |
+    |---|---|---|
+    | sim | `firmware/lv_conf.h` | `#define LV_USE_QRCODE 1` |
+    | device | `firmware/targets/esp32s3/sdkconfig.defaults` | `CONFIG_LV_USE_QRCODE=y` **and `CONFIG_LV_USE_CANVAS=y`** |
+
+    The device needs canvas explicitly because `lv_qrcode`'s class
+    derives from `lv_canvas_class`, and `lv_conf_internal.h` defaults
+    `LV_USE_CANVAS` to **1 without Kconfig (the sim) but to 0 with it
+    (ESP-IDF)** — so the sim builds and the device does not link, with
+    nothing in `lv_conf.h` to explain it. `LV_USE_QRCODE` itself
+    defaults to 0 on both. Slice D's first commit is these two config
+    lines plus a build of each target.
   - The deep-link string is built by the same core function the app
     uses (`ff_crewcode_invite_url`), against the same fixture.
   - **There is no remote trigger, and this is deliberate.** A02 §2.4:
@@ -585,7 +613,7 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
   ### New acceptance criteria
 
   - **S02_AC11 — admission rule.** A decrypted NodeInfo/Position/Text/
-    Private packet on the crew index from an unknown id admits it
+    `FF_PORTNUM`-269 packet on the crew index from an unknown id admits it
     (colour assigned, `paired == true`). Each of these admits nobody,
     as its own test: another channel index; `via_mqtt == true`; a
     telemetry packet; a `want_config` replay entry; our own id; a
