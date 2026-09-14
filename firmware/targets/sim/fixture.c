@@ -1125,6 +1125,39 @@ static const fx_enum_entry_t fx_settings_subview_table[] = {
     {"name_edit", FF_SETTINGS_SUB_NAME_EDIT},       /* NAME in Settings */
     {"diagnostics", FF_SETTINGS_SUB_DIAGNOSTICS},   /* DIAGNOSTICS */
     {"crew_code", FF_SETTINGS_SUB_CREW_CODE},       /* [api] A02 slice D — SHOW CODE */
+    {"crew_confirm", FF_SETTINGS_SUB_CREW_CONFIRM}, /* [api] A02 slice D2 — START/LEAVE confirm */
+    {"crew_status", FF_SETTINGS_SUB_CREW_STATUS},   /* [api] A02 slice D2 — START/LEAVE progress */
+};
+
+/* [api] A02 slice D2 — the crew operation's three small
+ * boundary-translated enums (ff_app_state.h's own doc comments have the
+ * rationale for each). Same table shape as every enum above. */
+static const fx_enum_entry_t fx_crew_op_table[] = {
+    {"none", FF_APP_CREW_OP_NONE},
+    {"start", FF_APP_CREW_OP_START},
+    {"leave", FF_APP_CREW_OP_LEAVE},
+};
+
+static const fx_enum_entry_t fx_crew_phase_table[] = {
+    {"idle", FF_APP_CREW_PHASE_IDLE},
+    {"generating", FF_APP_CREW_PHASE_GENERATING},
+    {"writing", FF_APP_CREW_PHASE_WRITING},
+    {"verifying", FF_APP_CREW_PHASE_VERIFYING},
+    {"ready", FF_APP_CREW_PHASE_READY},
+    {"failed", FF_APP_CREW_PHASE_FAILED},
+};
+
+static const fx_enum_entry_t fx_crew_fail_table[] = {
+    {"none", FF_APP_CREW_FAIL_NONE},
+    {"no_link", FF_APP_CREW_FAIL_NO_LINK},
+    {"region_unset", FF_APP_CREW_FAIL_REGION_UNSET},
+    {"no_entropy", FF_APP_CREW_FAIL_NO_ENTROPY},
+    {"no_snapshot", FF_APP_CREW_FAIL_NO_SNAPSHOT},
+    {"send", FF_APP_CREW_FAIL_SEND},
+    {"nak", FF_APP_CREW_FAIL_NAK},
+    {"timeout_ack", FF_APP_CREW_FAIL_TIMEOUT_ACK},
+    {"timeout_verify", FF_APP_CREW_FAIL_TIMEOUT_VERIFY},
+    {"mismatch", FF_APP_CREW_FAIL_MISMATCH},
 };
 
 /* DIAGNOSTICS — ff_app_diag_t's five small boundary-translated enums
@@ -1239,6 +1272,44 @@ static ff_fixture_result_t fx_parse_crew_page(fx_ctx_t const *c, int obj_i, ff_a
         }
     }
     if (fx_obj_get(c, obj_i, "hidden_full", &t)) cw->hidden_full = fx_bool(c, t, false);
+
+    /* [api] A02 slice D2 — START CREW / LEAVE CREW. `pending_code` is
+     * VALIDATED like `crew_code` above and left empty when it is not a
+     * real code, for the same reason: a golden must not be able to pin a
+     * face showing a code this tree's own decoder would reject. */
+    if (fx_obj_get(c, obj_i, "can_start", &t)) cw->can_start = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "can_leave", &t)) cw->can_leave = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "has_snapshot", &t)) cw->has_snapshot = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "region_unset", &t)) cw->region_unset = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "op", &t)) {
+        int v;
+        ff_fixture_result_t const rc =
+            fx_enum(c, t, fx_crew_op_table, sizeof(fx_crew_op_table) / sizeof(fx_crew_op_table[0]),
+                    "settings.crew.op", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        cw->op = (ff_app_crew_op_t)v;
+    }
+    if (fx_obj_get(c, obj_i, "phase", &t)) {
+        int v;
+        ff_fixture_result_t const rc =
+            fx_enum(c, t, fx_crew_phase_table, sizeof(fx_crew_phase_table) / sizeof(fx_crew_phase_table[0]),
+                    "settings.crew.phase", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        cw->phase = (ff_app_crew_phase_t)v;
+    }
+    if (fx_obj_get(c, obj_i, "fail", &t)) {
+        int v;
+        ff_fixture_result_t const rc =
+            fx_enum(c, t, fx_crew_fail_table, sizeof(fx_crew_fail_table) / sizeof(fx_crew_fail_table[0]),
+                    "settings.crew.fail", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        cw->fail = (ff_app_crew_fail_t)v;
+    }
+    if (fx_obj_get(c, obj_i, "pending_code", &t)) {
+        char raw[FF_CREWCODE_LEN + 1u];
+        fx_copy_str(c, t, raw, sizeof(raw));
+        if (ff_crewcode_valid(raw)) memcpy(cw->pending_code, raw, sizeof(raw));
+    }
 
     int hidden_i;
     if (fx_obj_get(c, obj_i, "hidden", &hidden_i) && !fx_is_null(c, hidden_i)) {
@@ -2714,7 +2785,24 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
         if (i > 0) fw_raw(&w, ",");
         fw_crew_heard_row(&w, &s->settings.crew.overflow[i]);
     }
-    fw_raw(&w, "]}");
+    /* [api] A02 slice D2 — the crew operation. Same round-trip contract
+     * as everything above it. */
+    fw_raw(&w, s->settings.crew.can_start ? "],\"can_start\":true" : "],\"can_start\":false");
+    fw_raw(&w, s->settings.crew.can_leave ? ",\"can_leave\":true" : ",\"can_leave\":false");
+    fw_raw(&w, s->settings.crew.has_snapshot ? ",\"has_snapshot\":true" : ",\"has_snapshot\":false");
+    fw_raw(&w, s->settings.crew.region_unset ? ",\"region_unset\":true" : ",\"region_unset\":false");
+    fw_raw(&w, ",\"op\":\"");
+    fw_raw(&w, fx_enum_name(fx_crew_op_table, sizeof(fx_crew_op_table) / sizeof(fx_crew_op_table[0]),
+                            (int)s->settings.crew.op, "none"));
+    fw_raw(&w, "\",\"phase\":\"");
+    fw_raw(&w, fx_enum_name(fx_crew_phase_table, sizeof(fx_crew_phase_table) / sizeof(fx_crew_phase_table[0]),
+                            (int)s->settings.crew.phase, "idle"));
+    fw_raw(&w, "\",\"fail\":\"");
+    fw_raw(&w, fx_enum_name(fx_crew_fail_table, sizeof(fx_crew_fail_table) / sizeof(fx_crew_fail_table[0]),
+                            (int)s->settings.crew.fail, "none"));
+    fw_raw(&w, "\",\"pending_code\":");
+    fw_json_str(&w, s->settings.crew.pending_code);
+    fw_raw(&w, "}");
 
     /* S12 step 3 — the compass calibration ritual's status. */
     fw_raw(&w, ",\"compass_cal\":{");

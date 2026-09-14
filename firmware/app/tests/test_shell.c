@@ -71,7 +71,9 @@
 #include "ff_beat.h" /* S31 — FF_BEAT_LOUD_THRESHOLD, for the music.loudness render-key bucket pin */
 #include "ff_admit.h"    /* A02 slice D */
 #include "ff_crew.h"
-#include "ff_crewcode.h" /* A02 slice D — the shared code/PSK codec */
+#include "ff_crewcode.h"
+#include "ff_crewstart.h" /* A02 slice D2 — FF_CREWSTART_MAX_ATTEMPTS / the ack timeout */
+#include "ff_dbgcmd.h"   /* A02 slice D2 — the bench console shares the shell body */ /* A02 slice D — the shared code/PSK codec */
 #include "ff_hidden.h"   /* A02 slice D — FF_HIDDEN_MAX */
 #include "ff_feed.h"
 #include "ff_geo.h" /* SELFPOS — ff_geo_project, for an independent "my_pos equals the packet" check */
@@ -7116,7 +7118,7 @@ static void S24_demo_loopback_seam_makes_out_items_appear(void)
     ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell))); /* refused -> no OUT item */
 
-    ff_wiring_sender_t loop = {s24d_loop_send_text, s24d_loop_send_private, NULL, NULL, NULL};
+    ff_wiring_sender_t loop = {s24d_loop_send_text, s24d_loop_send_private, NULL, NULL, NULL, NULL, NULL};
     ff_shell_set_sender(&H.shell, loop);
     ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell))); /* accepted -> OUT item appears */
@@ -7907,7 +7909,7 @@ static void flare_wire_spy_install(bool accept)
 {
     memset(&S, 0, sizeof(S));
     S.accept = accept;
-    ff_wiring_sender_t const sender = {flare_wire_spy_send_text, flare_wire_spy_send_private, &S, NULL, NULL};
+    ff_wiring_sender_t const sender = {flare_wire_spy_send_text, flare_wire_spy_send_private, &S, NULL, NULL, NULL, NULL};
     ff_shell_set_sender(&H.shell, sender);
 }
 
@@ -11881,6 +11883,612 @@ static void S02_AC14_hide_and_unhide_intents_route_to_the_shell(void)
     TEST_ASSERT_FALSE(ff_shell_crew_hidden(&H.shell, DANA));
 }
 
+
+/* --- S02_AC16/AC17/AC18: the puck STARTS a crew (slice D2) ---------- */
+
+/* A recording "radio" for the admin channel write. The shell talks to it
+ * through ff_wiring_sender_t, exactly as the NAME push already does (see
+ * name_wire_spy_t above for the same shape). */
+typedef struct {
+    int          calls;
+    uint32_t     dest;
+    mc_channel_t last;
+    int          rc;       /* what send_admin_set_channel returns; 0 by default */
+    uint32_t     packet_id;
+    int          rereads;
+} d2_wire_spy_t;
+
+static d2_wire_spy_t D2S;
+
+static int d2_spy_set_channel(void *ctx, uint32_t dest, mc_channel_t const *ch, uint32_t *out_packet_id)
+{
+    (void)ctx;
+    D2S.calls++;
+    D2S.dest = dest;
+    if (ch != NULL) D2S.last = *ch;
+    if (D2S.rc != 0) return D2S.rc;
+    if (out_packet_id != NULL) *out_packet_id = D2S.packet_id;
+    return 0;
+}
+
+static void d2_spy_request_config(void *ctx)
+{
+    (void)ctx;
+    D2S.rereads++;
+}
+
+static uint32_t d2_rng(void *ctx)
+{
+    return *(uint32_t *)ctx;
+}
+
+static uint32_t D2_BITS = 0x0A4D2E7u;
+
+/* Bind the spy sender and a scripted entropy source. Deliberately NOT
+ * folded into a02_harness_init: every pre-D2 test in this file must keep
+ * running with no sender and no RNG bound, which is also the honest
+ * "nothing to write through" case D2 itself has a test for. */
+static void d2_bind(void)
+{
+    memset(&D2S, 0, sizeof(D2S));
+    D2S.packet_id = 0x5150u;
+    ff_wiring_sender_t sender;
+    memset(&sender, 0, sizeof(sender));
+    sender.send_admin_set_channel = d2_spy_set_channel;
+    sender.request_config = d2_spy_request_config;
+    ff_shell_set_sender(&H.shell, sender);
+    ff_shell_set_random(&H.shell, d2_rng, &D2_BITS);
+}
+
+/* A connected puck that is NOT on a crew: the radio's primary is
+ * Meshtastic's stock channel. This is the state a wearer starting a crew
+ * is actually in. */
+static void d2_connect_no_crew(void)
+{
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    H.ev.on_lora_region(H.ev.user, 1u /* US */);
+    uint8_t const one = 0x01u;
+    a02_inject_channel(0u, "LongFast", &one, 1u, true);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+}
+
+/* Advance the shell far enough for the machine to take its next action. */
+static void d2_tick(uint32_t dt_ms)
+{
+    H.clk.t += dt_ms;
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+}
+
+/* The radio answers the write: a routing ACK, then a fresh handshake
+ * whose channel table reports exactly what was written. */
+static void d2_radio_confirms(void)
+{
+    H.ev.on_routing_ack(H.ev.user, D2S.packet_id, true);
+    d2_tick(10u);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    H.ev.on_lora_region(H.ev.user, 1u);
+    a02_inject_channel(D2S.last.index, D2S.last.name, D2S.last.psk, D2S.last.psk_len, D2S.last.is_primary);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+}
+
+static void S02_AC16_start_writes_the_crew_channel_and_verifies_it(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+
+    /* A02 §1.5, field by field — a crew minted at the import path's
+     * cautious precision 0, or parked on a secondary slot, fails here. */
+    TEST_ASSERT_EQUAL_INT(1, D2S.calls);
+    TEST_ASSERT_EQUAL_UINT32(MY_ID, D2S.dest); /* the local-admin path */
+    TEST_ASSERT_EQUAL_UINT8(0u, D2S.last.index);
+    TEST_ASSERT_TRUE(D2S.last.is_primary);
+    TEST_ASSERT_EQUAL_UINT8(32u, D2S.last.psk_len);
+    TEST_ASSERT_TRUE(D2S.last.has_position_precision);
+    TEST_ASSERT_EQUAL_UINT32(32u, D2S.last.position_precision);
+    TEST_ASSERT_TRUE(ff_crewcode_valid(D2S.last.name));
+
+    /* The key on the wire is the one the code on the glass derives. */
+    uint8_t want[FF_CREWCODE_PSK_LEN];
+    TEST_ASSERT_TRUE(ff_crewcode_psk(D2S.last.name, want));
+    TEST_ASSERT_EQUAL_MEMORY(want, D2S.last.psk, sizeof(want));
+
+    /* Not done yet: the frame is out, nothing is proved. */
+    ff_shell_crew_op_status_t st = ff_shell_crew_op_status(&H.shell);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_PHASE_WRITING, st.phase);
+
+    d2_radio_confirms();
+    st = ff_shell_crew_op_status(&H.shell);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_PHASE_READY, st.phase);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_FAIL_NONE, st.fail);
+
+    /* And the whole point: the SHOW CODE face now has a real code,
+     * derived from the radio's own channel name. */
+    TEST_ASSERT_EQUAL_STRING(D2S.last.name, ff_shell_crew_code(&H.shell));
+    TEST_ASSERT_EQUAL_STRING(D2S.last.name, st.pending_code);
+}
+
+/* THE PROXY TEST, at the shell level. The radio accepts and ACKs the
+ * write, then reports back a different channel. "We sent it and nothing
+ * complained" is satisfied; "the radio holds our crew" is not. READY
+ * here would put a code on the glass that nobody could join. */
+static void S02_AC18_a_readback_that_disagrees_is_not_success(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    H.ev.on_routing_ack(H.ev.user, D2S.packet_id, true);
+    d2_tick(10u);
+
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    uint8_t const one = 0x01u;
+    a02_inject_channel(0u, "LongFast", &one, 1u, true);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    ff_shell_crew_op_status_t const st = ff_shell_crew_op_status(&H.shell);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_PHASE_FAILED, st.phase);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_FAIL_MISMATCH, st.fail);
+    /* And nothing fabricated a crew code out of the attempt. */
+    TEST_ASSERT_EQUAL_STRING("", ff_shell_crew_code(&H.shell));
+}
+
+static void S02_AC18_a_routing_nak_is_reported_as_a_nak(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    for (int i = 0; i < 6; i++) {
+        d2_tick(10u);
+        H.ev.on_routing_ack(H.ev.user, D2S.packet_id, false);
+    }
+    ff_shell_crew_op_status_t const st = ff_shell_crew_op_status(&H.shell);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_PHASE_FAILED, st.phase);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_FAIL_NAK, st.fail);
+    /* Bounded: the retry budget, not an unattended loop. */
+    TEST_ASSERT_EQUAL_INT(FF_CREWSTART_MAX_ATTEMPTS, D2S.calls);
+}
+
+static void S02_AC18_silence_from_the_radio_times_out_honestly(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    for (int i = 0; i < 6; i++) d2_tick(FF_CREWSTART_ACK_TIMEOUT_MS);
+
+    ff_shell_crew_op_status_t const st = ff_shell_crew_op_status(&H.shell);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_PHASE_FAILED, st.phase);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_FAIL_TIMEOUT_ACK, st.fail);
+    TEST_ASSERT_EQUAL_INT(FF_CREWSTART_MAX_ATTEMPTS, D2S.calls);
+}
+
+/* A02 §1.7 — Firefly never writes lora_config and never guesses a
+ * region, so an UNSET region stops the whole thing BEFORE any write. */
+static void S02_AC18_an_unset_region_stops_before_any_write(void)
+{
+    a02_harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    H.ev.on_lora_region(H.ev.user, 0u /* UNSET */);
+    uint8_t const one = 0x01u;
+    a02_inject_channel(0u, "LongFast", &one, 1u, true);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    d2_bind();
+
+    TEST_ASSERT_FALSE(ff_shell_crew_start(&H.shell));
+    d2_tick(100u);
+    TEST_ASSERT_EQUAL_INT(0, D2S.calls);
+
+    ff_shell_crew_op_status_t const st = ff_shell_crew_op_status(&H.shell);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_PHASE_FAILED, st.phase);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_FAIL_REGION_UNSET, st.fail);
+    /* The page must not offer a control that cannot work. */
+    TEST_ASSERT_FALSE(st.can_start);
+}
+
+/* A region that has NOT been reported yet is not a region of 0. Reading
+ * the two the same way would either block every start on a radio that is
+ * fine, or wave through one that is not. */
+static void S02_AC18_an_unreported_region_is_not_read_as_unset(void)
+{
+    a02_harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    uint8_t const one = 0x01u;
+    a02_inject_channel(0u, "LongFast", &one, 1u, true);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    d2_bind();
+
+    ff_shell_crew_op_status_t st = ff_shell_crew_op_status(&H.shell);
+    TEST_ASSERT_FALSE(st.region_known);
+    TEST_ASSERT_FALSE(st.can_start);
+    TEST_ASSERT_FALSE(ff_shell_crew_start(&H.shell));
+    TEST_ASSERT_EQUAL(FF_APP_CREW_FAIL_NO_LINK, ff_shell_crew_op_status(&H.shell).fail);
+
+    /* ...and a handshake that reports one un-blocks it. */
+    H.ev.on_lora_region(H.ev.user, 1u);
+    st = ff_shell_crew_op_status(&H.shell);
+    TEST_ASSERT_TRUE(st.region_known);
+    TEST_ASSERT_TRUE(st.can_start);
+}
+
+/* A puck whose target never wired up a CSPRNG refuses to mint a code
+ * rather than minting a guessable one. */
+static void S02_AC18_no_entropy_source_refuses_to_mint(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    memset(&D2S, 0, sizeof(D2S));
+    ff_wiring_sender_t sender;
+    memset(&sender, 0, sizeof(sender));
+    sender.send_admin_set_channel = d2_spy_set_channel;
+    ff_shell_set_sender(&H.shell, sender);
+    /* Deliberately NO ff_shell_set_random. */
+
+    TEST_ASSERT_FALSE(ff_shell_crew_start(&H.shell));
+    d2_tick(100u);
+    TEST_ASSERT_EQUAL_INT(0, D2S.calls);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_FAIL_NO_ENTROPY, ff_shell_crew_op_status(&H.shell).fail);
+}
+
+/* A target with nothing bound to write through reports a refused send —
+ * never a success, and never a silent nothing. */
+static void S02_AC18_no_sender_bound_reports_a_refused_send(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    ff_shell_set_random(&H.shell, d2_rng, &D2_BITS);
+
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    for (int i = 0; i < 6; i++) d2_tick(10u);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_FAIL_SEND, ff_shell_crew_op_status(&H.shell).fail);
+}
+
+/* --- S02_AC17: LEAVE, and the pre-crew snapshot --------------------- */
+
+static void S02_AC17_leave_restores_the_channel_the_radio_had_before(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+
+    /* Start a crew — which is what takes the snapshot. */
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    d2_radio_confirms();
+    TEST_ASSERT_EQUAL(FF_APP_CREW_PHASE_READY, ff_shell_crew_op_status(&H.shell).phase);
+    TEST_ASSERT_TRUE(ff_shell_crew_op_status(&H.shell).has_snapshot);
+    TEST_ASSERT_TRUE(ff_shell_crew_op_status(&H.shell).can_leave);
+
+    ff_shell_crew_dismiss(&H.shell);
+    memset(&D2S, 0, sizeof(D2S));
+    D2S.packet_id = 0x6161u;
+
+    TEST_ASSERT_TRUE(ff_shell_crew_leave(&H.shell));
+    d2_tick(10u);
+    TEST_ASSERT_EQUAL_INT(1, D2S.calls);
+    /* Byte for byte what was there before Firefly touched it — NOT the
+     * factory default, which is a different promise. */
+    TEST_ASSERT_EQUAL_STRING("LongFast", D2S.last.name);
+    TEST_ASSERT_EQUAL_UINT8(1u, D2S.last.psk_len);
+    TEST_ASSERT_EQUAL_UINT8(0x01u, D2S.last.psk[0]);
+    TEST_ASSERT_TRUE(D2S.last.is_primary);
+
+    d2_radio_confirms();
+    ff_shell_crew_op_status_t const st = ff_shell_crew_op_status(&H.shell);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_PHASE_READY, st.phase);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_OP_LEAVE, st.op);
+    /* No code after leaving, and none invented. */
+    TEST_ASSERT_EQUAL_STRING("", st.pending_code);
+    TEST_ASSERT_EQUAL_STRING("", ff_shell_crew_code(&H.shell));
+}
+
+/* The snapshot is the ORIGINAL, taken once. A second crew must not
+ * overwrite it with the first crew — LEAVE would then put the wearer
+ * back on a crew they had just left. */
+static void S02_AC17_a_second_start_does_not_overwrite_the_snapshot(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    d2_radio_confirms();
+    ff_shell_crew_dismiss(&H.shell);
+
+    /* Leaving and starting again, with the crew channel now live. */
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    d2_radio_confirms();
+    ff_shell_crew_dismiss(&H.shell);
+
+    memset(&D2S, 0, sizeof(D2S));
+    D2S.packet_id = 0x7171u;
+    TEST_ASSERT_TRUE(ff_shell_crew_leave(&H.shell));
+    d2_tick(10u);
+    TEST_ASSERT_EQUAL_STRING("LongFast", D2S.last.name);
+    TEST_ASSERT_EQUAL_UINT8(1u, D2S.last.psk_len);
+}
+
+/* The once-only rule, isolated from the never-snapshot-a-Firefly-crew
+ * rule beside it.
+ *
+ * Written because a mutation check found the two guards overlapping: with
+ * the once-only guard deleted, every other test in this file still
+ * passed, because after a first start index 0 IS a Firefly crew and the
+ * second guard caught it. This is the case only the FIRST guard covers —
+ * somebody re-provisions the radio to a different, non-Firefly channel
+ * in between, and a capture that ran again would record THAT as "what
+ * your radio looked like before", quietly replacing the original. */
+static void S02_AC17_the_snapshot_is_taken_once_even_if_the_radio_changes(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    d2_radio_confirms();
+    ff_shell_crew_dismiss(&H.shell);
+
+    /* Somebody moves the radio to a different, non-Firefly channel. */
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    H.ev.on_lora_region(H.ev.user, 1u);
+    uint8_t const two = 0x02u;
+    a02_inject_channel(0u, "Public", &two, 1u, true);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    TEST_ASSERT_TRUE(ff_shell_crew_op_status(&H.shell).can_start);
+
+    memset(&D2S, 0, sizeof(D2S));
+    D2S.packet_id = 0x8181u;
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    d2_radio_confirms();
+    ff_shell_crew_dismiss(&H.shell);
+
+    memset(&D2S, 0, sizeof(D2S));
+    D2S.packet_id = 0x9191u;
+    TEST_ASSERT_TRUE(ff_shell_crew_leave(&H.shell));
+    d2_tick(10u);
+    /* The ORIGINAL, not the intermediate. */
+    TEST_ASSERT_EQUAL_STRING("LongFast", D2S.last.name);
+    TEST_ASSERT_EQUAL_UINT8(0x01u, D2S.last.psk[0]);
+}
+
+/* The once-only rule again, on the path where NO crew was ever written.
+ *
+ * Independent review variant (PR #312): the test above reaches its second
+ * capture through a SUCCESSFUL first start, so index 0 is a Firefly crew
+ * for part of the run and the never-snapshot-a-Firefly-crew guard is in
+ * play alongside the once-only one. Here the first start is NAKed — the
+ * radio is never moved onto a crew at all — and index 0 then changes to
+ * a different, still-non-Firefly channel before the second attempt. The
+ * Firefly guard can never fire on this path, so the original snapshot
+ * surviving is the once-only rule and nothing else.
+ *
+ * It also pins the ordering the amendment states in words (§A.2,
+ * "before the first write"): the record has to exist after an attempt
+ * that reached the radio and came back refused. */
+static void S02_AC17_a_failed_start_still_leaves_the_first_snapshot_standing(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+
+    /* Attempt 1: the write goes out and the mesh NAKs it, every time. */
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    TEST_ASSERT_TRUE(D2S.calls > 0);
+    TEST_ASSERT_TRUE(ff_shell_crew_op_status(&H.shell).has_snapshot);
+    for (int i = 0; i < 6; i++) {
+        H.ev.on_routing_ack(H.ev.user, D2S.packet_id, false);
+        d2_tick(10u);
+    }
+    TEST_ASSERT_EQUAL(FF_APP_CREW_PHASE_FAILED, ff_shell_crew_op_status(&H.shell).phase);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_FAIL_NAK, ff_shell_crew_op_status(&H.shell).fail);
+    ff_shell_crew_dismiss(&H.shell);
+
+    /* Somebody re-provisions the radio to a DIFFERENT non-Firefly
+     * channel while the puck is still crewless. */
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    H.ev.on_lora_region(H.ev.user, 1u);
+    uint8_t const two = 0x02u;
+    a02_inject_channel(0u, "Public", &two, 1u, true);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    /* Attempt 2 succeeds; LEAVE must restore what was there BEFORE the
+     * first, failed attempt — not "Public". */
+    memset(&D2S, 0, sizeof(D2S));
+    D2S.packet_id = 0xA1A1u;
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    d2_radio_confirms();
+    ff_shell_crew_dismiss(&H.shell);
+
+    memset(&D2S, 0, sizeof(D2S));
+    D2S.packet_id = 0xB1B1u;
+    TEST_ASSERT_TRUE(ff_shell_crew_leave(&H.shell));
+    d2_tick(10u);
+    TEST_ASSERT_EQUAL_STRING("LongFast", D2S.last.name);
+    TEST_ASSERT_EQUAL_UINT8(1u, D2S.last.psk_len);
+    TEST_ASSERT_EQUAL_UINT8(0x01u, D2S.last.psk[0]);
+}
+
+/* An UNSET region blocks both controls, and the CREW page has to say
+ * WHICH refusal that is. Without `region_unset` the page falls through
+ * to "your puck is still reading your radio's settings" — a sentence
+ * that is false at a radio which has finished answering, and that never
+ * resolves. Independent review finding (PR #312). */
+static void S02_AC18_an_unset_region_is_named_on_the_crew_page(void)
+{
+    a02_harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    H.ev.on_lora_region(H.ev.user, 0u /* UNSET */);
+    uint8_t const one = 0x01u;
+    a02_inject_channel(0u, "LongFast", &one, 1u, true);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    d2_bind();
+
+    (void)ff_shell_intent(&H.shell, &(ff_intent_t){.kind = FF_INTENT_SETTINGS_OPEN_CREW, .u = {0}});
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    ff_app_crew_page_t const *cw = &ff_shell_view(&H.shell)->settings.crew;
+    TEST_ASSERT_FALSE(cw->can_start);
+    TEST_ASSERT_FALSE(cw->can_leave);
+    TEST_ASSERT_TRUE(cw->region_unset);
+
+    /* A region that has not been REPORTED is an absence, not a reading,
+     * and must not borrow this sentence. */
+    a02_harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    a02_inject_channel(0u, "LongFast", &one, 1u, true);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    (void)ff_shell_intent(&H.shell, &(ff_intent_t){.kind = FF_INTENT_SETTINGS_OPEN_CREW, .u = {0}});
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->settings.crew.region_unset);
+}
+
+/* The snapshot survives a reboot: it is what LEAVE restores, and a
+ * wearer who power-cycles between starting and leaving is the ordinary
+ * case, not an edge one. */
+static void S02_AC17_the_snapshot_survives_a_reboot(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    d2_radio_confirms();
+
+    a02_harness_init(500000u, /*keep=*/true);
+    d2_connect_no_crew();
+    d2_bind();
+    TEST_ASSERT_TRUE(ff_shell_crew_op_status(&H.shell).has_snapshot);
+
+    TEST_ASSERT_TRUE(ff_shell_crew_leave(&H.shell));
+    d2_tick(10u);
+    TEST_ASSERT_EQUAL_STRING("LongFast", D2S.last.name);
+}
+
+/* No snapshot means LEAVE says so, rather than resetting somebody's
+ * radio to the factory default under the words "your old settings". */
+static void S02_AC17_leave_with_no_snapshot_fails_honestly(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    H.ev.on_lora_region(H.ev.user, 1u);
+    d2_bind();
+
+    TEST_ASSERT_FALSE(ff_shell_crew_op_status(&H.shell).has_snapshot);
+    TEST_ASSERT_FALSE(ff_shell_crew_leave(&H.shell));
+    d2_tick(100u);
+    TEST_ASSERT_EQUAL_INT(0, D2S.calls);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_FAIL_NO_SNAPSHOT, ff_shell_crew_op_status(&H.shell).fail);
+}
+
+/* --- The page, and the controls it offers --------------------------- */
+
+static void S02_AC16_the_crew_page_offers_exactly_one_of_start_and_leave(void)
+{
+    /* No crew resolved -> START, never LEAVE. */
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+    ff_app_crew_page_t const *cw = a02_crew_page();
+    TEST_ASSERT_TRUE(cw->can_start);
+    TEST_ASSERT_FALSE(cw->can_leave);
+
+    /* On a crew -> LEAVE, never START. */
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew();
+    H.ev.on_lora_region(H.ev.user, 1u);
+    d2_bind();
+    cw = a02_crew_page();
+    TEST_ASSERT_FALSE(cw->can_start);
+    TEST_ASSERT_TRUE(cw->can_leave);
+
+    /* Link down -> neither. A button that cannot do what it says is
+     * worse than no button; the page explains instead. */
+    H.ev.on_state(H.ev.user, MC_STATE_DISCONNECTED);
+    cw = a02_crew_page();
+    TEST_ASSERT_FALSE(cw->can_start);
+    TEST_ASSERT_FALSE(cw->can_leave);
+}
+
+/* The confirm face is the consent. The REQUEST intent must change
+ * nothing about the radio. */
+static void S02_AC16_the_request_intent_opens_the_confirm_face_and_writes_nothing(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+
+    (void)ff_shell_intent(&H.shell, &(ff_intent_t){.kind = FF_INTENT_CREW_START_REQUEST, .u = {0}});
+    d2_tick(100u);
+    TEST_ASSERT_EQUAL_INT(0, D2S.calls);
+    TEST_ASSERT_EQUAL(FF_SETTINGS_SUB_CREW_CONFIRM, ff_shell_view(&H.shell)->settings.subview);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_OP_START, ff_shell_view(&H.shell)->settings.crew.op);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_PHASE_IDLE, ff_shell_view(&H.shell)->settings.crew.phase);
+
+    /* ...and the CONFIRM intent is the one that writes. */
+    (void)ff_shell_intent(&H.shell, &(ff_intent_t){.kind = FF_INTENT_CREW_START_CONFIRM, .u = {0}});
+    d2_tick(10u);
+    TEST_ASSERT_EQUAL_INT(1, D2S.calls);
+    TEST_ASSERT_EQUAL(FF_SETTINGS_SUB_CREW_STATUS, ff_shell_view(&H.shell)->settings.subview);
+}
+
+/* The bench console's `crew start` reaches the SAME body the confirm
+ * face does — one path into the machine, not two. */
+static void S02_AC16_the_console_and_the_ui_share_one_path(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, ff_dbgcmd_parse("crew start", 10u, &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_CREW_START, cmd.kind);
+
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    TEST_ASSERT_EQUAL_INT(1, D2S.calls);
+
+    /* A second press while the write is in the air is ignored, not
+     * queued: two channel writes racing each other's reboot is how a
+     * radio lands somewhere nobody asked for. */
+    TEST_ASSERT_FALSE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    TEST_ASSERT_EQUAL_INT(1, D2S.calls);
+}
+
+/* A verifying run asks the radio to re-send its configuration, so the
+ * read-back does not have to wait on the reboot's own handshake. */
+static void S02_AC16_verifying_asks_for_a_reread(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    TEST_ASSERT_EQUAL_INT(0, D2S.rereads);
+    H.ev.on_routing_ack(H.ev.user, D2S.packet_id, true);
+    d2_tick(10u);
+    TEST_ASSERT_EQUAL_INT(1, D2S.rereads);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -12248,6 +12856,25 @@ int main(void)
     RUN_TEST(S02_AC14_the_code_and_invite_url_come_from_the_channel_name);
     RUN_TEST(S02_AC14_show_code_opens_from_the_crew_page);
     RUN_TEST(S02_AC14_hide_and_unhide_intents_route_to_the_shell);
+    RUN_TEST(S02_AC16_start_writes_the_crew_channel_and_verifies_it);
+    RUN_TEST(S02_AC16_the_crew_page_offers_exactly_one_of_start_and_leave);
+    RUN_TEST(S02_AC16_the_request_intent_opens_the_confirm_face_and_writes_nothing);
+    RUN_TEST(S02_AC16_the_console_and_the_ui_share_one_path);
+    RUN_TEST(S02_AC16_verifying_asks_for_a_reread);
+    RUN_TEST(S02_AC17_leave_restores_the_channel_the_radio_had_before);
+    RUN_TEST(S02_AC17_a_second_start_does_not_overwrite_the_snapshot);
+    RUN_TEST(S02_AC17_the_snapshot_is_taken_once_even_if_the_radio_changes);
+    RUN_TEST(S02_AC17_a_failed_start_still_leaves_the_first_snapshot_standing);
+    RUN_TEST(S02_AC18_an_unset_region_is_named_on_the_crew_page);
+    RUN_TEST(S02_AC17_the_snapshot_survives_a_reboot);
+    RUN_TEST(S02_AC17_leave_with_no_snapshot_fails_honestly);
+    RUN_TEST(S02_AC18_a_readback_that_disagrees_is_not_success);
+    RUN_TEST(S02_AC18_a_routing_nak_is_reported_as_a_nak);
+    RUN_TEST(S02_AC18_silence_from_the_radio_times_out_honestly);
+    RUN_TEST(S02_AC18_an_unset_region_stops_before_any_write);
+    RUN_TEST(S02_AC18_an_unreported_region_is_not_read_as_unset);
+    RUN_TEST(S02_AC18_no_entropy_source_refuses_to_mint);
+    RUN_TEST(S02_AC18_no_sender_bound_reports_a_refused_send);
 
     return UNITY_END();
 }

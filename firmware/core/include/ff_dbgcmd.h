@@ -64,6 +64,9 @@
  *   cal | cal start | cal finish | cal cancel | cal clear
  *                           — S12 step 3: the compass calibration ritual
  *   name | name <text>     — NAME in Settings: status / set + mesh push
+ *   crew | crew start | crew leave
+ *                           — A02 slice D2: crew status / start a crew /
+ *                             leave one (the puck-initiated crew)
  *   diag                    — DIAGNOSTICS: link/position/mesh/time/compass/
  *                             device facts, the same ones the Settings
  *                             DIAGNOSTICS page shows
@@ -124,6 +127,25 @@
  * it through `FF_INTENT_SETTINGS_NAME_COMMIT`'s own path
  * (`ff_shell.c`'s `shell_apply_name_commit`, core's
  * `ff_meshname_sanitize`) exactly like a real T9-authored name would be.
+ *
+ * `crew` (A02 slice D2, docs/specs/S02-core-crew.md's 2026-09-14
+ * amendment) follows `cal`'s shape, not `name`'s: START and LEAVE are
+ * the whole vocabulary, so there is a fixed set of sub-verbs to
+ * enumerate and no free-text argument to carry (the crew CODE is minted
+ * by the puck from its own CSPRNG — a typed one would defeat the point).
+ *   crew          — status: the crew code the radio reports, which index
+ *                   it resolved to, the radio's LoRa region, whether a
+ *                   pre-crew snapshot exists, and the current/last
+ *                   operation's phase + failure reason. See
+ *                   `ff_debug_console.c`'s `dbgconsole_crew_status` for
+ *                   the exact line format
+ *   crew start    — mint a code, write the derived channel to the comms
+ *                   brain, verify it by re-reading the channel table
+ *   crew leave    — restore the pre-crew snapshot, same write-and-verify
+ * Both actions go through `ff_shell_crew_start`/`ff_shell_crew_leave` —
+ * the SAME body the Settings CONFIRM face reaches, never a second path
+ * into the machine, exactly as `name <text>` shares
+ * `shell_apply_name_commit` with the NAME row's DONE button.
  *
  * `diag` (DIAGNOSTICS) is zero-arg like `me`/`roster`/`heard`/`wall`/`i2c`
  * above — a bare status dump, no sub-verb, no argument. It carries no
@@ -243,6 +265,9 @@ typedef enum {
     FF_DBGCMD_MIC_DUMP,     /* 2026-09-09 amendment: "mic dump <secs>" — u.mic_dump_secs, 1-10 */
     FF_DBGCMD_MUSIC,        /* S31: "music" bare — source/loudness/bpm-estimate */
     FF_DBGCMD_MUSIC_SEED,   /* S31: "music seed <n>" — u.music_seed, bench-determinism reseed */
+    FF_DBGCMD_CREW,         /* A02 slice D2: "crew" bare — crew code/index/region/operation status */
+    FF_DBGCMD_CREW_START,   /* A02 slice D2: "crew start" */
+    FF_DBGCMD_CREW_LEAVE,   /* A02 slice D2: "crew leave" */
 } ff_dbgcmd_kind_t;
 
 /** Why a line failed to become a command. `FF_DBGCMD_ERR_EMPTY` is not

@@ -685,6 +685,51 @@ static void dbgcmd_names_are_never_null(void)
     TEST_ASSERT_NOT_NULL(ff_dbgcmd_status_name((ff_dbgcmd_status_t)99));
 }
 
+/* A02 slice D2 — `crew` follows `cal`'s exact shape: a bare verb plus one
+ * of a small fixed set of sub-verbs, each its own kind, and anything
+ * else rejected rather than guessed at. */
+static void dbgcmd_crew_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("crew", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_CREW, cmd.kind);
+}
+
+static void dbgcmd_crew_start_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("crew start", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_CREW_START, cmd.kind);
+}
+
+static void dbgcmd_crew_leave_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("crew leave", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_CREW_LEAVE, cmd.kind);
+}
+
+static void dbgcmd_crew_rejects_unknown_subverb(void)
+{
+    ff_dbgcmd_t cmd;
+    /* `crew stop` is not a thing, and must not silently become `crew`
+     * (the status dump) — an operator who typed the wrong verb on a
+     * bench needs to be told, not quietly shown something else. */
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("crew stop", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_NONE, cmd.kind);
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("crew start now", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_NONE, cmd.kind);
+    /* And `crew` is not a prefix match for some other verb. */
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_UNKNOWN_CMD, parse_str("crewstart", &cmd));
+}
+
+static void dbgcmd_crew_kinds_have_names(void)
+{
+    TEST_ASSERT_EQUAL_STRING("CREW", ff_dbgcmd_kind_name(FF_DBGCMD_CREW));
+    TEST_ASSERT_EQUAL_STRING("CREW_START", ff_dbgcmd_kind_name(FF_DBGCMD_CREW_START));
+    TEST_ASSERT_EQUAL_STRING("CREW_LEAVE", ff_dbgcmd_kind_name(FF_DBGCMD_CREW_LEAVE));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -745,6 +790,11 @@ int main(void)
     RUN_TEST(dbgcmd_flare_cancel_parses);
     RUN_TEST(dbgcmd_cal_parses);
     RUN_TEST(dbgcmd_cal_start_parses);
+    RUN_TEST(dbgcmd_crew_parses);
+    RUN_TEST(dbgcmd_crew_start_parses);
+    RUN_TEST(dbgcmd_crew_leave_parses);
+    RUN_TEST(dbgcmd_crew_rejects_unknown_subverb);
+    RUN_TEST(dbgcmd_crew_kinds_have_names);
     RUN_TEST(dbgcmd_cal_finish_parses);
     RUN_TEST(dbgcmd_cal_cancel_parses);
     RUN_TEST(dbgcmd_cal_clear_parses);

@@ -43,6 +43,11 @@
 #include "esp_err.h" /* esp_err_to_name() — S26 slice g's boot-splash failure log */
 #include "esp_log.h"
 #include "esp_random.h" /* fix/meshclient-packet-id-seed — esp_random() for the outgoing packet-id seed */
+/* A02 slice D2 — `esp_random()` behind ff_shell_set_random's `(void*)`
+ * context signature. A one-line adapter rather than a cast of the
+ * function pointer itself: calling through an incompatible pointer type
+ * is undefined behaviour, and this is the kind of place it would never
+ * be noticed. */
 #include "esp_sleep.h"  /* S26 slice f — esp_light_sleep_start() + wake-source config */
 #include "esp_system.h" /* esp_restart() — S26 slice b's reboot action */
 #include "esp_task_wdt.h" /* 2026-09-08 QA hardening — render-loop task + LVGL-liveness watchdog coverage */
@@ -135,6 +140,13 @@ static const char *TAG = "firefly";
 static inline TickType_t ff_ticks_at_least_one(uint32_t ms)
 {
     return (TickType_t)ff_ticks_at_least_one_calc(ms, (uint32_t)configTICK_RATE_HZ);
+}
+
+/* A02 slice D2 — see the note beside the esp_random.h include above. */
+static uint32_t ff_esp_random32(void *ctx)
+{
+    (void)ctx;
+    return esp_random();
 }
 
 #if !CONFIG_FF_DEMO_MODE
@@ -2163,6 +2175,23 @@ void app_main(void)
     ff_shell_set_auto_crew(&s_shell, false);
     ESP_LOGW(TAG, "firefly: FF_CREW_AUTO_ON_CHANNEL off — only explicit pairing grows the crew");
 #endif
+
+    /* A02 slice D2 (S02's 2026-09-14 amendment) — the CSPRNG the crew
+     * code is minted from.
+     *
+     * `esp_random()` is the hardware RNG, and it is only a true CSPRNG
+     * once the RF subsystem is up (ESP-IDF's own documentation: without
+     * Wi-Fi or Bluetooth enabled it degrades to a PRNG). This is called
+     * where it is — after the radio stack has been brought up above —
+     * for that reason, and it is the same source this file already
+     * trusts for `cfg.packet_id_seed`.
+     *
+     * There is deliberately NO fallback in the shell: a puck whose
+     * target never calls this refuses to mint a code rather than minting
+     * a guessable one (`ff_shell_set_random`'s own doc comment). 30 bits
+     * is a privacy fence (A02 §1.6) and a predictable 30 bits is no
+     * fence at all. */
+    ff_shell_set_random(&s_shell, ff_esp_random32, NULL);
 
     /* S25 slice c — push one battery reading immediately after init, so
      * the very first face flushed to glass already has a real (or

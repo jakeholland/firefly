@@ -1,0 +1,17 @@
+{
+  "fixture": "crew_region_unset",
+  "face": "settings",
+  "settings": {
+    "my_name": "DANA",
+    "subview": "crew",
+    "crew": {
+      "link_connected": true,
+      "can_start": false,
+      "can_leave": false,
+      "region_unset": true,
+      "heard": [
+        { "node_id": 2271512608, "name": "SAM", "age_ms": 12000 }
+      ]
+    }
+  }
+}

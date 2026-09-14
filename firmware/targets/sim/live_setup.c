@@ -79,6 +79,41 @@ static int live_setup_load_pack_file(ff_shell_t *shell, char const *path)
     return rc;
 }
 
+/* ---------------------------------------------------------------------
+ * A02 slice D2 — the sim's entropy source
+ * ------------------------------------------------------------------- */
+
+/* Opened once and held for the process's life: the shell's RNG context
+ * must outlive the shell (`ff_shell_set_random`'s own contract), and a
+ * per-call open/close on a code mint would be the one place a transient
+ * EMFILE turned into a silently worse code. NULL means the source is
+ * unavailable, which `ff_sim_random32` reports by... not being wired up
+ * at all (see ff_sim_random_open). */
+static FILE *s_urandom;
+
+static uint32_t ff_sim_random32(void *ctx)
+{
+    FILE *f = (FILE *)ctx;
+    uint32_t v = 0u;
+    if (f != NULL && fread(&v, sizeof(v), 1u, f) == 1u) return v;
+    /* A short read from /dev/urandom is not a thing that happens, but if
+     * it ever does, the honest answer is 0 rather than a fabricated
+     * "random" value from the clock. A 0 draw is a VALID code
+     * (FIRE-000000) — which is the one downside of this path, and the
+     * reason it is only reachable on a genuinely broken host. */
+    return v;
+}
+
+static void ff_sim_random_open(ff_shell_t *shell)
+{
+    if (s_urandom == NULL) s_urandom = fopen("/dev/urandom", "rb");
+    if (s_urandom == NULL) {
+        fprintf(stderr, "ffsim: /dev/urandom unavailable — START CREW will refuse to mint a code\n");
+        return; /* left unwired: the shell then fails honestly */
+    }
+    ff_shell_set_random(shell, ff_sim_random32, s_urandom);
+}
+
 int ff_live_setup(ff_shell_t *shell, ff_shell_cfg_t *shell_cfg, ff_live_setup_cfg_t const *cfg,
                    ff_live_setup_t *out)
 {
@@ -108,6 +143,17 @@ int ff_live_setup(ff_shell_t *shell, ff_shell_cfg_t *shell_cfg, ff_live_setup_cf
         ff_live_setup_close(out);
         return -1;
     }
+
+    /* A02 slice D2 — the CSPRNG the crew code is minted from
+     * (`ff_shell_set_random`, ff_shell.h). `/dev/urandom` rather than
+     * `rand()`, and rather than `arc4random()` which is not portably
+     * available across this project's two build hosts: a crew code that
+     * a sim mints is a code that could be typed into a real phone and
+     * used on a real bench, so it gets a real CSPRNG or it gets
+     * nothing. On a host with no `/dev/urandom` the source stays
+     * unwired and START CREW fails honestly with "this puck can't make
+     * a safe code" — never a fallback to something guessable. */
+    ff_sim_random_open(shell);
 
     if (cfg->dev_trust_all) {
         /* S16 AC6's compile-time assertion: this affordance must not

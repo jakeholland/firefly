@@ -1,0 +1,9 @@
+{
+  "fixture": "crew_op_verifying",
+  "face": "settings",
+  "settings": {
+    "my_name": "DANA",
+    "subview": "crew_status",
+    "crew": { "op": "start", "phase": "verifying" }
+  }
+}

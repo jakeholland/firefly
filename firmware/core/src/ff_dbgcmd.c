@@ -197,6 +197,29 @@ ff_dbgcmd_status_t ff_dbgcmd_parse(char const *line, size_t line_len, ff_dbgcmd_
         }
         return FF_DBGCMD_ERR_BAD_ARGS;
     }
+    /* A02 slice D2 — `crew` follows `cal`'s exact shape: a bare verb plus
+     * one of a small fixed set of sub-verbs, each its OWN kind. Unlike
+     * `name <text>` there is no free-text argument to carry — START and
+     * LEAVE are the whole vocabulary, and the code is minted by the puck
+     * rather than typed. This parser carries no crew policy of its own
+     * (the same "zero I/O, zero policy" split every verb here keeps):
+     * the dispatcher routes all three through `ff_shell_crew_*`, the
+     * SAME seam the Settings confirm face uses. */
+    if (tok_eq(buf, start, cmd_end, "crew")) {
+        if (arg_start >= end) {
+            out->kind = FF_DBGCMD_CREW;
+            return FF_DBGCMD_ERR_OK;
+        }
+        if (tok_eq(buf, arg_start, end, "start")) {
+            out->kind = FF_DBGCMD_CREW_START;
+            return FF_DBGCMD_ERR_OK;
+        }
+        if (tok_eq(buf, arg_start, end, "leave")) {
+            out->kind = FF_DBGCMD_CREW_LEAVE;
+            return FF_DBGCMD_ERR_OK;
+        }
+        return FF_DBGCMD_ERR_BAD_ARGS;
+    }
     if (tok_eq(buf, start, cmd_end, "send")) {
         size_t const n = end - arg_start;
         if (n == 0u || n > FF_DBGCMD_TEXT_MAX) return FF_DBGCMD_ERR_BAD_ARGS;
@@ -407,6 +430,9 @@ char const *ff_dbgcmd_kind_name(ff_dbgcmd_kind_t kind)
     case FF_DBGCMD_MIC_DUMP: return "MIC_DUMP";
     case FF_DBGCMD_MUSIC: return "MUSIC";
     case FF_DBGCMD_MUSIC_SEED: return "MUSIC_SEED";
+    case FF_DBGCMD_CREW: return "CREW";
+    case FF_DBGCMD_CREW_START: return "CREW_START";
+    case FF_DBGCMD_CREW_LEAVE: return "CREW_LEAVE";
     }
     return "?";
 }

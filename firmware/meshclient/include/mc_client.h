@@ -436,6 +436,11 @@ typedef struct {
     uint32_t portnum;
 } mc_rx_meta_t;
 
+/** Meshtastic's own channel-table size (`MAX_NUM_CHANNELS`). Bounds the
+ *  client's cached snapshot of the table — see
+ *  `mc_client_get_channel_snapshot`. */
+#define MC_CHANNEL_MAX 8u
+
 /**
  * [api] A02 slice D — one row of the radio's channel table, delivered
  * during `want_config` (docs/specs/S02-core-crew.md's 2026-09-13
@@ -465,6 +470,25 @@ typedef struct {
      * a plausible-looking wrong key. 0 means the channel stated no key. */
     uint8_t  psk_len;
     bool     is_primary; /* Channel.role == PRIMARY */
+
+    /* [api] A02 slice D2 — `ChannelSettings.module_settings.
+     * position_precision`, PRESENCE-FLAGGED.
+     *
+     * The flag is load-bearing in both directions, which is why an
+     * "absent means 0" shortcut is not taken here:
+     *  - on a READ, an absent `module_settings` submessage is a channel
+     *    that never stated a precision, which is NOT the same claim as
+     *    "this channel shares nothing" — and the pre-crew snapshot
+     *    (ff_crewstart.h) has to be able to restore the distinction;
+     *  - on a WRITE, Meshtastic reads an ABSENT submessage as the
+     *    default (32), so the submessage is always emitted explicitly
+     *    (A02 §1.5's own "saying it out loud is free"). A writer that
+     *    left it absent to mean 0 would silently ship full precision.
+     *
+     * `position_precision` is meaningless when `has_position_precision`
+     * is false, and is zeroed rather than left as stack garbage. */
+    bool     has_position_precision;
+    uint32_t position_precision;
 } mc_channel_t;
 
 /**
@@ -655,6 +679,32 @@ typedef struct {
      */
     void (*on_channel)(void *u, mc_channel_t const *ch);
 
+    /**
+     * [api] A02 slice D2 — the radio's LoRa REGION, from the
+     * `want_config` reply stream (`FromRadio.config` carrying a
+     * `lora` variant, `Config.LoRaConfig.region`).
+     *
+     * Exists for exactly one question, and deliberately carries nothing
+     * else from `LoRaConfig`: **is the region UNSET (0)?** A02 §1.7
+     * forbids Firefly from ever writing `lora_config` or guessing a
+     * region from anywhere, so the only honest thing a crew-start flow
+     * can do on an unprovisioned radio is stop and say so
+     * ("Set the radio region on the phone first"). It cannot say that
+     * without being able to see the region, and before this the client
+     * dropped the whole `config` frame on the floor.
+     *
+     * `region` is the raw `RegionCode` enum value as the radio reported
+     * it, NOT translated into a Firefly vocabulary: this library has no
+     * business deciding which of the two dozen regions are "fine", and
+     * a caller that only needs `!= 0` should not have to trust a
+     * translation table to tell it that.
+     *
+     * Re-sent on every handshake, like the channel table — a caller
+     * should clear what it cached when `on_state(MC_STATE_HANDSHAKE)`
+     * fires rather than trusting a value from before a reboot.
+     */
+    void (*on_lora_region)(void *u, uint32_t region);
+
     void *user;
 } mc_events_t;
 
@@ -805,6 +855,17 @@ typedef struct mc_client {
     uint8_t tick_carry_buf[MC_TICK_READ_CHUNK];
     uint16_t tick_carry_len;
     uint16_t tick_carry_pos;
+
+    /* [api] A02 slice D2 — the channel table as of the CURRENT
+     * handshake, for `mc_client_get_channel_snapshot`. Cleared whenever
+     * a fresh want_config starts, so a row here is always something
+     * THIS session's radio said, never a memory of a previous one.
+     * Bounded by MC_CHANNEL_MAX; a row with an index past that is
+     * dispatched to `on_channel` like any other but is not cached
+     * (there is no slot for it, and silently rewriting somebody else's
+     * slot would be worse than not remembering). */
+    mc_channel_t channels[MC_CHANNEL_MAX];
+    bool         channel_seen[MC_CHANNEL_MAX];
 } mc_client_t;
 
 /** Initialize a freshly-allocated client. Does not touch the transport or
@@ -1026,6 +1087,85 @@ int mc_send_set_owner(mc_client_t *c, uint32_t dest, char const *long_name, char
  * failure).
  */
 int mc_send_get_owner_request(mc_client_t *c, uint32_t dest);
+
+/**
+ * mc_client_set_channel — [api] A02 slice D2: send a Meshtastic
+ * `AdminMessage.set_channel`, writing one row of the radio's channel
+ * table.
+ *
+ * This is the puck's half of "start a crew": the phone app has had
+ * `applyChannelSet` since PR #274, and the puck — no camera, no phone —
+ * needs the same power over its own comms brain. It rides the SAME
+ * local-admin path `mc_send_set_owner` documents in full: ADMIN_APP
+ * (portnum 6), `want_ack` true, `dest` must be this node's OWN id so
+ * `AdminModule` takes the no-passkey-needed branch (`mp.from == 0` for
+ * anything a locally-attached client submits — meshtastic/firmware
+ * `v2.7.26`, `MeshService::handleToRadio` + `AdminModule::
+ * handleReceivedProtobuf`). A `dest` that is not this node's own id
+ * encodes and sends but lands on the passkey-required path on the
+ * remote node and is rejected there; this library does not enforce it,
+ * exactly as `mc_send_set_owner` does not.
+ *
+ * **What is written, and what is deliberately not.** Everything in
+ * `*ch` and nothing else: index, name, psk, role, and a
+ * `ModuleSettings` submessage that is ALWAYS emitted (A02 §1.5 — an
+ * absent submessage reads as the default precision 32 on Meshtastic's
+ * side, so a writer that left it out to mean 0 would silently ship full
+ * precision). `uplink_enabled`/`downlink_enabled` are left false: a crew
+ * is never bridged to MQTT. **`lora_config` — region, modem preset — is
+ * not part of `mc_channel_t` and is never written by this call**
+ * (A02 §1.7: locale is not location, a wrong region is a regulatory
+ * violation, and the radio's region was set once at flash time).
+ *
+ * **Bounds, checked before anything is encoded.** `ch->index` must be
+ * under `MC_CHANNEL_MAX`; `ch->psk_len` must be 0, 1, 16 or 32 (the only
+ * lengths `ChannelSettings.psk` documents — a 7-byte key is not a
+ * shorter key, it is a corrupt one); `ch->name` must be NUL-terminated
+ * within its 12 bytes. Any violation returns negative and sends
+ * nothing.
+ *
+ * **nanopb note.** `ChannelSettings.name` and `.psk` are unbounded in
+ * channel.proto, so the generator emits them as `pb_callback_t` with no
+ * callback installed — the same fact `mc_decode_channel_frame`'s comment
+ * explains for the decode direction. This call installs ENCODE
+ * callbacks over caller-owned buffers; unlike decode, a oneof's union is
+ * not memset during encode, so the pointers survive to be used.
+ *
+ * Returns 0 on success, negative on failure (not READY, out-of-bounds
+ * input, encode/write failure).
+ *
+ * `out_packet_id` is OPTIONAL (NULL-safe) and, on success only,
+ * receives the outgoing `MeshPacket.id`, so a caller can correlate a
+ * later `mc_events_t.on_routing_ack` against THIS write. Left untouched
+ * on failure. Note that an ACK here means the admin frame was
+ * delivered, NOT that the channel now holds what was asked for — the
+ * only proof of that is a read-back (`mc_connect` a fresh handshake and
+ * watch `on_channel`), which is exactly what `ff_crewstart`'s VERIFYING
+ * state exists to do.
+ */
+int mc_client_set_channel(mc_client_t *c, uint32_t dest, mc_channel_t const *ch, uint32_t *out_packet_id);
+
+/**
+ * mc_client_get_channel_snapshot — [api] A02 slice D2: read back a row
+ * of the channel table as the CURRENT handshake reported it.
+ *
+ * The client caches every `on_channel` row of the live handshake (up to
+ * `MC_CHANNEL_MAX`) so a caller can ask "what is on index 0 right now"
+ * at the moment it needs to know — which is immediately before
+ * overwriting it. That is the pre-crew snapshot LEAVE restores
+ * (`ff_crewstart.h`): without it, leaving a crew could only ever mean
+ * "reset to the factory default", which is a different and usually
+ * wrong thing to do to somebody's radio.
+ *
+ * The cache is cleared at the start of every want_config, so a row here
+ * is always something THIS session's radio said. Returns false —
+ * writing nothing — for a NULL argument, an index at or past
+ * `MC_CHANNEL_MAX`, or an index the current handshake has not reported.
+ * There is deliberately no "well, it's probably the default" fallback:
+ * a snapshot nobody took is a snapshot that does not exist, and the
+ * caller says so rather than restoring a guess.
+ */
+bool mc_client_get_channel_snapshot(mc_client_t const *c, uint8_t index, mc_channel_t *out);
 
 mc_state_t mc_state(mc_client_t const *c);
 mc_stats_t mc_get_stats(mc_client_t const *c);

@@ -224,6 +224,18 @@ static int wiring_mc_send_get_owner_request(void *ctx, uint32_t dest)
     return mc_send_get_owner_request((mc_client_t *)ctx, dest);
 }
 
+/* [api] A02 slice D2 — thin wrappers to the admin channel write and to
+ * the want_config re-read, the same shape as the four above. */
+static int wiring_mc_set_channel(void *ctx, uint32_t dest, mc_channel_t const *ch, uint32_t *out_packet_id)
+{
+    return mc_client_set_channel((mc_client_t *)ctx, dest, ch, out_packet_id);
+}
+
+static void wiring_mc_request_config(void *ctx)
+{
+    mc_connect((mc_client_t *)ctx);
+}
+
 void ff_wiring_init_with_sender(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_heard_t *heard,
                                  ff_wiring_sender_t sender, void (*haptic_cb)(void *user), void *haptic_user,
                                  ff_clock_t const *clock)
@@ -248,6 +260,8 @@ void ff_wiring_init(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_hea
     sender.ctx = mc;
     sender.send_admin_set_owner = wiring_mc_send_set_owner;
     sender.send_get_owner_request = wiring_mc_send_get_owner_request;
+    sender.send_admin_set_channel = wiring_mc_set_channel;
+    sender.request_config = wiring_mc_request_config;
     ff_wiring_init_with_sender(w, feed, crew, heard, sender, haptic_cb, haptic_user, clock);
 }
 

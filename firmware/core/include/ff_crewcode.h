@@ -88,6 +88,35 @@ extern "C" {
  * NUL-terminated, MSB-first when read as a 30-bit integer. */
 extern char const ff_crewcode_alphabet[33];
 
+/** Bits of entropy a code carries: 6 symbols x 5 bits (A02 §1.1). The
+ * generator draws exactly this many from a CSPRNG and nothing else —
+ * never a name, a timestamp or a node id. */
+#define FF_CREWCODE_BITS 30u
+
+/**
+ * ff_crewcode_from_bits — [api] A02 slice D2 — render a 30-bit integer as
+ * a canonical crew code, MSB-first (A02 §1.1: "encoded MSB-first from
+ * the 30-bit integer").
+ *
+ * This is the ENCODE half of the codec, and it lives here beside the
+ * decode half for the obvious reason: a generator that encoded the
+ * alphabet even slightly differently from `ff_crewcode_parse` would mint
+ * codes this same tree cannot read back. Symbol i (0 = leftmost) is
+ * `(bits >> (25 - 5*i)) & 0x1F`, indexed into `ff_crewcode_alphabet`.
+ *
+ * DELIBERATELY NOT a random-number generator. The entropy source is the
+ * caller's (`esp_random` on the puck, `/dev/urandom` in the sim,
+ * a scripted counter in a test) — core is pure, has no I/O, and a module
+ * that reached for `rand()` here would ship a guessable crew code, which
+ * is the one thing A02 §1.6's threat model cannot survive.
+ *
+ * Returns false, leaving `out` untouched, for a NULL `out` or a `bits`
+ * value that does not fit in `FF_CREWCODE_BITS` (rejected rather than
+ * masked: a caller handing over 32 raw bits and silently getting the low
+ * 30 would think it had drawn a code it did not draw).
+ */
+bool ff_crewcode_from_bits(uint32_t bits, char out[FF_CREWCODE_LEN + 1u]);
+
 /**
  * ff_crewcode_parse — normalise anything a human typed (or a channel
  * name) into the canonical code, or fail.

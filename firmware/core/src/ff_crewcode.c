@@ -359,3 +359,24 @@ size_t ff_crewcode_invite_url(char const *canonical, char const *name, char *buf
 
     return len;
 }
+
+bool ff_crewcode_from_bits(uint32_t bits, char out[FF_CREWCODE_LEN + 1u])
+{
+    if (out == NULL) return false;
+    /* Rejected, never masked — see this function's doc comment
+     * (ff_crewcode.h): silently keeping the low 30 bits of a 32-bit draw
+     * would hand the caller a code it did not think it drew. */
+    if (bits >= (1u << FF_CREWCODE_BITS)) return false;
+
+    char canon[FF_CREWCODE_LEN + 1u];
+    memcpy(canon, FF_CREWCODE_TAG, sizeof(FF_CREWCODE_TAG) - 1u);
+    for (unsigned i = 0; i < FF_CREWCODE_SYMBOLS; i++) {
+        unsigned const shift = FF_CREWCODE_BITS - 5u * (i + 1u); /* MSB-first */
+        uint32_t const sym = (bits >> shift) & 0x1Fu;
+        canon[(sizeof(FF_CREWCODE_TAG) - 1u) + i] = ff_crewcode_alphabet[sym];
+    }
+    canon[FF_CREWCODE_LEN] = '\0';
+
+    memcpy(out, canon, sizeof(canon));
+    return true;
+}

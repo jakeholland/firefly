@@ -1279,6 +1279,46 @@ static void settings_crew_show_code_cb(lv_event_t *e)
     ff_intent_emit(&in);
 }
 
+/* [api] A02 slice D2 — START CREW / LEAVE CREW, each in two beats. The
+ * pill only ASKS (the confirm face is the consent); the confirm face's
+ * own button is the one tap that writes to the radio. Same pure-renderer
+ * shape as every other control on this page: a bare intent, and the
+ * shell decides. */
+static void settings_crew_start_req_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_CREW_START_REQUEST, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_crew_leave_req_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_CREW_LEAVE_REQUEST, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_crew_start_confirm_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_CREW_START_CONFIRM, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_crew_leave_confirm_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_CREW_LEAVE_CONFIRM, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_crew_dismiss_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_CREW_DISMISS, .u = {0}};
+    ff_intent_emit(&in);
+}
+
 /* Honest presence text/color — S24's ff_sigview_presence vocabulary,
  * REUSED verbatim (mirrors scr_inbox.c's inbox_presence_text: same
  * words, same color roles, not reimplemented independently). */
@@ -1545,6 +1585,10 @@ static void settings_crew_build_heard_empty(lv_obj_t *list, int32_t rel_y, int32
     lv_obj_clear_flag(lbl, LV_OBJ_FLAG_SCROLLABLE);
 }
 
+/* Defined with the STATUS face below, and shared with the CREW page's
+ * blocked-reason caption so the same failure never gets two wordings. */
+static char const *settings_crew_fail_text(ff_app_crew_fail_t f);
+
 static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const *cw)
 {
     lv_obj_t *puck = lv_obj_create(parent);
@@ -1608,6 +1652,42 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
     settings_make_pill(list, "SHOW CODE", 0, y, row_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
                        FF_THEME_COLOR_AMBER, 2, settings_crew_show_code_cb, NULL);
     y += FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP;
+
+    /* [api] A02 slice D2 — START CREW / LEAVE CREW.
+     *
+     * Exactly one of the two is ever offered, and only when the shell
+     * says the puck could actually carry it out (`can_start`/
+     * `can_leave`, computed once — see `ff_shell_crew_op_status`). When
+     * neither is offered the row is a muted SENTENCE, not a greyed
+     * button: a disabled control tells a wearer that something is
+     * possible and withheld, when the truth is that the puck cannot see
+     * its radio's channels yet. Saying that is more use than a button
+     * that would fail.
+     *
+     * Same full-width geometry as SHOW CODE above — no new sizes, and
+     * clear of the 44 px hit floor by construction. */
+    if (cw->can_start) {
+        settings_make_pill(list, "START CREW", 0, y, row_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
+                           FF_THEME_COLOR_AMBER, 2, settings_crew_start_req_cb, NULL);
+        y += FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP;
+    } else if (cw->can_leave) {
+        settings_make_pill(list, "LEAVE CREW", 0, y, row_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
+                           FF_THEME_COLOR_STALE_AMBER, 2, settings_crew_leave_req_cb, NULL);
+        y += FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP;
+    } else if (cw->region_unset) {
+        /* S02's D2 amendment §A.1 requires this refusal be reported as
+         * ITSELF, in these words. Without this branch the sentence below
+         * would claim the puck is "still reading" a radio that has
+         * finished answering and cannot legally transmit — a sentence
+         * that is false and never resolves, over the one fact the wearer
+         * could act on. */
+        y = settings_crew_caption(list, y, row_w, settings_crew_fail_text(FF_APP_CREW_FAIL_REGION_UNSET));
+    } else {
+        y = settings_crew_caption(list, y, row_w,
+                                   cw->link_connected
+                                       ? "Your puck is still reading your radio's settings."
+                                       : "Your puck can't reach its radio, so it can't change crews.");
+    }
 
     y = settings_build_section_header(list, y, row_w, "PAIRED", /*first=*/true);
     for (uint8_t i = 0; i < cw->paired_count; i++) {
@@ -1756,7 +1836,11 @@ static void settings_crew_code_back_cb(lv_event_t *e)
     ff_intent_emit(&in);
 }
 
-static void settings_build_crew_code_page(lv_obj_t *parent, ff_app_crew_page_t const *cw)
+/* The puck disc every full-screen settings sub-face draws onto. One
+ * definition, used by SHOW CODE below and by the two crew-operation
+ * faces after it — the comment used to claim this factoring while the
+ * SHOW CODE face still kept its own verbatim copy. */
+static lv_obj_t *settings_face_disc(lv_obj_t *parent)
 {
     lv_obj_t *puck = lv_obj_create(parent);
     lv_obj_remove_style_all(puck);
@@ -1768,6 +1852,12 @@ static void settings_build_crew_code_page(lv_obj_t *parent, ff_app_crew_page_t c
     lv_obj_set_style_border_width(puck, 0, 0);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE);
+    return puck;
+}
+
+static void settings_build_crew_code_page(lv_obj_t *parent, ff_app_crew_page_t const *cw)
+{
+    lv_obj_t *puck = settings_face_disc(parent);
 
     bool const have_code = (cw->crew_code[0] != '\0') && (cw->invite_url[0] != '\0');
 
@@ -1825,6 +1915,255 @@ static void settings_build_crew_code_page(lv_obj_t *parent, ff_app_crew_page_t c
     settings_make_pill(puck, "BACK", (FF_THEME_PUCK_PX - FF_CREWCODE_BTN_W) / 2, FF_CREWCODE_BTN_Y,
                        FF_CREWCODE_BTN_W, FF_CREWCODE_BTN_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_MUTED,
                        2, settings_crew_code_back_cb, NULL);
+}
+
+/* ---------------------------------------------------------------------
+ * START CREW / LEAVE CREW — A02 slice D2 (docs/specs/S02-core-crew.md's
+ * 2026-09-14 amendment)
+ * ---------------------------------------------------------------------
+ *
+ * Two faces, both full-screen, both reached from the CREW page:
+ *
+ *   CONFIRM                          STATUS
+ *   ------------------------         ------------------------
+ *   Start a new crew?                SAVING TO YOUR RADIO
+ *   Your radio saves it and          Your radio restarts for a
+ *   restarts for a few seconds.      few seconds.
+ *
+ *   [ NOT NOW ]  [ START CREW ]      (no button while it works)
+ *
+ * The copy is plain-words on purpose (#303's "plain faces" pass): no
+ * "channel", no "PSK", no "admin write". A wearer standing in a field
+ * needs to know what is about to happen to their radio and roughly how
+ * long it will be off, and that is all this face claims.
+ *
+ * The STATUS face's vocabulary is the RADIO's truth rather than a
+ * reassuring summary — "checking it saved" is a real step that can
+ * really fail, and it says so. READY is only ever reached by a read-back
+ * that matched (ff_crewstart.h); nothing on this face can show DONE
+ * because a frame was sent.
+ * ------------------------------------------------------------------- */
+#define FF_CREWOP_TITLE_Y   122
+#define FF_CREWOP_BODY_Y    172
+#define FF_CREWOP_BODY_W    (FF_THEME_PUCK_PX - 150)
+#define FF_CREWOP_CODE_Y    168
+#define FF_CREWOP_CODE_BODY_Y 212
+#define FF_CREWOP_BTN_H     FF_SETTINGS_ROW_H
+#define FF_CREWOP_BTN_Y     300
+#define FF_CREWOP_BTN2_Y    (FF_CREWOP_BTN_Y - FF_SETTINGS_ROW_H - 10)
+#define FF_CREWOP_BTN_W     132
+#define FF_CREWOP_BTN_GAP   12
+
+_Static_assert(FF_CREWOP_BTN_H >= FF_THEME_MIN_HIT_PX, "crew confirm buttons must clear the 44px hit floor");
+
+/* Containment, against the GLASS and not against the 412 pixel array.
+ *
+ * The two are not the same circle: the panel sits ~5 px left of the
+ * bezel's optical centre, so FF_THEME_GLASS_CX is 208 against the
+ * array's 206, and FF_THEME_GLASS_R is 200 (203 measured, pulled in 3)
+ * against the array's 206 — see ff_theme.h, and the SHOW CODE face's own
+ * assert above, which was rewritten onto these constants for exactly
+ * this reason. An assert written against 206/206 passes a layout whose
+ * bottom-LEFT corner is already under the bezel lip, because the left
+ * side is the side the offset eats.
+ *
+ * The pill row is `2*W + GAP` wide, centred on the array
+ * (LV_ALIGN_TOP_MID), so its corners are at
+ *   x = (FF_THEME_PUCK_PX -/+ row_w) / 2,  y = BTN_Y + BTN_H
+ * and the bottom-left corner is the worst case. Stated as arithmetic
+ * rather than eyeballed off a render: a golden is a pixel-diff against
+ * itself and would keep a corner over the bezel forever. (The pills are
+ * drawn with FF_SETTINGS_PILL_RADIUS, so the real corner is rounded and
+ * this square-corner test is the conservative one.) */
+#define FF_CREWOP_ROW_W  (2 * FF_CREWOP_BTN_W + FF_CREWOP_BTN_GAP)
+#define FF_CREWOP_DX_L   (FF_THEME_GLASS_CX - (FF_THEME_PUCK_PX - FF_CREWOP_ROW_W) / 2)
+#define FF_CREWOP_DX_R   ((FF_THEME_PUCK_PX + FF_CREWOP_ROW_W) / 2 - FF_THEME_GLASS_CX)
+#define FF_CREWOP_DY_B   (FF_CREWOP_BTN_Y + FF_CREWOP_BTN_H - FF_THEME_GLASS_CY)
+
+_Static_assert(FF_CREWOP_DX_L * FF_CREWOP_DX_L + FF_CREWOP_DY_B * FF_CREWOP_DY_B <=
+                   FF_THEME_GLASS_R * FF_THEME_GLASS_R,
+               "the crew confirm button row's bottom-LEFT corner must stay inside FF_THEME_GLASS_R");
+_Static_assert(FF_CREWOP_DX_R * FF_CREWOP_DX_R + FF_CREWOP_DY_B * FF_CREWOP_DY_B <=
+                   FF_THEME_GLASS_R * FF_THEME_GLASS_R,
+               "the crew confirm button row's bottom-RIGHT corner must stay inside FF_THEME_GLASS_R");
+/* The second row (READY's SHOW CODE) sits a whole row higher, so its
+ * corners are strictly inside the row above's — pinned anyway, because
+ * "strictly inside" stops being true the moment somebody widens it. */
+_Static_assert(((FF_CREWOP_BTN_W + 1) / 2 + (FF_THEME_GLASS_CX - FF_THEME_PUCK_PX / 2)) *
+                       ((FF_CREWOP_BTN_W + 1) / 2 + (FF_THEME_GLASS_CX - FF_THEME_PUCK_PX / 2)) +
+                   (FF_CREWOP_BTN2_Y + FF_CREWOP_BTN_H - FF_THEME_GLASS_CY) *
+                       (FF_CREWOP_BTN2_Y + FF_CREWOP_BTN_H - FF_THEME_GLASS_CY) <=
+                   FF_THEME_GLASS_R * FF_THEME_GLASS_R,
+               "the crew READY face's single pill must stay inside FF_THEME_GLASS_R");
+
+static void settings_crewop_title(lv_obj_t *puck, char const *text, uint32_t color)
+{
+    lv_obj_t *lbl = lv_label_create(puck);
+    lv_obj_set_width(lbl, FF_CREWOP_BODY_W);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_font(lbl, FF_THEME_FONT_HEADLINE, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(color), 0);
+    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(lbl, LV_ALIGN_TOP_MID, 0, FF_CREWOP_TITLE_Y);
+    lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+}
+
+static void settings_crewop_body(lv_obj_t *puck, char const *text, int32_t y)
+{
+    lv_obj_t *lbl = lv_label_create(puck);
+    lv_obj_set_width(lbl, FF_CREWOP_BODY_W);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_font(lbl, FF_THEME_FONT_MSG_BODY, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(lbl, LV_ALIGN_TOP_MID, 0, y);
+    lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+}
+
+/* A centred row of one or two pills. `right_text == NULL` centres the
+ * single pill, rather than leaving it lopsided where a pair would be. */
+static void settings_crewop_buttons(lv_obj_t *puck, int32_t y, char const *left_text, uint32_t left_fg,
+                                     lv_event_cb_t left_cb, char const *right_text, uint32_t right_fg,
+                                     lv_event_cb_t right_cb)
+{
+    if (right_text == NULL) {
+        settings_make_pill(puck, left_text, (FF_THEME_PUCK_PX - FF_CREWOP_BTN_W) / 2, y, FF_CREWOP_BTN_W,
+                           FF_CREWOP_BTN_H, FF_THEME_COLOR_SURFACE, left_fg, 2, left_cb, NULL);
+        return;
+    }
+    int32_t const total = 2 * FF_CREWOP_BTN_W + FF_CREWOP_BTN_GAP;
+    int32_t const x0 = (FF_THEME_PUCK_PX - total) / 2;
+    settings_make_pill(puck, left_text, x0, y, FF_CREWOP_BTN_W, FF_CREWOP_BTN_H, FF_THEME_COLOR_SURFACE,
+                       left_fg, 2, left_cb, NULL);
+    settings_make_pill(puck, right_text, x0 + FF_CREWOP_BTN_W + FF_CREWOP_BTN_GAP, y, FF_CREWOP_BTN_W,
+                       FF_CREWOP_BTN_H, FF_THEME_COLOR_SURFACE, right_fg, 2, right_cb, NULL);
+}
+
+static void settings_build_crew_confirm_page(lv_obj_t *parent, ff_app_crew_page_t const *cw)
+{
+    lv_obj_t *puck = settings_face_disc(parent);
+
+    if (cw->op == FF_APP_CREW_OP_LEAVE) {
+        if (!cw->has_snapshot) {
+            /* The honest refusal, up front. "Your radio goes back to its
+             * old settings" is a promise this puck cannot keep when it
+             * never recorded them — a puck handed a crew channel by
+             * somebody else's CLI, say — and offering the button anyway
+             * would be offering to do something else entirely (a reset
+             * to the factory default) under that sentence. */
+            settings_crewop_title(puck, "Can't leave yet", FF_THEME_COLOR_INK);
+            settings_crewop_body(puck,
+                                  "Your puck has no record of your radio's old settings, so it can't put "
+                                  "them back. Change crews from the phone instead.",
+                                  FF_CREWOP_BODY_Y);
+            settings_crewop_buttons(puck, FF_CREWOP_BTN_Y, "BACK", FF_THEME_COLOR_MUTED,
+                                     settings_crew_dismiss_cb, NULL, 0, NULL);
+            return;
+        }
+        settings_crewop_title(puck, "Leave the crew?", FF_THEME_COLOR_INK);
+        settings_crewop_body(puck, "Your radio goes back to its old settings.", FF_CREWOP_BODY_Y);
+        settings_crewop_buttons(puck, FF_CREWOP_BTN_Y, "NOT NOW", FF_THEME_COLOR_MUTED,
+                                 settings_crew_dismiss_cb, "LEAVE", FF_THEME_COLOR_STALE_AMBER,
+                                 settings_crew_leave_confirm_cb);
+        return;
+    }
+
+    settings_crewop_title(puck, "Start a new crew?", FF_THEME_COLOR_INK);
+    settings_crewop_body(puck, "Your radio saves it and restarts for a few seconds.", FF_CREWOP_BODY_Y);
+    settings_crewop_buttons(puck, FF_CREWOP_BTN_Y, "NOT NOW", FF_THEME_COLOR_MUTED, settings_crew_dismiss_cb,
+                             "START", FF_THEME_COLOR_AMBER, settings_crew_start_confirm_cb);
+}
+
+/* One sentence per failure. Every one of these is something a wearer can
+ * either act on or at least understand — "it didn't work" is not a
+ * report, and a bare error code on a festival puck is worse. */
+static char const *settings_crew_fail_text(ff_app_crew_fail_t f)
+{
+    switch (f) {
+    case FF_APP_CREW_FAIL_NO_LINK: return "Your puck can't reach its radio right now.";
+    case FF_APP_CREW_FAIL_REGION_UNSET: return "Set the radio region on the phone first.";
+    case FF_APP_CREW_FAIL_NO_ENTROPY: return "This puck can't make a safe code.";
+    case FF_APP_CREW_FAIL_NO_SNAPSHOT: return "No record of your radio's old settings.";
+    case FF_APP_CREW_FAIL_SEND: return "Your radio wouldn't take the change.";
+    case FF_APP_CREW_FAIL_NAK: return "Your radio refused the change.";
+    case FF_APP_CREW_FAIL_TIMEOUT_ACK: return "Your radio never answered.";
+    case FF_APP_CREW_FAIL_TIMEOUT_VERIFY: return "Your radio didn't come back to be checked.";
+    case FF_APP_CREW_FAIL_MISMATCH: return "Your radio saved something else.";
+    case FF_APP_CREW_FAIL_NONE: break;
+    }
+    /* Unreachable while phase == FAILED, and deliberately not a cheerful
+     * blank: a face with no reason on it is the thing this enum exists
+     * to prevent. */
+    return "Something went wrong.";
+}
+
+static void settings_build_crew_status_page(lv_obj_t *parent, ff_app_crew_page_t const *cw)
+{
+    lv_obj_t *puck = settings_face_disc(parent);
+    bool const leaving = (cw->op == FF_APP_CREW_OP_LEAVE);
+
+    switch (cw->phase) {
+    case FF_APP_CREW_PHASE_IDLE:
+    case FF_APP_CREW_PHASE_GENERATING:
+        settings_crewop_title(puck, "MAKING A CODE", FF_THEME_COLOR_AMBER);
+        settings_crewop_body(puck, "One moment.", FF_CREWOP_BODY_Y);
+        return;
+
+    case FF_APP_CREW_PHASE_WRITING:
+        settings_crewop_title(puck, "SAVING TO YOUR RADIO", FF_THEME_COLOR_AMBER);
+        settings_crewop_body(puck, "Your radio restarts for a few seconds.", FF_CREWOP_BODY_Y);
+        return;
+
+    case FF_APP_CREW_PHASE_VERIFYING:
+        /* Named out loud because it is a real step that can really fail.
+         * A face that said "saving..." through the read-back would be
+         * hiding the only part of this that proves anything. */
+        settings_crewop_title(puck, "CHECKING IT SAVED", FF_THEME_COLOR_AMBER);
+        settings_crewop_body(puck, "Reading your radio back to make sure.", FF_CREWOP_BODY_Y);
+        return;
+
+    case FF_APP_CREW_PHASE_READY:
+        settings_crewop_title(puck, leaving ? "LEFT THE CREW" : "CREW STARTED", FF_THEME_COLOR_LIVE_GREEN);
+        if (leaving) {
+            settings_crewop_body(puck, "Your radio is back on its old settings.", FF_CREWOP_BODY_Y);
+            settings_crewop_buttons(puck, FF_CREWOP_BTN_Y, "DONE", FF_THEME_COLOR_MUTED,
+                                     settings_crew_dismiss_cb, NULL, 0, NULL);
+            return;
+        }
+        /* One short line here, not the SHOW CODE face's full sentence:
+         * this face has to fit the code, a caption and two 44 px
+         * targets between the title and the bottom of the glass, and a
+         * two-line caption is what pushes the code into the buttons. */
+        settings_crewop_body(puck, "Show this to your crew.", FF_CREWOP_CODE_BODY_Y);
+        /* The code, from the RUN that just succeeded. Rendered only
+         * here, on READY — the machine does not fill `pending_code` for
+         * a leave, and showing a minted code before the radio accepted
+         * it is exactly the confidently-wrong screen the verify step
+         * exists to prevent. */
+        if (cw->pending_code[0] != '\0') {
+            lv_obj_t *code = lv_label_create(puck);
+            lv_label_set_text(code, cw->pending_code);
+            lv_obj_set_style_text_font(code, FF_THEME_FONT_NAME, 0);
+            lv_obj_set_style_text_color(code, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+            lv_obj_set_style_text_letter_space(code, 2, 0);
+            lv_obj_align(code, LV_ALIGN_TOP_MID, 0, FF_CREWOP_CODE_Y);
+            lv_obj_clear_flag(code, LV_OBJ_FLAG_CLICKABLE);
+        }
+        settings_crewop_buttons(puck, FF_CREWOP_BTN2_Y, "SHOW CODE", FF_THEME_COLOR_AMBER,
+                                 settings_crew_show_code_cb, NULL, 0, NULL);
+        settings_crewop_buttons(puck, FF_CREWOP_BTN_Y, "DONE", FF_THEME_COLOR_MUTED,
+                                 settings_crew_dismiss_cb, NULL, 0, NULL);
+        return;
+
+    case FF_APP_CREW_PHASE_FAILED:
+        settings_crewop_title(puck, leaving ? "COULDN'T LEAVE" : "COULDN'T START", FF_THEME_COLOR_STALE_AMBER);
+        settings_crewop_body(puck, settings_crew_fail_text(cw->fail), FF_CREWOP_BODY_Y);
+        settings_crewop_buttons(puck, FF_CREWOP_BTN_Y, "BACK", FF_THEME_COLOR_MUTED,
+                                 settings_crew_dismiss_cb, NULL, 0, NULL);
+        return;
+    }
 }
 
 /* ---------------------------------------------------------------------
@@ -2739,6 +3078,15 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
     /* [api] A02 slice D — SHOW CODE, same shape again. */
     if (settings->subview == FF_SETTINGS_SUB_CREW_CODE) {
         settings_build_crew_code_page(parent, &settings->crew);
+        return;
+    }
+    /* [api] A02 slice D2 — the START/LEAVE confirm and status faces. */
+    if (settings->subview == FF_SETTINGS_SUB_CREW_CONFIRM) {
+        settings_build_crew_confirm_page(parent, &settings->crew);
+        return;
+    }
+    if (settings->subview == FF_SETTINGS_SUB_CREW_STATUS) {
+        settings_build_crew_status_page(parent, &settings->crew);
         return;
     }
 

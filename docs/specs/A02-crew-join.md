@@ -445,6 +445,21 @@ No partial result, no fallback code.
 Advanced → "Start a new crew" (which is also how you leave one crew for
 a fresh one).
 
+> **The puck can start a crew too — see `docs/specs/S02-core-crew.md`'s
+> 2026-09-14 amendment, "slice D2 — the puck STARTS a crew".** This
+> section assumes the organiser holds a phone. The festival topology is
+> asymmetric and that assumption does not always hold: the person
+> wearing the puck has no camera and a T9 keyboard, and the phone may be
+> somebody else's. The puck therefore mints its own code, derives the
+> PSK through the SAME `ff_crewcode` HKDF against the SAME fixture, and
+> writes the channel to its own comms brain over Meshtastic's admin
+> `set_channel` — then verifies it by re-reading the channel table
+> before claiming success. Everything in §1 (the code, the key, the
+> channel that gets written) and §1.7 (region is never written, never
+> guessed) is shared byte for byte; only the client differs. The
+> amendment owns the puck's UI, its failure vocabulary and its
+> LEAVE/restore path.
+
 **Screen: `CrewStartView`** (artboard `CrewStart.dc.html`)
 
 ```

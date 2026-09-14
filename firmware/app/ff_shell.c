@@ -20,6 +20,7 @@
 #include "ff_crewcode.h" /* A02 slice D — crew code codec + invite link */
 #include "ff_find.h" /* S29 PR2 — FIND mode session state machine */
 #include "ff_hidden.h" /* A02 slice D — the per-node hide set */
+#include "ff_crewstart.h" /* A02 slice D2 — the START/LEAVE state machine */
 #include "ff_geo.h"
 #include "ff_meshname.h" /* NAME in Settings — charset sanitize + short-name derivation */
 #include "ff_multitap.h" /* S10 quick flare — the N-presses-within-a-window counter FSM */
@@ -790,6 +791,53 @@ typedef struct {
     uint32_t overflow_ids[FF_HEARD_MAX];
     uint8_t  overflow_count;
 
+    /* ---------------------------------------------------------------
+     * A02 slice D2 — the puck STARTS a crew
+     * (docs/specs/S02-core-crew.md's 2026-09-14 amendment).
+     * ------------------------------------------------------------- */
+
+    /* The pure sequencing machine (core/include/ff_crewstart.h). This
+     * file performs its actions and reports the results back; nothing
+     * about which state we are in or what counts as proof lives here. */
+    ff_crewstart_t crewstart;
+
+    /* The injected CSPRNG. Deliberately no default — see
+     * `ff_shell_set_random`'s doc comment for why a tick-count fallback
+     * is refused rather than merely not implemented. */
+    uint32_t (*rand_fn)(void *ctx);
+    void     *rand_ctx;
+
+    /* The radio's LoRa region, cleared on every handshake and rebuilt
+     * from that handshake's own Config reply. `region_known` is separate
+     * because 0 (UNSET) is a real answer, not an absence — and it is
+     * precisely the answer that stops a crew start (A02 §1.7). */
+    bool     region_known;
+    uint32_t region;
+
+    /* The crew-index channel row as THIS handshake reported it, kept so
+     * the pre-crew snapshot can be taken at the moment it is needed —
+     * immediately before overwriting that row.
+     *
+     * `mc_client_get_channel_snapshot` caches the same table inside the
+     * client, from the same dispatch, and is read first below; the two
+     * are filled from one callback and cannot disagree. This copy exists
+     * because the shell's event seam is injectable WITHOUT a live client
+     * (which is how every shell test in this tree drives inbound
+     * events), and because the client's table stops at MC_CHANNEL_MAX
+     * while this only ever holds the one row that matters. Cleared on
+     * every handshake, like the index and the region. */
+    bool                   pre_row_known;
+    ff_crewstart_channel_t pre_row;
+
+    /* The persisted pre-crew snapshot, CACHED. Loaded once at init and
+     * refreshed only when one is written — `shell_project_crew_page`
+     * runs every tick (see its own doc comment), and a store read per
+     * frame is an NVS read per frame on the device. The record only
+     * changes when this shell writes it, so a cache cannot go stale
+     * behind its own back. */
+    bool                   snapshot_present;
+    ff_crewstart_channel_t snapshot;
+
     /* --- S18 slice b: settle-then-age the cold-boot replay burst (#50) --
      * The want_config replay streams cached positions while the wall latch
      * is still settling. A reading that MOVES the latch cannot be aged from
@@ -1425,10 +1473,52 @@ static bool shell_crew_hide(shell_t *sh, uint32_t node_id, bool hidden)
  * nobody, and the CREW page says "your puck isn't on this crew's
  * channel" rather than quietly treating the public channel as the crew.
  */
+/* A02 slice D2 — the one place `mc_channel_t` becomes core's
+ * `ff_crewstart_channel_t`. Same facts, same units; core cannot include
+ * meshclient headers, and this file is one of the two that sees both. */
+static ff_crewstart_channel_t shell_channel_to_core(mc_channel_t const *ch)
+{
+    ff_crewstart_channel_t out;
+    memset(&out, 0, sizeof(out));
+    out.index = ch->index;
+    /* Both buffers are 12 bytes by construction (mc_channel_t's own
+     * comment pins it against FF_CREWSTART_NAME_MAX), and the source is
+     * NUL-terminated by the decoder. */
+    memcpy(out.name, ch->name, sizeof(out.name) < sizeof(ch->name) ? sizeof(out.name) : sizeof(ch->name));
+    out.name[sizeof(out.name) - 1u] = '\0';
+    memcpy(out.psk, ch->psk, sizeof(out.psk));
+    out.psk_len = ch->psk_len;
+    out.is_primary = ch->is_primary;
+    /* A row that stated no precision is written back as an explicit 0
+     * (there is no way to say "absent" on a write) — see
+     * mc_channel_t.has_position_precision's own comment. */
+    out.position_precision = ch->has_position_precision ? ch->position_precision : 0u;
+    return out;
+}
+
 static void shell_ev_channel(void *u, mc_channel_t const *ch)
 {
     shell_t *sh = (shell_t *)u;
     if (sh == NULL || ch == NULL) return;
+
+    /* A02 slice D2 — VERIFICATION FIRST, and unconditionally.
+     *
+     * A crew START is proved by a row that matches what was written; a
+     * crew LEAVE is proved by a row that is deliberately NOT a crew
+     * channel and would therefore never survive the crew-match filter
+     * below. Routing the row through the machine before that filter is
+     * what lets one verify path serve both, and it is the reason LEAVE
+     * can report READY at all rather than timing out on a channel it
+     * successfully restored. The machine ignores rows outside its own
+     * VERIFYING state, so ordinary handshake traffic costs nothing. */
+    {
+        ff_crewstart_channel_t const row = shell_channel_to_core(ch);
+        ff_crewstart_on_channel(&sh->crewstart, &row, shell_now(sh));
+        if (ch->index == (uint8_t)FF_CREWSTART_CREW_INDEX) {
+            sh->pre_row_known = true;
+            sh->pre_row = row;
+        }
+    }
 
     /* A crew channel's key is always the full 32 bytes this codec
      * derives (A02 §1.5, AES256). A 0/1/16-byte psk is some other kind
@@ -1458,6 +1548,325 @@ static void shell_ev_channel(void *u, mc_channel_t const *ch)
         /* A different crew's overflow marks mean nothing here. */
         sh->overflow_count = 0u;
     }
+}
+
+/**
+ * shell_ev_lora_region — A02 slice D2: the radio's LoRa region, from the
+ * handshake's own Config reply.
+ *
+ * Cached for exactly one decision: A02 §1.7 forbids Firefly from ever
+ * writing `lora_config` or guessing a region, so a crew start on a radio
+ * whose region is UNSET stops before any write and says so. `region ==
+ * 0` is UNSET and is a real reading, which is why `region_known` is a
+ * separate flag rather than "nonzero means we know".
+ */
+static void shell_ev_lora_region(void *u, uint32_t region)
+{
+    shell_t *sh = (shell_t *)u;
+    if (sh == NULL) return;
+    sh->region_known = true;
+    sh->region = region;
+}
+
+/* ---------------------------------------------------------------------
+ * A02 slice D2 — the puck STARTS (and leaves) a crew
+ * (docs/specs/S02-core-crew.md's 2026-09-14 amendment)
+ * ------------------------------------------------------------------- */
+
+/**
+ * shell_crew_snapshot_load — the pre-crew channel, from the store.
+ *
+ * Returns false, leaving `*out` zeroed, when there is none or the record
+ * is corrupt. That is not a failure to paper over: LEAVE reports it as
+ * `FF_CREWSTART_FAIL_NO_SNAPSHOT` rather than resetting the radio to the
+ * factory default, because "back to your old settings" and "back to
+ * factory" are different promises and only one of them is the one the
+ * button makes.
+ */
+static bool shell_crew_snapshot_read_store(shell_t const *sh, ff_crewstart_channel_t *out)
+{
+    if (out != NULL) memset(out, 0, sizeof(*out));
+    if (sh == NULL || out == NULL || sh->store == NULL || sh->store->get == NULL) return false;
+
+    uint8_t blob[FF_CREWSTART_SNAPSHOT_BLOB_LEN];
+    int const n = sh->store->get(sh->store->io, FF_CREWSTART_SNAPSHOT_KEY, blob, sizeof(blob));
+    if (n != (int)sizeof(blob)) return false;
+    return ff_crewstart_snapshot_deserialize(out, blob, sizeof(blob));
+}
+
+/* Refresh the cache from the store. Called at init and after a write —
+ * never per frame; see `snapshot_present`'s own field comment. */
+static void shell_crew_snapshot_reload(shell_t *sh)
+{
+    sh->snapshot_present = shell_crew_snapshot_read_store(sh, &sh->snapshot);
+}
+
+/**
+ * shell_crew_snapshot_capture — record what the radio holds on the crew
+ * index, ONCE, before Firefly ever writes one (A02 §2.1 step 4).
+ *
+ * Two guards, and both are the difference between a snapshot that can
+ * restore something and one that restores the crew you were trying to
+ * leave:
+ *  - never overwrite an existing record. The first one is the only one
+ *    taken before Firefly touched anything;
+ *  - never record a Firefly crew channel. A puck starting a SECOND crew
+ *    would otherwise snapshot the first one, and LEAVE would put the
+ *    wearer back on a crew they had just left.
+ *
+ * A radio whose channel table this handshake has not reported yet
+ * records nothing — an un-taken snapshot is honestly absent, and
+ * `mc_client_get_channel_snapshot` refuses to guess for exactly this
+ * reason.
+ */
+static void shell_crew_snapshot_capture(shell_t *sh)
+{
+    if (sh == NULL || sh->store == NULL || sh->store->set == NULL) return;
+
+    if (sh->snapshot_present) return; /* already have the original */
+
+    /* The client's own record of the table first — it is the client that
+     * owns "what the radio said its channels are". The shell's copy is
+     * the fallback for the case the client cannot serve (an injected
+     * event seam with no live client; see `pre_row`'s own field
+     * comment). Both are filled from one dispatch. */
+    ff_crewstart_channel_t snap;
+    mc_channel_t row;
+    if (mc_client_get_channel_snapshot(&sh->mc, (uint8_t)FF_CREWSTART_CREW_INDEX, &row)) {
+        snap = shell_channel_to_core(&row);
+    } else if (sh->pre_row_known) {
+        snap = sh->pre_row;
+    } else {
+        return; /* nothing to snapshot — honestly absent */
+    }
+
+    /* Never snapshot a Firefly crew: see this function's doc comment. */
+    if (snap.psk_len == FF_CREWCODE_PSK_LEN && ff_crewcode_valid(snap.name)) {
+        uint8_t want[FF_CREWCODE_PSK_LEN];
+        if (ff_crewcode_psk(snap.name, want) && memcmp(want, snap.psk, sizeof(want)) == 0) return;
+    }
+
+    uint8_t blob[FF_CREWSTART_SNAPSHOT_BLOB_LEN];
+    if (ff_crewstart_snapshot_serialize(&snap, blob, sizeof(blob)) != sizeof(blob)) return;
+    if (sh->store->set(sh->store->io, FF_CREWSTART_SNAPSHOT_KEY, blob, sizeof(blob)) != (int)sizeof(blob)) {
+        /* The write did not land. Leaving the cache empty is the honest
+         * outcome: LEAVE will report NO_SNAPSHOT rather than promising
+         * to restore something that was never saved. */
+        return;
+    }
+    shell_crew_snapshot_reload(sh);
+}
+
+/**
+ * shell_crew_preflight — the preconditions `ff_crewstart` cannot see.
+ *
+ * Returns FF_CREWSTART_FAIL_NONE when the operation may proceed. Each
+ * refusal is reported as ITSELF, because "can't start a crew right now"
+ * is not something a wearer can act on and "set the radio region on the
+ * phone first" is.
+ */
+static ff_crewstart_fail_t shell_crew_preflight(shell_t const *sh)
+{
+    if (sh->link != FF_SHELL_LINK_CONNECTED) return FF_CREWSTART_FAIL_NO_LINK;
+    /* The admin write is addressed to this node's OWN id — that is what
+     * puts it on Meshtastic's no-passkey local-admin path
+     * (mc_client_set_channel's doc comment). Without the id there is no
+     * "self" to address, which from the wearer's side is the same "the
+     * radio isn't talking to me yet" fact as a down link. */
+    if (!sh->has_my_node_id) return FF_CREWSTART_FAIL_NO_LINK;
+    /* A02 §1.7 — Firefly never writes lora_config and never guesses a
+     * region from a locale. An UNSET region is a radio that cannot
+     * legally transmit anywhere, and the honest move is to stop. */
+    if (!sh->region_known) return FF_CREWSTART_FAIL_NO_LINK;
+    if (sh->region == 0u) return FF_CREWSTART_FAIL_REGION_UNSET;
+    return FF_CREWSTART_FAIL_NONE;
+}
+
+/**
+ * shell_crew_begin — the ONE body both the Settings CONFIRM face and the
+ * bench console's `crew start` / `crew leave` reach.
+ *
+ * Deliberately one function rather than two symmetrical ones: START and
+ * LEAVE differ only in which channel gets written, and every honest bit
+ * around that write — the preconditions, the snapshot, the verification
+ * — is identical. Two functions would be two places to keep that
+ * honesty, which is one too many.
+ */
+static bool shell_crew_begin(shell_t *sh, ff_crewstart_op_t op)
+{
+    if (sh == NULL) return false;
+    uint32_t const now = shell_now(sh);
+
+    /* A run in flight is never interrupted: the frame is out, and a
+     * second channel write racing the first one's reboot is how a radio
+     * lands in a configuration nobody asked for. */
+    if (ff_crewstart_busy(&sh->crewstart)) return false;
+
+    ff_crewstart_fail_t const pre = shell_crew_preflight(sh);
+    if (pre != FF_CREWSTART_FAIL_NONE) {
+        ff_crewstart_fail_now(&sh->crewstart, op, pre, now);
+        return false;
+    }
+
+    if (op == FF_CREWSTART_OP_START) {
+        /* Before the first write, and only ever once. */
+        shell_crew_snapshot_capture(sh);
+        return ff_crewstart_begin_start(&sh->crewstart, sh->rand_fn, sh->rand_ctx, now);
+    }
+
+    /* begin_leave(NULL) reports NO_SNAPSHOT itself; routed through it
+     * rather than short-circuited here so there is one place the failure
+     * is named. */
+    return ff_crewstart_begin_leave(&sh->crewstart, sh->snapshot_present ? &sh->snapshot : NULL, now);
+}
+
+/**
+ * shell_crewstart_pump — perform whatever the machine asked for, and
+ * report the result straight back.
+ *
+ * The only thing in this file that knows a "write" means an admin frame
+ * and a "re-read" means a fresh want_config. Everything about when and
+ * whether belongs to `ff_crewstart`.
+ */
+static void shell_crewstart_pump(shell_t *sh, uint32_t now_ms)
+{
+    ff_crewstart_tick(&sh->crewstart, now_ms);
+
+    ff_crewstart_channel_t want;
+    memset(&want, 0, sizeof(want));
+    ff_crewstart_action_t const act = ff_crewstart_take_action(&sh->crewstart, &want);
+
+    if (act == FF_CREWSTART_ACT_WRITE) {
+        if (sh->wiring.sender.send_admin_set_channel == NULL) {
+            /* Nothing bound to write through. Reported as a refused
+             * send, which is exactly what it is — never as a success. */
+            ff_crewstart_on_write_result(&sh->crewstart, false, false, 0u, now_ms);
+            return;
+        }
+
+        mc_channel_t out;
+        memset(&out, 0, sizeof(out));
+        out.index = want.index;
+        memcpy(out.name, want.name, sizeof(out.name) < sizeof(want.name) ? sizeof(out.name) : sizeof(want.name));
+        out.name[sizeof(out.name) - 1u] = '\0';
+        memcpy(out.psk, want.psk, sizeof(out.psk));
+        out.psk_len = want.psk_len;
+        out.is_primary = want.is_primary;
+        /* ALWAYS explicit on a write — an absent module_settings reads
+         * as the default precision on Meshtastic's side (A02 §1.5). */
+        out.has_position_precision = true;
+        out.position_precision = want.position_precision;
+
+        uint32_t packet_id = 0u;
+        int const rc = sh->wiring.sender.send_admin_set_channel(sh->wiring.sender.ctx, sh->my_node_id, &out,
+                                                                 &packet_id);
+        ff_crewstart_on_write_result(&sh->crewstart, rc == 0, rc == 0, packet_id, now_ms);
+        return;
+    }
+
+    if (act == FF_CREWSTART_ACT_REREAD) {
+        /* A channel write reboots the comms brain a few seconds later
+         * (Meshtastic's AdminModule::saveChanges), and mc_client already
+         * drops into a fresh want_config on the `rebooted` frame — so
+         * this is an accelerator for the case where it does not, not the
+         * only path to a read-back. Nothing is reported back: the proof
+         * is the channel table, and it arrives through
+         * `shell_ev_channel` like any other. */
+        if (sh->wiring.sender.request_config != NULL) {
+            sh->wiring.sender.request_config(sh->wiring.sender.ctx);
+        }
+    }
+}
+
+/* A02 slice D2 — core's vocabulary into the app layer's. Each layer
+ * names its own boundary enums (this tree's existing convention, see
+ * `diag_link_name` beside `link_name`); these are the ONE place the two
+ * are related, so a renumbering on either side is a compile error here
+ * rather than a silently shifted screen. */
+static ff_app_crew_phase_t shell_crew_phase_app(ff_crewstart_state_t s)
+{
+    switch (s) {
+    case FF_CREWSTART_IDLE: return FF_APP_CREW_PHASE_IDLE;
+    case FF_CREWSTART_GENERATING: return FF_APP_CREW_PHASE_GENERATING;
+    case FF_CREWSTART_WRITING: return FF_APP_CREW_PHASE_WRITING;
+    case FF_CREWSTART_VERIFYING: return FF_APP_CREW_PHASE_VERIFYING;
+    case FF_CREWSTART_READY: return FF_APP_CREW_PHASE_READY;
+    case FF_CREWSTART_FAILED: return FF_APP_CREW_PHASE_FAILED;
+    }
+    return FF_APP_CREW_PHASE_IDLE;
+}
+
+static ff_app_crew_op_t shell_crew_op_app(ff_crewstart_op_t op)
+{
+    switch (op) {
+    case FF_CREWSTART_OP_NONE: return FF_APP_CREW_OP_NONE;
+    case FF_CREWSTART_OP_START: return FF_APP_CREW_OP_START;
+    case FF_CREWSTART_OP_LEAVE: return FF_APP_CREW_OP_LEAVE;
+    }
+    return FF_APP_CREW_OP_NONE;
+}
+
+static ff_app_crew_fail_t shell_crew_fail_app(ff_crewstart_fail_t f)
+{
+    switch (f) {
+    case FF_CREWSTART_FAIL_NONE: return FF_APP_CREW_FAIL_NONE;
+    case FF_CREWSTART_FAIL_NO_LINK: return FF_APP_CREW_FAIL_NO_LINK;
+    case FF_CREWSTART_FAIL_REGION_UNSET: return FF_APP_CREW_FAIL_REGION_UNSET;
+    case FF_CREWSTART_FAIL_NO_ENTROPY: return FF_APP_CREW_FAIL_NO_ENTROPY;
+    case FF_CREWSTART_FAIL_NO_SNAPSHOT: return FF_APP_CREW_FAIL_NO_SNAPSHOT;
+    case FF_CREWSTART_FAIL_SEND: return FF_APP_CREW_FAIL_SEND;
+    case FF_CREWSTART_FAIL_NAK: return FF_APP_CREW_FAIL_NAK;
+    case FF_CREWSTART_FAIL_TIMEOUT_ACK: return FF_APP_CREW_FAIL_TIMEOUT_ACK;
+    case FF_CREWSTART_FAIL_TIMEOUT_VERIFY: return FF_APP_CREW_FAIL_TIMEOUT_VERIFY;
+    case FF_CREWSTART_FAIL_MISMATCH: return FF_APP_CREW_FAIL_MISMATCH;
+    }
+    return FF_APP_CREW_FAIL_NONE;
+}
+
+/**
+ * shell_crew_op_status — computed ONCE, read by both the CREW faces and
+ * the bench console's `crew` command, so the two can never answer the
+ * same question differently (the rule `ff_shell_mesh_name_status`
+ * already sets for the NAME row).
+ */
+static ff_shell_crew_op_status_t shell_crew_op_status(shell_t const *sh)
+{
+    ff_shell_crew_op_status_t st;
+    memset(&st, 0, sizeof(st));
+
+    st.op = shell_crew_op_app(ff_crewstart_op(&sh->crewstart));
+    st.phase = shell_crew_phase_app(ff_crewstart_state(&sh->crewstart));
+    st.fail = shell_crew_fail_app(ff_crewstart_failure(&sh->crewstart));
+    st.attempts = ff_crewstart_attempts(&sh->crewstart);
+
+    st.region_known = sh->region_known;
+    st.region = sh->region;
+    st.crew_index_known = sh->crew_index_known;
+    st.crew_index = sh->crew_index;
+
+    shell_copy_str(st.code, sizeof(st.code), sh->crew_code);
+    shell_copy_str(st.pending_code, sizeof(st.pending_code), ff_crewstart_code(&sh->crewstart));
+
+    st.has_snapshot = sh->snapshot_present;
+
+    /* WHICH CONTROL THE PAGE OFFERS.
+     *
+     * "Has a crew" is `crew_index_known`, not `crew_code[0] != 0`: the
+     * code is display-only and deliberately survives a reconnect (see
+     * that field's own comment), while the index is what this
+     * handshake's channel table actually proved. Offering LEAVE off a
+     * remembered code would offer to un-join a crew the radio might not
+     * be on.
+     *
+     * Neither is offered while a run is in flight, and neither is
+     * offered while the preconditions say no — a button that cannot do
+     * what it says is worse than a button that is not there, and the
+     * page explains the reason in its place. */
+    bool const idle = !ff_crewstart_busy(&sh->crewstart);
+    bool const ready_to_write = (shell_crew_preflight(sh) == FF_CREWSTART_FAIL_NONE);
+    st.can_leave = idle && ready_to_write && sh->crew_index_known;
+    st.can_start = idle && ready_to_write && !sh->crew_index_known;
+    return st;
 }
 
 /**
@@ -1942,6 +2351,23 @@ static void shell_ev_state(void *u, mc_state_t s)
     case MC_STATE_READY:
         sh->ever_connected = true;
         sh->link = FF_SHELL_LINK_CONNECTED;
+        /* A02 slice D2 — a COMPLETED handshake that resolved no crew
+         * channel is positive evidence that this radio is not on one,
+         * and the remembered code must go.
+         *
+         * This is the other half of slice D's "crew_code is deliberately
+         * NOT cleared on HANDSHAKE" rule, and it does not undo it: the
+         * code survives the handshake IN PROGRESS (no flicker on an
+         * ordinary reconnect, which was the point), and is dropped only
+         * once the whole table has been re-read without it. Before D2
+         * nothing on the puck could remove a crew channel, so the case
+         * could not arise; LEAVE CREW makes it the expected outcome, and
+         * a SHOW CODE face still offering the code of a crew the radio
+         * has just been taken off would be exactly the fabricated code
+         * that face exists to refuse. */
+        if (!sh->crew_index_known) {
+            sh->crew_code[0] = '\0';
+        }
         break;
     case MC_STATE_HANDSHAKE:
         sh->link = FF_SHELL_LINK_RECONNECTING;
@@ -1960,6 +2386,15 @@ static void shell_ev_state(void *u, mc_state_t s)
          * was named, and blanking the SHOW CODE face for the ~20 ms of
          * every reconnect would be a flicker that buys no honesty. */
         sh->crew_index_known = false;
+        /* A02 slice D2 — same rule, same reason: the region is a fact
+         * about the radio on the other end of THIS handshake. A reboot
+         * (which an admin channel write causes) can bring back a
+         * differently-configured one, and a stale "region is fine" is
+         * the one that lets a crew start onto a radio that cannot
+         * legally transmit. */
+        sh->region_known = false;
+        sh->region = 0u;
+        sh->pre_row_known = false;
         /* fix/audio-init-order-seed-silence: every want_config handshake
          * (cold boot AND every later reconnect — see shell_settle_replay's
          * own comment, "run EXACTLY once per handshake") replays cached
@@ -2348,6 +2783,11 @@ static void shell_ev_routing_ack(void *u, uint32_t request_id, bool ok)
         sh->name_push_ack = ok ? FF_MESH_NAME_ACK_OK : FF_MESH_NAME_ACK_NAK;
         return;
     }
+    /* A02 slice D2 — the crew-channel write's own reply. The machine
+     * does its own request_id matching (an event for somebody else's
+     * packet is ignored there), so this is an unconditional hand-off
+     * rather than a second place that decides whose ack this is. */
+    ff_crewstart_on_routing_ack(&sh->crewstart, request_id, ok, shell_now(sh));
     (void)ff_feed_set_ack_by_packet_id(&sh->feed, request_id, ok, sh->now_ms);
 }
 
@@ -3424,6 +3864,23 @@ static void shell_project_crew_page(shell_t const *sh, uint32_t now_ms, ff_app_s
         shell_short_id(id, row->short_id, sizeof(row->short_id));
         row->age_ms = now_ms - he->last_heard_ms;
     }
+
+    /* ---------------------------------------------------------------
+     * A02 slice D2 — START CREW / LEAVE CREW
+     * (docs/specs/S02-core-crew.md's 2026-09-14 amendment).
+     * ------------------------------------------------------------- */
+    ff_shell_crew_op_status_t const op = shell_crew_op_status(sh);
+    cw->can_start = op.can_start;
+    cw->can_leave = op.can_leave;
+    cw->has_snapshot = op.has_snapshot;
+    /* The one blocked-reason the page says out loud, because it is the
+     * one that never resolves by itself (ff_app_crew_page_t's own field
+     * comment). "Reported, and it is 0" — never "not reported yet". */
+    cw->region_unset = op.region_known && (op.region == 0u);
+    cw->op = op.op;
+    cw->phase = op.phase;
+    cw->fail = op.fail;
+    shell_copy_str(cw->pending_code, sizeof(cw->pending_code), op.pending_code);
 }
 
 /**
@@ -4784,6 +5241,17 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     sh->toks = cfg->toks;
     sh->ntoks = cfg->ntoks;
 
+    /* A02 slice D2 — IDLE, with no entropy source. A puck whose target
+     * never called `ff_shell_set_random` refuses to mint a code rather
+     * than minting a guessable one. */
+    ff_crewstart_init(&sh->crewstart);
+    sh->snapshot_present = false;
+    memset(&sh->snapshot, 0, sizeof(sh->snapshot));
+    sh->rand_fn = NULL;
+    sh->rand_ctx = NULL;
+    sh->region_known = false;
+    sh->region = 0u;
+
     ff_crew_init(&sh->crew, sh->clock);
     ff_heard_init(&sh->heard);
     ff_feed_init(&sh->feed);
@@ -4809,6 +5277,12 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     /* Settings are loaded at init and never re-read per tick (S16
      * "Behavior"). A NULL store yields the exact defaults. */
     ff_settings_load(&sh->settings, sh->store);
+    /* A02 slice D2 — the pre-crew snapshot, read ONCE here rather than
+     * on every projection tick (see `snapshot_present`'s field comment).
+     * It is what LEAVE CREW restores, so a puck that was power-cycled
+     * between starting a crew and leaving it still knows what its radio
+     * looked like before. */
+    shell_crew_snapshot_reload(sh);
 
     /* S12/S04 [api] — boot re-pair: replay the persisted paired list, in
      * STORED order (which is also pairing order — see
@@ -5267,6 +5741,17 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
         }
     }
 
+    /* A02 slice D2 — pump the crew START/LEAVE machine.
+     *
+     * Three lines, and every decision in them belongs to core: tick the
+     * deadlines, take at most ONE action, perform it, report the result
+     * straight back. `shell_crewstart_pump` is where the performing
+     * lives (it is the only thing in this file that knows a "write"
+     * means an admin frame); the sequencing — retries, what counts as
+     * proof, when to give up — is `ff_crewstart`'s and is unit-tested
+     * against a scripted stub rather than through this tick. */
+    shell_crewstart_pump(sh, now_ms);
+
     /* SELFPOS (2026-09-05) — a self-fix adopted from the comms brain's
      * inbound traffic (shell_maybe_adopt_my_pos, my_pos_ms_valid) decays
      * back to "unknown" once older than FF_SELF_POS_STALE_MS: honest-data
@@ -5361,6 +5846,7 @@ mc_events_t ff_shell_events(ff_shell_t *sh_pub)
     ev.on_telemetry = shell_ev_telemetry; /* DIAGNOSTICS */
     ev.on_owner = shell_ev_owner; /* confirmation-fix follow-up */
     ev.on_routing_ack = shell_ev_routing_ack; /* confirmation-fix follow-up */
+    ev.on_lora_region = shell_ev_lora_region; /* A02 slice D2 — the region gate */
     ev.on_channel = shell_ev_channel; /* [api] A02 slice D — crew-index resolution */
     ev.user = shell_of(sh_pub);
     return ev;
@@ -6836,6 +7322,54 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         sh->settings_subview = FF_SETTINGS_SUB_CREW_CODE;
         return;
 
+    case FF_INTENT_CREW_START_REQUEST:
+    case FF_INTENT_CREW_LEAVE_REQUEST:
+        /* A02 slice D2 — the CREW page's two pills. These open the
+         * confirm face and change NOTHING. A channel write reboots the
+         * comms brain and replaces the crew, so it is not something a
+         * mis-tap on a scrolling list gets to do; the confirm face is
+         * the consent, in plain words.
+         *
+         * `crewstart.op` is set here so the face knows which question to
+         * ask, through `fail_now`'s sibling path: there is no state
+         * change beyond "which operation is being considered", which is
+         * why this does not call `shell_crew_begin`. */
+        if (takeover_up) return;
+        ff_crewstart_consider(&sh->crewstart, (in->kind == FF_INTENT_CREW_START_REQUEST)
+                                                   ? FF_CREWSTART_OP_START
+                                                   : FF_CREWSTART_OP_LEAVE);
+        sh->settings_subview = FF_SETTINGS_SUB_CREW_CONFIRM;
+        return;
+
+    case FF_INTENT_CREW_START_CONFIRM:
+    case FF_INTENT_CREW_LEAVE_CONFIRM: {
+        /* A02 slice D2 — the one tap that actually writes. Routed
+         * through the SAME body the bench console's `crew start` /
+         * `crew leave` reach, so the console cannot drift from the UI.
+         *
+         * The face switches to STATUS whether or not the machine
+         * started: a refused precondition IS a result, and the wearer
+         * needs to read it ("Set the radio region on the phone first")
+         * rather than watch a button do nothing. */
+        if (takeover_up) return;
+        ff_crewstart_op_t const op =
+            (in->kind == FF_INTENT_CREW_START_CONFIRM) ? FF_CREWSTART_OP_START : FF_CREWSTART_OP_LEAVE;
+        (void)shell_crew_begin(sh, op);
+        sh->settings_subview = FF_SETTINGS_SUB_CREW_STATUS;
+        return;
+    }
+
+    case FF_INTENT_CREW_DISMISS:
+        /* A02 slice D2 — acknowledge a finished run. Deliberately
+         * separate from BACK: BACK leaves the face, this clears the
+         * RESULT, so a wearer who backs out of a READY face and comes
+         * back still sees what happened. A no-op while a run is in
+         * flight (ff_crewstart_dismiss enforces that itself). */
+        if (takeover_up) return;
+        ff_crewstart_dismiss(&sh->crewstart);
+        sh->settings_subview = FF_SETTINGS_SUB_CREW;
+        return;
+
     case FF_INTENT_COMPASS_CAL_START:
         /* S12 step 3 — the Settings "CALIBRATE COMPASS" row / the bench
          * console's `cal start`. Gated on the takeover like every other
@@ -8089,6 +8623,46 @@ bool ff_shell_crew_hidden(ff_shell_t const *sh_pub, uint32_t node_id)
 {
     if (sh_pub == NULL) return false;
     return ff_hidden_contains(&shell_of_const(sh_pub)->hidden, node_id);
+}
+
+/* ---------------------------------------------------------------------
+ * [api] A02 slice D2 — the puck STARTS (and leaves) a crew
+ * ------------------------------------------------------------------- */
+
+void ff_shell_set_random(ff_shell_t *sh_pub, uint32_t (*fn)(void *ctx), void *ctx)
+{
+    if (sh_pub == NULL) return;
+    shell_t *sh = shell_of(sh_pub);
+    sh->rand_fn = fn;
+    sh->rand_ctx = ctx;
+}
+
+bool ff_shell_crew_start(ff_shell_t *sh_pub)
+{
+    if (sh_pub == NULL) return false;
+    return shell_crew_begin(shell_of(sh_pub), FF_CREWSTART_OP_START);
+}
+
+bool ff_shell_crew_leave(ff_shell_t *sh_pub)
+{
+    if (sh_pub == NULL) return false;
+    return shell_crew_begin(shell_of(sh_pub), FF_CREWSTART_OP_LEAVE);
+}
+
+void ff_shell_crew_dismiss(ff_shell_t *sh_pub)
+{
+    if (sh_pub == NULL) return;
+    ff_crewstart_dismiss(&shell_of(sh_pub)->crewstart);
+}
+
+ff_shell_crew_op_status_t ff_shell_crew_op_status(ff_shell_t const *sh_pub)
+{
+    if (sh_pub == NULL) {
+        ff_shell_crew_op_status_t zero;
+        memset(&zero, 0, sizeof(zero));
+        return zero; /* IDLE, nothing offered — never a fabricated "ready" */
+    }
+    return shell_crew_op_status(shell_of_const(sh_pub));
 }
 
 /* ---------------------------------------------------------------------
