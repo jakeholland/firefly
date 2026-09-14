@@ -37,6 +37,29 @@ final class CrewMapPinTests: XCTestCase {
         XCTAssertTrue(pins[0].ageText.hasPrefix("~"))
     }
 
+    /// PR #304 review: a member whose POSITION arrived before their
+    /// NodeInfo has a real fix and an empty `displayName` — the map drew
+    /// a blank annotation label and a letterless dot for them, while the
+    /// Inbox and Crew rows next door had just been fixed to say "New
+    /// crew member" / "?". Same fallback, one constant.
+    func testAPositionBeforeAnyNodeInfoStillGetsANameAndALetter() {
+        let store = CrewStore(now: { 0 })
+        store.onPosition(nodeID: 1, latitude: 43.7005, longitude: -121.4995, rxTimeMs: 0)
+        let pins = CrewMapPinBuilder.build(from: store.members(now: 1_000), myPosition: myPosition)
+        XCTAssertEqual(pins[0].name, "", "the MODEL still carries the honest empty name")
+        XCTAssertEqual(pins[0].displayLabel, CrewDisplayFallback.namelessMember)
+        XCTAssertEqual(pins[0].displayInitial, CrewDisplayFallback.unknownInitial)
+    }
+
+    func testANamedMemberKeepsTheirOwnNameAndInitial() {
+        let store = CrewStore(now: { 0 })
+        _ = store.setIdentity(nodeID: 1, shortName: "TAY", longName: "Taylor")
+        store.onPosition(nodeID: 1, latitude: 43.7005, longitude: -121.4995, rxTimeMs: 0)
+        let pins = CrewMapPinBuilder.build(from: store.members(now: 1_000), myPosition: myPosition)
+        XCTAssertEqual(pins[0].displayLabel, "Taylor")
+        XCTAssertEqual(pins[0].displayInitial, "T")
+    }
+
     func testNeverFreshnessIsNotDrawnAtAll() {
         let store = CrewStore(now: { 0 })
         store.upsert(nodeID: 1) // tracked, but no position has ever arrived

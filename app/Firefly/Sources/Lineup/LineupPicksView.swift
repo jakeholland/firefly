@@ -36,10 +36,10 @@ struct LineupPicksView: View {
         VStack(spacing: 8) {
             Image(systemName: "star")
                 .font(.largeTitle)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
             Text("Tap a set in the Grid to pick it — it'll show up here.")
                 .font(.footnote)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
         }
@@ -56,7 +56,7 @@ private struct PickedRowView: View {
             HStack(spacing: 12) {
                 Text(LineupViewModel.timeText(row.set.startMinute) ?? "TBD")
                     .font(.system(.subheadline, design: .monospaced))
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
                     .frame(width: 62, alignment: .leading)
                 Rectangle()
                     .fill(row.stage.map { Color(fireflyHex: $0.colorRGB) } ?? Color.ffMuted)
@@ -73,7 +73,7 @@ private struct PickedRowView: View {
                         if !row.set.note.isEmpty {
                             Text(row.set.note)
                                 .font(.caption2)
-                                .foregroundStyle(Color.ffMuted)
+                                .foregroundStyle(Color.ffCaption)
                         }
                     }
                 }

@@ -22,15 +22,24 @@ final class CrewSettingsViewModel {
         /// doc comment) — `nil` until the person renames this row.
         let nickname: String?
         let colorIndex: Int
+        /// `ff_crew_member_t.initial`'s own value — `nil` until the
+        /// mesh has actually reported one. Owner decision, 2026-09-13
+        /// ("Nameless crew rows... a colour and initial '?'"):
+        /// `CrewMemberRow`'s swatch shows this letter, or "?" when it is
+        /// still unknown, rather than a bare colour circle.
+        let initial: Character?
 
         /// Nickname first (it is what the person asked to see), then
-        /// the mesh's own name, then the honest `!nodeid` fallback — the
-        /// same three-step "never a blank row" convention
-        /// `NearbyNodesViewModel.displayName(for:)` uses.
+        /// the mesh's own name (already "the radio's short name if
+        /// known" — `ff_crew_display_name`'s own long-name-else-short-
+        /// name rule), then "New crew member" (owner decision,
+        /// 2026-09-13: "any row without a name... never a blank
+        /// label") — never the raw `!nodeid` hex, which reads as an
+        /// error code, not a person.
         var displayName: String {
             if let nickname, !nickname.isEmpty { return nickname }
             if !meshName.isEmpty { return meshName }
-            return String(format: "!%08x", id)
+            return CrewDisplayFallback.namelessMember
         }
     }
 
@@ -47,7 +56,7 @@ final class CrewSettingsViewModel {
         rows = pairing.pairedRecords().map { record in
             let member = pairing.crew.member(nodeID: record.nodeID, now: now)
             return Row(id: record.nodeID, meshName: member?.displayName ?? "",
-                       nickname: record.nickname, colorIndex: Int(record.colorIndex))
+                       nickname: record.nickname, colorIndex: Int(record.colorIndex), initial: member?.initial)
         }
     }
 

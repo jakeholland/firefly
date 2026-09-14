@@ -201,13 +201,13 @@ private struct MoreRow: View {
                         .foregroundStyle(Color.ffInk)
                     Text(subtitle)
                         .font(.caption)
-                        .foregroundStyle(Color.ffMuted)
+                        .foregroundStyle(Color.ffCaption)
                         .lineLimit(1)
                 }
                 Spacer()
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
             }
             .padding(16)
             .frame(minHeight: 44)

@@ -101,7 +101,7 @@ struct LineupGridView: View {
                 }
                 Text("Scrolls both ways · tap a set to pick it")
                     .font(.caption2)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
                     .padding(.horizontal)
                     .padding(.vertical, 4)
             }
@@ -112,10 +112,10 @@ struct LineupGridView: View {
         VStack(spacing: 8) {
             Image(systemName: "calendar")
                 .font(.largeTitle)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
             Text("No published set times for this night yet.")
                 .font(.footnote)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -143,7 +143,7 @@ struct LineupGridView: View {
             ForEach(layout.hourLines) { line in
                 Text(line.label)
                     .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
                     .padding(.trailing, 4)
                     // The -6 nudge centres a label on its own gridline,
                     // but this gutter is `.clipped()` to the axis

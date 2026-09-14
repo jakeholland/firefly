@@ -449,7 +449,7 @@ static void lineup_render_no_pack(lv_obj_t *parent)
     lv_obj_align(headline, LV_ALIGN_CENTER, 0, (int32_t)LINEUP_LAYOUT_NO_PACK_HEADLINE_DY);
 
     lv_obj_t *sub = lv_label_create(parent);
-    lv_label_set_text(sub, "Load a festpack to see what's playing");
+    lv_label_set_text(sub, "Ask whoever set up your puck to load one");
     lv_obj_set_style_text_font(sub, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
     lv_obj_set_width(sub, 280);
@@ -475,7 +475,7 @@ static void lineup_render_no_pack(lv_obj_t *parent)
 static void lineup_render_time_unknown(lv_obj_t *parent)
 {
     lv_obj_t *headline = lv_label_create(parent);
-    lv_label_set_text(headline, "WAITING FOR TIME FIX");
+    lv_label_set_text(headline, "WAITING FOR THE TIME");
     lv_obj_set_style_text_font(headline, FF_THEME_FONT_HEADLINE, 0);
     lv_obj_set_style_text_color(headline, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_set_width(headline, 320);
@@ -483,7 +483,7 @@ static void lineup_render_time_unknown(lv_obj_t *parent)
     lv_obj_align(headline, LV_ALIGN_CENTER, 0, (int32_t)LINEUP_LAYOUT_TIME_UNKNOWN_HEADLINE_DY);
 
     lv_obj_t *sub = lv_label_create(parent);
-    lv_label_set_text(sub, "Clock hasn't synced from the mesh yet");
+    lv_label_set_text(sub, "Clock hasn't synced from the radio yet");
     lv_obj_set_style_text_font(sub, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
     lv_obj_set_width(sub, 280);

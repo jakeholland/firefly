@@ -344,11 +344,11 @@ static void S10_lock_chip_clears_the_status_bar(void)
     ff_scr_flare_build_lock_chip(puck, &flare);
     lv_obj_update_layout(lv_screen_active());
 
-    /* Status bar: the "MESH" label (mesh_ok == true) — same font/dy as
+    /* Status bar: the "LINKED" label (mesh_ok == true) — same font/dy as
      * the clock and battery labels either side of it, so any one of the
      * three stands in for the row's real on-screen extent. */
-    lv_obj_t *mesh_lbl = find_label_with_prefix(puck, "MESH");
-    TEST_ASSERT_NOT_NULL_MESSAGE(mesh_lbl, "the status bar's MESH label must be built");
+    lv_obj_t *mesh_lbl = find_label_with_prefix(puck, "LINKED");
+    TEST_ASSERT_NOT_NULL_MESSAGE(mesh_lbl, "the status bar's LINKED label must be built");
     lv_area_t status_area;
     lv_obj_get_coords(mesh_lbl, &status_area);
 
@@ -626,8 +626,8 @@ static void S10_wire_sender_overlay_waiting_shows_no_mesh_copy(void)
     ff_scr_flare_build_sender_overlay(lv_screen_active(), &disp, /*screen_flip=*/false);
     lv_obj_update_layout(lv_screen_active());
 
-    lv_obj_t *status = find_label_with_prefix(lv_screen_active(), "NO MESH");
-    TEST_ASSERT_NOT_NULL_MESSAGE(status, "WAITING must show the honest NO MESH retry copy");
+    lv_obj_t *status = find_label_with_prefix(lv_screen_active(), "NO RADIO");
+    TEST_ASSERT_NOT_NULL_MESSAGE(status, "WAITING must show the honest NO RADIO retry copy");
     /* Review round 2 (2026-09-03): the COLOUR, not just the text — WAITING
      * must NOT render in the ordinary "confident" amber the SENT copy
      * uses; it gets the same alert shade the Radar face's STALE

@@ -250,7 +250,7 @@ static void S26d_AC2_banner_covers_mesh_status_label(void)
     ff_scr_banner_build(parent, &b, false);
     lv_obj_update_layout(parent);
 
-    lv_obj_t *mesh_lbl = find_label_exact(parent, "MESH");
+    lv_obj_t *mesh_lbl = find_label_exact(parent, "LINKED");
     TEST_ASSERT_NOT_NULL(mesh_lbl);
 
     uint32_t n = lv_obj_get_child_count(parent);
@@ -260,7 +260,7 @@ static void S26d_AC2_banner_covers_mesh_status_label(void)
     lv_obj_get_coords(mesh_lbl, &mesh_a);
 
     TEST_ASSERT_TRUE_MESSAGE(area_contains(&strip_a, &mesh_a),
-                             "banner must fully cover the MESH status label — no half-visible text behind it");
+                             "banner must fully cover the LINKED status label — no half-visible text behind it");
 }
 
 /* The status TEXT's own measured y-band (clock/MESH/battery all share

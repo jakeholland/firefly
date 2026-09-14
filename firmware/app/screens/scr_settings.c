@@ -1215,30 +1215,28 @@ _Static_assert(FF_CREW_ROW_H >= FF_THEME_MIN_HIT_PX, "crew rows must clear the 4
 #define FF_CREW_ACTION_PILL_W FF_SETTINGS_VALUE_PILL_W
 #define FF_CREW_ACTION_GAP    FF_SETTINGS_VALUE_GAP
 
-/* [api] A02 slice D — a PAIRED row now carries TWO controls, so each is
- * narrower than the single-pill columns elsewhere on this page.
+/* [api] A02 slice D — the PAIRED row's action is **HIDE**, and REMOVE is
+ * gone from this row. Both halves of that are decisions, so both are
+ * written down (AGENTS.md: note the interpretation).
  *
- * INTERPRETATION CALL, flagged rather than decided quietly (AGENTS.md).
- * A02 §4.7 retires the add/remove vocabulary outright: having the code
- * IS membership, so "remove" cannot mean what it used to. Under
- * auto-crew a plain unpair is genuinely not permanent — the person's
- * next qualifying packet re-admits them (see `shell_try_admit`'s own
- * comment, ff_shell.c) — and HIDE is the control that actually sticks.
+ * WHY REMOVE GOES. A02 §4.7 retires the add/remove vocabulary outright:
+ * having the code IS membership, so "remove" cannot mean what it used
+ * to. Concretely, under auto-crew a plain unpair is not permanent — the
+ * person's next qualifying packet re-admits them (see
+ * `shell_try_admit`'s own comment, ff_shell.c). A button that silently
+ * undoes itself a few seconds later is worse than no button, and it is
+ * exactly the confidently-wrong control this project refuses elsewhere.
+ * `FF_INTENT_CREW_UNPAIR` itself stays — the bench console and the
+ * intent tests still exercise it — it is just no longer offered here.
  *
- * The right end state is REMOVE gone and HIDE alone. This slice does not
- * do that, for one reason: `polish/puck-plain-faces` is concurrently
- * rewording this page's existing strings, and deleting a control out
- * from under it would be a merge conflict over a product decision that
- * is A02 slice E's to make. So both ship here, HIDE first because it is
- * the one that works, and slice E retires REMOVE.
+ * WHY NOT BOTH. Two 74 px pills side by side were tried and shipped a
+ * measurable regression: `polish/puck-plain-faces` (#303) had just
+ * replaced "LOST" with "NO SIGNAL 15 MIN", and the narrowed label column
+ * truncated it to "NO SIGNA...". One control at the page's existing
+ * FF_CREW_ACTION_PILL_W keeps that wording legible, which is the whole
+ * point of #303.
  *
- * 84 + 8 + 84 = 176 against the single column's 96, so the name column
- * loses 80 px. Names already truncate with DOTS on this row
- * (settings_crew_row_labels), so nothing new can be silently lost. */
-#define FF_CREW_ACTION_PILL_SM_W 74
-#define FF_CREW_ACTION_PILL_SM_GAP 8
-_Static_assert(FF_CREW_ACTION_PILL_SM_W >= 72,
-               "crew action pills must stay wide enough for the word REMOVE at FF_THEME_FONT_CHIP");
+ * The HIDE pill reuses FF_CREW_ACTION_PILL_W above — no new geometry. */
 
 static void settings_crew_back_cb(lv_event_t *e)
 {
@@ -1251,14 +1249,6 @@ static void settings_crew_pair_cb(lv_event_t *e)
 {
     uintptr_t node = (uintptr_t)lv_event_get_user_data(e);
     ff_intent_t in = {.kind = FF_INTENT_CREW_PAIR, .u = {0}};
-    in.u.node_id = (uint32_t)node;
-    ff_intent_emit(&in);
-}
-
-static void settings_crew_unpair_cb(lv_event_t *e)
-{
-    uintptr_t node = (uintptr_t)lv_event_get_user_data(e);
-    ff_intent_t in = {.kind = FF_INTENT_CREW_UNPAIR, .u = {0}};
     in.u.node_id = (uint32_t)node;
     ff_intent_emit(&in);
 }
@@ -1303,13 +1293,16 @@ static void settings_crew_presence_text(ff_sigview_presence_t presence, uint32_t
         *out_color = FF_THEME_COLOR_STALE_AMBER;
         break;
     }
-    case FF_PRESENCE_LOST:
-        snprintf(buf, n, "LOST");
+    case FF_PRESENCE_LOST: {
+        char age_buf[16];
+        ff_fmt_age(age_buf, sizeof(age_buf), age_ms);
+        snprintf(buf, n, "NO SIGNAL %s", age_buf);
         *out_color = FF_THEME_COLOR_STALE_AMBER;
         break;
+    }
     case FF_PRESENCE_LINKED:
     default:
-        snprintf(buf, n, "LINKED");
+        snprintf(buf, n, "NOT SEEN YET");
         *out_color = FF_THEME_COLOR_MUTED;
         break;
     }
@@ -1359,8 +1352,7 @@ static void settings_crew_build_paired_row(lv_obj_t *list, int32_t rel_y, int32_
     lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-    int32_t const actions_w = FF_CREW_ACTION_PILL_SM_W * 2 + FF_CREW_ACTION_PILL_SM_GAP;
-    int32_t const label_w = row_w - actions_w - FF_CREW_ACTION_GAP;
+    int32_t const label_w = row_w - FF_CREW_ACTION_PILL_W - FF_CREW_ACTION_GAP;
 
     char status[24];
     uint32_t color = FF_THEME_COLOR_MUTED;
@@ -1394,15 +1386,9 @@ static void settings_crew_build_paired_row(lv_obj_t *list, int32_t rel_y, int32_
     lv_obj_t *top_lbl = settings_crew_row_labels(row, label_w, top, status, color);
     lv_label_set_recolor(top_lbl, has_tag);
 
-    int32_t const pill_y = (FF_CREW_ROW_H - FF_SETTINGS_ROW_H) / 2;
-    /* HIDE first (leftmost), because it is the control that actually
-     * sticks under auto-crew — see FF_CREW_ACTION_PILL_SM_W's comment. */
-    settings_make_pill(row, "HIDE", row_w - actions_w, pill_y, FF_CREW_ACTION_PILL_SM_W,
-                       FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_AMBER, 0,
-                       settings_crew_hide_cb, (void *)(uintptr_t)m->node_id);
-    settings_make_pill(row, "REMOVE", row_w - FF_CREW_ACTION_PILL_SM_W, pill_y,
-                       FF_CREW_ACTION_PILL_SM_W, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
-                       FF_THEME_COLOR_STALE_AMBER, 0, settings_crew_unpair_cb,
+    settings_make_pill(row, "HIDE", row_w - FF_CREW_ACTION_PILL_W, (FF_CREW_ROW_H - FF_SETTINGS_ROW_H) / 2,
+                       FF_CREW_ACTION_PILL_W, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
+                       FF_THEME_COLOR_STALE_AMBER, 0, settings_crew_hide_cb,
                        (void *)(uintptr_t)m->node_id);
 }
 
@@ -1543,7 +1529,7 @@ static void settings_crew_build_heard_empty(lv_obj_t *list, int32_t rel_y, int32
     lv_obj_set_pos(lbl, 0, rel_y);
     lv_obj_set_width(lbl, row_w);
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(lbl, link_connected ? "nobody heard yet" : "nobody heard yet - is the comms brain linked?");
+    lv_label_set_text(lbl, link_connected ? "nobody heard yet" : "No crew yet. Add people from HEARD once your radio is on.");
     lv_obj_set_style_text_font(lbl, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
     lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_LEFT, 0);

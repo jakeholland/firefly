@@ -69,6 +69,25 @@ public struct CrewMapPin: Sendable, Equatable, Identifiable {
     /// "~110 m area" style caption. nil otherwise.
     public let precisionGridMeters: Float?
 
+    /// What a map view actually draws as this pin's label. PR #304
+    /// review: `name` is `ff_crew_display_name`'s own value, which is
+    /// EMPTY for a member admitted before their NodeInfo arrived — a
+    /// state a position packet alone can reach — so the annotation and
+    /// the selected card both drew a blank label. Same fallback the
+    /// Inbox row and the Crew settings row already use, from the same
+    /// constant, so the three cannot drift.
+    public var displayLabel: String {
+        name.isEmpty ? CrewDisplayFallback.namelessMember : name
+    }
+
+    /// The letter drawn inside the pin — `initial` when the mesh has
+    /// actually reported one, otherwise the honest "unknown" glyph the
+    /// Inbox avatar and Radar dots already show (never a blank pin,
+    /// which reads as a broken one).
+    public var displayInitial: Character {
+        initial ?? CrewDisplayFallback.unknownInitial
+    }
+
     public init(id: UInt32, name: String, colorIndex: UInt8, initial: Character?, latitude: Double,
                 longitude: Double, treatment: CrewMapPinTreatment, ageText: String, distanceMeters: Double?,
                 bearingDegrees: Double?, precisionGridMeters: Float?) {

@@ -683,13 +683,16 @@ static void inbox_presence_text(ff_inbox_conv_t const *cv, char *buf, size_t n, 
         *out_color = FF_THEME_COLOR_STALE_AMBER;
         break;
     }
-    case FF_PRESENCE_LOST:
-        snprintf(buf, n, "LOST");
+    case FF_PRESENCE_LOST: {
+        char age_buf[FF_APP_STR_SHORT];
+        ff_fmt_age(age_buf, sizeof(age_buf), cv->presence_age_ms);
+        snprintf(buf, n, "NO SIGNAL %s", age_buf);
         *out_color = FF_THEME_COLOR_STALE_AMBER;
         break;
+    }
     case FF_PRESENCE_LINKED:
     default:
-        snprintf(buf, n, "LINKED");
+        snprintf(buf, n, "NOT SEEN YET");
         *out_color = FF_THEME_COLOR_MUTED;
         break;
     }
@@ -1347,8 +1350,8 @@ static char const *inbox_send_status_text(ff_feed_send_status_t s)
     case FF_SEND_WAITING: return "WAITING";
     case FF_SEND_SENT: return "SENT";
     case FF_SEND_DELIVERED: return "DELIVERED";
-    case FF_SEND_NO_ACK: return "NO ACK";
-    case FF_SEND_DROPPED: return "DROPPED";
+    case FF_SEND_NO_ACK: return "NOT DELIVERED";
+    case FF_SEND_DROPPED: return "NOT SENT";
     }
     return NULL; /* -Wswitch already flags a missing case above */
 }

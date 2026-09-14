@@ -4,7 +4,13 @@
 //  `InboxAvatar.avatarGlyph(for:)` (FireflyModel) must round-trip an
 //  unnamed-but-paired member — `initial == nil`, `displayName.isEmpty`
 //  (`ff_crew_member_t.initial`'s own "'\0' until known" precondition) —
-//  to a blank glyph instead of trapping on `Character("")`.
+//  without trapping on `Character("")`.
+//
+//  Owner decision, 2026-09-13 ("Nameless crew rows... a colour and
+//  initial '?' — never a blank label") reverses the ORIGINAL fix's own
+//  "blank, never '?'" choice: a blank glyph read as a broken row to
+//  real reviewers (this exact case, demo mode's Mo), so the honest
+//  "unknown" glyph is now "?", not a space.
 //
 import FireflyModel
 import XCTest
@@ -20,11 +26,10 @@ final class InboxAvatarTests: XCTestCase {
 
     /// The exact crash case this fix covers: paired via
     /// `ff_crew_set_paired`, no `NodeInfo` ever received — empty
-    /// `displayName`, no `initial`. Must not trap; must read blank, the
-    /// same "no invented placeholder" rule as everywhere else an
-    /// initial can be unknown, never a "?" stand-in.
-    func testUnnamedPairedMemberReadsBlankNotACrash() {
-        XCTAssertEqual(InboxAvatar.avatarGlyph(for: row(displayName: "")), " ")
+    /// `displayName`, no `initial`. Must not trap; must read "?" (owner
+    /// decision, 2026-09-13), never a blank cell that looks broken.
+    func testUnnamedPairedMemberReadsQuestionMarkNotACrash() {
+        XCTAssertEqual(InboxAvatar.avatarGlyph(for: row(displayName: "")), "?")
     }
 
     /// A known `initial` always wins over deriving one from the name.

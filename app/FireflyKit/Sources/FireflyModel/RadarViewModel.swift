@@ -327,17 +327,22 @@ public struct FindReply: Sendable, Equatable, Identifiable {
     public var hasSNR: Bool
     public var snrOfUs: Double
     public var tier: SignalTierPresentation
-    public var ageText: String
+    /// When this PONG actually arrived — the ONLY honest basis for "how
+    /// long ago" on screen. PR #304 review: this struct used to also
+    /// carry an `ageText` string, hardcoded to "0 SEC" at construction
+    /// and never recomputed; the moment a screen rendered it as a reply's
+    /// age (this PR's own FIND row), every reply in a ten-minute session
+    /// claimed to have just arrived. Removed rather than left lying
+    /// around — a renderer ages this `Date` itself.
     public var receivedAt: Date
 
     public init(id: Int, rssiOfUs: Int, hasSNR: Bool, snrOfUs: Double, tier: SignalTierPresentation,
-                ageText: String, receivedAt: Date) {
+                receivedAt: Date) {
         self.id = id
         self.rssiOfUs = rssiOfUs
         self.hasSNR = hasSNR
         self.snrOfUs = snrOfUs
         self.tier = tier
-        self.ageText = ageText
         self.receivedAt = receivedAt
     }
 }
@@ -729,6 +734,33 @@ public final class RadarViewModel {
         stopFind()
     }
 
+    /// The segment-switch half of `FindSegmentObserving.pauseObserving()`
+    /// (`app/Firefly/Sources/Find/FindSegment.swift`, this app's own
+    /// protocol this method's SIGNATURE exists to satisfy — this file
+    /// stays SwiftUI/app-target-free, same as every other view model
+    /// here, so it does not literally `import`/conform to that
+    /// protocol; `RadarViewModel: FindSegmentObserving`'s trivial
+    /// extension picks this up as the witness by name/signature alone,
+    /// same as `observe()`/`stopObserving()` already are).
+    ///
+    /// Owner decision, 2026-09-13 ("FIND keeps running across Find
+    /// segments"): stops the pump (heading/location mirroring + the
+    /// 1 Hz recompute loop) exactly like `stopObserving()` does, but
+    /// deliberately does NOT call `stopFind()` — an active FIND session
+    /// ticks on its own separate `findLoop` task, independent of
+    /// `recomputeLoop`, and `handlePong` is fed from `AppGraph`'s own
+    /// packet stream, not from anything this pauses, so FIND keeps
+    /// working correctly with the pump stopped. `stopObserving()` (full
+    /// teardown, FIND included) stays exactly what `AppGraph.stop()`
+    /// calls on backgrounding, and what an explicit STOP tap
+    /// (`stopFind()`) does — FIND still ends both those ways, just
+    /// never merely because Radar is not the visible segment right now.
+    public func pauseObserving() {
+        headingObservation?.cancel(); headingObservation = nil
+        locationObservation?.cancel(); locationObservation = nil
+        recomputeLoop?.cancel(); recomputeLoop = nil
+    }
+
     private func recompute() {
         // Re-read the units preference every recompute (1 Hz, plus every
         // heading/fix update) rather than once at construction — see
@@ -803,7 +835,7 @@ public final class RadarViewModel {
         findReplyCounter += 1
         findReplies.append(FindReply(
             id: findReplyCounter, rssiOfUs: Int(rssiDbm), hasSNR: hasSNR, snrOfUs: snrDb,
-            tier: SignalTierPresentation.tier(rssiDbm: rssiDbm), ageText: "0 SEC", receivedAt: now))
+            tier: SignalTierPresentation.tier(rssiDbm: rssiDbm), receivedAt: now))
         if findReplies.count > Self.findRepliesCap {
             findReplies.removeFirst(findReplies.count - Self.findRepliesCap)
         }
@@ -854,9 +886,13 @@ public final class RadarViewModel {
         case .stale: return "LAST SEEN \(snapshot.ageText)\(distanceAreaSuffix)"
         case .lost:
             if !snapshot.ageText.isEmpty { return "LAST SEEN \(snapshot.ageText)\(distanceAreaSuffix)" }
+            // Owner decision, 2026-09-13 ("Presence/status words
+            // everywhere they appear"): "NO FIX YET"/"NEAR, NO FIX" are
+            // radio-engineering phrasing for what is, in plain words,
+            // simply no location yet.
             switch snapshot.heardPresence {
-            case .heard, .stale: return "NEAR, NO FIX"
-            case .lost, .never: return "NO FIX YET"
+            case .heard, .stale: return "Near \u{00B7} no location yet"
+            case .lost, .never: return "No location yet"
             }
         case .place: return distanceAreaSuffix.isEmpty ? "FIXED POSITION" : "FIXED POSITION\(distanceAreaSuffix)"
         case .close: return "CLOSE RANGE"
@@ -865,8 +901,9 @@ public final class RadarViewModel {
             if snapshot.signalViaRelay { return "VIA RELAY" }
             // Should be unreachable per S29's mode-resolution rule (a
             // never-heard member always falls back to NOFIX/LOST), but
-            // the renderer stays honest rather than assuming.
-            return "RADIO SILENT"
+            // the renderer stays honest rather than assuming. "RADIO
+            // SILENT" -> "No signal" (owner decision, 2026-09-13).
+            return "No signal"
         }
     }
 
@@ -973,7 +1010,13 @@ public final class RadarViewModel {
     /// acceptance criterion). The SELECTED member's line — nil when
     /// there is nothing honestly knowable to say about them yet.
     public var theirPositionLine: String? {
-        let who = snapshot.name.isEmpty ? "they" : snapshot.name
+        // PR #304 review: the nameless fallback used to be the pronoun
+        // "they", which every branch below then made possessive — "they's
+        // position: their puck GPS, 4 MIN ago". A selection can genuinely
+        // have no name yet (paired, no NodeInfo), so this is reachable,
+        // and this PR's own pass is what makes the rest of that screen
+        // read like English. The possessive is built once here instead.
+        let who = snapshot.name.isEmpty ? "Their" : "\(snapshot.name)'s"
         switch snapshot.mode {
         case .noSel:
             return nil
@@ -984,34 +1027,52 @@ public final class RadarViewModel {
             // what's actually known (S06: RADAR_NOFIX still carries a
             // true age_str for the selection's last fix).
             guard !snapshot.ageText.isEmpty else { return nil }
-            return "\(who)'s last known position: their puck GPS, \(Self.agoPhrase(for: snapshot.ageText)) "
+            return "\(who) last known position: their puck GPS, \(Self.agoPhrase(for: snapshot.ageText)) "
                 + "(your distance unknown — no fix of your own)"
         case .place:
-            return "\(who)'s position: fixed position, asserted (no age given)"
+            return "\(who) position: fixed position, asserted (no age given)"
         case .noHdg, .live, .stale:
             guard !snapshot.ageText.isEmpty else { return nil }
-            return "\(who)'s position: their puck GPS, \(Self.agoPhrase(for: snapshot.ageText))"
+            return "\(who) position: their puck GPS, \(Self.agoPhrase(for: snapshot.ageText))"
         case .lost:
             guard !snapshot.ageText.isEmpty else { return nil }
-            return "\(who)'s position: their puck GPS, last seen \(Self.agoPhrase(for: snapshot.ageText))"
+            return "\(who) position: their puck GPS, last seen \(Self.agoPhrase(for: snapshot.ageText))"
         case .close:
             guard !snapshot.ageText.isEmpty else { return nil }
-            return "\(who)'s position: their puck GPS, \(Self.agoPhrase(for: snapshot.ageText))"
+            return "\(who) position: their puck GPS, \(Self.agoPhrase(for: snapshot.ageText))"
         case .signal:
             guard snapshot.arrowValid, snapshot.bearingValid else { return nil }
             let compass = CompassPoint.name(forBearingDegrees: snapshot.bearingDegrees)
-            return "\(who)'s last known position: their puck GPS, \(Self.agoPhrase(for: snapshot.ageText)), \(compass)"
+            return "\(who) last known position: their puck GPS, \(Self.agoPhrase(for: snapshot.ageText)), \(compass)"
         }
     }
 
     /// The RADIO evidence line (S29) — distinct from `theirPositionLine`:
     /// how we're hearing them right now, never dressed up as distance.
+    ///
+    /// Owner decision, 2026-09-13 ("Radar/Find detail lines"): drop
+    /// "direct" from the primary text entirely (UX review: "'direct'...
+    /// is a total non-word to Maya — she doesn't know there's an
+    /// alternative... this is being contrasted against"); show
+    /// "relayed through <name>" only when relayed — but the core does
+    /// not carry WHICH member relayed a packet (`ff_radar.h`:
+    /// `signal_via_relay`/`via_relay` are booleans, no relay identity),
+    /// so naming one here would be fabricated, not surfaced. Says
+    /// "via relay" instead, honest about the one fact this app actually
+    /// has, never a fictional name (interpretation call, noted in this
+    /// PR's body).
     public var theirSignalLine: String? {
         guard snapshot.signalHeard else { return nil }
-        let who = snapshot.name.isEmpty ? "they" : snapshot.name
-        let path = snapshot.signalViaRelay ? "via relay" : "direct"
-        let tierPart = snapshot.signalTier != .none ? "\(snapshot.signalTier.label.lowercased()) signal, " : ""
-        return "\(who)'s radio: \(tierPart)\(path), heard \(Self.agoPhrase(for: snapshot.signalAgeText))"
+        let who = snapshot.name.isEmpty ? "They" : snapshot.name
+        let when = "heard \(Self.agoPhrase(for: snapshot.signalAgeText))"
+        guard snapshot.signalTier != .none else {
+            // No direct tier to report — either genuinely via relay (a
+            // relayed packet's RSSI belongs to the relay, never the
+            // sender), or heard with no attributable reading at all.
+            let via = snapshot.signalViaRelay ? ", via relay" : ""
+            return "\(who): \(when)\(via)"
+        }
+        return "\(who): \(snapshot.signalTier.label.lowercased()) signal \u{00B7} \(when)"
     }
 
     /// The phone's OWN line: "your position: phone GPS ±4 m; heading:

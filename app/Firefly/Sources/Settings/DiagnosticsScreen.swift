@@ -22,7 +22,7 @@ struct DiagnosticsScreen: View {
 
                 Text("Every value above comes from the connected radio, or reads UNKNOWN until the app has it.")
                     .font(.caption)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
                     .padding(.top, 12)
             }
             .padding(20)
@@ -37,7 +37,7 @@ struct DiagnosticsScreen: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
                 Text(isLive ? "source: connected radio" : "source: not available yet")
                     .font(.caption2)
                     .foregroundStyle(Color.ffMuted.opacity(0.7))

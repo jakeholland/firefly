@@ -10,12 +10,14 @@
 		0318ED28B405C25C7661E064 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E30FCFD8A9260E48E8617D /* RootView.swift */; };
 		04CD563093000516B80C6D62 /* FireflyMesh in Frameworks */ = {isa = PBXBuildFile; productRef = 6D80661B0E11F75CD5DBFD53 /* FireflyMesh */; };
 		0985E28E3385EBA26AD6DE65 /* ImportPicksSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E88E40B311FEE9B2F1B4382 /* ImportPicksSheet.swift */; };
+		0D10D7712B65AE2955677DBC /* FireflyDebugStartDestinationLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = F05346761183CE52D605D57C /* FireflyDebugStartDestinationLaunch.swift */; };
 		124E5B4431C5B0C9509B4C85 /* FlareTakeoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1B310432CF46CE542A152E9 /* FlareTakeoverView.swift */; };
 		159595A99A88EA86CF1B6140 /* CrewSettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E1D66A6EFF83C09A11DB7FB /* CrewSettingsViewModel.swift */; };
 		17AE531969F0CDE913B44133 /* LineupPicksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EA34C071EFD0793A619E9A6 /* LineupPicksView.swift */; };
 		2EA722625D8D01FD5039B152 /* MoreScreenNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = E455F1EFCD0EFD761A051AEF /* MoreScreenNavigation.swift */; };
 		2EDFEA952BC97A0A68C06034 /* MapTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F97FA0CFDE77FDFFA48612D /* MapTabView.swift */; };
 		3B69F83116726CF8C396257C /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 9011CC84111BB0A130A3D3C7 /* FireflyModel */; };
+		3BFCFBA3D9771C3925E1CFBD /* ChannelApplySummaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1D11A9DB791BDA805737DD3 /* ChannelApplySummaryTests.swift */; };
 		452890E34DD01B6CD4D436CA /* ThreadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B41C74CB306C16EC81337A30 /* ThreadView.swift */; };
 		47E0809C008E900451404953 /* ConnectScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 336860AA8C792AB876CF7EB1 /* ConnectScreen.swift */; };
 		4CD9FFF6222D2B97DC1B8223 /* SettingsFestivalPickerWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CA0680B16ABBA1A558B1690 /* SettingsFestivalPickerWiringTests.swift */; };
@@ -43,6 +45,7 @@
 		9097B73639F1D372A217DB5C /* MoreScreenNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C195EF4E6C11A4F328A8A7A2 /* MoreScreenNavigationTests.swift */; };
 		924A1E5F5BB64A7CBC361118 /* LineupScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 686F2EF2441AE3FF6FC88B41 /* LineupScreen.swift */; };
 		9CEECC7E8F408FEDB03E85E8 /* RadarColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E99266CE9867C281FAC9513 /* RadarColors.swift */; };
+		9D5C223B210A1F4B9644D6AB /* FireflyDebugStartDestinationLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = F05346761183CE52D605D57C /* FireflyDebugStartDestinationLaunch.swift */; };
 		A17AFA6D2194A215E8B2C3F7 /* RadarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 378BC076CD59300BFAE0D0AD /* RadarView.swift */; };
 		A799FEADA8E9F7CFA215EDEF /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 688226395F6C22BD0D86BEB5 /* Assets.xcassets */; };
 		AC8AFA0CD87BCDBC83DDB4BD /* QRScannerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FF340B133498D33D74D3976 /* QRScannerSheet.swift */; };
@@ -51,6 +54,8 @@
 		B770F947CF8B1EDB0E8FDBD5 /* FireflyMesh in Frameworks */ = {isa = PBXBuildFile; productRef = B4C3D1CEE6287442EA267E68 /* FireflyMesh */; };
 		BD2120937E1168EB260D1750 /* SetDetailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45B28DBCD5175DF8DA45C5B9 /* SetDetailSheet.swift */; };
 		C03641377EDB721D4C81DE9D /* BLEHardwareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */; };
+		C27E9C110B680BB3354CACEA /* FireflyDebugStartDestinationLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2D8BB1DDD87FDEF33348C1D /* FireflyDebugStartDestinationLaunchTests.swift */; };
+		C5FFEAC1D2C0AAD3CFD6094C /* CrewSettingsViewModelRowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C69F2315E7F057CD81E80206 /* CrewSettingsViewModelRowTests.swift */; };
 		C669919991622119FE5BA2FA /* DiagnosticsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19687863E32B4CA54C5752D8 /* DiagnosticsScreen.swift */; };
 		CFF3E1EBE59116C8A0544EA2 /* LineupGridDemoFestpackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B88FE658484B40308B28D13 /* LineupGridDemoFestpackTests.swift */; };
 		D3A1DB1182D74174005A4541 /* FindSegment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E80926151F96810841565F7 /* FindSegment.swift */; };
@@ -63,9 +68,6 @@
 		E3CC4E9340C161539EDE9E85 /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1798EBF71029584D9BCBDE5F /* FireflyCore */; };
 		E44CA6E04D280A087AAB74CB /* GPSMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08332227D4D2BE1B28323FD5 /* GPSMapView.swift */; };
 		E466917345D124C8F9F6B557 /* FireflyAutoConnectLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */; };
-		84C488775E564E82D6691974 /* FireflyDebugStartDestinationLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15D46A646F3686688EBB572C /* FireflyDebugStartDestinationLaunch.swift */; };
-		A98729DF132BE0CC52162A25 /* FireflyDebugStartDestinationLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15D46A646F3686688EBB572C /* FireflyDebugStartDestinationLaunch.swift */; };
-		48416CADDCE4E563197BF7DB /* FireflyDebugStartDestinationLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61F2046FEB24662083C0A631 /* FireflyDebugStartDestinationLaunchTests.swift */; };
 		E6551196CD37E34092E3B5D8 /* DemoBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657F1057B225B7D58F60D158 /* DemoBadge.swift */; };
 		EBE7033561E014B40A656D0B /* InboxListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 918AE027165FB4634094A385 /* InboxListView.swift */; };
 		EE39AFFD0C1416E122228CFC /* firefly-fields.festpack.json in Resources */ = {isa = PBXBuildFile; fileRef = D8D4FFA7D320185B90470459 /* firefly-fields.festpack.json */; };
@@ -132,8 +134,6 @@
 		7CA0680B16ABBA1A558B1690 /* SettingsFestivalPickerWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsFestivalPickerWiringTests.swift; sourceTree = "<group>"; };
 		7E80926151F96810841565F7 /* FindSegment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindSegment.swift; sourceTree = "<group>"; };
 		829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyAutoConnectLaunch.swift; sourceTree = "<group>"; };
-		15D46A646F3686688EBB572C /* FireflyDebugStartDestinationLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyDebugStartDestinationLaunch.swift; sourceTree = "<group>"; };
-		61F2046FEB24662083C0A631 /* FireflyDebugStartDestinationLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyDebugStartDestinationLaunchTests.swift; sourceTree = "<group>"; };
 		899B46141ED5400385D53007 /* PeripheralDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeripheralDiscovery.swift; sourceTree = "<group>"; };
 		918AE027165FB4634094A385 /* InboxListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxListView.swift; sourceTree = "<group>"; };
 		9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEHardwareTests.swift; sourceTree = "<group>"; };
@@ -141,21 +141,25 @@
 		A2B2A769F6FE59B2041F556B /* lost-lands-2026.festpack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = "lost-lands-2026.festpack.json"; path = "../../../firmware/assets/field/lost-lands-2026.festpack.json"; sourceTree = "<group>"; };
 		AF57DA895520BCFCFEAE8099 /* MoreScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreScreen.swift; sourceTree = "<group>"; };
 		AF78D752270B8DEF9E445B92 /* FireflyUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FireflyUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B2D8BB1DDD87FDEF33348C1D /* FireflyDebugStartDestinationLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyDebugStartDestinationLaunchTests.swift; sourceTree = "<group>"; };
 		B41C74CB306C16EC81337A30 /* ThreadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadView.swift; sourceTree = "<group>"; };
 		B5AE4486A9AE4EFDBC5455E6 /* ConnectSettingsViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectSettingsViewModelTests.swift; sourceTree = "<group>"; };
 		B726C9DB8EA6DA10A760203D /* FireflyAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FireflyAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Firefly.xcconfig; sourceTree = "<group>"; };
 		C195EF4E6C11A4F328A8A7A2 /* MoreScreenNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreScreenNavigationTests.swift; sourceTree = "<group>"; };
 		C1B310432CF46CE542A152E9 /* FlareTakeoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlareTakeoverView.swift; sourceTree = "<group>"; };
+		C69F2315E7F057CD81E80206 /* CrewSettingsViewModelRowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewSettingsViewModelRowTests.swift; sourceTree = "<group>"; };
 		CD4FD3C330F61C78D0968513 /* FindLifecycleWiringGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindLifecycleWiringGuardTests.swift; sourceTree = "<group>"; };
 		CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsViewModel.swift; sourceTree = "<group>"; };
 		D245C926F1665311864D01C0 /* LineupGridView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineupGridView.swift; sourceTree = "<group>"; };
 		D8D4FFA7D320185B90470459 /* firefly-fields.festpack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = "firefly-fields.festpack.json"; path = "../../../firmware/assets/demo/firefly-fields.festpack.json"; sourceTree = "<group>"; };
+		E1D11A9DB791BDA805737DD3 /* ChannelApplySummaryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelApplySummaryTests.swift; sourceTree = "<group>"; };
 		E455F1EFCD0EFD761A051AEF /* MoreScreenNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreScreenNavigation.swift; sourceTree = "<group>"; };
 		E56FC0B8574441CB2FD171FD /* FireflyHardwareTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FireflyHardwareTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E6E87E756375F327962BDB91 /* FindLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindLifecycleTests.swift; sourceTree = "<group>"; };
 		E76A5B24A4204914C9C30817 /* InboxAvatarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxAvatarTests.swift; sourceTree = "<group>"; };
 		EDC28160EF0A8DD53FB3FFEB /* HapticSignaling+UIKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HapticSignaling+UIKit.swift"; sourceTree = "<group>"; };
+		F05346761183CE52D605D57C /* FireflyDebugStartDestinationLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyDebugStartDestinationLaunch.swift; sourceTree = "<group>"; };
 		F1F42EB3578D2B85C360FF91 /* FieldMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FieldMapView.swift; sourceTree = "<group>"; };
 		FEAE3E2DCB691E1E510ACF57 /* FindPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindPanel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -304,10 +308,12 @@
 		7D968AF42091B0CBB04FBE40 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				E1D11A9DB791BDA805737DD3 /* ChannelApplySummaryTests.swift */,
 				B5AE4486A9AE4EFDBC5455E6 /* ConnectSettingsViewModelTests.swift */,
-				61F2046FEB24662083C0A631 /* FireflyDebugStartDestinationLaunchTests.swift */,
+				C69F2315E7F057CD81E80206 /* CrewSettingsViewModelRowTests.swift */,
 				E6E87E756375F327962BDB91 /* FindLifecycleTests.swift */,
 				CD4FD3C330F61C78D0968513 /* FindLifecycleWiringGuardTests.swift */,
+				B2D8BB1DDD87FDEF33348C1D /* FireflyDebugStartDestinationLaunchTests.swift */,
 				E76A5B24A4204914C9C30817 /* InboxAvatarTests.swift */,
 				6B88FE658484B40308B28D13 /* LineupGridDemoFestpackTests.swift */,
 				5FB3DC0128FD7652E2645386 /* MapBackgroundLifecycleGuardTests.swift */,
@@ -360,7 +366,7 @@
 			children = (
 				657F1057B225B7D58F60D158 /* DemoBadge.swift */,
 				7C40E6DFE5C85637929993F5 /* FireflyApp.swift */,
-				15D46A646F3686688EBB572C /* FireflyDebugStartDestinationLaunch.swift */,
+				F05346761183CE52D605D57C /* FireflyDebugStartDestinationLaunch.swift */,
 				AF57DA895520BCFCFEAE8099 /* MoreScreen.swift */,
 				E455F1EFCD0EFD761A051AEF /* MoreScreenNavigation.swift */,
 				A1E30FCFD8A9260E48E8617D /* RootView.swift */,
@@ -540,15 +546,17 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3BFCFBA3D9771C3925E1CFBD /* ChannelApplySummaryTests.swift in Sources */,
 				F6C0D0DF3F349E930AD52E4C /* ChannelImportViewModel.swift in Sources */,
 				7DDDFABD54883171C0FD887A /* ConnectSettingsViewModelTests.swift in Sources */,
 				159595A99A88EA86CF1B6140 /* CrewSettingsViewModel.swift in Sources */,
+				C5FFEAC1D2C0AAD3CFD6094C /* CrewSettingsViewModelRowTests.swift in Sources */,
 				6640FC7A5590E35700C97181 /* DiagnosticsViewModel.swift in Sources */,
 				4D205FDE4C92CBA13EF9A921 /* FindLifecycleTests.swift in Sources */,
 				D6F9051146581172F73C2725 /* FindLifecycleWiringGuardTests.swift in Sources */,
 				D3A1DB1182D74174005A4541 /* FindSegment.swift in Sources */,
-				A98729DF132BE0CC52162A25 /* FireflyDebugStartDestinationLaunch.swift in Sources */,
-				48416CADDCE4E563197BF7DB /* FireflyDebugStartDestinationLaunchTests.swift in Sources */,
+				0D10D7712B65AE2955677DBC /* FireflyDebugStartDestinationLaunch.swift in Sources */,
+				C27E9C110B680BB3354CACEA /* FireflyDebugStartDestinationLaunchTests.swift in Sources */,
 				F06690C87C2BC2F7A3802A3C /* InboxAvatarTests.swift in Sources */,
 				CFF3E1EBE59116C8A0544EA2 /* LineupGridDemoFestpackTests.swift in Sources */,
 				6307FAECAA2C09995B4D63DE /* MapBackgroundLifecycleGuardTests.swift in Sources */,
@@ -586,7 +594,7 @@
 				F85E04509A4B7C2775E81711 /* FindSegment.swift in Sources */,
 				FB71020F3A2D6764FDD8FE64 /* FireflyApp.swift in Sources */,
 				E466917345D124C8F9F6B557 /* FireflyAutoConnectLaunch.swift in Sources */,
-				84C488775E564E82D6691974 /* FireflyDebugStartDestinationLaunch.swift in Sources */,
+				9D5C223B210A1F4B9644D6AB /* FireflyDebugStartDestinationLaunch.swift in Sources */,
 				124E5B4431C5B0C9509B4C85 /* FlareTakeoverView.swift in Sources */,
 				E44CA6E04D280A087AAB74CB /* GPSMapView.swift in Sources */,
 				7FA385525E20C469998B9B83 /* HapticSignaling+UIKit.swift in Sources */,

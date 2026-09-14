@@ -35,6 +35,21 @@ enum FindSegment: String, CaseIterable, Identifiable {
 protocol FindSegmentObserving: AnyObject {
     func observe()
     func stopObserving()
+    /// Stops this segment's own pump/subscriptions because ANOTHER Find
+    /// segment (or another tab entirely) is now visible — NOT a full
+    /// teardown. Defaults to `stopObserving()` for a segment with
+    /// nothing else worth preserving (Map has no FIND session of its
+    /// own); `RadarViewModel` overrides this to leave an active FIND
+    /// session running. Owner decision, 2026-09-13 ("FIND keeps running
+    /// across Find segments"): FIND ends only on explicit cancel or on
+    /// backgrounding (`AppGraph.stop()`, which calls the REAL
+    /// `stopObserving()` directly) — never merely because Radar, or the
+    /// Find tab itself, is not what's on screen right now.
+    func pauseObserving()
+}
+
+extension FindSegmentObserving {
+    func pauseObserving() { stopObserving() }
 }
 
 /// The start/stop rule: exactly one of `radar`/`map` observes at a
@@ -73,21 +88,34 @@ protocol FindSegmentObserving: AnyObject {
 /// `scenePhase` handler could not do it without racing that `Task`.
 @MainActor
 enum FindLifecycle {
+    /// Owner decision, 2026-09-13 ("FIND keeps running across Find
+    /// segments"): switching AWAY from Radar (or away from Find
+    /// entirely, in `stopAll` below) uses `pauseObserving()`, never the
+    /// full `stopObserving()` — an active FIND session on Radar must
+    /// survive a segment switch. Map has no FIND concept of its own, so
+    /// its `pauseObserving()` (the protocol's default) is
+    /// indistinguishable from `stopObserving()` either way.
     static func apply(segment: FindSegment, radar: any FindSegmentObserving, map: any FindSegmentObserving) {
         if segment == .radar {
-            map.stopObserving()
+            map.pauseObserving()
             radar.observe()
         } else {
-            radar.stopObserving()
+            radar.pauseObserving()
             map.observe()
         }
     }
 
-    /// Stops BOTH — `FindScreen`'s own `.onDisappear`, for when Find
-    /// itself loses the tab (another destination selected). Never
-    /// called for backgrounding (this type's own doc comment).
+    /// Pauses BOTH — `FindScreen`'s own `.onDisappear`, for when Find
+    /// itself loses the tab (another destination selected). Owner
+    /// decision, 2026-09-13 reverses part of #298 here too: leaving the
+    /// Find tab for Inbox/Lineup/More must NOT end an active FIND
+    /// session either — "keep it running while the app is
+    /// foregrounded... it ends on explicit cancel or on backgrounding."
+    /// Never called for backgrounding (this type's own doc comment) —
+    /// that path is `AppGraph.stop()`, which calls `radar.stopObserving()`
+    /// directly and DOES end FIND there.
     static func stopAll(radar: any FindSegmentObserving, map: any FindSegmentObserving) {
-        radar.stopObserving()
-        map.stopObserving()
+        radar.pauseObserving()
+        map.pauseObserving()
     }
 }

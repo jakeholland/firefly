@@ -17,6 +17,20 @@ import FireflyModel
 import Foundation
 import Observation
 
+/// The blink-off sentence every REAL admin write (name, region,
+/// channel) shares — never shown for "Clear history", which touches no
+/// radio at all. Owner's own wording, 2026-09-13, replacing "the node
+/// saves this, then reboots and disconnects." Lives here, not in
+/// `AdminWriteConfirmationSheet.swift` (SwiftUI): `ChannelApplySummary`
+/// below (no SwiftUI import) needs it, and `FireflyAppTests`' own
+/// curated source list keeps every SwiftUI screen file out on purpose
+/// (that target's own comment) — a plain string constant has no reason
+/// to force a `.swift` file across that line.
+enum AdminWriteCopy {
+    static let radioBlinksOff = "Your puck will blink off for a few seconds while it saves this, " +
+        "then reconnect on its own."
+}
+
 @MainActor
 @Observable
 final class ChannelImportViewModel {
@@ -218,9 +232,26 @@ struct ChannelApplySummary {
     /// the node's region/modem preset untouched in that case.
     let regionLine: String?
     let addMode: Bool
+    /// The confirmation sheet's own one-sentence `primaryText` (owner
+    /// decision, 2026-09-13): the crew's name plus the same blink-off
+    /// sentence every admin write shares. The PRIMARY written channel
+    /// (`isPrimary`), falling back to the first written channel's name
+    /// for an "add" plan that writes only secondaries, then to "this"
+    /// for the pathological case of a plan that writes nothing at all
+    /// (never reached by a real import — `ChannelWritePlan` always
+    /// writes at least one channel — but a sentence with nothing to
+    /// name is still better than crashing on `.first!`).
+    let primarySentence: String
 
     init(plan: ChannelWritePlan) {
         addMode = plan.addMode
+        let crewName = plan.writtenChannels.first(where: \.isPrimary)?.name
+            ?? plan.writtenChannels.first?.name
+        if let crewName, !crewName.isEmpty {
+            primarySentence = "This puts you on the \(crewName) crew. \(AdminWriteCopy.radioBlinksOff)"
+        } else {
+            primarySentence = "This puts you on this crew. \(AdminWriteCopy.radioBlinksOff)"
+        }
         channelLines = plan.writtenChannels.map { entry in
             let role = entry.isPrimary ? "primary" : "secondary"
             let precision: String

@@ -37,6 +37,7 @@ struct ThreadView: View {
                         ForEach(model.messages) { message in
                             MessageBubble(message: message,
                                           renderedState: model.renderedDeliveryState(for: message),
+                                          dropReasonText: model.dropReasonText(for: message),
                                           onResend: { Task { await model.resend(message) } })
                                 .id(message.id)
                         }
@@ -142,6 +143,10 @@ private struct ImmediateSendFailureBanner: View {
 private struct MessageBubble: View {
     let message: FeedMessage
     let renderedState: DeliveryState?
+    /// `ThreadViewModel.dropReasonText(for:)` — the specific,
+    /// permanent-failure reason, when one is honestly known. `nil` for
+    /// every other state.
+    let dropReasonText: String?
     let onResend: () -> Void
 
     private var isMine: Bool { message.direction == .out }
@@ -153,7 +158,7 @@ private struct MessageBubble: View {
                 if !isMine, let name = message.senderName {
                     Text(name.uppercased())
                         .font(.system(.caption2, design: .rounded).weight(.bold))
-                        .foregroundStyle(Color.ffMuted)
+                        .foregroundStyle(Color.ffCaption)
                 }
                 bubbleBody
                 HStack(spacing: 6) {
@@ -168,13 +173,13 @@ private struct MessageBubble: View {
                     if message.isRestored {
                         Text("FROM STORAGE")
                             .font(.system(.caption2, design: .monospaced).weight(.semibold))
-                            .foregroundStyle(Color.ffMuted)
+                            .foregroundStyle(Color.ffCaption)
                     }
                     Text(InboxAge.short(Date().timeIntervalSince(message.timestamp)))
                         .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(Color.ffMuted)
+                        .foregroundStyle(Color.ffCaption)
                     if isMine, let state = renderedState {
-                        DeliveryStatusTag(state: state)
+                        DeliveryStatusTag(state: state, reasonText: state == .dropped ? dropReasonText : nil)
                         if state == .noAck || state == .dropped {
                             Button("RESEND", action: onResend)
                                 .font(.system(.caption2, design: .monospaced).weight(.bold))
