@@ -496,7 +496,7 @@ void ff_scr_flare_build_takeover(ff_app_flare_t const *flare)
         snprintf(bearing_line, sizeof(bearing_line), "%s - %s", ff_flare_fmt_compass8(flare->takeover_bearing_deg),
                   dist);
     } else {
-        snprintf(bearing_line, sizeof(bearing_line), "bearing unknown - %s", dist);
+        snprintf(bearing_line, sizeof(bearing_line), "direction unknown - %s", dist);
     }
     lv_obj_t *bearing_lbl = lv_label_create(puck);
     lv_label_set_text(bearing_lbl, bearing_line);
@@ -630,7 +630,7 @@ void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *f
      * inventing a new alert color. */
     bool const wire_sent = (flare->wire_state == FF_FLARE_WIRE_SENT);
     char const *status_text =
-        wire_sent ? "you are flaring - crew arrows locked on you" : "NO MESH - flare not sent, retrying";
+        wire_sent ? "you are flaring - crew arrows locked on you" : "NO RADIO - flare not sent, retrying";
     uint32_t const status_color = wire_sent ? FF_THEME_COLOR_AMBER : FF_THEME_COLOR_STALE_AMBER;
 
     lv_obj_t *status_lbl = lv_label_create(parent);

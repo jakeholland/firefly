@@ -3487,7 +3487,7 @@ static void S12_crew_empty_state_has_no_add_or_remove_controls(void)
 
     TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "ADD"));
     TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "REMOVE"));
-    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "nobody heard yet - is the comms brain linked?"));
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "No crew yet. Add people from HEARD once your radio is on."));
 }
 
 /* =================================================================== */

@@ -1252,13 +1252,16 @@ static void settings_crew_presence_text(ff_sigview_presence_t presence, uint32_t
         *out_color = FF_THEME_COLOR_STALE_AMBER;
         break;
     }
-    case FF_PRESENCE_LOST:
-        snprintf(buf, n, "LOST");
+    case FF_PRESENCE_LOST: {
+        char age_buf[16];
+        ff_fmt_age(age_buf, sizeof(age_buf), age_ms);
+        snprintf(buf, n, "NO SIGNAL %s", age_buf);
         *out_color = FF_THEME_COLOR_STALE_AMBER;
         break;
+    }
     case FF_PRESENCE_LINKED:
     default:
-        snprintf(buf, n, "LINKED");
+        snprintf(buf, n, "NOT SEEN YET");
         *out_color = FF_THEME_COLOR_MUTED;
         break;
     }
@@ -1403,7 +1406,7 @@ static void settings_crew_build_heard_empty(lv_obj_t *list, int32_t rel_y, int32
     lv_obj_set_pos(lbl, 0, rel_y);
     lv_obj_set_width(lbl, row_w);
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(lbl, link_connected ? "nobody heard yet" : "nobody heard yet - is the comms brain linked?");
+    lv_label_set_text(lbl, link_connected ? "nobody heard yet" : "No crew yet. Add people from HEARD once your radio is on.");
     lv_obj_set_style_text_font(lbl, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
     lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_LEFT, 0);

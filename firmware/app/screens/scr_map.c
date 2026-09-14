@@ -1018,7 +1018,7 @@ static void map_draw_you(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app_m
          * position (there may be none to anchor it to), and not part of
          * the label-collision system either: it's fixed-position status
          * chrome, not a feature/YOU label competing for map space. */
-        map_make_chip(parent, "NO FIX", FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_MUTED, 0.0f,
+        map_make_chip(parent, "NO LOCATION", FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_MUTED, 0.0f,
                        FF_MAP_CIRCLE_RADIUS_PX - FF_MAP_MARGIN_PX - 20.0f);
         return;
     }

@@ -211,7 +211,7 @@ static void radar_build_status_bar(lv_obj_t *parent, ff_radar_view_t const *r)
     lv_obj_align(clock_lbl, LV_ALIGN_CENTER, -78, (int32_t)RADAR_LAYOUT_STATUS_BAR_DY);
 
     lv_obj_t *mesh_lbl = lv_label_create(parent);
-    lv_label_set_text(mesh_lbl, r->mesh_ok ? "MESH" : "NO MESH");
+    lv_label_set_text(mesh_lbl, r->mesh_ok ? "LINKED" : "NO RADIO");
     lv_obj_set_style_text_font(mesh_lbl, FF_THEME_FONT_LABEL, 0);
     /* UX review (non-blocking finding #6): losing the mesh radio breaks
      * the whole point of the puck (finding friends) — it must read at
@@ -917,7 +917,7 @@ static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r, radar_
                                      r->heard_presence == FF_CREW_PRESENCE_STALE);
 
         lv_obj_t *headline = lv_label_create(parent);
-        lv_label_set_text(headline, heard_recently ? "NEAR, NO FIX" : "NO FIX YET");
+        lv_label_set_text(headline, heard_recently ? "NEARBY, NO LOCATION" : "NO LOCATION YET");
         lv_obj_set_style_text_font(headline, FF_THEME_FONT_HEADLINE, 0);
         lv_obj_set_style_text_color(headline, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
         lv_obj_align(headline, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NEVER_HEADLINE_DY);
@@ -925,7 +925,7 @@ static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r, radar_
         radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_NEVER_NAME_DY, (int32_t)RADAR_LAYOUT_NEVER_NAME_W);
 
         lv_obj_t *sub = lv_label_create(parent);
-        lv_label_set_text(sub, heard_recently ? "Heard recently, no GPS fix yet" : "Waiting for their first GPS fix");
+        lv_label_set_text(sub, heard_recently ? "Their puck is near but hasn't found a location yet" : "Waiting for their first location");
         lv_obj_set_style_text_font(sub, FF_THEME_FONT_LABEL, 0);
         lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
         lv_obj_align(sub, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NEVER_SUB_DY);
@@ -1064,8 +1064,13 @@ static void radar_render_nofix(lv_obj_t *parent, ff_radar_view_t const *r)
      * in) — that codepoint renders as a tofu/replacement box, not a dot.
      * Substituted with a plain hyphen, which reads the same way and is
      * guaranteed renderable without pulling in a wider (larger) font
-     * subset for one punctuation mark. */
-    lv_label_set_text(headline, "NO FIX - RADIO ONLY");
+     * subset for one punctuation mark.
+     *
+     * 2026-09-13 plain-language pass: "FIX" is GPS-engineer jargon
+     * (ux-puck-maya/deshawn reviews, both flagging it independently) —
+     * relabeled "NO LOCATION", same honest meaning ("no position for
+     * this member yet"), no behavior change. */
+    lv_label_set_text(headline, "NO LOCATION - RADIO ONLY");
     lv_obj_set_style_text_font(headline, FF_THEME_FONT_HEADLINE, 0);
     lv_obj_set_style_text_color(headline, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_set_width(headline, 320);
@@ -1125,9 +1130,14 @@ static void radar_render_nofix(lv_obj_t *parent, ff_radar_view_t const *r)
  * the arrow would otherwise occupy. Below the distance, a bearing hint
  * states the one direction fact THIS mode CAN honestly give: the
  * absolute true bearing, which needs no heading at all (`r->bearing_deg`,
- * `ff_geo_compass_point`) — "BEARING 180 - S" is an absolute fact, unlike
- * an arrow, which would silently claim a screen-relative meaning it
- * cannot compute.
+ * `ff_geo_compass_point`) — the fact itself ("this member is due south of
+ * you") is honest and absolute, unlike an arrow, which would silently
+ * claim a screen-relative meaning it cannot compute.
+ *
+ * 2026-09-13 plain-language pass: rendered as just the compass letter
+ * (e.g. "S") rather than "BEARING 180 - S" — both persona reviews flagged
+ * "bearing" plus a raw degree number as unreadable at a glance; the
+ * letter alone carries the same honest fact this comment describes.
  *
  * Freshness still applies the ordinary STALE rim tint when `r->stale` —
  * this spec's own "freshness still picks the rim colour... but the mode
@@ -1164,7 +1174,7 @@ static void radar_render_nohdg(lv_obj_t *parent, ff_radar_view_t const *r, bool 
          * DEGREE SIGN or MIDDLE DOT glyph is compiled into the font
          * subset this codebase vendors. */
         char hint[24];
-        snprintf(hint, sizeof(hint), "BEARING %d - %s", (int)(r->bearing_deg + 0.5f), point);
+        snprintf(hint, sizeof(hint), "%s", point);
 
         lv_obj_t *hint_lbl = lv_label_create(parent);
         lv_label_set_text(hint_lbl, hint);
@@ -1230,7 +1240,7 @@ static void radar_render_signal(lv_obj_t *parent, ff_radar_view_t const *r, rada
         radar_make_chip(parent, tier_text, radar_signal_tier_color(r->signal_tier), FF_THEME_COLOR_BG,
                          (int32_t)RADAR_LAYOUT_SIGNAL_CHIP_DY);
     } else if (r->signal_via_relay) {
-        radar_make_chip(parent, "VIA RELAY", FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK,
+        radar_make_chip(parent, "RELAYED", FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK,
                          (int32_t)RADAR_LAYOUT_SIGNAL_CHIP_DY);
     } else {
         /* Should be unreachable — RADAR_SIGNAL's own mode-resolution

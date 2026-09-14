@@ -190,7 +190,7 @@ static void S_face_dispatch_each_active_face_builds_the_expected_screen(void)
 
     /* MAP: scr_map.c's map_draw_you — no position fix (zeroed
      * you_has_pos) always draws the fixed "NO FIX" status chip. */
-    assert_face_builds_label(FF_APP_FACE_MAP, "NO FIX", "MAP");
+    assert_face_builds_label(FF_APP_FACE_MAP, "NO LOCATION", "MAP");
 
     /* SETTINGS: scr_settings.c's brightness section caption — drawn
      * unconditionally regardless of the settings values. */
@@ -233,7 +233,7 @@ static void S_face_dispatch_takeover_wins_over_any_active_face(void)
     ff_face_dispatch_ctx_t ctx = FF_FACE_DISPATCH_CTX_INIT;
     ff_face_dispatch_build(&state, &ctx, NULL);
 
-    lv_obj_t *takeover_line = find_label_with_text(lv_screen_active(), "bearing unknown - -- m");
+    lv_obj_t *takeover_line = find_label_with_text(lv_screen_active(), "direction unknown - -- m");
     TEST_ASSERT_NOT_NULL_MESSAGE(takeover_line, "takeover bearing/distance line must render");
 
     lv_obj_t *radar_line = find_label_with_text(lv_screen_active(), "NO CREW SELECTED");
