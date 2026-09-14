@@ -270,7 +270,8 @@ struct CrewAdvancedScreen: View {
             // `.start(_, _, .some)` case).
             Section {
                 NavigationLink("Start a new crew") {
-                    CrewStartNewCrewView(controller: controller, membership: membership)
+                    CrewStartNewCrewView(controller: controller, membership: membership,
+                                         connect: connect, scanner: scanner)
                 }
             }
             // §4.7/§6.5, scoped for this slice — `CrewHeardListProviding

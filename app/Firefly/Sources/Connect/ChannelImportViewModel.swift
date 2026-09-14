@@ -187,7 +187,21 @@ final class ChannelImportViewModel {
 
     /// PR #274 review, BLOCKING 1 — messages for `ChannelWritePlanError`,
     /// surfaced by `preparePlan()` before any write is attempted.
-    private static func planMessage(for error: Error) -> String {
+    ///
+    /// **Owner report, build 328 ("tried to join but nothing happened").**
+    /// `preparePlan()` does not only fail with `ChannelWritePlanError`:
+    /// its very first step reads the radio's live channel table, which
+    /// throws `AdminWriteError.notConnected` when no radio is connected
+    /// (`MeshtasticClient.requireConnectedNode()`). That fell straight
+    /// through this function's `String(describing:)` default and reached
+    /// the Join screen as the bare word **`notConnected`**, on a
+    /// `.footnote` `Color.ffAlert` line, under a JOIN button that stayed
+    /// enabled — which is what "nothing happened" looked like from the
+    /// outside. `AdminWriteError` now gets the same plain-language
+    /// treatment `writeMessage(for:)` gives it, and `CrewController`
+    /// refuses the attempt before it ever gets here.
+    static func planMessage(for error: Error) -> String {
+        if let writeError = error as? AdminWriteError { return writeMessage(for: writeError) }
         guard let planError = error as? ChannelWritePlanError else { return String(describing: error) }
         switch planError {
         case .noFreeChannelSlots:
@@ -199,17 +213,28 @@ final class ChannelImportViewModel {
         }
     }
 
+    /// A02 §6.4's "no node" rule, applied to the words a FAILED write
+    /// puts on screen. Each one names the puck, says what is and is not
+    /// known to have happened, and (where there is one) the next step —
+    /// never a Swift enum case, and never a claim that the write
+    /// half-succeeded when the app cannot tell.
     static func writeMessage(for error: Error) -> String {
         guard let writeError = error as? AdminWriteError else { return String(describing: error) }
         switch writeError {
-        case .notConnected: return "Not connected to a radio."
-        case .encodingFailed: return "Couldn't prepare that change to send."
-        case .timeout: return "The radio did not answer in time — it may still be rebooting."
-        case .readBackMismatch(let detail): return "The radio did not confirm the change: \(detail)"
-        case .regionUnset: return "Pick a region before applying — UNSET can't be sent."
+        case .notConnected:
+            return "Your puck isn't connected. Connect it, then try again."
+        case .encodingFailed:
+            return "Couldn't prepare that change to send."
+        case .timeout:
+            return "Your puck didn't answer in time — it may still be restarting. Try again in a moment."
+        case .readBackMismatch(let detail):
+            return "Your puck didn't confirm the change (\(detail)). Nothing is certain until it " +
+                   "does — try again."
+        case .regionUnset:
+            return "Pick a frequency band before applying — UNSET can't be sent."
         case .partialApplyFailed(let step, let underlying):
-            return "Couldn't send \(step): \(underlying). The radio may be partially set up — " +
-                   "reconnect and check its channels before trying again."
+            return "Couldn't send \(step): \(underlying). Your puck may be only partly set up — " +
+                   "reconnect and try again."
         }
     }
 }

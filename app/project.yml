@@ -273,6 +273,11 @@ targets:
       # (conditionally `UserNotifications`), no SwiftUI/Theme, same
       # reasoning as every other file in this list.
       - path: Firefly/Sources/NotificationTapRouter.swift
+      # The connect-first onboarding's bench seam (`-FireflyDebugJoinCrew`
+      # /`-FireflyDebugStartCrew`) — SwiftUI-free by construction, the
+      # same shape and the same reason as
+      # `FireflyDebugStartDestinationLaunch.swift` just above.
+      - path: Firefly/Sources/Crew/FireflyDebugCrewLaunch.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit

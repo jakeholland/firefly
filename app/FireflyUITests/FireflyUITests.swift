@@ -144,6 +144,105 @@ final class FireflyUITests: XCTestCase {
         assertScreen("Screen.Connect", in: app)
     }
 
+    /// A02 §6.1's connect-first flow, on the launch that actually has
+    /// no radio: a PLAIN simulator launch (no `-FireflyDemo`) runs
+    /// `AppDependencies.stub()`, whose client is never connected and
+    /// whose scanner is nil — the honest "I just installed this and my
+    /// puck is in my bag" state, and exactly the one the owner hit on
+    /// build 328 ("tried to join but nothing happened").
+    ///
+    /// Welcome -> Connect your puck -> Join, asserting the thing that
+    /// was missing: JOIN is disabled, the reason is ON SCREEN next to
+    /// it, and the persistent banner offers the connect step. A tap that
+    /// silently does nothing is what this pins shut.
+    func testFirstLaunchWithNoPuckGoesThroughTheConnectStepAndGatesJoin() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        assertScreen("Screen.CrewWelcome", in: app)
+        tapWhenHittable(app.descendants(matching: .any)["CrewWelcome.Join"])
+
+        // The connect step, because no puck is connected. (With one, the
+        // container skips it entirely — `testDemoSmokeSkipsTheConnectStepWhenAPuckIsAlreadyConnected`.)
+        assertScreen("Screen.CrewConnectPuck", in: app)
+        XCTAssertTrue(app.descendants(matching: .any)["CrewConnect.Status"].waitForExistence(timeout: Self.uiTimeout),
+                      "the connect step must say what the link is doing")
+        XCTAssertTrue(app.buttons["CrewConnect.Rescan"].exists, "RESCAN must be reachable")
+        XCTAssertTrue(app.descendants(matching: .any)["CrewConnect.NoPuck"].exists,
+                      "\"Don't have a puck yet?\" must be reachable")
+
+        // "Do this later" goes ON to Join rather than dead-ending, so
+        // the banner can explain in place.
+        tapWhenHittable(app.descendants(matching: .any)["CrewConnect.Later"])
+        assertScreen("Screen.CrewJoin", in: app)
+
+        XCTAssertTrue(app.descendants(matching: .any)["CrewBanner.NeedsRadio"].waitForExistence(timeout: Self.uiTimeout),
+                      "Join must carry the persistent \"connect your puck\" banner with no radio")
+        XCTAssertTrue(app.descendants(matching: .any)["CrewJoin.DisabledReason"].exists,
+                      "the reason JOIN is disabled must be visible without tapping it")
+        XCTAssertFalse(app.buttons["CrewJoin.Join"].isEnabled,
+                       "JOIN must not be tappable while it could only be a no-op")
+
+        // …and the banner's CONNECT goes back to the same one connect
+        // step, not a second parallel one.
+        tapWhenHittable(app.descendants(matching: .any)["CrewBanner.Connect"])
+        assertScreen("Screen.CrewConnectPuck", in: app)
+        dismissCameraPermissionAlertIfPresent(timeout: 2)
+    }
+
+    /// The other half of §6.1's rule — "the step is skipped
+    /// automatically when already connected". Demo mode connects its
+    /// client during `DemoRunner.start()`, so JOIN A CREW here must go
+    /// straight to Join, with no banner and a live JOIN button.
+    func testDemoSmokeSkipsTheConnectStepWhenAPuckIsAlreadyConnected() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-FireflyDemo"]
+        app.launch()
+
+        assertScreen("Screen.CrewWelcome", in: app)
+        tapWhenHittable(app.descendants(matching: .any)["CrewWelcome.Join"])
+        assertScreen("Screen.CrewJoin", in: app)
+        XCTAssertFalse(app.descendants(matching: .any)["Screen.CrewConnectPuck"].exists,
+                       "a connected puck must not be asked to connect again")
+        XCTAssertFalse(app.descendants(matching: .any)["CrewBanner.NeedsRadio"].exists,
+                       "no banner when a puck is connected")
+        dismissCameraPermissionAlertIfPresent()
+    }
+
+    /// Answers the camera-permission alert `Screen.CrewJoin` raises, so
+    /// it does not outlive this test.
+    ///
+    /// Review of PR #319: landing on Join starts `CrewScannerCard`'s
+    /// `AVCaptureSession`, and on a simulator that has never been asked,
+    /// iOS puts up a system-modal camera alert. It belongs to
+    /// **Springboard**, not to this app, so terminating the app at the
+    /// end of a test does not take it away — it stays on screen and
+    /// every tap in the NEXT test lands on it instead. Measured, not
+    /// theorised: on a freshly created `iPhone 17 Pro` this suite failed
+    /// `testDemoSmokeTapsThroughAllScreens` ("Screen.Connect did not
+    /// appear") twice in a row, passed that test when run on its own,
+    /// and passed all three with `simctl privacy … grant camera`
+    /// pre-applied. Before this PR no iOS UI test ever reached a screen
+    /// with a camera on it, which is why it has not bitten before.
+    ///
+    /// Not `addUIInterruptionMonitor`: that fires only while a tap is
+    /// being attempted on the app, and the alert here is raised by a
+    /// screen appearing, then sits through the end of the test with
+    /// nothing else to interrupt.
+    private func dismissCameraPermissionAlertIfPresent(timeout: TimeInterval = 10) {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let alert = springboard.alerts.firstMatch
+        guard alert.waitForExistence(timeout: timeout) else { return }
+        // Either answer clears it — a simulator has no camera to grant
+        // access to — so take whichever this iOS version offers rather
+        // than pinning one button's exact wording.
+        for label in ["Allow", "OK", "Continue", "Don't Allow"] where alert.buttons[label].exists {
+            alert.buttons[label].tap()
+            return
+        }
+        alert.buttons.firstMatch.tap()
+    }
+
     /// Taps one of `FindScreen`'s own segmented-control buttons
     /// (`FindScreen.swift`'s `"Find.Segment.<name>"` identifiers) —
     /// plain buttons, not a native segmented control, so this is a

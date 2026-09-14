@@ -573,6 +573,45 @@ Joined · 3                                     updates live
 6. **Show the code** (the screen above) and start counting joiners
    (§2.3).
 
+**Amendment (2026-09-14) — step 1 is a visible gate, not a silent
+one.** Step 1 above said "the screen shows *Finding your puck…* and runs
+the existing `ConnectViewModel` discovery/connect path headlessly". On a
+first launch there is no remembered radio to connect to headlessly, so
+that spinner was a spinner over nothing. What ships instead:
+
+- **No radio → no attempt.** `CrewController.beginStart` /
+  `beginJoin` refuse up front, before `preparePlan()` is called, and
+  report `ApplyPhase.needsRadio`. The refusal is the only state this app
+  can honestly promise touched the radio not at all.
+- **A persistent banner**, on both Start and Join, whenever no puck is
+  connected — *"Connect your puck to join / Firefly puts the crew on
+  your puck itself, so your puck has to be connected first."* — with a
+  **CONNECT** button that opens §6.1's connect step. Persistent, not a
+  toast and not a post-tap error: the reason has to be on screen
+  *before* the tap.
+- **The primary action is disabled with its reason visible next to it.**
+  A disabled button with no stated reason is the same bug with a greyer
+  button.
+- Coming back from the connect step with a puck connected **resumes the
+  flow with no second tap** — the person already asked for a crew.
+
+**Progress, and what each word actually means.** Start and Join both
+render `CrewController.progressLabel`:
+
+| Phase | Shown | What is actually running |
+|---|---|---|
+| `.checkingPuck` | "Checking your puck…" | `preparePlan()` reading the radio's live channel table |
+| `.writing` | "Writing to your puck…" | `applyChannelSet()` — one indivisible call that writes AND makes the radio read its own values back |
+| `.verifying` | "Checking…" | this app's own check of the returned report against the code it asked for |
+| `.joined` | "Joined" | the crew profile is adopted |
+
+The order differs from a naive "write, then check": the radio's write
+and its read-back are one call in `MeshtasticClientProtocol`, so the app
+cannot narrate the inside of it. It says "Writing to your puck…" for the
+whole radio round trip and "Checking…" for the step it genuinely
+performs itself. A fourth label describing something unobserved would be
+invented progress.
+
 ### 2.2 The confirmation sheet, in plain language
 
 The sheet is the existing `AdminWriteConfirmationSheet`; only the
@@ -736,6 +775,36 @@ it saves this, then reconnect on its own.
 6. On failure, the honest `AdminWriteError` messages already written in
    `ChannelImportViewModel.writeMessage(for:)`, rephrased per §6 (no
    "node").
+
+**Amendment (2026-09-14) — failure states, in full, and the one that
+was missing.** §3.3's radio check (step 1) is the visible gate described
+in the §2.1 amendment above; the same banner and the same disabled-with-
+a-reason rule apply to JOIN. Every path out of an apply now ends
+somewhere a person can read:
+
+| What went wrong | What the screen says | Retry |
+|---|---|---|
+| No puck connected (refused before any attempt) | "Your puck isn't connected yet. Connect it, then try again." + the banner | the banner's CONNECT |
+| Puck disconnected mid-write (`.notConnected`) | "Your puck isn't connected. Connect it, then try again." | CONFIRM / TRY AGAIN |
+| NAK / partial apply (`.partialApplyFailed`) | "Couldn't send `<step>`: `<why>`. Your puck may be only partly set up — reconnect and try again." | CONFIRM / TRY AGAIN |
+| Timeout (`.timeout`) | "Your puck didn't answer in time — it may still be restarting. Try again in a moment." | CONFIRM / TRY AGAIN |
+| Read-back mismatch (`.readBackMismatch`) | "Your puck didn't confirm the change (`<detail>`). Nothing is certain until it does — try again." | CONFIRM / TRY AGAIN |
+| The app's own read-back check fails | "Your puck didn't come back with `FIRE-XXXXXX`. Nothing is certain until it does — try again." | CONFIRM / TRY AGAIN |
+| Region `UNSET` (§1.7) | the existing `RegionGateView` | SAVE AND CARRY ON |
+
+**None of these is ever a Swift enum case.** The shipped bug was exactly
+that: `ChannelImportViewModel.planMessage(for:)` had no `AdminWriteError`
+branch, so a not-connected radio during the PLAN step fell through its
+`String(describing:)` default and the Join screen printed the bare word
+`notConnected` on a `.footnote` alert-coloured line (`Color.ffAlert` —
+styled like a real error, and still saying nothing), under a JOIN
+button that stayed enabled. Pinned by `CrewControllerTests
+.testJoinWithNoRadioNeverShowsARawEnumCase`.
+
+**Leave (§3.4) is gated the same way.** Leaving is a write; refusing it
+without a radio is what stops a "leave" from silently becoming a local
+forget while the puck keeps transmitting precise positions on the crew
+channel — §3.4's own worst possible outcome.
 
 ### 3.4 Rejoin, change crew, leave
 
@@ -1095,6 +1164,60 @@ Navigation → First launch). The condition is unchanged — no known radio
 *or* no crew — but the destination is this screen, not the radio picker.
 "Connect your puck" is the escape hatch to the radio picker for someone
 re-installing.
+
+**Amendment (2026-09-14) — the flow gains a connect step: Welcome →
+Connect your puck → Start / Join.** Owner report, build 328 on the
+iPhone: *"Tried to join but nothing happened, still on the Join a crew
+screen. We also need better handling on that screen for connecting to a
+puck/meshtastic node first or making sure we are connected. Overall
+better onboarding."* Both halves of §2.1 step 1 and §3.3 step 1 assumed
+the radio check could stay invisible ("runs the existing discovery/
+connect path headlessly"); in practice a first launch has no remembered
+radio to connect to headlessly, and the invisible check turned into a
+screen that appeared to do nothing.
+
+- **Screen: `CrewConnectPuckView`**, pushed between Welcome and
+  Start/Join whenever `CrewController.hasConnectedRadio` is `false`, and
+  **skipped entirely when it is `true`** — a person whose puck is
+  already connected never sees it.
+
+```
+Connect your puck
+Turn your puck on and hold it near your phone. Firefly needs it
+connected before you can start or join a crew.
+
+● Not connected                         ← / Connecting to X… / Setting
+                                          up X… / Connected to X
+ Meshtastic_e7d4   e7d4        CONNECT
+[ RESCAN ]
+
+Don't have a puck yet?
+Do this later
+```
+
+- It is **not a second Connect screen**: it drives the same
+  `ConnectViewModel` and the same `RadioListBuilder` rows through the
+  same `PeripheralDiscovering` seam. What differs is what it says (A02
+  §6's vocabulary — no node id, no dBm, no channel card, no NEARBY list)
+  and two behaviours the Connect screen deliberately does not have:
+  1. **It scans on appear.** `ConnectScreen` must not (merely showing a
+     screen is not the moment to make the OS put up its Bluetooth
+     dialog); here the user has just tapped a button that says they want
+     to connect their puck.
+  2. **It auto-connects to the remembered radio once**, with no tap —
+     §2.1 step 1's headless path, kept, for the case where it actually
+     applies.
+- **Bluetooth off / not allowed / unsupported** are three separate,
+  honest sentences (`ConnectViewModel.RadioTrouble.plainMessage`),
+  classified from a typed `BluetoothUnavailable` error. Before this they
+  all reached the screen as `String(describing:)` output — literally the
+  word `notConnected` for "Bluetooth is off".
+- **"Do this later" is never removed and never disabled**, and it
+  advances to Start/Join rather than dead-ending: the destination's own
+  banner (§2/§3 amendment below) then explains in place.
+- **"Don't have a puck yet?"** opens a short plain-language explainer.
+  It does not sell anything; it says what a puck is and what the app can
+  and cannot do without one.
 
 ### 6.2 Permission strings (`Info.plist`)
 
