@@ -82,7 +82,7 @@ way on the bench.
   (https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/CoreBluetoothBackgroundProcessingForIOSApps/PerformingTasksWhileYourAppIsInTheBackground.html)
 - `NSBluetoothAlwaysUsageDescription` is required. **[Apple]**
   (https://developer.apple.com/documentation/bundleresources/information-property-list/nsbluetoothalwaysusagedescription)
-  Firefly has it (`Info.plist:35`).
+  Firefly has it (`Info.plist:39`).
 - App Review hooks this on guideline 2.5.4 — "Multitasking apps may only
   use background services for their intended purposes". **[Apple]**
   (https://developer.apple.com/app-store/review/guidelines/)
@@ -406,15 +406,21 @@ thing about the current background design and nothing in §3 changes it.
 
 ## 2. Current-state audit
 
-Read against `origin/main` @ `dbbc79b`. Every row names a file:line in
-this repo. "Works" is not a compliment here — it means the code does
+Read against `origin/main` @ `dbbc79b`, re-checked against **`e9d2ad0`**
+(PR #304) before merge. Every line below was re-verified at `e9d2ad0`;
+#304 did not touch `FireflyMesh` or any of `AppGraph`,
+`AppGraph+M2Protocol`, `SettingsStore`, `NotificationSending` or
+`FireflyApp`, so the BLE and notification rows are unmoved. Three
+citations outside those files drifted and are updated in place
+(`Info.plist:35`→`:39`, `:56`→`:60`, `SettingsScreen.swift:253`→`:265`).
+Every row names a file:line in this repo. "Works" is not a compliment here — it means the code does
 what it claims; several rows that work are still wrong for three days.
 
 ### 2.1 What is genuinely there
 
 | Claim | Where | Verdict |
 |---|---|---|
-| `bluetooth-central` background mode declared | `app/Firefly/Resources/Info.plist:56` | **Correct.** `location` is there too, for A01's GPS uplink. |
+| `bluetooth-central` background mode declared | `app/Firefly/Resources/Info.plist:60` | **Correct.** `location` is there too, for A01's GPS uplink. |
 | A **fixed** restore identifier is set | `BLETransport.swift:831` — `com.jakeholland.Firefly.ble-central`, iOS only, `#else [:]` on macOS | **Correct**, and fixed rather than generated, which is the part that matters. |
 | `willRestoreState` is implemented and branches on the restored peripheral's own state | `BLEDelegateBridge.swift:89` → `BLETransport.swift:1207` | **Correct shape.** `.connected` → rediscover services; `.connecting` → record as pending; else → `issueConnect`. |
 | Reconnect-on-loss re-arms a *pending* connect, not a poll | `BLETransport.swift:995` | **Correct**, and this is the right primitive (§1). |
@@ -545,6 +551,12 @@ what it claims; several rows that work are still wrong for three days.
     (`com.apple.developer.usernotifications.time-sensitive`) is also
     absent: the iOS target signs with `Firefly.entitlements`
     (`app/project.yml:138`), which contains only macOS App Sandbox keys.
+    As of PR #304 there are **two** entitlements files — Debug signs
+    with `Firefly.Debug.entitlements` instead (`app/project.yml:154`,
+    the sandbox turned off so `FireflyHardwareTests`' runner can
+    connect). S2 must add the time-sensitive key to **both**, or a
+    local Debug device build silently loses the level that a TestFlight
+    build has, and §6's P9 measures the wrong binary.
 
 13. **No thread identifier, no category, no actions, no `userInfo`.**
     `NotificationSending.swift:89` builds title + body + default sound
@@ -784,7 +796,7 @@ default that makes the product not work, and "the user can turn it on"
 is not a defence when the user is Bailey, at night, in a field. The
 toggle stays — someone who wants the radio off when the app is closed
 can still have that — and the Settings subtitle
-(`SettingsScreen.swift:253`) keeps saying exactly what each position
+(`SettingsScreen.swift:265`) keeps saying exactly what each position
 does.
 
 ### 3.4 Pending connect, plus iOS 17 auto-reconnect
@@ -1029,7 +1041,13 @@ renders `UNKNOWN` rather than a guess if there is none — the same rule
 (`app/Firefly/Sources/Settings/DiagnosticsViewModel.swift:105`) already
 follows. The three age bands above are A02 §6.3's own bands (< 2 min,
 2–10 min, > 10 min) on purpose: one age vocabulary across Crew, Inbox,
-Radar and this row, not two.
+Radar and this row, not two. **Render the age with the shipped helper,
+not a new one**: PR #304 landed `PresenceAge.words(_:)` /
+`PresenceAge.ago(_:)` in `FireflyModel` ("just now", "6 min", "6 min
+ago", "40 min", "1 day", "3 days"), pinned by `PresenceWordsTests`. The
+status line composes those strings rather than formatting its own, so
+there is exactly one place in the app that decides what an age sounds
+like.
 
 ### 3.11 Local notifications
 
@@ -1056,8 +1074,11 @@ refuses.
 `com.apple.developer.usernotifications.time-sensitive` in the iOS
 entitlements and the matching capability on the App ID. The iOS target
 currently signs with `Firefly.entitlements`
-(`app/project.yml:138`), which holds only macOS App Sandbox keys — S2
-adds a real iOS entitlements file. **If the entitlement is not granted,
+(`app/project.yml:138`) for Release and `Firefly.Debug.entitlements`
+(`:154`, added by PR #304) for Debug; both hold only macOS App Sandbox
+keys. S2 adds the iOS key to **both** — a Debug build missing it would
+degrade to `.active` while the TestFlight build did not, which is the
+worst possible way to run P9. **If the entitlement is not granted,
 the level silently degrades to `.active`**, so the app must not claim
 otherwise: Diagnostics shows whether the time-sensitive level is
 actually available.
