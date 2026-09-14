@@ -15,6 +15,21 @@
 //  true, useless for telling a mis-set channel apart from a hidden
 //  crewmate. `refusedTotal` is derived, never stored twice.
 //
+//  WHAT THE REFUSAL COUNTS ACTUALLY COUNT (PR #313 review). They count
+//  admission CHECKS, not radios and not packets. `MeshtasticClient
+//  .handle(meshPacket:)` publishes TWO `nodeUpdates()` elements for a
+//  `NODEINFO_APP` or `POSITION_APP` packet — one from `applyRxMeta` and
+//  one from the payload decode, both carrying the same rx meta — so a
+//  single such packet from a stranger is checked, and refused, twice.
+//  That is by design on the client's side (rx-meta-first, mirroring
+//  `mc_client.c`'s `on_rx_meta` ordering) and it does NOT inflate the
+//  admitted side, where the second element hits `admits(_:)`'s `isCrew`
+//  fast path. Deduplicating exactly would need a packet id on
+//  `MeshRxMeta`, which this type does not get to add. So the number is
+//  reported for what it is — `CrewDiagnosticsViewModel.checksNote` says
+//  so on the screen itself — rather than presented as a count of people
+//  or packets that it is not.
+//
 public struct CrewAdmissionCounters: Sendable, Equatable {
     /// A NEW node was let onto the crew — `CrewMembershipEngine.admit`'s
     /// `.paired` case. Deliberately NOT incremented for a packet from a

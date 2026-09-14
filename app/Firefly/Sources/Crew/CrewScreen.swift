@@ -287,7 +287,7 @@ struct CrewAdvancedScreen: View {
             // where they help; UNKNOWN is never rendered as 0
             // (`CrewDiagnosticsViewModel`'s own header comment).
             if let diagnosticsViewModel {
-                Section("Crew diagnostics") {
+                Section {
                     LabeledContent("Channel", value: diagnosticsViewModel.channelLabel)
                     LabeledContent("Admitted", value: diagnosticsViewModel.admittedLabel)
                     LabeledContent("Refused", value: diagnosticsViewModel.refusedLabel)
@@ -297,6 +297,15 @@ struct CrewAdvancedScreen: View {
                             .foregroundStyle(Color.ffMuted)
                     }
                     LabeledContent("Last admission", value: diagnosticsViewModel.lastAdmissionLabel)
+                } header: {
+                    Text("Crew diagnostics")
+                } footer: {
+                    // PR #313 review — `checksNote`'s own doc comment on
+                    // why the numbers above carry a caveat rather than
+                    // quietly meaning something other than they look.
+                    if let note = diagnosticsViewModel.checksNote {
+                        Text(note).font(.caption).foregroundStyle(Color.ffMuted)
+                    }
                 }
                 .font(.system(.footnote, design: .monospaced))
                 .foregroundStyle(Color.ffMuted)

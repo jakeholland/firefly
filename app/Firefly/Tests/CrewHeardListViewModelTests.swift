@@ -91,16 +91,38 @@ final class CrewHeardListViewModelTests: XCTestCase {
 
     /// Ordering: hidden rows first, then overflow oldest-heard first —
     /// the same order `CrewMembershipEngine.noteUntracked` evicts by.
+    /// PR #313 review, the proxy check (AGENTS.md's standing brief): the
+    /// FIRST version of this test used ids 10/20 whose age order happened
+    /// to match their id order, so it passed against a view model that
+    /// sorted by id and never exercised the property its own name claims.
+    /// The ids here are deliberately in the OPPOSITE order to the ages,
+    /// so only an age sort can pass.
     func testRowOrdering_hiddenFirstThenOverflowOldestFirst() {
         let heard = FakeHeardSource()
         heard.hidden = [50]
         let now = Date(timeIntervalSince1970: 1_780_000_000)
         heard.untracked = [
-            UntrackedCrewMember(nodeID: 20, firstHeard: now, lastHeard: now.addingTimeInterval(-30)),
-            UntrackedCrewMember(nodeID: 10, firstHeard: now, lastHeard: now.addingTimeInterval(-500)),
+            UntrackedCrewMember(nodeID: 10, firstHeard: now, lastHeard: now.addingTimeInterval(-30)),
+            UntrackedCrewMember(nodeID: 20, firstHeard: now, lastHeard: now.addingTimeInterval(-500)),
         ]
         let (vm, _, _) = makeViewModel(heard: heard, now: now)
-        XCTAssertEqual(vm.rows.map(\.id), [50, 10, 20], "hidden first, then overflow sorted by id (10 < 20)")
+        XCTAssertEqual(vm.rows.map(\.id), [50, 20, 10],
+                       "hidden first, then overflow OLDEST-heard first (20 at -500 s before 10 at -30 s) — "
+                       + "the order the engine itself evicts by, so \"who gets bumped next\" reads top to bottom")
+    }
+
+    /// Two ids heard in the same instant still come back in one fixed
+    /// order — a rendered list that reshuffles run to run is the reason
+    /// every sort in this module is total.
+    func testRowOrdering_tiesFallBackToNodeIDSoTheListNeverReshuffles() {
+        let heard = FakeHeardSource()
+        let now = Date(timeIntervalSince1970: 1_780_000_000)
+        heard.untracked = [
+            UntrackedCrewMember(nodeID: 40, firstHeard: now, lastHeard: now),
+            UntrackedCrewMember(nodeID: 30, firstHeard: now, lastHeard: now),
+        ]
+        let (vm, _, _) = makeViewModel(heard: heard, now: now)
+        XCTAssertEqual(vm.rows.map(\.id), [30, 40])
     }
 
     func testUnhide_delegatesToSource() {

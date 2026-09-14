@@ -72,9 +72,20 @@ final class CrewHeardListViewModel {
         // this module picks one (`CrewMembershipEngine.currentMembers`'s
         // own comment): hidden first (nothing about hidden members
         // changes moment to moment), then overflow oldest-heard first —
-        // the one `CrewMembershipEngine.noteUntracked` itself evicts by,
-        // so "who gets bumped next" reads top to bottom.
-        return hiddenRows + overflowRows.sorted { $0.id < $1.id }
+        // the SAME order `CrewMembershipEngine.noteUntracked` evicts by,
+        // so "who gets bumped next" really does read top to bottom.
+        // PR #313 review: this sorted by node id, which is neither that
+        // order nor anything a reader could act on, and the test that
+        // named the property used a fixture where id order and age order
+        // happened to agree. Ties fall back to the node id, so the order
+        // is still total.
+        let ages = Dictionary(heard.untracked.map { ($0.nodeID, $0.lastHeard) },
+                               uniquingKeysWith: { first, _ in first })
+        return hiddenRows + overflowRows.sorted {
+            let (l, r) = (ages[$0.id], ages[$1.id])
+            guard let l, let r else { return $0.id < $1.id }
+            return l == r ? $0.id < $1.id : l < r
+        }
     }
 
     var isEmpty: Bool { rows.isEmpty }

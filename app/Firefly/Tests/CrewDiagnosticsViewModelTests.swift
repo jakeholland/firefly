@@ -80,6 +80,24 @@ final class CrewDiagnosticsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.refusedLabel, "3", "the headline total is the sum of every reason")
     }
 
+    /// PR #313 review: the refusal numbers count admission CHECKS (a
+    /// NodeInfo or Position packet is judged twice — `CrewAdmissionCounters`'s
+    /// own header comment), so the row has to say so rather than let a
+    /// doubled figure read as "radios" or "packets". Absent before there
+    /// is a crew, where every figure is already "—".
+    func testChecksNote_saysWhatTheRefusalNumbersCountAndOnlyOnceACrewExists() {
+        let source = FakeDiagnosticsSource()
+        XCTAssertNil(source.crewChannel)
+        let (vm, _) = makeViewModel(source: source)
+        XCTAssertNil(vm.checksNote, "nothing to caveat before a crew exists")
+
+        source.crewChannel = CrewChannelIdentity(code: "FIRE-4K9M7X", psk: Data(repeating: 7, count: 32))
+        let note = vm.checksNote
+        XCTAssertNotNil(note)
+        XCTAssertTrue(note?.localizedCaseInsensitiveContains("checks") == true,
+                      "the note has to name what is being counted: \(note ?? "nil")")
+    }
+
     func testLastAdmission_honestAgeFromInjectedNow() {
         let source = FakeDiagnosticsSource()
         source.crewChannel = CrewChannelIdentity(code: "FIRE-4K9M7X", psk: Data(repeating: 1, count: 32))

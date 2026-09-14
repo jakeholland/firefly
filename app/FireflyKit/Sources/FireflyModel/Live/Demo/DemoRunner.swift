@@ -257,7 +257,12 @@ public final class DemoRunner {
             return channel
         }()]
         graph.crewMembership.configure(crew: CrewChannelIdentity(code: code.canonical, psk: CrewKey.psk(for: code)))
-        Task { await graph.crewMembership.refreshCrewChannelIndex() }
+        // `resolveCrewChannelIndex()`, not a bare `Task { await
+        // refreshCrewChannelIndex() }`: the former CANCELS the resolve
+        // `AppGraph.init` already kicked off against an empty demo
+        // channel table, so that older read can never land afterwards
+        // and put this row back to "Not resolved yet".
+        graph.crewMembership.resolveCrewChannelIndex()
 
         // A real pair, then a real hide (§4.5) — a dedicated demo id
         // (this file's own header comment on why not Taylor/Dana/Sam).

@@ -67,6 +67,18 @@ final class CrewDiagnosticsViewModel {
         ].filter { $0.1 > 0 }
     }
 
+    /// PR #313 review. The refusal figures above count admission CHECKS,
+    /// and one radio packet can be checked twice (`CrewAdmissionCounters`'s
+    /// own header comment: a NodeInfo or Position packet publishes two
+    /// node-update elements, both judged). Rather than print a number
+    /// that silently means something other than "packets" or "people",
+    /// the row says what it is counting. Only shown once a crew exists —
+    /// there is nothing to caveat before that.
+    var checksNote: String? {
+        guard hasCrew else { return nil }
+        return "Counts admission checks, not radios: one NodeInfo or Position packet is checked twice."
+    }
+
     /// "Never" (not "0 s ago", not "—") before the first admission this
     /// session — the one place this row spells UNKNOWN as a word rather
     /// than a dash, because "last admission: —" reads as a fault while
