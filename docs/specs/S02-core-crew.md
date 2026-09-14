@@ -809,15 +809,19 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
     a valid code from the injected CSPRNG, writes A02 §1.5's channel
     (index 0, PRIMARY, precision 32, name = the code, PSK = the key that
     code derives), and reaches READY only after a read-back whose name
-    AND key match. Settings → CREW offers exactly one of START/LEAVE and
-    neither when the channel table is unresolved; the REQUEST intent
-    opens the confirm face and writes nothing; a second press while a
-    write is in the air is ignored, not queued.
+    AND key AND `position_precision` match (see AC18's precision clause
+    below for exactly what "match" means for that last field). Settings
+    → CREW offers exactly one of START/LEAVE and neither when the
+    channel table is unresolved; the REQUEST intent opens the confirm
+    face and writes nothing; a second press while a write is in the air
+    is ignored, not queued.
   - **S02_AC17 — LEAVE and the snapshot.** The pre-crew channel is
     captured once before the first write, never overwritten by a Firefly
     crew channel, survives a reboot, and is restored byte for byte by
     LEAVE through the same write-and-verify path. With no snapshot,
-    LEAVE fails with `NO_SNAPSHOT` and writes nothing.
+    LEAVE fails with `NO_SNAPSHOT` and writes nothing. LEAVE's own
+    read-back verify never applies the AC18 precision clause below — the
+    restored channel is under no obligation to be precision 32.
   - **S02_AC18 — honest failure.** Each of these is reported as itself,
     with its own test — on the CREW page as well as on the status face,
     since a wearer whose region is UNSET is never offered the button
@@ -829,6 +833,38 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
     a read-back that never arrives; and — the one that matters most —
     **a read-back that arrives and disagrees**, which must be FAILED and
     never READY.
+
+    **Precision is part of "disagrees," not only name and key** (added
+    in review, PR #312; closed in PR #316 once the 2026-09-14 bench
+    round could finally tell the two failure shapes apart). #47's hazard
+    is a radio that ACKs the crew channel write and echoes back the
+    right name and key while silently keeping positions coarse — the
+    puck reaches READY with a real code on the glass while the crew's
+    own positions are km-scale. So a START's read-back verify checks
+    `position_precision` too: a row that STATES a value other than 32 is
+    **always** MISMATCH, unconditionally — not a configurable case, the
+    same as a wrong PSK. A row that states no precision at all is the
+    one case a sim alone cannot settle, because "never echoed" and
+    "echoed and wrong" decode identically: `FF_CREW_PRECISION_STRICT`
+    (Kconfig default `y`; `ff_crewstart_begin_start`'s `precision_strict`
+    parameter, re-stated from Kconfig at boot the same way `auto_crew`
+    is) says whether an absent field fails the START the same way a
+    wrong one does, or is trusted and reported honestly as
+    "unreported" — never a bare 0, which is a real, different, and
+    worse value a radio can genuinely state. The default is `y` on bench
+    evidence, not a guess: a Heltec V3 on Meshtastic 2.7.x, measured
+    2026-09-14, echoes `module_settings.position_precision` back in its
+    channel table after a URL import that set it, so a real radio's
+    silence here is a real signal. This is why PR #312 shipped the
+    name/key check alone rather than guess which way an untested absence
+    should fail. The same live fact — the crew channel's own current
+    `position_precision`, independent of whether any `ff_crewstart` run
+    happened this session — surfaces on the bench console's `crew`
+    status line (`precision=<n|unreported>`) and on the SHOW CODE face
+    (one honest line: "exact positions" iff proven exactly 32, else
+    "positions coarse - start the crew again", folding stated-but-wrong,
+    unreported, and no-crew-channel-at-all into the same "not exact" a
+    wearer acts on the same way regardless of which it is).
 
   Bench requirement: S02_AC16's positive case and S02_AC17's restore
   cannot be believed from the sim alone. The bench console's
