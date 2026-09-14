@@ -149,13 +149,13 @@ struct SettingsScreen: View {
     }
 
     private var nodeIdentitySection: some View {
-        SettingsBlock(title: "NODE NAME") {
+        SettingsBlock(title: "RADIO NAME") {
             // Finding 2 (first real-radio session): the write path has
             // shipped since M3 (PR #274) — the OLD "out of scope until
             // M3" copy was stale the moment that PR landed. Plain words
             // about what actually happens, not a scope note nobody
             // reading Settings cares about.
-            Text("Rename on the node. Applies after confirmation, node restarts.")
+            Text("Rename on the radio. Applies after confirmation, radio restarts.")
                 .font(.caption2)
                 .foregroundStyle(Color.ffMuted)
             LabeledField(label: "Long name") {
@@ -183,7 +183,7 @@ struct SettingsScreen: View {
             // M3 — the write path has landed; "APPLY NAME TO NODE"
             // reaches it behind a confirmation sheet, disabled whenever
             // there is no connected node.
-            Button("APPLY NAME TO NODE") { isShowingNameConfirmation = true }
+            Button("APPLY NAME TO RADIO") { isShowingNameConfirmation = true }
                 .buttonStyle(.borderedProminent)
                 .tint(.ffAmber)
                 .foregroundStyle(Color.ffBackground)
@@ -227,7 +227,7 @@ struct SettingsScreen: View {
     private var connectivitySection: some View {
         SettingsBlock(title: "CONNECTIVITY") {
             ToggleRow(
-                label: "Share phone GPS with node",
+                label: "Share phone GPS with radio",
                 isOn: Binding(get: { model.shareGPSWithNode }, set: { model.setShareGPSWithNode($0) }))
             if model.shareGPSWithNode {
                 LabeledField(label: "Interval (seconds, minimum 5)") {
@@ -563,7 +563,7 @@ private struct CrewMemberRow: View {
                 .onSubmit { onRename(nicknameDraft) }
             Button("REMOVE", action: onRemove)
                 .buttonStyle(.bordered)
-                .tint(.ffMuted)
+                .tint(.ffAlert)
                 .font(.caption)
         }
         .frame(minHeight: 44)

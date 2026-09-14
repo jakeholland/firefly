@@ -211,7 +211,7 @@ final class SettingsViewModel {
     /// block's source honestly rather than implying every row it shows
     /// came from the same place.
     var nodeConfigSourceLabel: String? {
-        nodeConfig != nil ? "from node" : nil
+        nodeConfig != nil ? "from radio" : nil
     }
 
     /// NIT (PR #282 review): the NODE NAME block's own version of
@@ -225,10 +225,10 @@ final class SettingsViewModel {
     /// `applyNodeConfig`/`init` gate the prefill itself on — since a
     /// user may have drafted one field but not the other.
     var nodeLongNameSourceLabel: String? {
-        store.nodeLongNamePreference == nil && nodeConfig?.ownerLongName != nil ? "from node" : nil
+        store.nodeLongNamePreference == nil && nodeConfig?.ownerLongName != nil ? "from radio" : nil
     }
     var nodeShortNameSourceLabel: String? {
-        store.nodeShortNamePreference == nil && nodeConfig?.ownerShortName != nil ? "from node" : nil
+        store.nodeShortNamePreference == nil && nodeConfig?.ownerShortName != nil ? "from radio" : nil
     }
 
     func setNodeLongName(_ value: String) {

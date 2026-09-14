@@ -38,7 +38,7 @@ struct AdminWriteConfirmationSheet: View {
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(Color.ffInk)
                 }
-                Text("The node saves this, then reboots and disconnects. The app reconnects and " +
+                Text("The radio saves this, then reboots and disconnects. The app reconnects and " +
                      "reads everything back on its own — CONFIRM only succeeds once it matches " +
                      "exactly what you sent.")
                     .font(.footnote)

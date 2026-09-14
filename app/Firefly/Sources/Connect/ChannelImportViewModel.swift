@@ -123,7 +123,7 @@ final class ChannelImportViewModel {
             .filter(\.missingExplicitPositionPrecision)
             .map { settings in
                 let name = settings.name.isEmpty ? "(default)" : settings.name
-                return "\(name): this link sets no position-precision limit — a node using this " +
+                return "\(name): this link sets no position-precision limit — a radio using this " +
                        "channel will share its exact coordinates, full precision."
             }
     }
@@ -177,9 +177,9 @@ final class ChannelImportViewModel {
         guard let planError = error as? ChannelWritePlanError else { return String(describing: error) }
         switch planError {
         case .noFreeChannelSlots:
-            return "No free channel slots — remove a secondary channel on the node first."
+            return "No free channel slots — remove a secondary channel on the radio first."
         case .notEnoughFreeChannelSlots(let needed, let available):
-            return "Not enough free channel slots: this link needs \(needed), the node has \(available) free."
+            return "Not enough free channel slots: this link needs \(needed), the radio has \(available) free."
         case .tooManyChannels(let count):
             return "This link has \(count) channels — a Meshtastic radio supports up to 8."
         }
@@ -188,13 +188,13 @@ final class ChannelImportViewModel {
     static func writeMessage(for error: Error) -> String {
         guard let writeError = error as? AdminWriteError else { return String(describing: error) }
         switch writeError {
-        case .notConnected: return "Not connected to a node."
+        case .notConnected: return "Not connected to a radio."
         case .encodingFailed: return "Couldn't prepare that change to send."
-        case .timeout: return "The node did not answer in time — it may still be rebooting."
-        case .readBackMismatch(let detail): return "The node did not confirm the change: \(detail)"
+        case .timeout: return "The radio did not answer in time — it may still be rebooting."
+        case .readBackMismatch(let detail): return "The radio did not confirm the change: \(detail)"
         case .regionUnset: return "Pick a region before applying — UNSET can't be sent."
         case .partialApplyFailed(let step, let underlying):
-            return "Couldn't send \(step): \(underlying). The node may be partially set up — " +
+            return "Couldn't send \(step): \(underlying). The radio may be partially set up — " +
                    "reconnect and check its channels before trying again."
         }
     }

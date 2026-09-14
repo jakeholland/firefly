@@ -888,14 +888,14 @@ public final class RadarViewModel {
             case .lost, .never: return "Waiting for their first GPS fix"
             }
         case .signal:
-            var line = "heard \(Self.agoPhrase(for: snapshot.signalAgeText))"
+            var line = "Heard \(Self.agoPhrase(for: snapshot.signalAgeText))"
             if snapshot.arrowValid {
                 // The ghost sub-case (S29): a real, if very old, fix
                 // exists for this member alongside the live signal
                 // reading — "last known" is a DIFFERENT fact from
                 // "heard", and both are shown.
                 let compass = snapshot.bearingValid ? " \(CompassPoint.name(forBearingDegrees: snapshot.bearingDegrees))" : ""
-                line += "\nLAST KNOWN \(Self.agoPhrase(for: snapshot.ageText)), \(displayDistanceText)\(compass)"
+                line += "\nLast known \(Self.agoPhrase(for: snapshot.ageText)), \(displayDistanceText)\(compass)"
             }
             return line
         default: return nil

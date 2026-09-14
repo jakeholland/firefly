@@ -541,7 +541,7 @@ final class SettingsViewModelTests: XCTestCase {
         let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel(),
                                     client: client)
         XCTAssertEqual(vm.region, "US")
-        XCTAssertEqual(vm.nodeConfigSourceLabel, "from node")
+        XCTAssertEqual(vm.nodeConfigSourceLabel, "from radio")
     }
 
     func testChannelNameIsUnknownUntilSomethingIsImportedOrReportedByTheClient() {
@@ -637,8 +637,8 @@ final class SettingsViewModelTests: XCTestCase {
         client.nodeConfig = NodeConfigSnapshot(ownerLongName: "Firefly One", ownerShortName: "FF1")
         let vm = SettingsViewModel(store: SettingsStore(defaults: defaults), channelImport: ChannelImportViewModel(),
                                     client: client)
-        XCTAssertEqual(vm.nodeLongNameSourceLabel, "from node")
-        XCTAssertEqual(vm.nodeShortNameSourceLabel, "from node")
+        XCTAssertEqual(vm.nodeLongNameSourceLabel, "from radio")
+        XCTAssertEqual(vm.nodeShortNameSourceLabel, "from radio")
     }
 
     /// No source claimed until the client has actually reported an
@@ -663,12 +663,12 @@ final class SettingsViewModelTests: XCTestCase {
         vm.observe()
         client.nodeConfig = NodeConfigSnapshot(ownerLongName: "Node's Name", ownerShortName: "NODE")
         await eventually("vm.nodeConfig to arrive") { vm.nodeConfig != nil }
-        XCTAssertEqual(vm.nodeLongNameSourceLabel, "from node")
-        XCTAssertEqual(vm.nodeShortNameSourceLabel, "from node")
+        XCTAssertEqual(vm.nodeLongNameSourceLabel, "from radio")
+        XCTAssertEqual(vm.nodeShortNameSourceLabel, "from radio")
 
         vm.setNodeLongName("My Own Draft")
         XCTAssertNil(vm.nodeLongNameSourceLabel, "a typed draft must stop claiming the value came from the node")
-        XCTAssertEqual(vm.nodeShortNameSourceLabel, "from node", "the untouched field is still an honest pre-fill")
+        XCTAssertEqual(vm.nodeShortNameSourceLabel, "from radio", "the untouched field is still an honest pre-fill")
         vm.stopObserving()
     }
 
@@ -1437,6 +1437,11 @@ final class RadioListBuilderTests: XCTestCase {
         XCTAssertEqual(rows[0].status, .remembered)
         XCTAssertTrue(rows[0].isRemembered)
         XCTAssertEqual(rows[0].action, .connect)
+        // Owner direction (2026-09-13): never the generic "Remembered
+        // radio" placeholder — a short id actually drawn from this
+        // radio when nothing more specific is known yet.
+        XCTAssertEqual(rows[0].title, "1111", "falls back to the peripheral id's own last 4 characters")
+        XCTAssertEqual(rows[0].shortID, "1111")
     }
 
     func testActiveRowMergesTheScanNameAndRSSIWhenTheRememberedPeripheralIsInRange() {
@@ -1471,6 +1476,7 @@ final class RadioListBuilderTests: XCTestCase {
         XCTAssertEqual(row.action, .disconnect)
         XCTAssertEqual(row.title, "Firefly 2", "the node's own long name leads once want_config has it")
         XCTAssertEqual(row.subtitle, "Meshtastic_e7d4 · !02e5e3d4")
+        XCTAssertEqual(row.shortID, "e3d4", "the node id hex's own last 4 characters, even though a name is already known")
     }
 
     /// The specific regression the owner's UX complaint named: DISCONNECT
@@ -1536,6 +1542,42 @@ final class RadioListBuilderTests: XCTestCase {
         connect.apply(.disconnected)
         let rows = RadioListBuilder.rows(discovered: [], connect: connect)
         XCTAssertTrue(rows.isEmpty)
+    }
+
+    // MARK: - RadioListBuilder.rememberedRadioHint (owner direction
+    // 2026-09-13: name the actual radio, never "a radio remembered for
+    // next launch")
+
+    func testRememberedRadioHintNamesTheRadioByItsKnownName() {
+        let store = InMemorySettingsStore()
+        store.setString("11111111-1111-1111-1111-111111111111", .lastPeripheralID)
+        let connect = ConnectViewModel(client: StubMeshtasticClient(), store: store)
+        let discovered = [peripheral("11111111-1111-1111-1111-111111111111", name: "Meshtastic_e7d4", rssi: -52)]
+        let rows = RadioListBuilder.rows(discovered: discovered, connect: connect)
+
+        let hint = RadioListBuilder.rememberedRadioHint(rows: rows)
+
+        XCTAssertEqual(hint, "DISCONNECT keeps Meshtastic_e7d4 · e7d4 — it will reconnect next launch. FORGET clears it.")
+    }
+
+    func testRememberedRadioHintFallsBackToShortIDAloneWhenNoNameIsKnownYet() {
+        let store = InMemorySettingsStore()
+        store.setString("11111111-1111-1111-1111-111111111111", .lastPeripheralID)
+        let connect = ConnectViewModel(client: StubMeshtasticClient(), store: store)
+        let rows = RadioListBuilder.rows(discovered: [], connect: connect)
+
+        let hint = RadioListBuilder.rememberedRadioHint(rows: rows)
+
+        XCTAssertEqual(hint, "DISCONNECT keeps 1111 — it will reconnect next launch. FORGET clears it.",
+                       "never doubled as '1111 · 1111' when the short id is all that's known")
+    }
+
+    func testRememberedRadioHintIsNilWhenNothingIsRemembered() {
+        let connect = ConnectViewModel(client: StubMeshtasticClient())
+        let rows = RadioListBuilder.rows(discovered: [], connect: connect)
+
+        XCTAssertNil(RadioListBuilder.rememberedRadioHint(rows: rows),
+                     "nothing to say about FORGET when nothing was ever persisted")
     }
 }
 

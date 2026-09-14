@@ -242,7 +242,7 @@ struct LineupScreen: View {
                     .font(.system(.footnote, design: .rounded).weight(.semibold))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(Color.ffMuted)
+            .foregroundStyle(Color.ffAmber)
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
@@ -260,7 +260,7 @@ private struct NowNextStrip: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("NOW").font(.system(.caption2, design: .monospaced).weight(.bold))
                     Text(now.artist.uppercased()).font(.system(.subheadline, design: .rounded).weight(.bold))
-                    Text(nowNext.nowStage?.name ?? "Unknown stage").font(.caption)
+                    Text((nowNext.nowStage?.name ?? "Unknown stage").uppercased()).font(.caption)
                 }
             }
             Spacer()

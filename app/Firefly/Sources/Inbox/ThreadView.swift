@@ -101,7 +101,7 @@ private struct LinkDownBanner: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "antenna.radiowaves.left.and.right.slash")
-            Text(queuedCount > 0 ? "NODE NOT CONNECTED · \(queuedCount) QUEUED" : "NODE NOT CONNECTED")
+            Text(queuedCount > 0 ? "RADIO NOT CONNECTED · \(queuedCount) QUEUED" : "RADIO NOT CONNECTED")
         }
         .font(.system(.caption, design: .monospaced).weight(.semibold))
         .foregroundStyle(Color(fireflyHex: FireflyTheme.staleAmber))
@@ -119,7 +119,7 @@ private struct ImmediateSendFailureBanner: View {
 
     private var label: String {
         switch failure {
-        case .linkDown: return "NOT SENT · NODE NOT CONNECTED"
+        case .linkDown: return "NOT SENT · RADIO NOT CONNECTED"
         case .transportError: return "NOT SENT · TRY AGAIN"
         case .flareUnavailable: return ThreadViewModel.flareUnavailableLabel.uppercased()
         case .rallyNoFix: return "NOT SENT · NO GPS FIX OF YOUR OWN"
