@@ -259,9 +259,11 @@ struct ConnectScreen: View {
                 .tint(.ffAmber)
                 .frame(minHeight: 44)
 
-            Text("DISCONNECT keeps a radio remembered for next launch. FORGET clears it.")
-                .font(.caption2)
-                .foregroundStyle(Color.ffMuted)
+            if let hint = RadioListBuilder.rememberedRadioHint(rows: rows) {
+                Text(hint)
+                    .font(.caption2)
+                    .foregroundStyle(Color.ffMuted)
+            }
         }
     }
 
