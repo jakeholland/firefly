@@ -666,6 +666,10 @@ they are properties of the wire, not of C:
 
 ### Routing ACK → delivery state
 
+*(This section names the six `ff_feed_send_status_t` states; for the
+actual on-screen words for each — puck and app side by side — see
+`docs/specs/S24-signals-inbox.md`'s Amendments, 2026-09-14.)*
+
 Outbound text goes out on `PortNum.TEXT_MESSAGE_APP` with a random
 `packet.id`. Direct messages set `want_ack = true`; broadcasts do not,
 because nothing acks a broadcast.

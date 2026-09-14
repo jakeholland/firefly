@@ -463,8 +463,9 @@ void ff_scr_nav_build(ff_app_state_t const *state)
 
     /* PR #20 UX review (finding #4, BLOCKING — "flaring_self reads as an
      * error"): whatever face is showing underneath, its own headline-
-     * shaped content (NOSEL's "NO CREW SELECTED", NOFIX's "NO FIX -
-     * RADIO ONLY", a LIVE/STALE name label, ...) was drawn at full
+     * shaped content (NOSEL's "NO CREW SELECTED", NOFIX's "NO LOCATION -
+     * RADIO ONLY" (wording per A02/PR #303, 2026-09-13 — was "NO FIX -
+     * RADIO ONLY"), a LIVE/STALE name label, ...) was drawn at full
      * opacity and visually outshouted the sender overlay's actual news
      * ("you are flaring"). Fixed STRUCTURALLY, at this container (one
      * place), not per-renderer: dim the WHOLE base face when sending,

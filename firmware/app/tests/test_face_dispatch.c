@@ -189,7 +189,8 @@ static void S_face_dispatch_each_active_face_builds_the_expected_screen(void)
     assert_face_builds_label(FF_APP_FACE_INBOX, "NO CREW LINKED YET", "INBOX");
 
     /* MAP: scr_map.c's map_draw_you — no position fix (zeroed
-     * you_has_pos) always draws the fixed "NO FIX" status chip. */
+     * you_has_pos) always draws the fixed "NO LOCATION" status chip
+     * (wording per A02/PR #303, 2026-09-13 — was "NO FIX"). */
     assert_face_builds_label(FF_APP_FACE_MAP, "NO LOCATION", "MAP");
 
     /* SETTINGS: scr_settings.c's brightness section caption — drawn

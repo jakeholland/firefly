@@ -105,7 +105,9 @@ Built per tick from `ff_feed_t` + `ff_crew_t` (same sources as `ff_sigview`):
 
 ## Honest-data (review-enforced)
 
-Presence text is `SEEN <age>` / `LOST` / `LINKED` from real freshness, in a
+Presence text is `SEEN <age>` / `NO SIGNAL <age>` / `NOT SEEN YET` (puck
+wording per PR #303, 2026-09-13 — see the Amendments section's status-
+vocabulary table; was `SEEN <age>` / `LOST` / `LINKED`) from real freshness, in a
 LEGIBLE tier (stale-amber, never the dimmest gray, never hidden behind heavy
 fade — the UX review's blocker 1). The CREW header shows a roster fact
 (`N CREW`), never a present-tense "N here". Ages are labeled so message-age
@@ -374,9 +376,11 @@ positions/times anywhere (rally rules above).
      my own OUT texts now carries a short plain-text status label
      (`scr_inbox.c`'s `inbox_send_status_text`/`inbox_send_status_color`)
      beside its age, right-aligned as one unit: WAITING / SENT /
-     DELIVERED / NO ACK / DROPPED. DELIVERED renders in the existing
-     "confirmed good" green (`FF_THEME_COLOR_LIVE_GREEN`); NO ACK and
-     DROPPED render in the existing stale-amber warning tint
+     DELIVERED / NOT DELIVERED / NOT SENT (puck wording per PR #303,
+     2026-09-13 — see the Amendments section's status-vocabulary table;
+     was NO ACK / DROPPED). DELIVERED renders in the existing
+     "confirmed good" green (`FF_THEME_COLOR_LIVE_GREEN`); NOT DELIVERED and
+     NOT SENT render in the existing stale-amber warning tint
      (`FF_THEME_COLOR_STALE_AMBER`); WAITING/SENT/NONE render neutral
      dim gray. No checkmark glyph anywhere, DELIVERED included — the
      word is the whole affordance, deliberately plain text so it never
@@ -475,3 +479,45 @@ positions/times anywhere (rally rules above).
   to (`ff_crew_presence`, heard age). See S02's amendment for the full
   rationale, the wiring change (`shell_ev_rx_meta`), and the fixture
   helper rename in `test_inbox.c` (`set_rssi_age` → `set_heard_age`).
+
+- **2026-09-14, owner decision via the orchestrator — one status
+  vocabulary for puck and app.** This doc's "Honest-data" section
+  (`SEEN <age>` / `LOST` / `LINKED`) and the delivery-state UI section
+  above (`WAITING` / `SENT` / `DELIVERED` / `NO ACK` / `DROPPED` as
+  literal on-screen text) predate two PRs that have since shipped and
+  are canonical: puck PR #303 (`dbbc79b`, "puck: plain-language faces")
+  and app PR #304 (`e9d2ad0`, "app: plain-language states and delivery
+  words"). This doc owns the presence/delivery vocabulary spec-wide
+  (`docs/specs/A02-crew-join.md` §6.3 cross-references this table
+  rather than duplicating it). The enum names this doc already
+  specifies (`ff_sigview_presence`'s SEEN/LOST/LINKED,
+  `ff_feed_send_status_t`'s WAITING/SENT/DELIVERED/NO_ACK/DROPPED) are
+  unchanged — only what each state renders as changed:
+
+  | State | Puck word | App word | When |
+  |---|---|---|---|
+  | Heard recently | `SEEN <age>` | "Heard just now" / "`<age>` ago" | < 2 min since any packet heard (`HEARD`) |
+  | Heard, aging | `SEEN <age>` | age only, e.g. "6 min ago" | 2–10 min since any packet heard (`STALE`) |
+  | Long radio silence | `NO SIGNAL <age>` | "No signal · 40 min" | > 10 min since any packet heard (`LOST`) |
+  | Paired, never heard | `NOT SEEN YET` | "Paired · not seen yet" | paired but zero packets ever received (`NEVER`/`LINKED`) |
+  | No GPS fix, never heard | `NO LOCATION YET` | "No location yet" | selection has no position, and is never-heard |
+  | No GPS fix, heard recently | `NEARBY, NO LOCATION` | "Near · no location yet" | selection has no position, but IS heard/stale |
+  | Relayed | `RELAYED` | "via relay `<name>`" — only when true | packet reached this puck/app through another node, not directly |
+  | Sending | `WAITING` (queued) / `SENT` (accepted by the radio) | "Sending…" | outgoing message queued or accepted, not yet resolved |
+  | Delivered | `DELIVERED` | "Delivered" | a routing ack came back OK for a direct send |
+  | Not delivered | `NOT DELIVERED` | "Didn't get through" | routing NAK, or ack timeout, on a direct send (`NO_ACK`) |
+  | Not sent | `NOT SENT` | "Couldn't send" / "Couldn't send · `<reason>`" | evicted from the bounded outbox queue before it could send (`DROPPED`) |
+  | Nameless crew member | *(no puck equivalent)* | "New crew member" | crew member paired with an empty/blank name |
+  | Puck↔radio link *(not presence — a different axis)* | `LINKED` / `NO RADIO` | *(app-only Bluetooth-to-puck concept, no shared word)* | the puck's own connection to its comms-brain radio |
+
+  "LOST" and the bare `LINKED` (as a presence word — the puck↔radio
+  link chip is a separate, unaffected concept, above) are retired from
+  the user-facing vocabulary on both surfaces; the "Honest-data"
+  section's `SEEN <age>` / `LOST` / `LINKED` line should be read as
+  `SEEN <age>` / `NO SIGNAL <age>` / `NOT SEEN YET` per the table.
+  Likewise the delivery-state UI section's `NO ACK` -> `NOT DELIVERED`
+  (puck) / "Didn't get through" (app), and `DROPPED` -> `NOT SENT`
+  (puck) / "Couldn't send" (app). No behavior or wiring changed by
+  this amendment — words only, already shipped; this is a documentation
+  catch-up. See `docs/specs/A02-crew-join.md` §6.3 for the app-side
+  crew-join copy this same table also governs.
