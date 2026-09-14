@@ -560,7 +560,7 @@ struct PlaceholderView: View {
                 .foregroundStyle(Color.ffInk)
             Text(note)
                 .font(.callout)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
             Text("NOT BUILT YET")

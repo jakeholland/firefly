@@ -96,7 +96,7 @@ struct FieldMapView: View {
     private var noMapAvailableText: some View {
         Text("No map for this festival yet")
             .font(.system(.footnote, design: .monospaced))
-            .foregroundStyle(Color.ffMuted)
+            .foregroundStyle(Color.ffCaption)
             .multilineTextAlignment(.center)
             .padding(.horizontal, 24)
             .accessibilityIdentifier("Map.Field.NoMap")
@@ -166,8 +166,8 @@ struct FieldMapView: View {
             case .imprecise:
                 Circle().strokeBorder(color.opacity(0.7), lineWidth: 2).frame(width: 34, height: 34)
             }
-            if let initial = dot.pin.initial, dot.pin.treatment != .imprecise {
-                Text(String(initial)).font(.system(size: 9, weight: .bold))
+            if dot.pin.treatment != .imprecise {
+                Text(String(dot.pin.displayInitial)).font(.system(size: 9, weight: .bold))
                     .foregroundStyle(dot.pin.treatment == .live ? Color.ffBackground : color)
             }
             if selected {

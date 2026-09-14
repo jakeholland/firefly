@@ -177,7 +177,7 @@ final class RadarViewModelTests: XCTestCase {
                           heardPresence: .never)
         let (model, _, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
-        XCTAssertEqual(model.chipText, "NO FIX YET")
+        XCTAssertEqual(model.chipText, "No location yet")
         XCTAssertEqual(model.subheadline, "Waiting for their first GPS fix")
         XCTAssertNil(model.theirPositionLine, "never fixed: nothing honest to claim as a position")
     }
@@ -192,7 +192,7 @@ final class RadarViewModelTests: XCTestCase {
                           heardPresence: .heard)
         let (model, _, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
-        XCTAssertEqual(model.chipText, "NEAR, NO FIX")
+        XCTAssertEqual(model.chipText, "Near \u{00B7} no location yet")
         XCTAssertEqual(model.subheadline, "Heard recently, no GPS fix yet")
     }
 
@@ -200,7 +200,7 @@ final class RadarViewModelTests: XCTestCase {
         let s = snapshot(mode: .lost, name: "JAMIE", ageText: "", heardPresence: .stale)
         let (model, _, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
-        XCTAssertEqual(model.chipText, "NEAR, NO FIX")
+        XCTAssertEqual(model.chipText, "Near \u{00B7} no location yet")
     }
 
     // MARK: - radar_close.json
@@ -321,6 +321,10 @@ final class RadarViewModelTests: XCTestCase {
         XCTAssertEqual(model.chipText, "VIA RELAY")
         XCTAssertEqual(model.subheadline, "Heard 2 MIN ago")
         XCTAssertFalse(model.showsTrendChip, "a trend on top of no direct reading would be a fabricated refinement of nothing")
+        // Owner decision, 2026-09-13: honest about the relay without
+        // fabricating WHICH member relayed it — the core carries no
+        // relay identity (`ff_radar.h`'s `via_relay` bool).
+        XCTAssertEqual(model.theirSignalLine, "Taylor: heard 2 MIN ago, via relay")
     }
 
     // MARK: - radar_signal_lastknown.json (the ghost sub-case)
@@ -340,7 +344,7 @@ final class RadarViewModelTests: XCTestCase {
         // and the radio evidence (current, direct/relay + age).
         XCTAssertEqual(model.theirPositionLine,
                        "DANA's last known position: their puck GPS, 42 MIN ago, SSW")
-        XCTAssertEqual(model.theirSignalLine, "DANA's radio: good signal, direct, heard 3 MIN ago")
+        XCTAssertEqual(model.theirSignalLine, "DANA: good signal \u{00B7} heard 3 MIN ago")
     }
 
     /// The other half of #267's "now ago" bug: `signalAgeText == "now"`
@@ -351,7 +355,7 @@ final class RadarViewModelTests: XCTestCase {
         let (model, _, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
         XCTAssertEqual(model.subheadline, "Heard just now")
-        XCTAssertEqual(model.theirSignalLine, "Taylor's radio: strong signal, direct, heard just now")
+        XCTAssertEqual(model.theirSignalLine, "Taylor: strong signal \u{00B7} heard just now")
     }
 
     /// PR #267 review, NIT item 3: `testLiveWithAFreshAgeReadsJustNowNotNowAgo`
@@ -628,6 +632,88 @@ final class RadarViewModelTests: XCTestCase {
         XCTAssertEqual(find.targetNodeID, 99)
         model.stopObserving() // .onDisappear calls this, which also stops FIND
         XCTAssertFalse(find.isActive)
+    }
+
+    /// Owner decision, 2026-09-13 ("FIND keeps running across Find
+    /// segments"): switching Radar -> Map/Field (`FindLifecycle.apply`,
+    /// `app/Firefly/Sources/Find/FindSegment.swift`) calls THIS method,
+    /// never `stopObserving()` — an active FIND session must survive
+    /// it. `pauseObserving()` still stops the ordinary pump, same as
+    /// `stopObserving()` does, just without `stopFind()`.
+    func testPauseObservingStopsThePumpButLeavesAnActiveFindSessionRunning() {
+        let s = snapshot(mode: .signal, signalTier: .good, signalHeard: true)
+        let (model, _, find) = makeModel(snapshot: s, selectedNodeID: 99)
+        model.observe()
+        model.startFindOnSelection()
+        XCTAssertTrue(find.isActive)
+
+        model.pauseObserving()
+
+        XCTAssertTrue(find.isActive, "a segment switch must never cancel an active FIND session")
+        XCTAssertTrue(model.isFindActive)
+        XCTAssertFalse(model.isObserving, "the pump itself must still stop on pause, same as stopObserving()")
+    }
+
+    /// PR #304 review: a selection with no name yet is reachable
+    /// (paired, no NodeInfo — the same state the Inbox/Crew rows now
+    /// call "New crew member"), and this line used to render it as
+    /// "they's position".
+    func testANamelessSelectionsPositionLineIsStillEnglish() {
+        let s = snapshot(mode: .live, name: "", ageText: "4 MIN")
+        let (model, _, _) = makeModel(snapshot: s)
+        model.observe(); defer { model.stopObserving() }
+        XCTAssertEqual(model.theirPositionLine, "Their position: their puck GPS, 4 MIN ago")
+    }
+
+    /// PR #304 review, mutation check: the test above asserts
+    /// `isObserving == false`, and `isObserving` is `headingObservation
+    /// != nil` — a PROXY for "the pump stopped". Deleting
+    /// `recomputeLoop?.cancel()` from `pauseObserving()` satisfies that
+    /// proxy and violates the property: Radar's 1 Hz `ff_radar_compute`
+    /// pump would keep running after every segment switch, forever —
+    /// the exact leak `AppGraph.stop()`'s own comment says it was added
+    /// to close. Measured, not reasoned about: with the cancel removed
+    /// this test fails and no other does.
+    ///
+    /// The first sleep is not padding. `observe()`'s heading/location
+    /// subscriptions each deliver one buffered value and finish, and
+    /// those two deliveries land asynchronously AFTER a synchronous
+    /// pause returns — counting from before them would measure them
+    /// rather than the pump (measured while writing this test: an
+    /// assertion taken immediately after `pauseObserving()` sees +2 on
+    /// unmutated code, and would have "passed" the mutation for the
+    /// wrong reason in reverse). So: let observe() settle, THEN pause,
+    /// THEN watch two ticks' worth of wall clock go by.
+    func testPauseObservingActuallyStopsTheOneHertzPumpNotJustItsSubscriptions() async {
+        let s = snapshot(mode: .live, name: "DANA")
+        let (model, radar, _) = makeModel(snapshot: s)
+        model.observe()
+        try? await Task.sleep(nanoseconds: 1_200_000_000) // one tick, plus both one-shot streams
+        model.pauseObserving()
+        let afterPause = radar.computeCallCount
+
+        try? await Task.sleep(nanoseconds: 2_100_000_000) // two more ticks' worth
+
+        XCTAssertEqual(radar.computeCallCount, afterPause,
+                       "a paused Radar must not still be recomputing geometry once a second")
+    }
+
+    /// The other half of the same contract: `stopObserving()` — what
+    /// `AppGraph.stop()` calls directly on backgrounding, and what an
+    /// explicit STOP tap reaches via `stopFind()` — still ends FIND.
+    /// `pauseObserving()` narrows ONE call site's behavior; it does not
+    /// change what a real teardown does.
+    func testStopObservingStillEndsAnActiveFindSessionAfterAPause() {
+        let s = snapshot(mode: .signal, signalTier: .good, signalHeard: true)
+        let (model, _, find) = makeModel(snapshot: s, selectedNodeID: 99)
+        model.observe()
+        model.startFindOnSelection()
+        model.pauseObserving() // e.g. Radar -> Map, FIND still running
+        XCTAssertTrue(find.isActive)
+
+        model.stopObserving() // e.g. backgrounding, or Radar -> Map -> back, then STOP
+
+        XCTAssertFalse(find.isActive, "backgrounding (AppGraph.stop()) must still end FIND")
     }
 
     // PR #283 review, BLOCKING 2: the Map tab's FIND action

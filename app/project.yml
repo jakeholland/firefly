@@ -237,6 +237,16 @@ targets:
       # comment): so `FireflyAppTests` can exercise the rule without
       # `FindScreen.swift`'s SwiftUI/Theme dependency.
       - path: Firefly/Sources/Find/FindSegment.swift
+      # Pre-existing gap (found while verifying this PR): PR #300 added
+      # `FireflyDebugStartDestinationLaunch.swift` and its test
+      # (`FireflyDebugStartDestinationLaunchTests.swift`, pulled in by
+      # the `Firefly/Tests` line below) but never added the production
+      # file here — `xcodebuild test -only-testing:FireflyAppTests`
+      # failed to BUILD (not just fail a test) with "cannot find
+      # 'FireflyDebugStartDestinationLaunch' in scope" before this line
+      # existed. SwiftUI/FireflyModel-free, same as every other file in
+      # this list, so it belongs here on the merits too.
+      - path: Firefly/Sources/FireflyDebugStartDestinationLaunch.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit

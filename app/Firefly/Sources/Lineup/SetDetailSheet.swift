@@ -24,7 +24,7 @@ struct SetDetailSheet: View {
                     model.dismissSetDetail()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(Color.ffMuted)
+                        .foregroundStyle(Color.ffCaption)
                         .font(.title3)
                 }
                 .buttonStyle(.plain)
@@ -42,7 +42,7 @@ struct SetDetailSheet: View {
                     .foregroundStyle(stage.map { Color(fireflyHex: $0.colorRGB) } ?? Color.ffMuted)
                 Text(timeRangeText)
                     .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
                 if let caveat = endCaveatText {
                     Text(caveat)
                         .font(.caption2)
@@ -52,7 +52,7 @@ struct SetDetailSheet: View {
                 if !set.note.isEmpty {
                     Text(set.note)
                         .font(.footnote)
-                        .foregroundStyle(Color.ffMuted)
+                        .foregroundStyle(Color.ffCaption)
                 }
             }
 
@@ -82,11 +82,11 @@ struct SetDetailSheet: View {
             }
             .disabled(true)
             .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.ffDim, lineWidth: 1.5))
-            .foregroundStyle(Color.ffMuted)
+            .foregroundStyle(Color.ffCaption)
             .clipShape(RoundedRectangle(cornerRadius: 14))
             Text("Coming soon")
                 .font(.caption2)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
 
             Spacer()
         }

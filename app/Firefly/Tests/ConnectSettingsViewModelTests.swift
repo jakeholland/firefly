@@ -1609,11 +1609,15 @@ final class CrewSettingsViewModelTests: XCTestCase {
     /// An unnamed node (the mesh has not reported a name yet) falls
     /// back to the same honest `!nodeid` convention Nearby uses — never
     /// a blank row.
-    func testAnUnnamedPairedMemberFallsBackToHexID() {
+    /// Owner decision, 2026-09-13 ("Nameless crew rows... shows 'New
+    /// crew member'... never a blank label") supersedes the raw
+    /// `!nodeid` hex fallback this used to read as — an error code, not
+    /// a person's row.
+    func testAnUnnamedPairedMemberReadsAsNewCrewMember() {
         let pairing = makeController()
         pairing.pair(nodeID: 0xAB)
         let vm = CrewSettingsViewModel(pairing: pairing)
-        XCTAssertEqual(vm.rows[0].displayName, "!000000ab")
+        XCTAssertEqual(vm.rows[0].displayName, "New crew member")
     }
 
     func testRenamePersistsThroughTheControllerAndPrefersTheNickname() {

@@ -105,8 +105,13 @@ struct SettingsScreen: View {
         // vulnerable to as Connect was: it too is one of `RootView`'s own
         // `detail(for:)` destinations).
         .sheet(isPresented: $isShowingNameConfirmation) {
+            // Owner decision, 2026-09-13 ("Settings' name sheet"): the
+            // title names what this actually is to the person reading
+            // it, and the body is the same blink-off sentence every
+            // real radio write shares — no more "node restarts".
             AdminWriteConfirmationSheet(
-                title: "APPLY NAME",
+                title: "Your name \u{00B7} what your crew sees",
+                primaryText: AdminWriteCopy.radioBlinksOff,
                 changes: model.nameApplySummary,
                 isBusy: model.isApplyingName,
                 errorMessage: model.nameApplyError,
@@ -120,6 +125,7 @@ struct SettingsScreen: View {
         .sheet(isPresented: $isShowingRegionConfirmation) {
             AdminWriteConfirmationSheet(
                 title: "APPLY REGION",
+                primaryText: AdminWriteCopy.radioBlinksOff,
                 changes: model.regionApplySummary,
                 isBusy: model.isApplyingRegion,
                 errorMessage: model.regionApplyError,
@@ -133,11 +139,13 @@ struct SettingsScreen: View {
         // M3 — "Clear history": no network round trip
         // (`SettingsViewModel.confirmClearHistory()`'s own doc comment),
         // so CONFIRM closes the sheet immediately rather than awaiting
-        // anything.
+        // anything. Never the radio blink-off sentence here — this
+        // action never touches the puck at all.
         .sheet(isPresented: $isShowingClearHistoryConfirmation) {
             AdminWriteConfirmationSheet(
                 title: "CLEAR HISTORY",
-                changes: model.clearHistorySummary,
+                primaryText: model.clearHistorySummary.first
+                    ?? "Every saved message, in every thread, deleted from this device.",
                 isBusy: false,
                 errorMessage: nil,
                 onConfirm: {
@@ -155,9 +163,13 @@ struct SettingsScreen: View {
             // M3" copy was stale the moment that PR landed. Plain words
             // about what actually happens, not a scope note nobody
             // reading Settings cares about.
-            Text("Rename on the radio. Applies after confirmation, radio restarts.")
+            // PR #304 review: this caption still said "radio restarts"
+            // while the confirmation sheet one tap away now says the
+            // puck blinks off — same event, two vocabularies, on one
+            // screen. A02 §6.4's own wording for this row.
+            Text("This is what your crew sees for you. Applies after confirmation.")
                 .font(.caption2)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
             LabeledField(label: "Long name") {
                 TextField("", text: Binding(get: { model.nodeLongName }, set: { model.setNodeLongName($0) }))
                     .textFieldStyle(.roundedBorder)
@@ -169,7 +181,7 @@ struct SettingsScreen: View {
             if let source = model.nodeLongNameSourceLabel {
                 Text(source)
                     .font(.caption2)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
             }
             LabeledField(label: "Short name") {
                 TextField("", text: Binding(get: { model.nodeShortName }, set: { model.setNodeShortName($0) }))
@@ -178,7 +190,7 @@ struct SettingsScreen: View {
             if let source = model.nodeShortNameSourceLabel {
                 Text(source)
                     .font(.caption2)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
             }
             // M3 — the write path has landed; "APPLY NAME TO NODE"
             // reaches it behind a confirmation sheet, disabled whenever
@@ -203,7 +215,7 @@ struct SettingsScreen: View {
             if let source = model.nodeConfigSourceLabel {
                 Text(source)
                     .font(.caption2)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
             }
             // A region PICKED here is only a staged selection
             // (`SettingsViewModel.regionSelection`) until "APPLY REGION"
@@ -274,7 +286,7 @@ struct SettingsScreen: View {
             .frame(minHeight: 44)
             Text(unitsCaption)
                 .font(.caption2)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
         }
     }
 
@@ -318,10 +330,10 @@ struct SettingsScreen: View {
         SettingsBlock(title: "HISTORY") {
             Text("Saved messages live only on this device. Clearing them cannot be undone.")
                 .font(.caption2)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
             Text("If the app's history format changes, old history is cleared automatically.")
                 .font(.caption2)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
             Button("CLEAR HISTORY") { isShowingClearHistoryConfirmation = true }
                 .buttonStyle(.bordered)
                 .tint(.ffAlert)
@@ -342,11 +354,11 @@ struct SettingsScreen: View {
         SettingsBlock(title: "FESTIVAL DATA") {
             Text(festivalDataStatusText)
                 .font(.footnote)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
             festivalPickerList
             Text("Advanced")
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
                 .padding(.top, 4)
             LabeledField(label: "Pack URL (blank = fest-almanac default)") {
                 TextField(AlmanacFestpackProvider.defaultURL.absoluteString, text: $festpackURLDraft)
@@ -425,7 +437,7 @@ struct SettingsScreen: View {
             if model.festivalPicker.isLoading, model.festivalPicker.rows.isEmpty {
                 Text("Loading festivals…")
                     .font(.caption2)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
             }
             if let error = model.festivalPicker.loadError {
                 Text(error)
@@ -443,7 +455,7 @@ struct SettingsScreen: View {
             if crewSettings.rows.isEmpty {
                 Text("Nobody paired yet.")
                     .font(.footnote)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
             } else {
                 ForEach(crewSettings.rows) { row in
                     CrewMemberRow(
@@ -471,7 +483,7 @@ struct SettingsScreen: View {
             .accessibilityIdentifier("Settings.AddCrew")
             Text("Pick a nearby radio on Connect \u{2192} Nearby to add it to your crew.")
                 .font(.caption2)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
         }
     }
 }
@@ -484,7 +496,7 @@ private struct SettingsBlock<Content: View>: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title)
                 .font(.system(.caption, design: .monospaced).weight(.bold))
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
             content
         }
         .padding(16)
@@ -501,7 +513,7 @@ private struct LabeledField<Content: View>: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.caption)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
             content
                 .frame(minHeight: 44)
         }
@@ -515,7 +527,7 @@ private struct LabeledRow: View {
     var body: some View {
         HStack {
             Text(label)
-                .foregroundStyle(Color.ffMuted)
+                .foregroundStyle(Color.ffCaption)
             Spacer()
             Text(value)
                 .font(.system(.body, design: .monospaced))
@@ -555,9 +567,19 @@ private struct CrewMemberRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Circle()
-                .fill(Color(fireflyHex: RadarCrewPalette.hex(index: row.colorIndex, colorblind: colorblind)))
-                .frame(width: 16, height: 16)
+            // Colour + initial, never a bare swatch (owner decision,
+            // 2026-09-13: "Nameless crew rows... a colour and initial
+            // '?'") — "?" is an honest "unknown" glyph, not a
+            // fabricated name, the same fix `InboxAvatar.avatarGlyph`
+            // makes for the Inbox row.
+            ZStack {
+                Circle()
+                    .fill(Color(fireflyHex: RadarCrewPalette.hex(index: row.colorIndex, colorblind: colorblind)))
+                Text(String(row.initial ?? "?"))
+                    .font(.system(.caption2, design: .rounded).weight(.bold))
+                    .foregroundStyle(Color.ffBackground)
+            }
+            .frame(width: 22, height: 22)
             TextField(row.meshName.isEmpty ? row.displayName : row.meshName, text: $nicknameDraft)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { onRename(nicknameDraft) }
@@ -589,7 +611,7 @@ private struct ToggleRow: View {
             if let subtitle {
                 Text(subtitle)
                     .font(.caption2)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
             }
         }
     }

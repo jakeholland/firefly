@@ -202,11 +202,14 @@ public final class CoreRadarComputing: RadarComputing {
                 RadarSnapshotDot(
                     id: index,
                     ringDegrees: Double(dot.ringDeg),
-                    // A dot whose member has no name yet renders a BLANK
-                    // letter, never a '?' — `ff_crew_member_t.initial`'s
-                    // own "'\\0' until known" rule, carried through
-                    // rather than substituted for.
-                    initial: dot.initial ?? " ",
+                    // A dot whose member has no name yet renders "?" —
+                    // owner decision, 2026-09-13 ("Nameless crew rows...
+                    // a colour and initial '?' — never a blank label"),
+                    // superseding the earlier "blank, never '?'" choice:
+                    // a blank glyph read as a broken dot to real
+                    // reviewers, the same fix `InboxAvatar.avatarGlyph`
+                    // makes for the Inbox row right next to it.
+                    initial: dot.initial ?? "?",
                     colorIndex: Int(dot.colorIndex),
                     stale: dot.stale,
                     place: dot.place,
@@ -219,7 +222,7 @@ public final class CoreRadarComputing: RadarComputing {
             signalDots: view.signalDots.enumerated().map { index, dot in
                 RadarSnapshotSignalDot(
                     id: index,
-                    initial: dot.initial ?? " ",
+                    initial: dot.initial ?? "?",
                     colorIndex: Int(dot.colorIndex),
                     tier: dot.tier,
                     viaRelay: dot.viaRelay)
