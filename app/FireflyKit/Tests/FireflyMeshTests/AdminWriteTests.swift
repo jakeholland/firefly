@@ -227,9 +227,13 @@ final class AdminWriteTests: XCTestCase {
         // immediately, same as a real 2.8 live-apply commit that never
         // disconnects.
 
-        // 6. get_channel_request(index: 0)
+        // 6. get_channel_request(index: 0) — sent on the wire as index +
+        // 1, the protocol's own value convention (a real AdminModule
+        // treats a literal 0 as "no request" and never answers; see
+        // MeshtasticClient.requestChannel's doc comment), even though
+        // the channel being read back is index 0.
         try await waitForSentCount(9, on: transport)
-        try assertAdminFrame(transport, at: 8, wantResponse: true) { $0.getChannelRequest = 0 }
+        try assertAdminFrame(transport, at: 8, wantResponse: true) { $0.getChannelRequest = 1 }
         let (channelReqPacket, _) = try decodeAdminSend(transport, at: 8)
         transport.inject(adminResponseFrame(requestID: channelReqPacket.id) { $0.getChannelResponse = channel })
 
@@ -516,7 +520,11 @@ final class AdminWriteTests: XCTestCase {
 
         for index in Int32(0)..<maxChannelSlots {
             try await waitForSentCount(4 + Int(index), on: transport)
-            try assertAdminFrame(transport, at: 3 + Int(index), wantResponse: true) { $0.getChannelRequest = UInt32(index) }
+            // Wire value is index + 1 (the protocol's value convention —
+            // a real AdminModule never answers a literal 0); the
+            // response's own `Channel.index` stays the real, unshifted
+            // 0-based index — asserted below via `table.map(\.index)`.
+            try assertAdminFrame(transport, at: 3 + Int(index), wantResponse: true) { $0.getChannelRequest = UInt32(index) + 1 }
             let (reqPacket, _) = try decodeAdminSend(transport, at: 3 + Int(index))
             let response: Channel
             switch index {
@@ -534,6 +542,98 @@ final class AdminWriteTests: XCTestCase {
         XCTAssertEqual(Set(table.map(\.index)), [0, 2])
         XCTAssertTrue(table.contains(primary))
         XCTAssertTrue(table.contains(secondary))
+    }
+
+    // MARK: - regression: get_channel_request is index + 1, not index
+
+    /// The bug, isolated at the protobuf layer with no client/transport
+    /// involved: `admin.pb.swift`'s own doc comment on
+    /// `getChannelRequest` says the wire value must be "the channel
+    /// index + 1 (to ensure we never try to send 'zero' - which
+    /// protobufs treats as not present)".
+    ///
+    /// This is NOT literally true at the swift-protobuf wire-encoding
+    /// level for this field — `getChannelRequest` is a `oneof` member,
+    /// and swift-protobuf's generated `traverse()` (like nanopb's
+    /// `which_payload_variant` on the firmware side) always serializes
+    /// a selected oneof field regardless of its value, so `.getChannelRequest(0)`
+    /// round-trips to bytes and back to `.getChannelRequest(0)` just
+    /// fine — asserted below as the actual, verified behavior, not
+    /// assumed. The +1 convention is still mandatory: it's the real
+    /// `AdminModule`'s own interpretation of the value (treats a
+    /// literal 0 as "no request" and silently never answers), confirmed
+    /// against real hardware (bench Heltec, firmware 2.7.26; see
+    /// `AdminReadSerialHardwareTests`) — a value-level protocol
+    /// convention, not a wire-presence one. This is exactly the proxy
+    /// the original bug hid behind: `getChannelRequest == index`
+    /// type-checked and "round-trips fine" for index 0 too — only the
+    /// real firmware on the other end tells them apart.
+    func testGetChannelRequestZeroRoundTripsButOnlyIndexPlusOneIsTheValidRequest() throws {
+        var bare = AdminMessage()
+        bare.getChannelRequest = 0 // the pre-fix bug's exact wire value for index 0
+        let bareBytes = try bare.serializedData()
+        XCTAssertFalse(bareBytes.isEmpty, "a selected oneof field serializes even at value 0 — the bug is NOT a dropped byte")
+        let bareDecoded = try AdminMessage(serializedBytes: bareBytes)
+        guard case .getChannelRequest(let bareValue)? = bareDecoded.payloadVariant else {
+            return XCTFail("expected payloadVariant .getChannelRequest after round-tripping get_channel_request = 0")
+        }
+        XCTAssertEqual(bareValue, 0, "confirms 0 is a well-formed, present request on the wire — a real AdminModule still refuses to answer it")
+
+        var correct = AdminMessage()
+        correct.getChannelRequest = 0 + 1 // the fix: index 0 -> wire value 1
+        let correctBytes = try correct.serializedData()
+        XCTAssertFalse(correctBytes.isEmpty)
+        let correctDecoded = try AdminMessage(serializedBytes: correctBytes)
+        guard case .getChannelRequest(let value)? = correctDecoded.payloadVariant else {
+            return XCTFail("expected payloadVariant .getChannelRequest after round-tripping index 0 + 1")
+        }
+        XCTAssertEqual(value, 1, "index 0 must be requested as wire value 1 — the only value a real AdminModule answers for channel 0")
+    }
+
+    /// The same proof against the real client and transport: a live
+    /// `currentChannel(index: 0)` call must put `get_channel_request`
+    /// **1** on the wire, not 0 — a test that would have caught the
+    /// original bug, which sent `UInt32(index)` (0 for index 0) and hung
+    /// until `sendAdminRequest`'s 30s timeout. The 0 was well-formed and
+    /// present on the wire (see the round-trip test above); a real
+    /// `AdminModule` just refuses to answer that value, so nothing ever
+    /// came back.
+    func testCurrentChannelIndexZeroSendsGetChannelRequestOneOnTheWire() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
+        try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
+
+        let readTask = Task { try await client.currentChannel(index: 0) }
+
+        try await waitForSentCount(4, on: transport)
+        let (reqPacket, sentAdmin) = try decodeAdminSend(transport, at: 3)
+
+        // The proxy this bug hid behind: a test that restates the
+        // implementation ("the wire value equals the index it was asked
+        // for") passes for the buggy send and the fixed one alike. The
+        // only thing that separates them is the absolute value the
+        // firmware will answer — 1 for channel 0 — so that is what is
+        // asserted below, not a relationship to `index`.
+        //
+        // `sentAdmin` is already decoded from the bytes the transport
+        // actually sent (`decodeAdminSend`), so the non-empty check
+        // below is only a standing record of the corrected mechanism:
+        // the pre-fix 0 was NOT missing from the frame, it was present
+        // and simply ignored by the firmware.
+        let sentBytes = try sentAdmin.serializedData()
+        XCTAssertFalse(sentBytes.isEmpty, "the sent AdminMessage for currentChannel(index: 0) must not serialize to an empty payload")
+        guard case .getChannelRequest(let wireValue)? = sentAdmin.payloadVariant else {
+            return XCTFail("expected the sent admin frame's payloadVariant to be .getChannelRequest, got \(String(describing: sentAdmin.payloadVariant))")
+        }
+        XCTAssertEqual(wireValue, 1, "get_channel_request on the wire for index 0 must be 1 (index + 1), not 0")
+
+        var primary = Channel(); primary.index = 0; primary.role = .primary
+        primary.settings.name = "Firefly"
+        transport.inject(adminResponseFrame(requestID: reqPacket.id) { $0.getChannelResponse = primary })
+
+        let channel = try await readTask.value
+        XCTAssertEqual(channel.index, 0, "the response's own Channel.index must stay the real, unshifted 0-based index")
+        XCTAssertEqual(channel, primary)
     }
 
     // MARK: - M3 (PR #274 review, SHOULD-FIX 5): setRegion(.unset)
