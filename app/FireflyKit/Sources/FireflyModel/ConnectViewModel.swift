@@ -429,6 +429,7 @@ public final class ConnectViewModel {
         let minutes = seconds / 60
         if minutes < 60 { return "\(minutes) min ago" }
         let hours = minutes / 60
-        return "\(hours) h ago"
+        if hours < 48 { return "\(hours) h ago" }
+        return "\(hours / 24) d ago"
     }
 }

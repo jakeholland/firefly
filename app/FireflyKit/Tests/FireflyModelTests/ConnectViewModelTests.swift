@@ -104,6 +104,17 @@ final class ConnectViewModelTests: XCTestCase {
         XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(3 * 3600 + 60)), "3 h ago")
     }
 
+    /// Same ladder `FestpackSourceState.ageDescription` uses beyond the
+    /// "N h ago" window: past 48 hours this must read in days, exactly
+    /// like Festpack's own status text, never an ever-growing hour
+    /// count ("96 h ago") that no other screen in the app would show.
+    func testRelativeAgoSwitchesToDaysPastFortyEightHours() {
+        let base = Date(timeIntervalSince1970: 10_000)
+        XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(47 * 3600)), "47 h ago")
+        XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(48 * 3600)), "2 d ago")
+        XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(4 * 24 * 3600)), "4 d ago")
+    }
+
     // MARK: - BLOCKING 2 (PR #272 review): the alreadyConnecting race
 
     /// `AppGraph`'s launch auto-connect racing a user's own CONNECT tap
