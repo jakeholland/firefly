@@ -20,6 +20,7 @@
 		2CA9CE64FE1C36426E116583 /* CrewOnboardingContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF2B70A0AD5BD84CDC921F8A /* CrewOnboardingContainer.swift */; };
 		2EA722625D8D01FD5039B152 /* MoreScreenNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = E455F1EFCD0EFD761A051AEF /* MoreScreenNavigation.swift */; };
 		2EDFEA952BC97A0A68C06034 /* MapTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F97FA0CFDE77FDFFA48612D /* MapTabView.swift */; };
+		33E79CCF47D6BFCC5B23DF6B /* NotificationTapRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE6C12AD5DA49E6EDD60B3B7 /* NotificationTapRouter.swift */; };
 		34354F6FF40B5D886262C2BE /* CrewDiagnosticsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079915169BD92106A7B73B11 /* CrewDiagnosticsViewModel.swift */; };
 		3B10C3E4C23834FFBD6C3234 /* CrewDiagnosticsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079915169BD92106A7B73B11 /* CrewDiagnosticsViewModel.swift */; };
 		3B69F83116726CF8C396257C /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 9011CC84111BB0A130A3D3C7 /* FireflyModel */; };
@@ -34,6 +35,7 @@
 		5118E1D58EDAC35BA512AC27 /* CrewControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6E0B231DEE30CCC9A730B76 /* CrewControllerTests.swift */; };
 		5291B0D94E1C2D672D5C56D4 /* CrewHeardListViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23E949F68CC599D6A320111 /* CrewHeardListViewModelTests.swift */; };
 		59A003F0821E61E9DE8E99F5 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */; };
+		5B1FDA589EBD527CF8A4440F /* NotificationTapRouterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02E84854CAB87134C455E8F2 /* NotificationTapRouterTests.swift */; };
 		6174B5CF13B05DAAAB1058D0 /* FieldMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1F42EB3578D2B85C360FF91 /* FieldMapView.swift */; };
 		6307FAECAA2C09995B4D63DE /* MapBackgroundLifecycleGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FB3DC0128FD7652E2645386 /* MapBackgroundLifecycleGuardTests.swift */; };
 		63F4CB9CD8015973BF2A6A87 /* NearbyNodesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */; };
@@ -124,6 +126,7 @@
 
 /* Begin PBXFileReference section */
 		01DE6F44AFB83D4A5399385A /* MapColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapColors.swift; sourceTree = "<group>"; };
+		02E84854CAB87134C455E8F2 /* NotificationTapRouterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationTapRouterTests.swift; sourceTree = "<group>"; };
 		05D20D18F962B7E51C03A90B /* FireflyKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FireflyKit; path = FireflyKit; sourceTree = SOURCE_ROOT; };
 		05F189342B5B984F2BBDAB8A /* BLEReconnectHardwareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEReconnectHardwareTests.swift; sourceTree = "<group>"; };
 		062AA56CD484E37A597C4FC9 /* CrewHeardListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewHeardListView.swift; sourceTree = "<group>"; };
@@ -384,6 +387,7 @@
 				6B88FE658484B40308B28D13 /* LineupGridDemoFestpackTests.swift */,
 				5FB3DC0128FD7652E2645386 /* MapBackgroundLifecycleGuardTests.swift */,
 				C195EF4E6C11A4F328A8A7A2 /* MoreScreenNavigationTests.swift */,
+				02E84854CAB87134C455E8F2 /* NotificationTapRouterTests.swift */,
 				7CA0680B16ABBA1A558B1690 /* SettingsFestivalPickerWiringTests.swift */,
 			);
 			path = Tests;
@@ -641,6 +645,8 @@
 				2EA722625D8D01FD5039B152 /* MoreScreenNavigation.swift in Sources */,
 				9097B73639F1D372A217DB5C /* MoreScreenNavigationTests.swift in Sources */,
 				F743AE393385BA397AC457C9 /* NearbyNodesViewModel.swift in Sources */,
+				33E79CCF47D6BFCC5B23DF6B /* NotificationTapRouter.swift in Sources */,
+				5B1FDA589EBD527CF8A4440F /* NotificationTapRouterTests.swift in Sources */,
 				D4509A6BF45005057BE62C69 /* PeripheralDiscovery.swift in Sources */,
 				4CD9FFF6222D2B97DC1B8223 /* SettingsFestivalPickerWiringTests.swift in Sources */,
 				FDA4D7E8A140B83CAEBB792F /* SettingsViewModel.swift in Sources */,

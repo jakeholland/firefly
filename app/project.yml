@@ -268,6 +268,11 @@ targets:
       # is here: `Firefly/Tests` below needs them in scope to build.
       - path: Firefly/Sources/Crew/CrewHeardListViewModel.swift
       - path: Firefly/Sources/Crew/CrewDiagnosticsViewModel.swift
+      # Hotfix (build 328 SIGABRT, `NotificationTapRouterTests`) —
+      # `NotificationTapRouter` is `Foundation`/`FireflyModel` only
+      # (conditionally `UserNotifications`), no SwiftUI/Theme, same
+      # reasoning as every other file in this list.
+      - path: Firefly/Sources/NotificationTapRouter.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit
