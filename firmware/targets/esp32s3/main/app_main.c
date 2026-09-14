@@ -2140,24 +2140,28 @@ void app_main(void)
         return;
     }
 
-#if CONFIG_FF_DEV_TRUST_CHANNEL
-    /* DEV/FIELD STOPGAP (docs/hardware/comms-brain.md): the pairing UI
-     * (S12) is unbuilt, and the crew channel is private (own PSK), so
-     * for the Sep 18-20 field test this mirrors ffsim's
-     * --dev-trust-all NodeInfo-only auto-pair (S16 AC6) on device,
-     * through the exact same field/branch in ff_shell.c — see
-     * ff_shell_dev_trust_all's doc comment (ff_shell.h) for precisely
-     * what this does (auto-pair on NodeInfo) and does NOT do on device
-     * (no self-filter suspension, no host-clock wall observation —
-     * those stay FF_TARGET_SIM-only, needed only by the sim's
-     * single-node dev harness). Called after ff_shell_init so the shell
-     * exists; must run before the first inbound NodeInfo can arrive,
-     * which want_config's replay makes possible the moment mc_connect
-     * completes inside ff_shell_init above — there is no window where a
-     * NodeInfo could beat this call. Off by default
-     * (CONFIG_FF_DEV_TRUST_CHANNEL=n); never meant to ship on. */
-    ff_shell_dev_trust_all(&s_shell, true);
-    ESP_LOGI(TAG, "firefly: DEV_TRUST_CHANNEL on — auto-pairing every heard node");
+    /* A02 slice D (docs/specs/S02-core-crew.md's 2026-09-13 amendment
+     * §A) — auto crew on the crew channel, the SHIPPED behaviour.
+     *
+     * Re-stated from Kconfig rather than left to the shell's own
+     * default, so the built image's behaviour is a property of its
+     * sdkconfig and visible in one place. `CONFIG_FF_CREW_AUTO_ON_CHANNEL`
+     * defaults y; a Kconfig bool set to n is simply undefined, which is
+     * why this is a #if rather than a value passed through.
+     *
+     * Called after ff_shell_init so the shell exists, and before any
+     * inbound packet can arrive — want_config's replay becomes possible
+     * the moment mc_connect completes inside ff_shell_init above, so
+     * there is no window where a packet could beat this call. (The
+     * replay admits nobody in any case; a live packet could.)
+     *
+     * This REPLACES CONFIG_FF_DEV_TRUST_CHANNEL, which is deleted: that
+     * stopgap trusted the LINK, this trusts the crew KEY. */
+#if CONFIG_FF_CREW_AUTO_ON_CHANNEL
+    ff_shell_set_auto_crew(&s_shell, true);
+#else
+    ff_shell_set_auto_crew(&s_shell, false);
+    ESP_LOGW(TAG, "firefly: FF_CREW_AUTO_ON_CHANNEL off — only explicit pairing grows the crew");
 #endif
 
     /* S25 slice c — push one battery reading immediately after init, so

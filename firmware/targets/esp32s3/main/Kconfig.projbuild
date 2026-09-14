@@ -318,33 +318,43 @@ menu "Firefly bring-up (S15 slice b)"
 
     endmenu
 
-    config FF_DEV_TRUST_CHANNEL
-        bool "DEV/FIELD STOPGAP: auto-pair every node heard on the link"
-        default n
+    config FF_CREW_AUTO_ON_CHANNEL
+        bool "Crew = whoever is heard on the crew channel"
+        default y
         help
-            DEV/FIELD STOPGAP: auto-pair every node heard on the link (the
-            Meshtastic channel is private, so membership is the crew). Off =
-            only the explicit pairing UI grows the roster. Never ship on by
-            default.
+            The SHIPPED behaviour (docs/specs/S02-core-crew.md's
+            2026-09-13 amendment, the puck half of
+            docs/specs/A02-crew-join.md): a node becomes crew when this
+            radio delivers a packet it DECRYPTED with the crew channel's
+            key, from an id that is not us and not hidden, not via MQTT,
+            on NodeInfo / Position / Text / Firefly's own portnum 269.
 
-            Mirrors the sim target's `ffsim --dev-trust-all` (S16 AC6) on
-            device, through the exact same field and NodeInfo-only
-            auto-pair branch in ff_shell.c/.h (see ff_shell_dev_trust_all's
-            doc comment) — a bare Position still never pairs. Unlike the
-            sim flag, this does NOT suspend the self filter or latch the
-            wall clock from a host observation: those exist only to work
-            around the sim's single-node dev harness playing every role,
-            which does not apply to a real puck talking to a real,
-            distinct comms-brain node id.
+            This is a policy change, not a convenience: possession of the
+            crew channel's 32-byte key is a strictly stronger claim than
+            "the radio said so", and it is the claim the paired roster is
+            now allowed to grow on. The crew channel's index is looked up
+            in the radio's own channel table by name AND key — never
+            assumed to be 0 — so a radio provisioned by hand cannot end up
+            treating the public channel as the crew.
 
-            Bench/field stopgap for the Sep 18-20 field test while S12 (the
-            real Crew/pairing screen) is built in parallel — see
-            docs/hardware/comms-brain.md. Logs
-            "firefly: DEV_TRUST_CHANNEL on — auto-pairing every heard node"
-            once at boot when enabled. With this OFF (the default), device
-            builds are byte-for-byte equivalent in roster-trust policy to a
-            build that never had this option: the roster only grows via
-            ff_shell_pair, called from a user action.
+            Default y, and deliberately: this REPLACES the old
+            FF_DEV_TRUST_CHANNEL bench/field stopgap, which was gated off
+            because it trusted the LINK rather than the key. Keeping a
+            second, differently-named gate for behaviour that is now the
+            default is exactly the drift that option's own "never ship on
+            by default" help text would otherwise have inherited, so it
+            is deleted rather than deprecated in place.
+
+            Turn it OFF (n) to get the pre-A02 policy back exactly: only
+            an explicit pairing action grows the roster, and nothing the
+            radio says does. Hidden ids stay hidden and already-paired
+            members stay paired either way — switching it does not
+            silently delete anyone's crew.
+
+            The sim's `ffsim --dev-trust-all` is unrelated and unchanged:
+            it is a single-node dev-harness affordance (it also suspends
+            the self filter and latches the wall clock from the host),
+            not a product behaviour.
 
     config FF_AUDIO_SELFTEST
         bool "Play FLARE_SENT once at boot (S27 sounds device bring-up aid)"
@@ -394,7 +404,7 @@ menu "Firefly bring-up (S15 slice b)"
             body is `#if defined(FF_TARGET_SIM) ||
             defined(CONFIG_FF_DEBUG_CONSOLE)` — compiled out entirely,
             not merely disabled at runtime, exactly like
-            CONFIG_FF_DEV_TRUST_CHANNEL/CONFIG_FF_GLASS_RULER above — and
+            CONFIG_FF_GLASS_RULER above — and
             app_main.c's own polling code under this same guard vanishes
             too, so a field build is byte-for-byte the same with or
             without this feature existing in the tree. Enable only for a

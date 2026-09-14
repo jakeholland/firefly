@@ -45,6 +45,8 @@
 #include "ff_find.h"    /* S29 PR2 — ff_find_t, the real `find` field type */
 #include "ff_flare.h"   /* [api] S10 Amendment 2026-09-03 — ff_flare_wire_state_t, the real `flare.wire_state` field type */
 #include "ff_heard.h"   /* S12/S04 — FF_HEARD_MAX, the CREW page's heard-row cap */
+#include "ff_crewcode.h" /* [api] A02 slice D — FF_CREWCODE_LEN / FF_CREWCODE_URL_MAX, the CREW page's code + invite-link fields */
+#include "ff_hidden.h"  /* [api] A02 slice D — FF_HIDDEN_MAX, the CREW page's hidden-row cap */
 #include "ff_inbox.h"   /* S24 — ff_inbox_t, the inbox half of the `signals` field */
 #include "ff_notify.h"  /* S26(d) — ff_notify_kind_t, the real `banner` field's kind vocabulary */
 #include "ff_radar.h"   /* S06 — ff_radar_view_t, the real `radar` field type */
@@ -615,6 +617,13 @@ typedef enum {
      * generic "any non-LIST settings subview returns to LIST" rule)
      * needs no new case. */
     FF_SETTINGS_SUB_DIAGNOSTICS,
+    /* [api] A02 slice D (docs/specs/S02-core-crew.md's 2026-09-13
+     * amendment §D) — the SHOW CODE face: the crew code as big mono
+     * text plus a scannable QR of its `firefly://crew?...` invite link.
+     * Reached from the CREW page's SHOW CODE pill. Same shape as every
+     * sub-view above; BACK's existing generic "any non-LIST settings
+     * subview returns to LIST" rule needs no new case. */
+    FF_SETTINGS_SUB_CREW_CODE,
 } ff_settings_subview_t;
 
 /**
@@ -671,6 +680,25 @@ typedef struct {
 } ff_app_crew_heard_row_t;
 
 /**
+ * [api] A02 slice D — one HIDDEN-list row (docs/specs/S02-core-crew.md's
+ * 2026-09-13 amendment §C).
+ *
+ * A hidden node is deliberately NOT in the roster (hide is unpair +
+ * remember, which is how hiding frees a slot for the ninth person), so
+ * there is no `ff_crew_member_t` to project from and no presence to
+ * report — only who they are, as honestly as we know it. `has_name`
+ * follows the HEARD row's convention exactly: a cached NodeInfo name if
+ * one ever arrived, otherwise the node-id-derived short form, never a
+ * blank row and never a fabricated name.
+ */
+typedef struct {
+    uint32_t node_id;
+    bool     has_name;
+    char     name[FF_APP_NAME_LEN];
+    char     short_id[12];
+} ff_app_crew_hidden_row_t;
+
+/**
  * The whole CREW page — built by the shell only while `subview ==
  * FF_SETTINGS_SUB_CREW` (zeroed otherwise, the `ff_app_rally_t`
  * precedent). `FF_APP_CREW_HEARD_MAX` is a literal #define ALIAS of
@@ -695,6 +723,45 @@ typedef struct {
      * only when the link genuinely isn't up, never as a generic filler. */
     bool roster_full;
     bool link_connected;
+
+    /* ---------------------------------------------------------------
+     * [api] A02 slice D — docs/specs/S02-core-crew.md's 2026-09-13
+     * amendment (§C hide, §D the code, §E overflow).
+     * ------------------------------------------------------------- */
+
+    /* The crew code, DERIVED from the radio's own channel name — there
+     * is no second source of truth and nothing extra persisted (§D).
+     * "" means this puck is not on a crew channel, which the page says
+     * in words rather than rendering a fabricated code. */
+    char crew_code[FF_CREWCODE_LEN + 1u];
+
+    /* The `firefly://crew?v=1&code=...` link the SHOW CODE face encodes
+     * as a QR, built by core's `ff_crewcode_invite_url` against the same
+     * fixture the app uses. "" exactly when `crew_code` is "". Built in
+     * the shell rather than the screen so the screen stays a pure
+     * renderer — and so there is exactly one place the link is
+     * composed. */
+    char invite_url[FF_CREWCODE_URL_MAX];
+
+    /* HIDDEN (§C) — people the wearer took off their radar. Their
+     * messages still arrive and their thread stays reachable; they just
+     * show on no face. `name`/`short_id` follow the same never-blank,
+     * never-fabricated rules as a HEARD row. */
+    uint8_t                 hidden_count;
+    ff_app_crew_hidden_row_t hidden[FF_HIDDEN_MAX];
+
+    /* True when the hide list is at `FF_HIDDEN_MAX` — the page says
+     * "You've hidden as many people as your puck can remember (16).
+     * Unhide someone first." rather than silently dropping the next
+     * hide. */
+    bool hidden_full;
+
+    /* NOT TRACKED (§E) — senders that qualified for the crew but arrived
+     * at a full 8/8 roster. Surfaced honestly, with their real
+     * last-heard age, instead of being dropped silently; hiding someone
+     * frees a slot and the next packet admits them. */
+    uint8_t                   overflow_count;
+    ff_app_crew_heard_row_t   overflow[FF_APP_CREW_HEARD_MAX];
 } ff_app_crew_page_t;
 
 /* -------------------------------------------------------------------
@@ -1623,9 +1690,21 @@ typedef struct {
  * `ff_app_settings_t`) is another such real reason: FF_CREW_MAX (8) paired
  * rows + FF_APP_CREW_HEARD_MAX (16) heard rows pushed the measured size to
  * ~12.4KB, past the old 12KB — bumped to 14KB, again generous headroom over
- * the actual, and still a tripwire rather than a hard limit. */
-_Static_assert(sizeof(ff_app_state_t) <= 14 * 1024,
-               "ff_app_state_t exceeds its 14KB view-state budget (see this assert's comment)");
+ * the actual, and still a tripwire rather than a hard limit.
+ *
+ * A02 slice D (docs/specs/S02-core-crew.md's 2026-09-13 amendment) is the
+ * third such reason, and worth naming precisely so the next person can
+ * judge it rather than re-deriving it: the CREW page gained a HIDDEN
+ * section (FF_HIDDEN_MAX = 16 rows, ~0.9KB), a NOT TRACKED overflow
+ * section (FF_APP_CREW_HEARD_MAX = 16 rows, ~1.0KB) and the crew code +
+ * its invite URL (~0.14KB) — measured 14.8KB, past the old 14KB. Bumped
+ * to 17KB. Every one of those caps is an EXISTING bounded core constant
+ * (ff_hidden.h, ff_heard.h), not a new unbounded array, which is exactly
+ * the distinction this tripwire exists to make: it is meant to catch a
+ * face adding something that can grow without limit, not ordinary
+ * per-slice growth against caps the DRAM budget already governs. */
+_Static_assert(sizeof(ff_app_state_t) <= 17 * 1024,
+               "ff_app_state_t exceeds its 17KB view-state budget (see this assert's comment)");
 
 #ifdef __cplusplus
 }
