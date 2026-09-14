@@ -50,7 +50,7 @@ meshtastic --set serial.enabled true --set serial.mode PROTO \
            --set serial.baud BAUD_115200 --set serial.txd 2 --set serial.rxd 4
 meshtastic --set bluetooth.enabled false        # optional, saves power
 meshtastic --set-owner "Jake"
-meshtastic --ch-set name Firefly --ch-set psk random --ch-index 0   # copy the PSK to every crew node
+meshtastic --ch-set name Firefly --ch-set psk random --ch-index 0   # SUPERSEDED 2026-09-13 - see "Pairing (crew roster)" below
 meshtastic --set position.position_broadcast_secs 120 \
            --set position.position_broadcast_smart_enabled true \
            --set position.broadcast_smart_minimum_interval_secs 30
@@ -107,30 +107,58 @@ re-check this estimate rather than assuming it still holds.
    rising resync counters = wrong baud.
 5. A second node (T1000-E / Heltec) sends a position → Radar within 10 s (S15 AC2).
 
-## Pairing (crew roster) — bench/field stopgap until S12 ships
+## Pairing (crew roster) — superseded 2026-09-13 by auto-crew
 
-A CONNECTED link is not enough on its own: pairing v1 is "channel membership
-+ explicit crew list" (`docs/specs/S04-firefly-protocol.md`), and the shell's
-roster-trust policy (S16) refuses to grow the paired crew list from anything
-the radio says — only an explicit user pairing action does that
-(`ff_shell_pair`). Until the real Crew screen (S12) exists to drive that
-action, a puck that is CONNECTED to its comms brain but has never been
-paired shows "no crew linked" and silently drops every position/text from
-the other node — not a bug, the policy working as specified, just with no UI
-yet to use it.
+**This section described a bench/field stopgap (`CONFIG_FF_DEV_TRUST_CHANNEL`)
+that is now the shipped behaviour under a different name.** See
+`docs/specs/S02-core-crew.md`'s 2026-09-13 amendment and
+`docs/specs/A02-crew-join.md`.
 
-**Bench/field stopgap:** set `CONFIG_FF_DEV_TRUST_CHANNEL=y`
-(`idf.py menuconfig` → Firefly bring-up, or by hand in `sdkconfig`) until
-S12 ships. Every crew channel is already private (its own PSK, set once when
-configuring the XIAO above), so on this bench/field setup channel membership
-already IS the crew — this option auto-pairs any node heard on that channel
-(NodeInfo only, the same S16 AC6 mechanism the sim's `ffsim --dev-trust-all`
-uses in dev). Off by default; it must never ship on by default, and the
-Kconfig help text says so. Watch for
-`firefly: DEV_TRUST_CHANNEL on — auto-pairing every heard node` in the boot
-log to confirm it took. See `firmware/app/include/ff_shell.h`'s
-`ff_shell_dev_trust_all` doc comment for exactly what this does and does not
-change versus the sim flag it mirrors.
+What changed: membership is no longer "channel membership + an explicit
+crew list". **Possession of the crew channel's key is membership** — a
+node the radio decrypted on the crew channel has proved it holds a key
+that only came from someone who had the crew code, and the roster may
+grow on that proof. `CONFIG_FF_DEV_TRUST_CHANNEL` is replaced by
+`CONFIG_FF_CREW_AUTO_ON_CHANNEL`, **default y**, with a per-node hide
+list (`ff_hidden.h`) for stragglers. The old option is deleted rather
+than deprecated; the sim's `ffsim --dev-trust-all` is unaffected and
+keeps its single-node-harness meaning.
+
+What that means for the setup block above: the `--ch-set name` line no
+longer takes a free-text name. The crew channel's name **is** the crew
+code (A02 §1.3 — Meshtastic mixes the channel name into the on-air
+channel hash, so a name mismatch makes two radios with the same key
+invisible to each other), and both the name and the PSK are derived
+from the code:
+
+```
+# Provision a radio by hand onto crew code FIRE-4K9M7X
+# (PSK from docs/specs/fixtures/A02-crew-codes.json — never retyped by hand)
+meshtastic --ch-index 0 \
+           --ch-set name FIRE-4K9M7X \
+           --ch-set psk base64:dDzJg7oyaJL7kbZwC5/z0I1+ACVos/J420MkSiSecdo= \
+           --ch-set module_settings.position_precision 32
+```
+
+The `position_precision` line is not optional and not decoration: A02
+§1.5 requires the crew channel to state 32 explicitly. `--ch-set` edits
+the slot in place, so a radio whose index 0 already carries a precision
+(0, or a km-scale value from a previous import) keeps it unless this
+line overwrites it — the crew would be encrypted, mutually audible, and
+silently sharing positions truncated to a grid. Do not rely on the
+"absent means 32" firmware default; absent is only absent on a *fresh*
+slot.
+
+or, equivalently and preferably, import the crew's Meshtastic link
+(Firefly app → Crew → Advanced → **Copy Meshtastic link**), which
+carries exactly the same channel and no LoRa config — region and modem
+preset on the importing radio are never touched by a crew join (A02
+§1.7).
+
+Region still comes from the flash-time setup above and is never
+auto-set from a phone's locale; a radio with `region UNSET` blocks the
+app's Start/Join flow on a one-step picker rather than being guessed
+at.
 
 ## Field festpack (CONFIG_FF_FIELD_PACK)
 

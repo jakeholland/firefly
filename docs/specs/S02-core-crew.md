@@ -360,3 +360,283 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
     `FF_CREW_MAX`, no duplicate `node_id`s, every currently-paired member
     is never seen to vanish or change identity across the run, no
     out-of-bounds slot index is ever produced.
+
+- **2026-09-13, owner decision — auto-crew on the crew channel (the
+  puck half of `docs/specs/A02-crew-join.md`).** Jake, 2026-09-13:
+  *"anyone who has the crew code IS crew automatically (no manual add),
+  with a per-person hide for stragglers… the puck must behave the same
+  way — today that only exists as the dev-only
+  `CONFIG_FF_DEV_TRUST_CHANNEL`."* A02 owns the app, the crew-code
+  codec and the product reasoning; **this amendment owns the puck**.
+  The codec (`FIRE-` + 6 Crockford-base32 symbols → HKDF-SHA256 →
+  32-byte PSK → a channel named with the code at index 0) is shared
+  byte-for-byte between the two, through one fixture file,
+  `docs/specs/fixtures/A02-crew-codes.json`.
+
+  **Why this is a policy change and not a flag flip.** `ff_shell.h`'s
+  "THE ROSTER TRUST POLICY" block says the paired roster never grows
+  from anything the radio says, with exactly one compiled-out exception
+  (`ff_shell_dev_trust_all`, reachable on device only via
+  `CONFIG_FF_DEV_TRUST_CHANNEL`, "off by default and never meant to
+  ship"). That policy was written when membership had no other
+  definition. A02 gives it one: **possession of the crew channel's key
+  is membership.** A node the radio decrypted on our crew channel has
+  proved it holds a 32-byte key that only came from someone who had the
+  code. That is a stronger claim than the old policy's "the radio said
+  so", and it is the claim the roster may now grow on. The policy
+  sentence is amended, not deleted: *the roster grows from an explicit
+  user action, or from proof of the crew key — and from nothing else.*
+
+  ### A. `FF_CREW_AUTO_ON_CHANNEL` replaces `FF_DEV_TRUST_CHANNEL`
+
+  New Kconfig under Firefly bring-up, **`default y`** — the shipped
+  behaviour, not a stopgap:
+
+  ```
+  config FF_CREW_AUTO_ON_CHANNEL
+      bool "Crew = whoever is heard on the crew channel"
+      default y
+  ```
+
+  `CONFIG_FF_DEV_TRUST_CHANNEL` is **deleted**, not deprecated in
+  place: keeping a second, differently-named gate for behaviour that is
+  now the default is exactly the kind of drift the Kconfig help text
+  problem ("never ship on by default") would otherwise inherit.
+  `docs/hardware/comms-brain.md`'s "Pairing (crew roster) — bench/field
+  stopgap" section is rewritten to match. The sim's
+  `ffsim --dev-trust-all` **stays** and keeps its current meaning — it
+  is a single-node dev harness affordance (it also suspends the self
+  filter and latches the wall clock), not a product behaviour, and
+  conflating the two is what made this confusing in the first place.
+
+  `[api]` — `firmware/app/include/ff_shell.h`:
+  ```c
+  /* was ff_shell_dev_trust_all(ff_shell_t *, bool) */
+  void ff_shell_set_auto_crew(ff_shell_t *sh, bool enabled);
+  bool ff_shell_auto_crew(ff_shell_t const *sh);
+  ```
+  The single audited growth path is unchanged: auto-admission still
+  routes through `shell_pair`, so there remains exactly one place the
+  roster grows.
+
+  ### B. Which packets admit, exactly
+
+  Identical to A02 §4.1, restated in this tree's terms. A packet admits
+  its sender iff **all** of:
+
+  1. it reached the shell decrypted (a packet the radio could not
+     decrypt never reaches `mc_client` at all);
+  2. its channel index is the index the crew channel occupies on this
+     radio — resolved by name-and-PSK match against the radio's channel
+     table, cached per link, re-resolved on reconnect; **never assumed
+     to be 0** (`mesh.proto`: the channel index is "inherently a local
+     concept");
+  3. `from` is neither 0 nor our own node id;
+  4. `from` is not on the hide list (§C);
+  5. `via_mqtt == false`;
+  6. the portnum is `NODEINFO_APP` (4), `POSITION_APP` (3),
+     `TEXT_MESSAGE_APP` (1) or Firefly's own private portnum
+     `FF_PORTNUM` = 269 (`firmware/core/include/ff_proto.h`).
+     **269 is not `PRIVATE_APP`** — in `portnums.proto`
+     `PRIVATE_APP = 256` and `ATAK_FORWARDER = 257`; 269 is simply a
+     value Firefly picked inside the documented private range 256-511
+     and must be matched by raw value (A02 §4.1 clause 6).
+
+  Deliberately **not** admitting: `TELEMETRY_APP` (it refreshes an
+  existing member's presence through the existing unconditional
+  `ff_crew_on_heard` call, but carries neither identity nor intent);
+  any other channel index; anything via MQTT; and — the one that
+  matters most here — the **`want_config` NodeInfo replay**. The replay
+  is a synthesized nodeDB dump, not a live `MeshPacket`, and cannot
+  prove the node was ever heard on our channel. Note *why*, because the
+  obvious reason is wrong: `NodeInfo` does carry a `channel` field
+  (`mesh.proto` field 7), but it is *"only populated if its not the
+  default channel"* — and Firefly's crew channel IS the primary at
+  index 0, so the field is unset for exactly the nodes in question and
+  is indistinguishable from unset-for-a-stranger. It is also a latched
+  summary rather than an observation. This is the same ruling this
+  spec's 2026-09-07 amendment
+  already made for presence ("the boot/reconnect NodeInfo REPLAY path…
+  does not flow through `on_rx_meta`"), applied to admission, and it
+  falls out of routing admission through `shell_ev_rx_meta` rather than
+  `shell_ev_node`. No new guard is needed; a test pins it.
+
+  `[api]` — `firmware/meshclient/include/mc_client.h`, `mc_rx_meta_t`
+  gains the two facts clause 2 and clause 5 need, which it does not
+  carry today:
+  ```c
+  /* The channel index the radio reports for this packet. Presence-
+   * flagged: a DM (`to` == our id) may arrive with no meaningful
+   * channel, and absent must never read as 0. */
+  bool     has_channel_index;
+  uint32_t channel_index;
+  /* MeshPacket.via_mqtt. A crew is people who are here; an MQTT path
+   * can replay. */
+  bool     via_mqtt;
+  ```
+  and a channel-table read, which the client currently drops on the
+  floor during `want_config`:
+  ```c
+  typedef struct {
+      uint8_t  index;
+      char     name[12];   /* Meshtastic's own limit: < 12 bytes */
+      uint8_t  psk[32];
+      uint8_t  psk_len;    /* 0, 1, 16 or 32 */
+      bool     is_primary;
+  } mc_channel_t;
+  /* mc_events_t gains: */
+  void (*on_channel)(void *u, mc_channel_t const *ch);
+  ```
+  Both are additive; every existing callback and caller is unaffected.
+
+  ### C. Hide — `ff_hidden.h`, a new bounded list in core
+
+  Hide is **per node id, local to this puck, never transmitted.**
+  Nobody is told they were hidden: on a mesh where possession of the
+  key is membership there is no "kick", and a UI that implied otherwise
+  would be lying about what the radio is doing.
+
+  **Hide is implemented as unpair + remember**, which is also how the
+  8-slot cap is managed (§E): hiding a member frees a roster slot, and
+  the hide list is what stops clause 4 from re-admitting them on their
+  very next packet.
+
+  New header `firmware/core/include/ff_hidden.h`, deliberately a
+  separate bounded list rather than fields on `ff_crew_t` — the exact
+  precedent `ff_heard.h` set, and for the same reason: `ff_crew_t` is
+  under a DRAM budget (`firmware/tools/check_dram_budget.py`) and
+  should not grow for state that is not per-member.
+
+  ```c
+  #define FF_HIDDEN_MAX 16
+  typedef struct { uint32_t ids[FF_HIDDEN_MAX]; uint8_t count; } ff_hidden_t;
+  void ff_hidden_init(ff_hidden_t *h);
+  bool ff_hidden_add(ff_hidden_t *h, uint32_t node_id);    /* false if full */
+  bool ff_hidden_remove(ff_hidden_t *h, uint32_t node_id);
+  bool ff_hidden_contains(ff_hidden_t const *h, uint32_t node_id);
+  uint8_t ff_hidden_count(ff_hidden_t const *h);
+  ```
+
+  **No LRU here, unlike `ff_heard_t`** — a hide is a user decision, and
+  silently forgetting one would put someone back on the wearer's radar
+  without being asked. A full list fails honestly (`false`) and the
+  CREW page says *"You've hidden as many people as your puck can
+  remember (16). Unhide someone first."*
+
+  Persisted in NVS alongside `paired_ids` (S11/S21 semantics), keyed by
+  crew code so leaving and rejoining a crew restores the hides you had.
+
+  Effect on the puck: a hidden member leaves the radar ring, the map
+  face, FIND targets, the inbox list and the crew count. Their messages
+  still arrive and their thread is still reachable from the CREW page's
+  HIDDEN sub-view — hidden is "off my radar", not "blocked".
+
+  ### D. The puck shows the crew code
+
+  The puck **derives the code from its own channel name** — A02 §1.3
+  makes `ChannelSettings.name` and the canonical code the same 11
+  bytes, so there is no second source of truth and nothing extra to
+  persist. `ff_crewcode.h` (core, slice A) validates the name against
+  the alphabet; a channel name that is not a valid code reads as "no
+  crew code" rather than being rendered as one.
+
+  Settings → CREW gains a **SHOW CODE** full-screen face:
+
+  ```
+        [ QR of firefly://crew?v=1&code=FIRE-4K9M7X ]
+
+                    FIRE-4K9M7X
+
+        Anyone who scans or types this is in your crew.
+                        [ BACK ]
+  ```
+
+  - QR rendering uses LVGL's own `lv_qrcode`. **Verified present** in
+    the pinned LVGL — `src/libs/qrcode/{lv_qrcode.c,qrcodegen.c}` with
+    `lv_qrcode_create`/`set_size`/`set_dark_color`/`update`, in both
+    v9.5.0 pinned by `firmware/CMakeLists.txt` (sim) and the 9.5.0 the
+    ESP-IDF component manager resolves from `^9.2.0`
+    (`targets/esp32s3/dependencies.lock`). No new dependency. But it is
+    **off by default and enabled in two different places**, which is the
+    sdkconfig trap S15 already paid for once:
+
+    | Target | Where | What |
+    |---|---|---|
+    | sim | `firmware/lv_conf.h` | `#define LV_USE_QRCODE 1` |
+    | device | `firmware/targets/esp32s3/sdkconfig.defaults` | `CONFIG_LV_USE_QRCODE=y` **and `CONFIG_LV_USE_CANVAS=y`** |
+
+    The device needs canvas explicitly because `lv_qrcode`'s class
+    derives from `lv_canvas_class`, and `lv_conf_internal.h` defaults
+    `LV_USE_CANVAS` to **1 without Kconfig (the sim) but to 0 with it
+    (ESP-IDF)** — so the sim builds and the device does not link, with
+    nothing in `lv_conf.h` to explain it. `LV_USE_QRCODE` itself
+    defaults to 0 on both. Slice D's first commit is these two config
+    lines plus a build of each target.
+  - The deep-link string is built by the same core function the app
+    uses (`ff_crewcode_invite_url`), against the same fixture.
+  - **There is no remote trigger, and this is deliberate.** A02 §2.4:
+    the phone and the puck are two clients of the *same* comms brain,
+    not mesh peers of each other, so there is no packet the app could
+    address to the puck. The app's "Show on puck" button therefore
+    shows instructions (*"On your puck: SETTINGS → CREW → SHOW CODE"*)
+    and sends nothing. A real trigger needs a new `ff_proto` message and
+    is out of scope.
+
+  ### E. The cap stays 8 on the puck
+
+  `FF_CREW_MAX` is unchanged. The 2026-09-11 unpaired-LRU amendment
+  already guarantees that *pairing a node not currently in the roster
+  always succeeds while `paired_count < FF_CREW_MAX`*, so auto-
+  admission inherits a roster that evicts strangers rather than
+  wedging. At a genuinely full 8/8 paired roster, `shell_pair` returns
+  false and **the 9th joiner must not be dropped silently** — the CREW
+  page shows the honest overflow (*"2 more people are on this crew than
+  your puck can track (8 is the limit). Hide someone to make room."*)
+  and the overflow ids are surfaced from the existing `ff_heard_t`
+  list, which is already bounded, LRU-evicted and sized (16) for
+  exactly this job. Whether 8 is still the right number after the field
+  test is A02 §8's open question, not this amendment's.
+
+  ### F. Honest-data rules unchanged
+
+  Nothing here invents a position, a name, a time or a freshness.
+  Specifically: admission records membership only — it never calls
+  `ff_crew_on_position`, and the existing rule that a position with no
+  usable age is not recorded at all (S16 AC9) is untouched. A member
+  admitted with no NodeInfo yet renders as **"NEW CREW MEMBER"** with
+  its assigned colour and a `NAME?` chip, never a blank row and never a
+  hex id; the name fills in when NodeInfo actually arrives. Presence
+  keeps both axes separate exactly as the 2026-09-07 amendment requires
+  — the SHOW CODE face and the CREW page report "heard" ages, never
+  position ages dressed up as them.
+
+  ### New acceptance criteria
+
+  - **S02_AC11 — admission rule.** A decrypted NodeInfo/Position/Text/
+    `FF_PORTNUM`-269 packet on the crew index from an unknown id admits it
+    (colour assigned, `paired == true`). Each of these admits nobody,
+    as its own test: another channel index; `via_mqtt == true`; a
+    telemetry packet; a `want_config` replay entry; our own id; a
+    hidden id; any packet at all with `FF_CREW_AUTO_ON_CHANNEL=n`.
+  - **S02_AC12 — index resolution.** The crew index is resolved by
+    name-and-PSK match against the channel table, cached per link,
+    re-resolved on reconnect; with no matching channel, nothing is ever
+    admitted and the CREW page reports "not on this crew's channel" —
+    it never falls back to index 0.
+  - **S02_AC13 — hide.** `ff_hidden_*` round-trips through NVS; a
+    hidden id is unpaired, freeing a slot; it is never re-admitted
+    while hidden; unhiding re-admits on the next qualifying packet; a
+    full list fails honestly rather than evicting a user decision.
+  - **S02_AC14 — code face.** A valid channel name renders the code and
+    a scannable QR whose payload matches `ff_crewcode_invite_url`
+    byte-for-byte against `docs/specs/fixtures/A02-crew-codes.json`; an
+    invalid or empty channel name renders "no crew code", never a
+    fabricated one. Sim golden: `crew_show_code.json`.
+  - **S02_AC15 — overflow.** With 8/8 paired, a 9th qualifying sender
+    is not admitted, is surfaced from `ff_heard_t` in the CREW page's
+    overflow list with its honest last-heard age, and is admitted on
+    its next packet once a member is hidden.
+
+  Bench requirement: S02_AC11's positive case, S02_AC12 and S02_AC14
+  cannot be believed from the sim alone — two radios and a puck, per
+  A02 slice D.
