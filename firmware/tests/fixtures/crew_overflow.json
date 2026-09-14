@@ -1,0 +1,91 @@
+{
+  "fixture": "crew_overflow",
+  "face": "settings",
+  "ui_settings_scroll_y": 660,
+  "settings": {
+    "my_name": "DANA",
+    "subview": "crew",
+    "crew": {
+      "roster_full": true,
+      "link_connected": true,
+      "crew_code": "FIRE-4K9M7X",
+      "paired": [
+        {
+          "node_id": 1,
+          "name": "Riley",
+          "initial": "R",
+          "color_idx": 0,
+          "presence": "seen",
+          "presence_age_ms": 8000
+        },
+        {
+          "node_id": 2,
+          "name": "KEV",
+          "initial": "K",
+          "color_idx": 1,
+          "presence": "seen",
+          "presence_age_ms": 40000
+        },
+        {
+          "node_id": 3,
+          "name": "Taylor",
+          "initial": "T",
+          "color_idx": 2,
+          "presence": "lost",
+          "presence_age_ms": 900000
+        },
+        {
+          "node_id": 4,
+          "name": "Dana",
+          "initial": "D",
+          "color_idx": 3,
+          "presence": "linked"
+        },
+        {
+          "node_id": 5,
+          "name": "Sam",
+          "initial": "S",
+          "color_idx": 4,
+          "presence": "seen",
+          "presence_age_ms": 6000
+        },
+        {
+          "node_id": 6,
+          "name": "Marcus",
+          "initial": "M",
+          "color_idx": 5,
+          "presence": "lost",
+          "presence_age_ms": 600000
+        },
+        {
+          "node_id": 7,
+          "name": "Jo",
+          "initial": "J",
+          "color_idx": 6,
+          "presence": "seen",
+          "presence_age_ms": 2000
+        },
+        {
+          "node_id": 8,
+          "name": "Ash",
+          "initial": "A",
+          "color_idx": 7,
+          "presence": "linked"
+        }
+      ],
+      "overflow": [
+        {
+          "node_id": 2271512608,
+          "name": "NEV",
+          "age_ms": 95000
+        },
+        {
+          "node_id": 2400446496,
+          "short_id": "8f60",
+          "age_ms": 640000
+        }
+      ],
+      "heard": []
+    }
+  }
+}

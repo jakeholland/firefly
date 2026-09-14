@@ -1,0 +1,31 @@
+{
+  "fixture": "crew_hidden",
+  "face": "settings",
+  "settings": {
+    "my_name": "DANA",
+    "subview": "crew",
+    "crew": {
+      "roster_full": false,
+      "link_connected": true,
+      "crew_code": "FIRE-4K9M7X",
+      "paired": [
+        {
+          "node_id": 1,
+          "name": "Riley",
+          "short_name": "RILEY",
+          "initial": "R",
+          "color_idx": 0,
+          "presence": "seen",
+          "presence_age_ms": 8000
+        }
+      ],
+      "hidden": [
+        { "node_id": 2271512608, "name": "SAM" },
+        { "node_id": 2400446496, "short_id": "8f60" }
+      ],
+      "heard": [
+        { "node_id": 2887057408, "short_id": "ac00", "age_ms": 180000 }
+      ]
+    }
+  }
+}

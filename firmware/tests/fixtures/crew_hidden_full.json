@@ -1,0 +1,92 @@
+{
+  "fixture": "crew_hidden_full",
+  "face": "settings",
+  "ui_settings_scroll_y": 200,
+  "settings": {
+    "my_name": "DANA",
+    "subview": "crew",
+    "crew": {
+      "roster_full": false,
+      "link_connected": true,
+      "crew_code": "FIRE-4K9M7X",
+      "hidden_full": true,
+      "paired": [
+        {
+          "node_id": 1,
+          "name": "Riley",
+          "initial": "R",
+          "color_idx": 0,
+          "presence": "seen",
+          "presence_age_ms": 8000
+        }
+      ],
+      "hidden": [
+        {
+          "node_id": 101,
+          "short_id": "0065"
+        },
+        {
+          "node_id": 102,
+          "short_id": "0066"
+        },
+        {
+          "node_id": 103,
+          "short_id": "0067"
+        },
+        {
+          "node_id": 104,
+          "short_id": "0068"
+        },
+        {
+          "node_id": 105,
+          "short_id": "0069"
+        },
+        {
+          "node_id": 106,
+          "short_id": "006a"
+        },
+        {
+          "node_id": 107,
+          "short_id": "006b"
+        },
+        {
+          "node_id": 108,
+          "short_id": "006c"
+        },
+        {
+          "node_id": 109,
+          "short_id": "006d"
+        },
+        {
+          "node_id": 110,
+          "short_id": "006e"
+        },
+        {
+          "node_id": 111,
+          "short_id": "006f"
+        },
+        {
+          "node_id": 112,
+          "short_id": "0070"
+        },
+        {
+          "node_id": 113,
+          "short_id": "0071"
+        },
+        {
+          "node_id": 114,
+          "short_id": "0072"
+        },
+        {
+          "node_id": 115,
+          "short_id": "0073"
+        },
+        {
+          "node_id": 116,
+          "short_id": "0074"
+        }
+      ],
+      "heard": []
+    }
+  }
+}
