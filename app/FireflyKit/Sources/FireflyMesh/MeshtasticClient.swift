@@ -1008,9 +1008,32 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         return id
     }
 
+    /// `get_channel_request` is the channel index **plus one**, not the
+    /// index itself — `admin.pb.swift`'s own doc comment on
+    /// `getChannelRequest`: "This field is sent with the channel index +
+    /// 1 (to ensure we never try to send 'zero' - which protobufs treats
+    /// as not present)", and the Python CLI agrees (`meshtastic/node.py`
+    /// `_requestChannel`: `p.get_channel_request = channelNum + 1`).
+    ///
+    /// NOTE for anyone re-deriving this from the wire: `getChannelRequest`
+    /// is a `oneof` member, and both swift-protobuf's generated
+    /// `traverse()` (this package's `admin.pb.swift`) and the firmware's
+    /// nanopb `which_payload_variant` tag always serialize a selected
+    /// oneof field regardless of its value — sending the bare index for
+    /// index 0 does NOT literally vanish off the wire the way a plain
+    /// proto3 scalar's default value would. The convention is real
+    /// anyway: `AdminModule` treats `get_channel_request == 0` as "no
+    /// request" and simply never answers, which is exactly what a bench
+    /// repro shows (Heltec, firmware 2.7.26): sending the bare index hung
+    /// `currentChannel(index: 0)`/`currentChannelTable()` until
+    /// `sendAdminRequest`'s 30s timeout, and it returns in well under 2s
+    /// once the request carries index + 1. Indexes >= 1 were also
+    /// silently asking for the wrong slot (index − 1) before this fix.
+    /// The response itself carries the real, unshifted `Channel.index` —
+    /// only the request field needs the +1.
     private func requestChannel(index: Int32, from dest: UInt32) async throws -> Channel {
         var admin = AdminMessage()
-        admin.getChannelRequest = UInt32(index)
+        admin.getChannelRequest = UInt32(index) + 1
         let response = try await sendAdminRequest(admin, to: dest)
         guard case .getChannelResponse(let channel) = response.payloadVariant else {
             throw AdminWriteError.readBackMismatch("no channel response for index \(index)")

@@ -641,6 +641,27 @@ the lesson rather than the bug.
 A 15 s heartbeat with a 5 s response timer runs on **stream transports
 only**; BLE gets its liveness from the link itself.
 
+### Admin reads: `get_channel_request` is index + 1
+
+`AdminMessage.get_channel_request` (used by `currentChannel(index:)` and
+`currentChannelTable()`, both `MeshtasticClient.swift`) is **not** the
+raw channel index — it is the index **plus one**. This is the wire
+protocol's own convention, not a Swift/nanopb encoding accident:
+`admin.pb.swift`'s doc comment on `getChannelRequest` states it
+outright ("This field is sent with the channel index + 1 ... to ensure
+we never try to send 'zero'"), and the Python reference client agrees
+(`meshtastic/node.py`'s `_requestChannel`: `p.get_channel_request =
+channelNum + 1`). A real `AdminModule` treats a request whose value is
+0 as "no request" and never answers it — confirmed against a bench
+Heltec (firmware 2.7.26): sending the bare index hung
+`currentChannel(index: 0)`/`currentChannelTable()` until
+`sendAdminRequest`'s 30s timeout (the "Your puck didn't answer in
+time" failure crew Join/Start and the Connect-screen channel import
+both hit), and it answers in well under a second once the request
+carries index + 1. The **response**'s own `Channel.index` is unaffected
+— it stays the real, 0-based index; only the outgoing request field
+needs the shift.
+
 ### NodeDB
 
 In-memory, rebuilt by each handshake in M1. `num` → `!%08x` for display,
