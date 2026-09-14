@@ -3873,6 +3873,10 @@ static void shell_project_crew_page(shell_t const *sh, uint32_t now_ms, ff_app_s
     cw->can_start = op.can_start;
     cw->can_leave = op.can_leave;
     cw->has_snapshot = op.has_snapshot;
+    /* The one blocked-reason the page says out loud, because it is the
+     * one that never resolves by itself (ff_app_crew_page_t's own field
+     * comment). "Reported, and it is 0" — never "not reported yet". */
+    cw->region_unset = op.region_known && (op.region == 0u);
     cw->op = op.op;
     cw->phase = op.phase;
     cw->fail = op.fail;

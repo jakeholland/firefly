@@ -844,6 +844,22 @@ typedef struct {
      * settings" over a record nobody ever took. */
     bool has_snapshot;
 
+    /* The radio HAS reported its LoRa region and it is UNSET (0).
+     *
+     * A separate fact from `can_start`/`can_leave` being false, because
+     * it is the one reason for that which never resolves on its own and
+     * which the wearer can actually act on. Without it the CREW page's
+     * muted sentence would say "your puck is still reading your radio's
+     * settings" forever at a radio that has finished answering and
+     * cannot legally transmit — which is exactly the confidently-wrong
+     * screen this slice exists to refuse, and it would also bury the
+     * one sentence S02's D2 amendment §A.1 requires be said in these
+     * words ("Set the radio region on the phone first").
+     *
+     * False while the region is merely UNREPORTED: that is an absence,
+     * not a reading, and the two get different sentences. */
+    bool region_unset;
+
     /* What the CONFIRM/STATUS faces are about, and how far along. */
     ff_app_crew_op_t    op;
     ff_app_crew_phase_t phase;

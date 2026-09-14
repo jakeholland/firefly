@@ -1585,6 +1585,10 @@ static void settings_crew_build_heard_empty(lv_obj_t *list, int32_t rel_y, int32
     lv_obj_clear_flag(lbl, LV_OBJ_FLAG_SCROLLABLE);
 }
 
+/* Defined with the STATUS face below, and shared with the CREW page's
+ * blocked-reason caption so the same failure never gets two wordings. */
+static char const *settings_crew_fail_text(ff_app_crew_fail_t f);
+
 static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const *cw)
 {
     lv_obj_t *puck = lv_obj_create(parent);
@@ -1670,6 +1674,14 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
         settings_make_pill(list, "LEAVE CREW", 0, y, row_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
                            FF_THEME_COLOR_STALE_AMBER, 2, settings_crew_leave_req_cb, NULL);
         y += FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP;
+    } else if (cw->region_unset) {
+        /* S02's D2 amendment §A.1 requires this refusal be reported as
+         * ITSELF, in these words. Without this branch the sentence below
+         * would claim the puck is "still reading" a radio that has
+         * finished answering and cannot legally transmit — a sentence
+         * that is false and never resolves, over the one fact the wearer
+         * could act on. */
+        y = settings_crew_caption(list, y, row_w, settings_crew_fail_text(FF_APP_CREW_FAIL_REGION_UNSET));
     } else {
         y = settings_crew_caption(list, y, row_w,
                                    cw->link_connected
@@ -1824,7 +1836,11 @@ static void settings_crew_code_back_cb(lv_event_t *e)
     ff_intent_emit(&in);
 }
 
-static void settings_build_crew_code_page(lv_obj_t *parent, ff_app_crew_page_t const *cw)
+/* The puck disc every full-screen settings sub-face draws onto. One
+ * definition, used by SHOW CODE below and by the two crew-operation
+ * faces after it — the comment used to claim this factoring while the
+ * SHOW CODE face still kept its own verbatim copy. */
+static lv_obj_t *settings_face_disc(lv_obj_t *parent)
 {
     lv_obj_t *puck = lv_obj_create(parent);
     lv_obj_remove_style_all(puck);
@@ -1836,6 +1852,12 @@ static void settings_build_crew_code_page(lv_obj_t *parent, ff_app_crew_page_t c
     lv_obj_set_style_border_width(puck, 0, 0);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE);
+    return puck;
+}
+
+static void settings_build_crew_code_page(lv_obj_t *parent, ff_app_crew_page_t const *cw)
+{
+    lv_obj_t *puck = settings_face_disc(parent);
 
     bool const have_code = (cw->crew_code[0] != '\0') && (cw->invite_url[0] != '\0');
 
@@ -1933,34 +1955,46 @@ static void settings_build_crew_code_page(lv_obj_t *parent, ff_app_crew_page_t c
 #define FF_CREWOP_BTN_GAP   12
 
 _Static_assert(FF_CREWOP_BTN_H >= FF_THEME_MIN_HIT_PX, "crew confirm buttons must clear the 44px hit floor");
-/* Two 132 px pills plus a 12 px gap is 276 px wide, centred. At the
- * buttons' bottom edge (y = 300 + 44 = 344) the inscribed chord is
- * 2*sqrt(206^2 - (344-206)^2) ~= 306 px, so 276 fits with ~15 px each
- * side. Stated as arithmetic rather than eyeballed off a render,
- * matching the SHOW CODE face's own assert: a render can be wrong by
- * exactly the amount nobody notices until the bezel eats it. */
-_Static_assert(2 * FF_CREWOP_BTN_W + FF_CREWOP_BTN_GAP <= 300,
-               "the crew confirm button row must stay inside the round glass");
-_Static_assert(FF_CREWOP_BTN_Y + FF_CREWOP_BTN_H <= 350,
-               "the crew confirm button row must stay inside the round glass");
 
-/* The puck disc every full-screen settings sub-face draws onto. Factored
- * out of settings_build_crew_code_page's own copy rather than written a
- * third time. */
-static lv_obj_t *settings_face_disc(lv_obj_t *parent)
-{
-    lv_obj_t *puck = lv_obj_create(parent);
-    lv_obj_remove_style_all(puck);
-    lv_obj_set_size(puck, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
-    lv_obj_align(puck, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_radius(puck, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(puck, lv_color_hex(FF_THEME_COLOR_BG), 0);
-    lv_obj_set_style_bg_opa(puck, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(puck, 0, 0);
-    lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE);
-    return puck;
-}
+/* Containment, against the GLASS and not against the 412 pixel array.
+ *
+ * The two are not the same circle: the panel sits ~5 px left of the
+ * bezel's optical centre, so FF_THEME_GLASS_CX is 208 against the
+ * array's 206, and FF_THEME_GLASS_R is 200 (203 measured, pulled in 3)
+ * against the array's 206 — see ff_theme.h, and the SHOW CODE face's own
+ * assert above, which was rewritten onto these constants for exactly
+ * this reason. An assert written against 206/206 passes a layout whose
+ * bottom-LEFT corner is already under the bezel lip, because the left
+ * side is the side the offset eats.
+ *
+ * The pill row is `2*W + GAP` wide, centred on the array
+ * (LV_ALIGN_TOP_MID), so its corners are at
+ *   x = (FF_THEME_PUCK_PX -/+ row_w) / 2,  y = BTN_Y + BTN_H
+ * and the bottom-left corner is the worst case. Stated as arithmetic
+ * rather than eyeballed off a render: a golden is a pixel-diff against
+ * itself and would keep a corner over the bezel forever. (The pills are
+ * drawn with FF_SETTINGS_PILL_RADIUS, so the real corner is rounded and
+ * this square-corner test is the conservative one.) */
+#define FF_CREWOP_ROW_W  (2 * FF_CREWOP_BTN_W + FF_CREWOP_BTN_GAP)
+#define FF_CREWOP_DX_L   (FF_THEME_GLASS_CX - (FF_THEME_PUCK_PX - FF_CREWOP_ROW_W) / 2)
+#define FF_CREWOP_DX_R   ((FF_THEME_PUCK_PX + FF_CREWOP_ROW_W) / 2 - FF_THEME_GLASS_CX)
+#define FF_CREWOP_DY_B   (FF_CREWOP_BTN_Y + FF_CREWOP_BTN_H - FF_THEME_GLASS_CY)
+
+_Static_assert(FF_CREWOP_DX_L * FF_CREWOP_DX_L + FF_CREWOP_DY_B * FF_CREWOP_DY_B <=
+                   FF_THEME_GLASS_R * FF_THEME_GLASS_R,
+               "the crew confirm button row's bottom-LEFT corner must stay inside FF_THEME_GLASS_R");
+_Static_assert(FF_CREWOP_DX_R * FF_CREWOP_DX_R + FF_CREWOP_DY_B * FF_CREWOP_DY_B <=
+                   FF_THEME_GLASS_R * FF_THEME_GLASS_R,
+               "the crew confirm button row's bottom-RIGHT corner must stay inside FF_THEME_GLASS_R");
+/* The second row (READY's SHOW CODE) sits a whole row higher, so its
+ * corners are strictly inside the row above's — pinned anyway, because
+ * "strictly inside" stops being true the moment somebody widens it. */
+_Static_assert(((FF_CREWOP_BTN_W + 1) / 2 + (FF_THEME_GLASS_CX - FF_THEME_PUCK_PX / 2)) *
+                       ((FF_CREWOP_BTN_W + 1) / 2 + (FF_THEME_GLASS_CX - FF_THEME_PUCK_PX / 2)) +
+                   (FF_CREWOP_BTN2_Y + FF_CREWOP_BTN_H - FF_THEME_GLASS_CY) *
+                       (FF_CREWOP_BTN2_Y + FF_CREWOP_BTN_H - FF_THEME_GLASS_CY) <=
+                   FF_THEME_GLASS_R * FF_THEME_GLASS_R,
+               "the crew READY face's single pill must stay inside FF_THEME_GLASS_R");
 
 static void settings_crewop_title(lv_obj_t *puck, char const *text, uint32_t color)
 {

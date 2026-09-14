@@ -734,6 +734,18 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
   muted sentence, not a greyed button. A control that cannot do what it
   says is worse than a sentence explaining why.
 
+  **The sentence has to be the right one** (added in review, PR #312).
+  A refusal reported as itself at the confirm face and reported as a
+  generic "still reading your radio's settings" on the page in front of
+  it is still a generic refusal, because the page is the only surface a
+  wearer reaches without pressing a button that is not there. The
+  UNSET-region case in particular never resolves on its own and is the
+  one the wearer can act on, so the CREW page says it in §A.1's own
+  words — *"Set the radio region on the phone first."* — and keeps
+  "still reading" for a region that has genuinely not been REPORTED yet.
+  An absence and a reading get different sentences here for the same
+  reason they get different flags in `ff_shell_crew_op_status_t`.
+
   One consequence, flagged rather than discovered: slice D deliberately
   did NOT clear `crew_code` on a handshake (display-only, no flicker on
   reconnect). D2 adds the other half — a **completed** handshake that
@@ -807,7 +819,10 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
     LEAVE through the same write-and-verify path. With no snapshot,
     LEAVE fails with `NO_SNAPSHOT` and writes nothing.
   - **S02_AC18 — honest failure.** Each of these is reported as itself,
-    with its own test: an UNSET region (before any write); a region not
+    with its own test — on the CREW page as well as on the status face,
+    since a wearer whose region is UNSET is never offered the button
+    that would otherwise be the only way to read the reason: an UNSET
+    region (before any write); a region not
     yet reported (which is NOT the same as UNSET); no entropy source; a
     routing NAK (retried, bounded, then reported as a NAK); no ACK at
     all (retried, bounded, then reported as a timeout); a refused send;

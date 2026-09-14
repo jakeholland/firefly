@@ -206,9 +206,13 @@ typedef struct {
      * crew-start path needs a "mock mc" a unit test can record against,
      * with no live transport or handshake.
      *
-     * Appended at the END, like `send_get_owner_request` before it, so
-     * an existing 5-element positional initializer still compiles with
-     * this field implicitly zero-initialized. May be NULL: the shell
+     * Appended at the END, like `send_get_owner_request` before it. That
+     * keeps every NAMED initializer and every by-value copy of this
+     * struct working untouched; it does NOT spare the tree's handful of
+     * POSITIONAL initializers, because `-Wextra` turns a short one into
+     * `-Wmissing-field-initializers` and this build is `-Werror` — the
+     * two in `targets/sim/tests/` were updated with this slice, and a
+     * future append will have to do the same. May be NULL: the shell
      * checks before calling through it and reports the honest
      * `FF_CREWSTART_FAIL_SEND` rather than pretending a write happened
      * — a target with no radio bound here cannot start a crew, and says

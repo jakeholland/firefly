@@ -12266,6 +12266,100 @@ static void S02_AC17_the_snapshot_is_taken_once_even_if_the_radio_changes(void)
     TEST_ASSERT_EQUAL_UINT8(0x01u, D2S.last.psk[0]);
 }
 
+/* The once-only rule again, on the path where NO crew was ever written.
+ *
+ * Independent review variant (PR #312): the test above reaches its second
+ * capture through a SUCCESSFUL first start, so index 0 is a Firefly crew
+ * for part of the run and the never-snapshot-a-Firefly-crew guard is in
+ * play alongside the once-only one. Here the first start is NAKed — the
+ * radio is never moved onto a crew at all — and index 0 then changes to
+ * a different, still-non-Firefly channel before the second attempt. The
+ * Firefly guard can never fire on this path, so the original snapshot
+ * surviving is the once-only rule and nothing else.
+ *
+ * It also pins the ordering the amendment states in words (§A.2,
+ * "before the first write"): the record has to exist after an attempt
+ * that reached the radio and came back refused. */
+static void S02_AC17_a_failed_start_still_leaves_the_first_snapshot_standing(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+
+    /* Attempt 1: the write goes out and the mesh NAKs it, every time. */
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    TEST_ASSERT_TRUE(D2S.calls > 0);
+    TEST_ASSERT_TRUE(ff_shell_crew_op_status(&H.shell).has_snapshot);
+    for (int i = 0; i < 6; i++) {
+        H.ev.on_routing_ack(H.ev.user, D2S.packet_id, false);
+        d2_tick(10u);
+    }
+    TEST_ASSERT_EQUAL(FF_APP_CREW_PHASE_FAILED, ff_shell_crew_op_status(&H.shell).phase);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_FAIL_NAK, ff_shell_crew_op_status(&H.shell).fail);
+    ff_shell_crew_dismiss(&H.shell);
+
+    /* Somebody re-provisions the radio to a DIFFERENT non-Firefly
+     * channel while the puck is still crewless. */
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    H.ev.on_lora_region(H.ev.user, 1u);
+    uint8_t const two = 0x02u;
+    a02_inject_channel(0u, "Public", &two, 1u, true);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    /* Attempt 2 succeeds; LEAVE must restore what was there BEFORE the
+     * first, failed attempt — not "Public". */
+    memset(&D2S, 0, sizeof(D2S));
+    D2S.packet_id = 0xA1A1u;
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    d2_radio_confirms();
+    ff_shell_crew_dismiss(&H.shell);
+
+    memset(&D2S, 0, sizeof(D2S));
+    D2S.packet_id = 0xB1B1u;
+    TEST_ASSERT_TRUE(ff_shell_crew_leave(&H.shell));
+    d2_tick(10u);
+    TEST_ASSERT_EQUAL_STRING("LongFast", D2S.last.name);
+    TEST_ASSERT_EQUAL_UINT8(1u, D2S.last.psk_len);
+    TEST_ASSERT_EQUAL_UINT8(0x01u, D2S.last.psk[0]);
+}
+
+/* An UNSET region blocks both controls, and the CREW page has to say
+ * WHICH refusal that is. Without `region_unset` the page falls through
+ * to "your puck is still reading your radio's settings" — a sentence
+ * that is false at a radio which has finished answering, and that never
+ * resolves. Independent review finding (PR #312). */
+static void S02_AC18_an_unset_region_is_named_on_the_crew_page(void)
+{
+    a02_harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    H.ev.on_lora_region(H.ev.user, 0u /* UNSET */);
+    uint8_t const one = 0x01u;
+    a02_inject_channel(0u, "LongFast", &one, 1u, true);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    d2_bind();
+
+    (void)ff_shell_intent(&H.shell, &(ff_intent_t){.kind = FF_INTENT_SETTINGS_OPEN_CREW, .u = {0}});
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    ff_app_crew_page_t const *cw = &ff_shell_view(&H.shell)->settings.crew;
+    TEST_ASSERT_FALSE(cw->can_start);
+    TEST_ASSERT_FALSE(cw->can_leave);
+    TEST_ASSERT_TRUE(cw->region_unset);
+
+    /* A region that has not been REPORTED is an absence, not a reading,
+     * and must not borrow this sentence. */
+    a02_harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    a02_inject_channel(0u, "LongFast", &one, 1u, true);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    (void)ff_shell_intent(&H.shell, &(ff_intent_t){.kind = FF_INTENT_SETTINGS_OPEN_CREW, .u = {0}});
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->settings.crew.region_unset);
+}
+
 /* The snapshot survives a reboot: it is what LEAVE restores, and a
  * wearer who power-cycles between starting and leaving is the ordinary
  * case, not an edge one. */
@@ -12770,6 +12864,8 @@ int main(void)
     RUN_TEST(S02_AC17_leave_restores_the_channel_the_radio_had_before);
     RUN_TEST(S02_AC17_a_second_start_does_not_overwrite_the_snapshot);
     RUN_TEST(S02_AC17_the_snapshot_is_taken_once_even_if_the_radio_changes);
+    RUN_TEST(S02_AC17_a_failed_start_still_leaves_the_first_snapshot_standing);
+    RUN_TEST(S02_AC18_an_unset_region_is_named_on_the_crew_page);
     RUN_TEST(S02_AC17_the_snapshot_survives_a_reboot);
     RUN_TEST(S02_AC17_leave_with_no_snapshot_fails_honestly);
     RUN_TEST(S02_AC18_a_readback_that_disagrees_is_not_success);

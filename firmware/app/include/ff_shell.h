@@ -672,6 +672,15 @@ typedef struct {
  * 44.5 KB (45,568 B) clears it with ~1 KB headroom, in this budget's
  * usual range. Still comfortable in the S3's 512 KB SRAM; still a
  * tripwire, not a hardware limit.
+ *
+ * NOT raised for A02 slice D2 (the puck-initiated crew), and the
+ * measurement is recorded here rather than left to be rediscovered:
+ * D2's `ff_crewstart_t`, its injected RNG pointers, the cached region,
+ * the crew-index row and the pre-crew snapshot come to **728 B**, so
+ * `sizeof(shell_t)` is **45,224 B** against this 45,568 B budget —
+ * **344 B of headroom left**, not the ~1 KB the paragraph above
+ * measured. The next slice that adds a struct to the shell should
+ * expect to raise this number, and should say so.
  */
 #define FF_SHELL_BYTES 45568u
 
