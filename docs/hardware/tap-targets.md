@@ -177,7 +177,7 @@ not a re-layout.
 | Rally WHERE rows (hit) | 308×44 | **298×80** | 26.0 × 7.0 | ★ |
 | Rally WHEN | 86×56 | **86×80** | 7.5 × 7.0 | ★ |
 | Rally Send | 166×56 | **148×80** | 12.9 × 7.0 | ★ |
-| compose FAB (on-glass square) | 63×63 | **80×80** | 7.0 | ★ — see below |
+| compose FAB (on-glass square) | 48×48 | **80×80** | 7.0 | ★ — see below |
 | sub-screen BACK | 44×44 @ (109,30) | 44×44 @ (113,36) | 3.85 | **could not grow** |
 
 **The FAB.** Both reviews named it (`ux-puck-maya` §(e): "the single worst
@@ -185,7 +185,9 @@ place to put a primary action"). Its hit rect is corner-anchored and
 deliberately bleeds into the masked letterbox corner, so the number that
 describes it is not the rect — it is the largest square at its **near**
 corner that is on glass, which is what a thumb can actually reach. With
-the anchor at (300,300) that square was 63×63. Solving
+the anchor at (300,300) that square was **48.4×48.4** (4.2 mm) — measured
+by the test, after a first hand-derivation of this number wrongly used the
+framebuffer's centre instead of the glass's and came out at 63. Solving
 
 ```
 (x1 + w − 208)² + (x1 + w − 206)² ≤ 200²   for w = 80
@@ -193,7 +195,8 @@ the anchor at (300,300) that square was 63×63. Solving
 
 gives an anchor of (268,268), which is where it now sits. The visible
 amber lens and the `+` glyph are unchanged; the reachable target went
-5.5 mm → 7.0 mm. The rows' and chips' right-hand clearance is derived
+**4.2 mm → 7.0 mm** — the FAB was, by this measure, the worst-placed
+control on the device, exactly as `ux-puck-maya` §(e) called it. The rows' and chips' right-hand clearance is derived
 from the anchor, so they gave up the 32 px the FAB gained rather than
 colliding with it. `test_tap_target_sizing.c` checks the inscribed square
 rather than the rect for exactly this class of control.
