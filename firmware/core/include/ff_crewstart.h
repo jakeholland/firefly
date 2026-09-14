@@ -77,6 +77,22 @@ extern "C" {
 #define FF_CREWSTART_CREW_PRECISION 32u
 
 /**
+ * Not a toggle — the shipped policy `ff_crewstart_on_channel` enforces
+ * unconditionally, named so review can see it is deliberate rather than
+ * a magic `true` buried in a comparison: a read-back row that STATES a
+ * `position_precision` for the crew channel must state exactly
+ * `FF_CREWSTART_CREW_PRECISION`. #47's hazard is a radio that accepts
+ * the channel write but silently keeps positions coarse — the crew sees
+ * km-scale positions while the puck's own face says READY — and a
+ * verify step that checked name and key but not this is a real gap in
+ * the claim READY makes (found in PR #312's review, not turned on there
+ * for lack of a bench that could tell "never echoed" from "echoed and
+ * wrong"; the 2026-09-14 bench round settled it — see
+ * `ff_crewstart_begin_start`'s `precision_strict` parameter for the one
+ * part of this rule that a real radio's silence still leaves open). */
+#define FF_CREWSTART_PRECISION_REQUIRED true
+
+/**
  * How long a write may sit unacknowledged before it is retried
  * (`FF_CREWSTART_WRITING`).
  *
@@ -141,6 +157,15 @@ typedef struct {
     uint8_t  psk_len;                   /* 0, 1, 16 or 32 — 1 is Meshtastic's well-known-key shorthand */
     bool     is_primary;
     uint32_t position_precision;        /* always written explicitly, A02 §1.5 */
+    /* PRESENCE-FLAGGED, mirroring `mc_channel_t.has_position_precision`
+     * byte for byte (the shell's translation between the two is a plain
+     * copy — see `shell_channel_to_core`). Meaningful only on a READ:
+     * `ff_crewstart_take_action`'s WRITE always carries an explicit
+     * `position_precision` (A02 §1.5's "saying it out loud is free"), so
+     * `desired`'s own flag is never consulted for that leg. On the
+     * VERIFYING read-back it is the whole reason absent and "stated as
+     * 0" are not the same failure — see `ff_crewstart_on_channel`. */
+    bool     has_position_precision;
 } ff_crewstart_channel_t;
 
 /** Which operation is in flight. */
@@ -223,6 +248,25 @@ typedef struct {
 
     uint32_t               state_since_ms;
     uint8_t                attempts; /* write attempts started, incl. the first */
+
+    /* Whether an ABSENT `position_precision` on the read-back is trusted
+     * (READY, reported "unreported") or treated as the same failure as a
+     * stated-but-wrong one (MISMATCH). Set once, at `begin_start`, from
+     * the caller's `precision_strict` argument — see that function's own
+     * doc comment. Meaningless for LEAVE, which is under no obligation
+     * to restore precision 32. */
+    bool                   precision_strict;
+
+    /* The read-back's OWN `position_precision`, presence-flagged exactly
+     * like `mc_channel_t`'s — captured the moment `ff_crewstart_on_channel`
+     * reaches READY, for whichever op. `has_precision == false` after a
+     * READY means the radio proved it holds the right name and key but
+     * never stated a precision (only reachable for LEAVE, or for START
+     * with `precision_strict == false`) — read through
+     * `ff_crewstart_has_precision`/`ff_crewstart_precision`, never these
+     * fields directly, matching this struct's own top comment. */
+    bool                   has_precision;
+    uint32_t               precision;
 } ff_crewstart_t;
 
 /** Zero the machine into `FF_CREWSTART_IDLE`. NULL-safe (no-op). */
@@ -246,13 +290,30 @@ void ff_crewstart_init(ff_crewstart_t *f);
  * following `ff_crewstart_take_action` hands back the channel to
  * write.
  *
+ * `precision_strict` (`FF_CREW_PRECISION_STRICT`, Kconfig default y,
+ * injected — core has no Kconfig of its own, see `ff_shell.c`'s
+ * `sh->crew_precision_strict`) decides ONE thing: what the verifying
+ * read-back means when it proves the right name and key but states NO
+ * `position_precision` at all. `FF_CREWSTART_PRECISION_REQUIRED` (not
+ * configurable) already fails a STATED-but-wrong precision every time;
+ * an ABSENT one is the case a bench had to settle, because "never
+ * echoed" and "echoed and wrong" look identical from here. The
+ * 2026-09-14 bench round (a Heltec V3 on Meshtastic 2.7.x) proved a real
+ * radio DOES echo `module_settings.position_precision` back after an
+ * import that set it, so `true` reads an absence as the same #47 hazard
+ * a wrong value is; `false` reports it honestly as "unreported" and
+ * still lands READY. Meaningless for `ff_crewstart_begin_leave` — LEAVE
+ * restores whatever the radio held before Firefly ever wrote a channel,
+ * which is under no obligation to be precision 32.
+ *
  * Returns false (and lands in `FF_CREWSTART_FAILED` with
  * `FF_CREWSTART_FAIL_NO_ENTROPY`) if `rng` is NULL. Returns false
  * without touching the machine if `f` is NULL or an operation is
  * already in flight — a second press while a write is in the air is
  * ignored, not queued.
  */
-bool ff_crewstart_begin_start(ff_crewstart_t *f, ff_crewstart_rand_fn rng, void *rng_ctx, uint32_t now_ms);
+bool ff_crewstart_begin_start(ff_crewstart_t *f, ff_crewstart_rand_fn rng, void *rng_ctx, bool precision_strict,
+                               uint32_t now_ms);
 
 /**
  * ff_crewstart_begin_leave — begin putting this radio back the way it
@@ -353,7 +414,15 @@ void ff_crewstart_on_routing_ack(ff_crewstart_t *f, uint32_t request_id, bool ok
  * psk, byte for byte) is the proof, and moves to `FF_CREWSTART_READY`. A
  * row at the target index that does NOT match is a decisive failure
  * (`FF_CREWSTART_FAIL_MISMATCH`), not a reason to keep waiting: the
- * radio has answered the question, and the answer was no.
+ * radio has answered the question and the answer was no.
+ *
+ * For a START, "match" also covers `position_precision` (#47's hazard —
+ * see `FF_CREWSTART_PRECISION_REQUIRED`/`precision_strict`): a row that
+ * states a precision other than `FF_CREWSTART_CREW_PRECISION` is always
+ * a MISMATCH, and a row that states none at all is a MISMATCH too
+ * unless this run's `precision_strict` says otherwise. LEAVE never
+ * applies this — it restores whatever the radio held before, which is
+ * under no obligation to be precision 32.
  *
  * Rows arriving in any other state are ignored, so the ordinary
  * every-handshake channel traffic costs nothing here.
@@ -395,6 +464,19 @@ char const          *ff_crewstart_code(ff_crewstart_t const *f);
 bool                 ff_crewstart_busy(ff_crewstart_t const *f);
 /** Write attempts started so far, including the first. */
 uint8_t              ff_crewstart_attempts(ff_crewstart_t const *f);
+
+/**
+ * ff_crewstart_has_precision / ff_crewstart_precision — what the
+ * VERIFYING read-back proved about `position_precision`, captured the
+ * moment the machine reached `FF_CREWSTART_READY`. False/0 before then,
+ * and after a run that never reached READY — never a stale value from a
+ * previous op (`ff_crewstart_init`, reached by every `begin_*` and
+ * `consider`, zeroes both). `ff_crewstart_precision` is meaningless when
+ * `ff_crewstart_has_precision` is false — the radio proved the channel
+ * but never stated a precision, which is a real, reportable fact
+ * ("unreported"), not the same as 0. NULL-safe: false/0 for NULL. */
+bool                 ff_crewstart_has_precision(ff_crewstart_t const *f);
+uint32_t             ff_crewstart_precision(ff_crewstart_t const *f);
 
 /** Short, stable, all-caps names for logs and test messages — this
  *  codebase's existing `ff_*_name` convention. Never NULL; "?" for an

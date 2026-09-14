@@ -19,6 +19,7 @@
 #include "ff_shell.h"
 
 #include "ff_crew.h"
+#include "ff_crewcode.h" /* A02 slice D2 amendment (#47) — the crew status line's own tests */
 #include "ff_feed.h"
 #include "ff_flare.h"
 #include "ff_heard.h"
@@ -1447,6 +1448,59 @@ static void dbgconsole_name_set_with_no_node_id_still_commits_locally(void)
  * `ff_shell_diag_debug` and print what it says, not "does every field
  * project correctly" — that exhaustive coverage lives in test_shell.c's
  * S_diag_* tests against the same getter). */
+/* A02 slice D2 amendment (#47) — the `crew` status line's own
+ * `precision=` field, sourced from the LIVE crew channel's own row (not
+ * from any `ff_crewstart` run — a wearer who never touched START/LEAVE
+ * this session still gets an honest reading off a radio provisioned some
+ * other way, e.g. the CLI). */
+static void inject_crew_channel(char const *code, bool has_precision, uint32_t precision)
+{
+    uint8_t psk[FF_CREWCODE_PSK_LEN];
+    TEST_ASSERT_TRUE(ff_crewcode_psk(code, psk));
+
+    mc_channel_t ch;
+    memset(&ch, 0, sizeof(ch));
+    ch.index = 0u;
+    snprintf(ch.name, sizeof(ch.name), "%s", code);
+    memcpy(ch.psk, psk, sizeof(psk));
+    ch.psk_len = (uint8_t)sizeof(psk);
+    ch.is_primary = true;
+    ch.has_position_precision = has_precision;
+    ch.position_precision = has_precision ? precision : 0u;
+    H.ev.on_channel(H.ev.user, &ch);
+}
+
+static void dbgconsole_crew_reports_the_channels_own_precision(void)
+{
+    harness_init(0u);
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    H.ev.on_lora_region(H.ev.user, 1u);
+    inject_crew_channel("FIRE-4K9M7X", /*has_precision=*/true, 32u);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    capture_t cap;
+    dispatch("crew", &cap);
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "precision=32"));
+}
+
+static void dbgconsole_crew_reports_unreported_precision_honestly(void)
+{
+    harness_init(0u);
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    H.ev.on_lora_region(H.ev.user, 1u);
+    inject_crew_channel("FIRE-4K9M7X", /*has_precision=*/false, 0u);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    capture_t cap;
+    dispatch("crew", &cap);
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "precision=unreported"));
+    /* And "0" (a real, different value a radio can genuinely state) is
+     * never printed in its place. */
+    TEST_ASSERT_FALSE(capture_has_line_containing(&cap, "precision=0"));
+}
+
 static void dbgconsole_diag_reports_unknowns_when_nothing_known(void)
 {
     harness_init(1000);
@@ -1566,6 +1620,9 @@ int main(void)
     RUN_TEST(dbgconsole_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state);
     RUN_TEST(dbgconsole_name_reports_mismatch_when_the_reply_names_someone_else);
     RUN_TEST(dbgconsole_name_set_with_no_node_id_still_commits_locally);
+
+    RUN_TEST(dbgconsole_crew_reports_the_channels_own_precision);
+    RUN_TEST(dbgconsole_crew_reports_unreported_precision_honestly);
 
     RUN_TEST(dbgconsole_diag_reports_unknowns_when_nothing_known);
     RUN_TEST(dbgconsole_diag_reports_observed_facts);

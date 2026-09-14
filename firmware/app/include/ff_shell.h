@@ -2029,6 +2029,29 @@ void ff_shell_set_auto_crew(ff_shell_t *sh, bool enabled);
 bool ff_shell_auto_crew(ff_shell_t const *sh);
 
 /**
+ * [api] A02 slice D2 amendment (#47) — `ff_shell_set_crew_precision_strict`
+ * decides what a crew START's verifying read-back means when it proves
+ * the right name and key but states NO `position_precision` at all.
+ *
+ * **On by default** (`ff_shell_init`; the esp32s3 target re-states it at
+ * boot from `CONFIG_FF_CREW_PRECISION_STRICT`, Kconfig default y) — the
+ * same "shipped behaviour, plain runtime field, re-stated from Kconfig"
+ * pattern `ff_shell_set_auto_crew` above already documents. Passed into
+ * `ff_crewstart_begin_start` at the moment a START begins (core has no
+ * Kconfig of its own to read this from); a run already in flight is
+ * unaffected — see that function's own doc comment for why a real radio
+ * makes an absent field a real signal now, not decoding noise.
+ *
+ * Meaningless for LEAVE, which is under no obligation to restore
+ * precision 32.
+ */
+void ff_shell_set_crew_precision_strict(ff_shell_t *sh, bool strict);
+
+/** Whether an absent read-back precision fails a crew START. NULL-safe
+ *  (false). */
+bool ff_shell_crew_precision_strict(ff_shell_t const *sh);
+
+/**
  * ff_shell_crew_code — the crew code this puck is on, DERIVED from its
  * own channel name (A02 §1.3: the Meshtastic channel name IS the
  * canonical code, so there is no second source of truth and nothing
@@ -2197,6 +2220,16 @@ typedef struct {
      * guessed as 0 — see `ff_shell_crew_channel_index`. */
     bool     crew_index_known;
     uint32_t crew_index;
+
+    /* [api] A02 slice D2 amendment (#47) — what the radio's channel
+     * table currently states about the crew index's OWN
+     * `position_precision`, presence-flagged. A live fact about the
+     * radio, rebuilt every handshake exactly like `crew_index` above,
+     * and independent of any `ff_crewstart` run having ever executed in
+     * this session — never "unreported" only because no START has run
+     * yet, when the crew channel genuinely states 32. */
+    bool     precision_known;
+    uint32_t precision;
 
     char code[FF_CREWCODE_LEN + 1u];
     char pending_code[FF_CREWCODE_LEN + 1u];

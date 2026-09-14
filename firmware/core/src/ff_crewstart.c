@@ -65,12 +65,14 @@ bool ff_crewstart_busy(ff_crewstart_t const *f)
            f->state == FF_CREWSTART_VERIFYING;
 }
 
-bool ff_crewstart_begin_start(ff_crewstart_t *f, ff_crewstart_rand_fn rng, void *rng_ctx, uint32_t now_ms)
+bool ff_crewstart_begin_start(ff_crewstart_t *f, ff_crewstart_rand_fn rng, void *rng_ctx, bool precision_strict,
+                               uint32_t now_ms)
 {
     if (f == NULL || ff_crewstart_busy(f)) return false;
 
     ff_crewstart_init(f);
     f->op = FF_CREWSTART_OP_START;
+    f->precision_strict = precision_strict;
     crewstart_enter(f, FF_CREWSTART_GENERATING, now_ms);
 
     if (rng == NULL) {
@@ -108,6 +110,7 @@ bool ff_crewstart_begin_start(ff_crewstart_t *f, ff_crewstart_rand_fn rng, void 
     f->desired.psk_len = (uint8_t)sizeof(psk);
     f->desired.is_primary = true;
     f->desired.position_precision = FF_CREWSTART_CREW_PRECISION;
+    f->desired.has_position_precision = true; /* always explicit on a write, A02 §1.5 */
     return true;
 }
 
@@ -121,6 +124,7 @@ void ff_crewstart_default_primary(ff_crewstart_channel_t *out)
     out->psk_len = 1u;
     out->is_primary = true;
     out->position_precision = 0u;
+    out->has_position_precision = true; /* a known, concrete fact: the stock default states 0 */
 }
 
 bool ff_crewstart_begin_leave(ff_crewstart_t *f, ff_crewstart_channel_t const *restore, uint32_t now_ms)
@@ -219,7 +223,35 @@ void ff_crewstart_on_channel(ff_crewstart_t *f, ff_crewstart_channel_t const *ch
     bool const psk_ok = (ch->psk_len == f->desired.psk_len) &&
                         (f->desired.psk_len == 0u || memcmp(ch->psk, f->desired.psk, f->desired.psk_len) == 0);
 
-    if (name_ok && psk_ok) {
+    /* #47's hazard: a radio that accepts the channel write but silently
+     * keeps positions coarse reaches READY while the crew sees km-scale
+     * positions. Only a START's own target carries this requirement —
+     * LEAVE restores whatever the radio held before Firefly ever wrote a
+     * channel, which is under no obligation to be precision 32. */
+    bool precision_ok = true;
+    if (f->op == FF_CREWSTART_OP_START) {
+        if (ch->has_position_precision) {
+            /* FF_CREWSTART_PRECISION_REQUIRED: not a toggle — a channel
+             * that STATES a precision must state exactly the crew's
+             * own. _Static_assert below pins that this is unconditional
+             * policy, not a runtime flag masquerading as one. */
+            precision_ok = (ch->position_precision == FF_CREWSTART_CREW_PRECISION);
+        } else {
+            /* The bench fact (2026-09-14, Heltec V3 / Meshtastic 2.7.x)
+             * is that a real radio DOES echo module_settings.position_
+             * precision back after an import that set it, so an absent
+             * field here is a real signal and not decoding noise.
+             * Whether that signal is trusted as READY-with-"unreported"
+             * or folded into the same MISMATCH a wrong value gets is
+             * this run's own `precision_strict`
+             * (FF_CREW_PRECISION_STRICT, Kconfig default y). */
+            precision_ok = !f->precision_strict;
+        }
+    }
+
+    if (name_ok && psk_ok && precision_ok) {
+        f->has_precision = ch->has_position_precision;
+        f->precision = ch->has_position_precision ? ch->position_precision : 0u;
         f->pending = FF_CREWSTART_ACT_NONE;
         crewstart_enter(f, FF_CREWSTART_READY, now_ms);
         return;
@@ -230,6 +262,10 @@ void ff_crewstart_on_channel(ff_crewstart_t *f, ff_crewstart_channel_t const *ch
      * the table carries one entry per index. */
     crewstart_fail(f, FF_CREWSTART_FAIL_MISMATCH, now_ms);
 }
+
+_Static_assert(FF_CREWSTART_PRECISION_REQUIRED,
+               "ff_crewstart_on_channel's STATED-but-wrong-precision leg assumes this is unconditionally true; "
+               "if it is ever meant to be configurable, that leg needs a matching update");
 
 void ff_crewstart_tick(ff_crewstart_t *f, uint32_t now_ms)
 {
@@ -292,6 +328,16 @@ char const *ff_crewstart_code(ff_crewstart_t const *f)
 uint8_t ff_crewstart_attempts(ff_crewstart_t const *f)
 {
     return (f == NULL) ? 0u : f->attempts;
+}
+
+bool ff_crewstart_has_precision(ff_crewstart_t const *f)
+{
+    return (f == NULL) ? false : f->has_precision;
+}
+
+uint32_t ff_crewstart_precision(ff_crewstart_t const *f)
+{
+    return (f == NULL) ? 0u : f->precision;
 }
 
 char const *ff_crewstart_state_name(ff_crewstart_state_t s)
