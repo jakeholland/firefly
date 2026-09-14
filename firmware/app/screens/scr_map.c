@@ -903,8 +903,8 @@ static void map_collect_rally_label(map_label_collector_t *lc, ff_map_xform_t co
 }
 
 /* ---------------------------------------------------------------------
- * YOU arrow — rotated by heading; hidden + "NO FIX" chip when no fix
- * (S09 AC5).
+ * YOU arrow — rotated by heading; hidden + "NO LOCATION" chip when no
+ * fix (S09 AC5; wording per A02/PR #303, 2026-09-13 — was "NO FIX").
  * ------------------------------------------------------------------- */
 
 /* Rotates (x, y) by `heading_deg` CLOCKWISE ON SCREEN (0 = up/north,
@@ -1014,7 +1014,7 @@ static void map_draw_you(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app_m
 {
     bool const show_arrow = map->you_has_pos && map->you_heading_valid;
     if (!show_arrow) {
-        /* Hidden + "NO FIX" chip (AC5) — a fixed chip, not tied to any
+        /* Hidden + "NO LOCATION" chip (AC5; was "NO FIX") — a fixed chip, not tied to any
          * position (there may be none to anchor it to), and not part of
          * the label-collision system either: it's fixed-position status
          * chrome, not a feature/YOU label competing for map space. */
@@ -1074,7 +1074,7 @@ static void map_draw_truncated_indicator(lv_obj_t *parent, ff_app_map_t const *m
          * than a fabricated "+0 MORE". */
         snprintf(text, sizeof(text), "MAP INCOMPLETE");
     }
-    /* Top of the puck — mirrors the "NO FIX" chip's bottom placement
+    /* Top of the puck — mirrors the "NO LOCATION" chip's bottom placement
      * (map_draw_you) so the two honest-incompleteness signals never
      * collide. */
     map_make_chip(parent, text, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_STALE_AMBER, 0.0f,
@@ -1147,7 +1147,7 @@ void ff_scr_map_build(lv_obj_t *parent, ff_app_map_t const *map, bool colorblind
      *      drawing every shape before any label means a later feature's
      *      polygon fill can never paint over an earlier feature's text
      *      (LVGL draws children in creation order). Rally's pin and
-     *      YOU's arrow (or "NO FIX" chip) are markers in the same sense
+     *      YOU's arrow (or "NO LOCATION" chip) are markers in the same sense
      *      — always drawn, never part of the collision system — so they
      *      join this same early "never dropped" group.
      *   2. QUEUE every label this render wants, in ONE collector, HIGH

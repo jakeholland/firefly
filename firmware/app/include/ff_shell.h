@@ -155,7 +155,8 @@
  * and whichever node carries the greatest `last_heard` in a burst always
  * does, whatever the nodeDB order. So a NodeInfo that moved the latch
  * does not age its own position: it reads `FF_FRESH_NEVER`, which the
- * radar renders as "NO FIX YET" rather than a fabricated "LAST SEEN"
+ * radar renders as "NO LOCATION YET" (wording per A02/PR #303,
+ * 2026-09-13 — was "NO FIX YET") rather than a fabricated "LAST SEEN"
  * (ff_radar.h's renderer contract). Nodes later in the same burst with
  * older timestamps do not move the latch and ARE aged, against the
  * running maximum — the best estimate of "now" available.

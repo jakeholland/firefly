@@ -715,6 +715,36 @@ final class CrewMembershipEngineTests: XCTestCase {
                        "hiding unpairs, so there is no separate filter to forget to apply")
     }
 
+    /// PR #308 review. The presence words the Crew page and the Start
+    /// screen render are age-carrying by rule
+    /// (`PresenceTag.plainLabel(age:)`, PR #304: "6 min ago",
+    /// "No signal \u{00B7} 40 min"); a row that arrives with no age
+    /// silently falls back to the bare enum name ("STALE"). This engine
+    /// is where that age enters the UI, so it is pinned here.
+    func testCurrentMembersCarriesTheHeardAgeTheUIWordsRequire() async throws {
+        let h = try await connectedCrewHarness()
+        h.transport.inject(try packetFrame(from: 9005, channel: Self.crewIndex, portnum: .nodeinfoApp,
+                                           payload: try userPayload(long: "Freshly Heard")))
+        try await pump(h)
+
+        guard let row = h.engine.currentMembers().first(where: { $0.id == 9005 }) else {
+            return XCTFail("9005 was not admitted")
+        }
+        // Just heard, so there IS an age and it must be present — the
+        // label is built from it, not from the presence enum alone.
+        XCTAssertEqual(row.heardPresence, .heard)
+        guard let ageMs = row.heardAgeMs else {
+            return XCTFail("a member heard this instant must carry an age, not nil")
+        }
+        XCTAssertLessThan(ageMs, PresenceTag.heardLiveMS,
+                          "an age just observed cannot already be outside the HEARD window")
+        // And the age actually reaches the shipped vocabulary rather
+        // than being carried and ignored.
+        let label = PresenceTag.heard.plainLabel(age: TimeInterval(ageMs) / 1000)
+        XCTAssertNotEqual(label, PresenceTag.heard.rawValue,
+                          "the label fell back to the bare enum word: \(label)")
+    }
+
     // MARK: - §4.4's display-name order
 
     func testDisplayNameFallsBackInSpecOrderAndNeverToBlank() {

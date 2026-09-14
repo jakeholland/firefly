@@ -83,9 +83,11 @@ float ff_geo_arrow_deg(float bearing_deg, float heading_deg);
  * Amendments): when the device's own heading is unknown, the radar face
  * still knows the true bearing to a member with a known position and
  * needs an honest way to say it without implying a screen-relative
- * direction it cannot compute — "BEARING 180 deg . S" reads as an
- * absolute fact, unlike an arrow, which would silently claim a
- * screen-relative meaning with no heading to anchor it.
+ * direction it cannot compute — the compass letter (e.g. "S"; rendered
+ * bare since the 2026-09-13 plain-language pass, was "BEARING 180 deg
+ * . S") reads as an absolute fact, unlike an arrow, which would
+ * silently claim a screen-relative meaning with no heading to anchor
+ * it.
  *
  * Each of the 16 sectors spans 22.5 degrees, centered on its own compass
  * point (N is centered on 0/360); a value falling exactly on a sector

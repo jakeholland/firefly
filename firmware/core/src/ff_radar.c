@@ -323,8 +323,9 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
      * lat/lons — no heading at all — so it's computed independent of
      * `heading_ok` (unlike `arrow_deg`/`arrow_valid` below, which need
      * MY heading too to become a screen-relative rotation). This is what
-     * makes RADAR_NOHDG's "BEARING 180 deg . S" hint honest even though
-     * `arrow_valid` is false in that mode. */
+     * makes RADAR_NOHDG's compass-letter hint (e.g. "S"; was "BEARING
+     * 180 deg . S" before the 2026-09-13 plain-language pass) honest
+     * even though `arrow_valid` is false in that mode. */
     bool bearing_known = my_pos_ok && member->has_pos;
     v->bearing_valid = bearing_known;
     v->bearing_deg = bearing_known ? ff_geo_bearing_deg(my_pos, member->pos) : 0.0f;

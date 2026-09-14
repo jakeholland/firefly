@@ -534,7 +534,8 @@ typedef struct {
      * enum. Meaningful iff `sending`; FF_FLARE_WIRE_WAITING (the
      * least-claiming default) when not sending. scr_flare.c's sender
      * overlay reads this to choose between the normal "you are flaring"
-     * copy (SENT) and the amber "NO MESH" retry copy (WAITING). */
+     * copy (SENT) and the amber "NO RADIO" retry copy (WAITING; wording
+     * per A02/PR #303, 2026-09-13 — was "NO MESH"). */
     ff_flare_wire_state_t wire_state;
 
     /* The full-screen takeover currently awaiting a GO/DISMISS decision,
@@ -1369,7 +1370,8 @@ typedef struct {
     /* YOU. */
     bool    you_has_pos;
     float   you_east_m, you_north_m;
-    /* false -> arrow hidden + "NO FIX" chip (S09 AC5) — same "prove you
+    /* false -> arrow hidden + "NO LOCATION" chip (S09 AC5; wording per
+     * A02/PR #303, 2026-09-13 — was "NO FIX") — same "prove you
      * meant this" convention as radar.arrow_valid / flare.takeover_bearing_valid. */
     bool    you_heading_valid;
     float   you_heading_deg;

@@ -36,7 +36,7 @@ Specs are contracts. Acceptance criteria (AC) become test names (`S01_AC3_...`).
 | # | Spec | Depends on | Lost Lands MVP? | Status |
 |---|---|---|---|---|
 | A01 | companion app — native Swift/SwiftUI Meshtastic client (iOS 17+/macOS 14+), links `firmware/core` in as a C target | S02,S03,S04,S06,S24,S29 | YES (both puck screens are broken; the app + 2x Heltec V3 is the working mesh) | ◐ spec + buildable skeleton |
-| A02 | crew join — Start/Join a crew, crew code + key derivation, auto membership, plain-language crew UX | A01,S02,S03 | YES (nobody gets onto a crew without it) | ☐ spec |
+| A02 | crew join — Start/Join a crew, crew code + key derivation, auto membership, plain-language crew UX | A01,S02,S03 | YES (nobody gets onto a crew without it) | ◐ a+b merged (codec + Start/Join/Crew page); c,d,e pending |
 | A03 | background BLE, reconnection and local notifications — state restoration, iOS 17 auto-reconnect, bounded rediscovery ladder, FLARE/RALLY/DM/crew notifications | A01,A02,S10,S27 | YES (a phone in a pocket for three days is the whole product) | ☐ spec |
 
 The A-series exists because S-numbers are the puck's contracts and the

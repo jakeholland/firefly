@@ -19,7 +19,8 @@ extern "C" {
  *   radar.png        (DANA selected — live arrow)
  *   radar_riley.png  (RILEY selected — close-range rings)
  *   radar_maya.png   (MAYA selected — "LAST SEEN 25 MIN")
- *   radar_sam.png    (SAM selected  — "NO FIX YET")
+ *   radar_sam.png    (SAM selected  — "NO LOCATION YET"; wording per
+ *                     A02/PR #303, 2026-09-13 — was "NO FIX YET")
  *   now.png          (Saturday lineup, FIREFLY mid-set, starred countdown)
  *   map.png          (stages + landmarks + crew dots)
  *   signals.png      (the seeded feed)

@@ -41,8 +41,10 @@
  * unchanged, position-only) and "is the radio still hearing this
  * person" (`ff_crew_presence`, core/ff_crew.h — ANY packet of any kind,
  * gated on nothing but a receive). This function now derives SEEN/LOST
- * from THAT axis alone — the one the "LOST" word on an Inbox row or the
- * CREW page has always meant to the person reading it. A member never
+ * from THAT axis alone — the one the puck's "NO SIGNAL <age>" chip on
+ * an Inbox row or the CREW page has always meant to the person reading
+ * it (word renamed from the bare "LOST" by A02/PR #303, 2026-09-13 —
+ * this enum's own name is untouched). A member never
  * heard from at all still classifies as `FF_PRESENCE_LINKED` (paired,
  * no sighting) — NOT a fabricated recent time.
  *

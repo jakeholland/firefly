@@ -16,7 +16,10 @@
 //  `MoreScreen.swift` in behind it.
 //
 enum MoreScreenRow: Hashable {
-    case connect, settings, system
+    /// A02 §5 — the Crew page, appended (never inserted) to this list so
+    /// every existing `MoreScreenRow` switch stays exhaustive-by-append
+    /// rather than needing a reorder.
+    case crew, connect, settings, system
 }
 
 enum MoreScreenNavigation {

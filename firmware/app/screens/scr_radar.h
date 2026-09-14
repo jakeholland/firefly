@@ -30,7 +30,8 @@ extern "C" {
  * Renders every `radar_mode_t` per docs/specs/S06-radar-face.md's
  * rendering section, plus the never-fixed special case
  * (`ff_radar.h`'s "RENDERER CONTRACT": `mode == RADAR_LOST &&
- * age_str[0] == '\0'` gets "NO FIX YET", never "LAST SEEN"). Also draws
+ * age_str[0] == '\0'` gets "NO LOCATION YET" (wording per A02/PR #303,
+ * 2026-09-13 — was "NO FIX YET"), never "LAST SEEN"). Also draws
  * the cross-mode chrome: status bar (clock/mesh/battery) and crew ring
  * dots (dashed when a dot's own freshness isn't LIVE).
  *

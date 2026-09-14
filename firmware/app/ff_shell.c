@@ -1799,7 +1799,8 @@ static bool shell_observe_wall_nodeinfo(shell_t *sh, uint32_t node_id, uint32_t 
  * packet reads 2-3 s "ahead" of the prediction purely from the two
  * truncations above. Because the old code rejected any `age_s < 0`
  * outright, `shell_maybe_adopt_my_pos` never ran on this path and
- * `my_pos_ok` stayed false forever (Radar: "NO FIX - RADIO ONLY").
+ * `my_pos_ok` stayed false forever (Radar: "NO LOCATION - RADIO ONLY";
+ * wording per A02/PR #303, 2026-09-13 — was "NO FIX - RADIO ONLY").
  *
  * 60 s is comfortably wider than either truncation could plausibly
  * explain (they are sub-second/low-single-digit-second effects) while
@@ -2219,8 +2220,9 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
          *
          * We have just learned what time it is FROM this node; we cannot
          * also use it to say how old this node is. Not recorded ->
-         * FF_FRESH_NEVER, which the radar renders as "NO FIX YET" rather
-         * than a fabricated "LAST SEEN" (ff_radar.h's renderer
+         * FF_FRESH_NEVER, which the radar renders as "NO LOCATION YET"
+         * (wording per A02/PR #303, 2026-09-13 — was "NO FIX YET")
+         * rather than a fabricated "LAST SEEN" (ff_radar.h's renderer
          * contract). A later node in the same burst with an OLDER
          * `last_heard` does not move the latch, so it IS aged — against
          * the running maximum, which is the best estimate of "now" the
@@ -4084,8 +4086,9 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * struct compare, and repeated lat/lon trig can still produce a
      * different last-bit float from one tick to the next for an
      * otherwise-unchanged scene. Coarsened to whole degrees for the same
-     * reason arrow_deg is coarsened above: RADAR_NOHDG's "BEARING 180 -
-     * S" hint only ever needs whole-degree precision
+     * reason arrow_deg is coarsened above: RADAR_NOHDG's compass-letter
+     * hint (e.g. "S"; was "BEARING 180 - S" before the 2026-09-13
+     * plain-language pass) only ever needs whole-degree precision
      * (ff_geo_compass_point's own resolution is 22.5 deg sectors), so a
      * sub-degree float wobble that changes no rendered pixel must not
      * mark the view dirty. `mode` (RADAR_NOHDG included) needs no such
@@ -5677,7 +5680,8 @@ static void shell_flare_wire(shell_t *sh, ff_flare_intent_t intent, uint16_t dur
             /* S27 sounds, moved here from the two ff_flare_send_begin call
              * sites (2026-09-03 review round 2): FLARE_SENT must mark the
              * frame actually reaching the wire, not the user's send
-             * INTENT — a chime saying "sent" over a "NO MESH" overlay is
+             * INTENT — a chime saying "sent" over a "NO RADIO" overlay
+             * (wording per A02/PR #303, 2026-09-13 — was "NO MESH") is
              * exactly the same class of dishonesty this whole PR exists
              * to fix. Fires once, at the WAITING->SENT transition, on
              * whichever attempt lands first (the initial one, or a later
@@ -6382,7 +6386,7 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * site (the Radar CLOSE-mode FLARE button) and QUICK_FLARE below
          * are simply the two triggers that reach `shell_flare_wire`; the
          * chime no longer fires here directly, so a link-down send does
-         * NOT chime "sent" over a "NO MESH" overlay — it chimes once,
+         * NOT chime "sent" over a "NO RADIO" overlay (was "NO MESH") — it chimes once,
          * later, exactly when a retry finally lands. */
         return;
 

@@ -767,7 +767,8 @@ static void S16_AC9_cold_boot_replay_is_never_stamped_fresh(void)
     /* Not recorded at all: we have just learned the time FROM this node,
      * so we have no independent evidence of how old its fix is. NEVER is
      * the honest answer, and ff_radar.h's renderer contract turns it into
-     * "NO FIX YET" rather than a fabricated "LAST SEEN". */
+     * "NO LOCATION YET" (wording per A02/PR #303, 2026-09-13 — was
+     * "NO FIX YET") rather than a fabricated "LAST SEEN". */
     TEST_ASSERT_NOT_EQUAL_INT(FF_FRESH_LIVE, ff_crew_freshness(member(DANA), H.clk.t));
     TEST_ASSERT_EQUAL_INT(FF_FRESH_NEVER, ff_crew_freshness(member(DANA), H.clk.t));
     TEST_ASSERT_FALSE(member(DANA)->has_pos);

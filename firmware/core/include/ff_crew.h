@@ -98,8 +98,10 @@ extern "C" {
  * member's last known coordinate," nothing about whether the radio is
  * still hearing them at all. See FF_CREW_HEARD_LIVE_MS/
  * FF_CREW_HEARD_LOST_MS and `ff_crew_presence` just below for the
- * separate radio-silence axis that now drives the "LOST" chips/labels
- * (Inbox rows, CREW page) that used to read THIS axis alone — indoors,
+ * separate radio-silence axis that now drives the "NO SIGNAL <age>"
+ * chips/labels (Inbox rows, CREW page; word renamed from the bare
+ * "LOST" by A02/PR #303, 2026-09-13) that used to read THIS axis
+ * alone — indoors,
  * with no GPS fix, a member's last outdoor position ages into LOST here
  * while their NodeInfo/telemetry keep arriving every few minutes; that
  * is honest position staleness, not radio silence, and the two must
@@ -180,13 +182,15 @@ typedef enum { FF_FRESH_LIVE, FF_FRESH_STALE, FF_FRESH_LOST, FF_FRESH_NEVER, FF_
  * is still being heard from constantly. `ff_crew_presence` answers the
  * honest question this member never could: "is the radio still hearing
  * this person" — an axis orthogonal to "how old is their last known
- * position." Chips/labels that render "LOST" (Inbox rows, the CREW page
- * — via `ff_sigview_presence`, now driven by this enum) read THIS axis,
- * never position age. Radar/Map PLACEMENT (`ff_radar_compute`'s mode,
- * arrow style, rim tint) keeps reading `ff_crew_freshness` alone — a
- * stale position is still drawn as stale — but the radar CHIP TEXT for a
- * member with no fix at all also consults this enum, to read "near, no
- * fix" instead of implying total silence when the radio plainly isn't
+ * position." Chips/labels that render "NO SIGNAL <age>" (Inbox rows,
+ * the CREW page — via `ff_sigview_presence`, now driven by this enum;
+ * word renamed from the bare "LOST" by A02/PR #303, 2026-09-13, this
+ * enum's own name unchanged) read THIS axis, never position age.
+ * Radar/Map PLACEMENT (`ff_radar_compute`'s mode, arrow style, rim
+ * tint) keeps reading `ff_crew_freshness` alone — a stale position is
+ * still drawn as stale — but the radar CHIP TEXT for a member with no
+ * fix at all also consults this enum, to read "NEARBY, NO LOCATION"
+ * instead of implying total silence when the radio plainly isn't
  * silent (see ff_radar.h's `heard_presence` field). */
 typedef enum {
     FF_CREW_PRESENCE_HEARD, /* heard_age < FF_CREW_HEARD_LIVE_MS (2 min) */
