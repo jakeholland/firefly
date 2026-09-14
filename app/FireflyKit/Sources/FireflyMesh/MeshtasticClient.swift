@@ -771,6 +771,9 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         if let readLora {
             nodeConfig.region = readLora.region
             nodeConfig.modemPreset = readLora.modemPreset
+            nodeConfig.usePreset = readLora.usePreset
+            nodeConfig.hopLimit = readLora.hopLimit
+            nodeConfig.txEnabled = readLora.txEnabled
         }
         if !readChannels.isEmpty || readLora != nil { nodeConfigHub.yield(nodeConfig) }
         return ChannelWriteReport(channels: readChannels, loraConfig: readLora)
@@ -852,6 +855,9 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         // own authoritative read-back.
         nodeConfig.region = got.region
         nodeConfig.modemPreset = got.modemPreset
+        nodeConfig.usePreset = got.usePreset
+        nodeConfig.hopLimit = got.hopLimit
+        nodeConfig.txEnabled = got.txEnabled
         nodeConfigHub.yield(nodeConfig)
         return RegionWriteReport(region: got.region)
     }
@@ -1662,6 +1668,9 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             if case .lora(let lora)? = cfg.payloadVariant {
                 nodeConfig.region = lora.region
                 nodeConfig.modemPreset = lora.modemPreset
+                nodeConfig.usePreset = lora.usePreset
+                nodeConfig.hopLimit = lora.hopLimit
+                nodeConfig.txEnabled = lora.txEnabled
                 nodeConfigHub.yield(nodeConfig)
             }
 

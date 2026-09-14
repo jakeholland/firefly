@@ -362,21 +362,41 @@ struct CrewAdvancedScreen: View {
             }
             Section {
                 if let code = controller.profile?.code, let parsed = try? CrewCode.parse(code) {
-                    Button("Copy Meshtastic link") {
-                        #if os(iOS)
-                        UIPasteboard.general.string = CrewChannel.meshtasticURL(for: parsed)
-                        #elseif os(macOS)
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(CrewChannel.meshtasticURL(for: parsed), forType: .string)
-                        #endif
+                    // §1.8 amendment (2026-09-14, bench finding): the
+                    // exported link now carries the radio's CURRENT LoRa
+                    // config (`--seturl` and the official apps' URL
+                    // import REPLACE it, and an absent one writes the
+                    // importing radio deaf — region UNSET, preset off).
+                    // `controller.meshtasticURL` is `nil` exactly when
+                    // that config isn't known yet or is itself `.unset`
+                    // (same fact `regionIsUnset` already gates Start/
+                    // Join on) — show the same honest blocker here
+                    // instead of a link that would go on to break
+                    // something.
+                    if let url = controller.meshtasticURL(for: parsed) {
+                        Button("Copy Meshtastic link") {
+                            #if os(iOS)
+                            UIPasteboard.general.string = url
+                            #elseif os(macOS)
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(url, forType: .string)
+                            #endif
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(Color.ffMuted)
+                        .foregroundStyle(Color.ffAmber)
+                        Text("For other apps and for setting up a puck by hand. Whatever imports this " +
+                             "link will use this crew as its main channel and turn its other channels off.")
+                            .font(.caption)
+                            .foregroundStyle(Color.ffMuted)
+                    } else {
+                        Text("Set the radio region first")
+                            .foregroundStyle(Color.ffMuted)
+                        Text("Your puck's frequency band isn't set yet, so this link can't safely carry " +
+                             "it. Set it above, then come back here.")
+                            .font(.caption)
+                            .foregroundStyle(Color.ffMuted)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(Color.ffMuted)
-                    .foregroundStyle(Color.ffAmber)
-                    Text("For other apps and for setting up a puck by hand. Whatever imports this " +
-                         "link will use this crew as its main channel and turn its other channels off.")
-                        .font(.caption)
-                        .foregroundStyle(Color.ffMuted)
                 }
             }
             Section("About this crew's key") {

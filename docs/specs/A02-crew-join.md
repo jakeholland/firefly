@@ -214,7 +214,7 @@ future format change (`firefly-crew-v2`) cannot collide with a v1 code.
 | `ModuleSettings.position_precision` | **32**, always explicitly present | the crew exists to find each other; see below |
 | `Channel.index` | the primary slot, **0** | §4.2 |
 | `Channel.role` | `PRIMARY` | |
-| LoRa config (region, modem preset) | **never written** | §1.7 |
+| LoRa config (region, modem preset) | **never written** — this table is what a crew JOIN writes to the radio's channel table; it is unaffected by the §1.8 amendment below, which is about the SEPARATE "Copy Meshtastic link" export | §1.7 |
 
 `position_precision = 32` is a deliberate departure from the import
 path's safe default of 0 (`ChannelImportResult.makeChannelWritePlan`,
@@ -339,20 +339,67 @@ easier scan on a scratched phone screen in the dark.
 
 **But the Meshtastic link still exists, under Advanced.** Crew →
 Advanced → **Copy Meshtastic link** produces the standard
-`https://meshtastic.org/e/#<base64url ChannelSet>`, built by the
-*existing* `ChannelURL.encode` from the *same* derived channel, so a
-puck being provisioned by CLI, a stock Meshtastic app, or any other
-client can still import the crew. Its row says, in plain words, what it
-does: *"For other apps and for setting up a puck by hand. Whatever
-imports this link will use this crew as its main channel and turn its
-other channels off."*
+`https://meshtastic.org/e/#<base64url ChannelSet>`, built by
+`ChannelURL.encode` from the *same* derived channel, so a puck being
+provisioned by CLI, a stock Meshtastic app, or any other client can
+still import the crew. Its row says, in plain words, what it does:
+*"For other apps and for setting up a puck by hand. Whatever imports
+this link will use this crew as its main channel and turn its other
+channels off."*
 
-- The fallback URL is a **replace** URL (no `?add=true`) and carries
-  **no `lora_config`**. Replace, because the crew channel must land on
-  index 0 as the primary everywhere (§4.2) and that is what a bare
-  replace guarantees; no `lora_config`, because §1.7 — the importer's
-  region and preset are none of our business. `makeChannelWritePlan`
-  already implements exactly these semantics and is reused unchanged.
+- The fallback URL is a **replace** URL (no `?add=true`). Replace,
+  because the crew channel must land on index 0 as the primary
+  everywhere (§4.2) and that is what a bare replace guarantees.
+  `makeChannelWritePlan` already implements exactly this semantics and
+  is reused unchanged for the *import* side (a phone importing a link
+  it received).
+
+> #### AMENDMENT — 2026-09-14, bench finding: the link MUST carry
+> `lora_config`
+>
+> This subsection originally said the fallback URL carries **no**
+> `lora_config`, "because §1.7 — the importer's region and preset are
+> none of our business." That reasoning is correct for Firefly's OWN
+> join path (admin `set_channel` never writes `lora_config` — §1.5,
+> §1.7 stand, unaffected by this amendment) but **wrong** for this
+> link, and shipping it that way would have broken every radio
+> provisioned through it.
+>
+> **What's actually true, bench-confirmed on a Heltec V3:** the
+> Meshtastic Python CLI's `--seturl` (and the official apps' URL
+> import) **replace** the target radio's entire `lora_config` from the
+> URL's `lora_config` field. An absent field is not "leave it alone" —
+> it is "write an EMPTY `LoRaConfig`": `region UNSET`, `use_preset
+> false`. `--seturl` against the old (no-`lora_config`) form of this
+> URL left the bench radio unable to hear anything (`"region":
+> "UNSET", "usePreset": false`); restoring a `--qr`-style URL that
+> carries `lora_config` brought it back.
+>
+> **Decision:** the exported `ChannelSet` MUST carry `lora_config`,
+> copied from the *exporting* radio's CURRENT LoRa config — at minimum
+> `use_preset`, `modem_preset`, `region`, `hop_limit`, `tx_enabled`;
+> never `channel_num`/`override_frequency` unless the exporting radio
+> actually has them set (most don't — those two fields exist for
+> advanced/test configurations this spec has no business inventing).
+> This is never a guess: it is read straight off the connected radio's
+> own `want_config` config replies (`NodeConfigSnapshot.loraConfig`,
+> `FireflyMesh`), the same passive-read seam §1.7's region gate already
+> uses.
+>
+> **Corollary: the export must refuse while the exporting radio's
+> region is UNSET.** Copying an UNSET region forward would just move
+> the deafness bug from "the link never carried a region" to "the link
+> carries a *known-broken* one." Crew → Advanced → Copy Meshtastic link
+> shows *"Set the radio region first"* and does not produce a link at
+> all in that state, matching the same fact the Start/Join region gate
+> already surfaces.
+>
+> This is a genuine scope change to what ships on the wire (the export
+> path only — §1.5's join-write `ChannelSet` is untouched), so it gets
+> the same test-vector treatment as everything else in §1.9: the
+> fixture's `export_lora_config` block and every vector's
+> `export_channelset_hex`/`meshtastic_url`, regenerated. §7 AC3 is
+> amended to match.
 
 ### 1.9 Test vectors — byte exact
 
@@ -363,9 +410,24 @@ Swift tests (`CrewCodeTests`) and the C tests
 (`firmware/core/tests/test_crewcode.c`). One file, two languages, no
 drift — the same discipline `ProtobufPinTests` uses.
 
-The `ChannelSet` bytes are the serialization of exactly one
-`ChannelSettings` (psk field 2, name field 3, module_settings field 7
-containing position_precision field 1 = 32), no `lora_config`.
+The `ChannelSet` bytes (`channelset_hex`) are the serialization of
+exactly one `ChannelSettings` (psk field 2, name field 3,
+module_settings field 7 containing position_precision field 1 = 32), no
+`lora_config` — this is the join-write `ChannelSet` (§1.5), unaffected
+by the §1.8 amendment above.
+
+**§1.8 amendment addition:** the fixture also carries a single
+top-level `export_lora_config` block (the values the amendment's bench
+example uses: `use_preset=true, modem_preset=LONG_FAST, region=US,
+hop_limit=3, tx_enabled=true` — `ChannelSet.settings` field 1,
+`lora_config` field 2; `LoRaConfig.use_preset` field 1, `modem_preset`
+field 2, `region` field 7, `hop_limit` field 8, `tx_enabled` field 9,
+verified against `MeshtasticProto/config.pb.swift`) and each vector adds
+`export_channelset_hex` — `channelset_hex` with that `lora_config`
+appended as field 2 — which is what `meshtastic_url` now encodes. Only
+`channelset_hex`/`meshtastic_url` from before this amendment would have
+diverged from each other; they do not, because `meshtastic_url` was
+regenerated FROM `export_channelset_hex`, not from `channelset_hex`.
 
 **Vector 1 — the canonical example (all shipped copy uses this code)**
 
@@ -1191,11 +1253,20 @@ someone is, and losing the FIND you started, is a bug with a rationale.
 2. **A02_AC2** — `CrewCode.psk(for:)` reproduces vectors 1–3 and 5 byte
    for byte, in both the Swift and C implementations, from the shared
    `docs/specs/fixtures/A02-crew-codes.json`.
-3. **A02_AC3** — the built `ChannelSet` serializes to the vector hex
-   exactly, and `ChannelURL.encode` of it produces the vector URL
-   exactly; `ChannelURL.parse` of that URL round-trips to an identical
-   `ChannelSet`. `position_precision` is present and 32 in every case;
-   `lora_config` is absent in every case.
+3. **A02_AC3** — the join-write `ChannelSet` (`CrewChannel
+   .channelSet(for:)`, §1.5) serializes to the vector's
+   `channelset_hex` exactly. `position_precision` is present and 32 in
+   every case; `lora_config` is absent in every case — this is the
+   `ChannelSet` Firefly's own join path writes, and the §1.8 amendment
+   does not touch it.
+   **§1.8 amendment, 2026-09-14** — the EXPORT `ChannelSet`
+   (`CrewChannel.exportChannelSet(for:loraConfig:)`, built with the
+   fixture's `export_lora_config`) serializes to `export_channelset_hex`
+   exactly, `hasLoraConfig` is `true`, and `ChannelURL.encode` of it
+   produces the vector's `meshtastic_url` exactly; `ChannelURL.parse` of
+   that URL round-trips to an identical export `ChannelSet`. Exporting
+   with `region == .unset` throws (`CrewChannel.ExportError
+   .regionUnset`) rather than producing a URL.
 4. **A02_AC4** — code generation is correct **and its test is
    deterministic**. Three parts, none of them a sampling test:
    (a) generation draws its 30 bits from the platform CSPRNG

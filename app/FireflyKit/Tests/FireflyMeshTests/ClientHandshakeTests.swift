@@ -71,11 +71,15 @@ final class ClientHandshakeTests: XCTestCase {
 
     // Finding 2 (first real-radio session) frame builders.
 
-    private func loraConfigFrame(region: Config.LoRaConfig.RegionCode, modemPreset: Config.LoRaConfig.ModemPreset) -> Data {
+    private func loraConfigFrame(region: Config.LoRaConfig.RegionCode, modemPreset: Config.LoRaConfig.ModemPreset,
+                                  usePreset: Bool = true, hopLimit: UInt32 = 3, txEnabled: Bool = true) -> Data {
         fromRadio { fr in
             var lora = Config.LoRaConfig()
             lora.region = region
             lora.modemPreset = modemPreset
+            lora.usePreset = usePreset
+            lora.hopLimit = hopLimit
+            lora.txEnabled = txEnabled
             var config = Config()
             config.lora = lora
             fr.config = config
@@ -443,6 +447,48 @@ final class ClientHandshakeTests: XCTestCase {
 
         XCTAssertEqual(client.connectedNodeConfig?.region, .us)
         XCTAssertEqual(client.connectedNodeConfig?.modemPreset, .longFast)
+    }
+
+    /// §1.8 amendment (2026-09-14, bench finding): `usePreset`/
+    /// `hopLimit`/`txEnabled` are read off the SAME `.config(.lora)`
+    /// frame as region/modem preset, and `NodeConfigSnapshot.loraConfig`
+    /// assembles all five into the exact `Config.LoRaConfig` "Copy
+    /// Meshtastic link" needs to export — `docs/specs/A02-crew-join.md`
+    /// §1.8, `CrewController.meshtasticURL(for:)`.
+    func testNodeConfigReadsFullLoRaConfigFromWantConfig() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport)
+
+        let connectTask = Task { try await client.connect() }
+        try await waitForSentCount(2, on: transport)
+        transport.inject(myInfoFrame(num: 1))
+        transport.inject(loraConfigFrame(region: .us, modemPreset: .longFast,
+                                          usePreset: true, hopLimit: 3, txEnabled: true))
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyConfig))
+        try await waitForSentCount(3, on: transport)
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyNodeDB))
+        try await connectTask.value
+
+        let snapshot = client.connectedNodeConfig
+        XCTAssertEqual(snapshot?.usePreset, true)
+        XCTAssertEqual(snapshot?.hopLimit, 3)
+        XCTAssertEqual(snapshot?.txEnabled, true)
+
+        var expected = Config.LoRaConfig()
+        expected.region = .us
+        expected.modemPreset = .longFast
+        expected.usePreset = true
+        expected.hopLimit = 3
+        expected.txEnabled = true
+        XCTAssertEqual(snapshot?.loraConfig, expected)
+    }
+
+    /// `loraConfig` is `nil` before `region` has ever been reported —
+    /// never a guessed/zeroed `Config.LoRaConfig()` (which would read as
+    /// a VALID `.unset`-region config to a careless caller, rather than
+    /// "not known yet").
+    func testNodeConfigLoraConfigIsNilBeforeAnyRegionReport() {
+        XCTAssertNil(NodeConfigSnapshot().loraConfig)
     }
 
     /// The PRIMARY channel's name only — a secondary channel in the same

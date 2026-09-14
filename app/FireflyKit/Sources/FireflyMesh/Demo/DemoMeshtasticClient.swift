@@ -124,7 +124,9 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     /// allowed to be fictional" rule.
     public static let scriptedNodeConfig = NodeConfigSnapshot(
         ownerLongName: "JAKE", ownerShortName: "JAKE",
-        region: .us, modemPreset: .longFast, primaryChannelName: "Firefly Fields")
+        region: .us, modemPreset: .longFast,
+        usePreset: true, hopLimit: 3, txEnabled: true,
+        primaryChannelName: "Firefly Fields")
 
     public var connectedNodeNum: UInt32? {
         get { lock.lock(); defer { lock.unlock() }; return _connectedNodeNum }
