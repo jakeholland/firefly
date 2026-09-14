@@ -756,4 +756,131 @@ final class CrewMembershipEngineTests: XCTestCase {
         XCTAssertEqual(CrewMembershipEngine.displayName(nickname: nil, longName: nil, shortName: nil),
                         "New crew member")
     }
+
+    // MARK: - A02 slice E — admission counters (§6.5's "Crew diagnostics")
+
+    /// A real admission increments `.admitted` and stamps
+    /// `lastAdmissionAtMs` — but a SECOND packet from the same,
+    /// already-crew member (the `isCrew(_:)` fast path in `admits(_:)`)
+    /// must NOT: the diagnostics row counts admissions, not ordinary
+    /// traffic from people already in (`CrewAdmissionCounters.admitted`'s
+    /// own doc comment).
+    func testAdmissionCounters_countsNewAdmissionsOnlyNotOrdinaryTraffic() async throws {
+        let h = try await connectedCrewHarness()
+        XCTAssertEqual(h.engine.admissionCounters.admitted, 0)
+        XCTAssertNil(h.engine.lastAdmissionAtMs)
+
+        h.transport.inject(try packetFrame(from: 1001, channel: Self.crewIndex, portnum: .nodeinfoApp,
+                                           payload: try userPayload(long: "Deshawn")))
+        try await pump(h)
+        XCTAssertEqual(h.engine.admissionCounters.admitted, 1)
+        XCTAssertNotNil(h.engine.lastAdmissionAtMs)
+
+        // Same member, a second packet: already crew, no new admission.
+        h.transport.inject(try packetFrame(from: 1001, channel: Self.crewIndex, portnum: .textMessageApp,
+                                           payload: Data("hi again".utf8)))
+        try await pump(h)
+        XCTAssertEqual(h.engine.admissionCounters.admitted, 1, "traffic from an existing member is not a new admission")
+    }
+
+    /// Every `tryAdmit`/`admits` refusal clause increments its OWN
+    /// counter, and no other — the diagnostics row's whole point is
+    /// telling these apart (task brief: "admitted / refused by reason").
+    ///
+    /// One reason per test, each against a FRESH harness with exactly
+    /// ONE `pump(h)` call: `.nodeinfoApp`/`.positionApp` packets
+    /// publish TWO `nodeUpdates()` elements each (`applyRxMeta`'s own
+    /// "a snapshot is now published for EVERY packet naming a sender"
+    /// comment, `MeshtasticClient.swift`), and `pump`'s own sentinel is
+    /// itself a `.nodeinfoApp` packet on `Self.otherIndex` — so it
+    /// always contributes exactly `refusedWrongChannel += 2` on a
+    /// harness's FIRST-ever `pump(h)` call. Every packet THIS file
+    /// injects below uses `.textMessageApp` (still one of the four
+    /// admitting portnums, §4.1 clause 6) specifically so it publishes
+    /// exactly one element and the counters stay arithmetically simple;
+    /// mixing pump() calls within one test (or reusing `.nodeinfoApp`)
+    /// reintroduces exactly this double-counting, which is what the
+    /// first draft of this test caught the hard way.
+    func testAdmissionCounters_hiddenRefusalCountsUnderItsOwnLabel() async throws {
+        let h = try await connectedCrewHarness()
+        h.engine.hide(nodeID: 2001)
+        h.transport.inject(try packetFrame(from: 2001, channel: Self.crewIndex, portnum: .textMessageApp,
+                                           payload: Data("hi".utf8)))
+        try await pump(h)
+        XCTAssertEqual(h.engine.admissionCounters.refusedHidden, 1)
+        XCTAssertEqual(h.engine.admissionCounters.refusedWrongChannel, 2, "the sentinel's own two elements")
+        XCTAssertEqual(h.engine.admissionCounters.refusedTotal, 3)
+        XCTAssertEqual(h.engine.admissionCounters.admitted, 0)
+    }
+
+    func testAdmissionCounters_wrongChannelRefusalCountsUnderItsOwnLabel() async throws {
+        let h = try await connectedCrewHarness()
+        h.transport.inject(try packetFrame(from: 2002, channel: Self.otherIndex, portnum: .textMessageApp,
+                                           payload: Data("hi".utf8)))
+        try await pump(h)
+        XCTAssertEqual(h.engine.admissionCounters.refusedWrongChannel, 3, "the own packet, plus the sentinel's two")
+        XCTAssertEqual(h.engine.admissionCounters.refusedHidden, 0)
+        XCTAssertEqual(h.engine.admissionCounters.admitted, 0)
+    }
+
+    func testAdmissionCounters_viaMQTTRefusalCountsUnderItsOwnLabel() async throws {
+        let h = try await connectedCrewHarness()
+        h.transport.inject(try packetFrame(from: 2003, channel: Self.crewIndex, portnum: .textMessageApp,
+                                           payload: Data("hi".utf8), viaMqtt: true))
+        try await pump(h)
+        XCTAssertEqual(h.engine.admissionCounters.refusedViaMQTT, 1)
+        XCTAssertEqual(h.engine.admissionCounters.refusedWrongChannel, 2, "the sentinel's own two elements")
+        XCTAssertEqual(h.engine.admissionCounters.admitted, 0)
+    }
+
+    func testAdmissionCounters_wrongPortnumRefusalCountsUnderItsOwnLabel() async throws {
+        let h = try await connectedCrewHarness()
+        h.transport.inject(try packetFrame(from: 2004, channel: Self.crewIndex, portnum: .telemetryApp,
+                                           payload: Data()))
+        try await pump(h)
+        XCTAssertEqual(h.engine.admissionCounters.refusedWrongPortnum, 1)
+        XCTAssertEqual(h.engine.admissionCounters.refusedWrongChannel, 2, "the sentinel's own two elements")
+        XCTAssertEqual(h.engine.admissionCounters.admitted, 0)
+    }
+
+    /// §4.3's overflow path — `refusedRosterFull`, not a silent drop.
+    /// All nine packets injected BEFORE the one `pump(h)` call, for the
+    /// same reason the four tests above each use exactly one: repeated
+    /// `pump(h)` calls against the SAME sentinel id/name let a later
+    /// call's sentinel short-circuit on its own already-named record
+    /// (set by an earlier call) and leave an element from THAT earlier
+    /// call still unconsumed — batching sidesteps it entirely rather
+    /// than depending on it.
+    func testAdmissionCounters_rosterFullCountsAsItsOwnReason() async throws {
+        let h = try await connectedCrewHarness()
+        for id: UInt32 in 3001...3008 {
+            h.transport.inject(try packetFrame(from: id, channel: Self.crewIndex, portnum: .textMessageApp,
+                                               payload: Data("hi from \(id)".utf8)))
+        }
+        h.transport.inject(try packetFrame(from: 3009, channel: Self.crewIndex, portnum: .textMessageApp,
+                                           payload: Data("hi from 3009".utf8)))
+        try await pump(h)
+
+        XCTAssertEqual(h.engine.admissionCounters.admitted, 8)
+        XCTAssertEqual(h.engine.admissionCounters.refusedRosterFull, 1)
+        XCTAssertEqual(h.engine.untracked.map(\.nodeID), [3009])
+    }
+
+    // MARK: - A02 slice E — `seedUntrackedForDemo` (`-FireflyDemoScreen crew`)
+
+    /// Demo-only seam: appends directly, never touches
+    /// `admissionCounters` (which must stay an honest count of REAL
+    /// admission decisions even while demo mode is running).
+    func testSeedUntrackedForDemo_appendsDirectlyAndNeverTouchesRealCounters() {
+        let h = makeHarness()
+        let first = Date(timeIntervalSince1970: 1_000)
+        let last = Date(timeIntervalSince1970: 2_000)
+        h.engine.seedUntrackedForDemo(nodeID: 0xABCD, firstHeard: first, lastHeard: last)
+
+        XCTAssertEqual(h.engine.untracked.count, 1)
+        XCTAssertEqual(h.engine.untracked[0].nodeID, 0xABCD)
+        XCTAssertEqual(h.engine.untracked[0].firstHeard, first)
+        XCTAssertEqual(h.engine.untracked[0].lastHeard, last)
+        XCTAssertEqual(h.engine.admissionCounters, CrewAdmissionCounters(), "no real admission decision was made")
+    }
 }

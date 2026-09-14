@@ -257,6 +257,13 @@ targets:
       # `plainLabel(age:)`/`CrewDisplayFallback` words — and that
       # delegation is exactly what `CrewCopyTests` pins.
       - path: Firefly/Sources/Crew/CrewCopy.swift
+      # A02 slice E's two Advanced-only view models (`CrewHeardListView
+      # Model`/`CrewDiagnosticsViewModel`'s own header comments) —
+      # SwiftUI-free by construction, same reasoning as every other file
+      # in this list, appended for the same reason `CrewController.swift`
+      # is here: `Firefly/Tests` below needs them in scope to build.
+      - path: Firefly/Sources/Crew/CrewHeardListViewModel.swift
+      - path: Firefly/Sources/Crew/CrewDiagnosticsViewModel.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit

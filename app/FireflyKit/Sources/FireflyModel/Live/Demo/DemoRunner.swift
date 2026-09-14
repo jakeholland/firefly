@@ -32,6 +32,7 @@
 //
 import FireflyMesh
 import Foundation
+import MeshtasticProto
 
 @MainActor
 public final class DemoRunner {
@@ -228,6 +229,53 @@ public final class DemoRunner {
 
     public func selectMember(_ nodeID: UInt32) {
         graph.core.crew.selectNode(nodeID)
+    }
+
+    /// `-FireflyDemoScreen crew`'s own request (A02 slice E, task scope
+    /// item 4): populate Advanced -> "Crew diagnostics"/"People my puck
+    /// hears" with something real to show instead of "No crew set" and
+    /// an empty list. `DemoCrew.profile` already gives
+    /// `CrewController.profile` a code for this exact screen name (via
+    /// `AppGraph.makeCrewProfileStore`), and `AppGraph.init` has already
+    /// called `crewMembership.configure(crew:)` off that same profile —
+    /// so this method only has to give the demo radio a channel table to
+    /// resolve against and seed the two Advanced rows.
+    ///
+    /// Deliberately its own method, not folded into `start()`: every
+    /// OTHER demo screenshot (`welcome`, `radar`, `connect`, `crew-
+    /// start`, …) must keep seeing `client.channelTable == []` and
+    /// `crewMembership.channelStatus == .noCrew` exactly as before —
+    /// same convention `triggerInboundFlare()`/`triggerInboundRally()`
+    /// already follow for their own single-screen-only seeds.
+    public func seedCrewAdvancedDemo() {
+        let code = try! CrewCode.parse(DemoCrew.profile.code)
+        client.channelTable = [{
+            var channel = Channel()
+            channel.index = 0
+            channel.role = .primary
+            channel.settings = CrewChannel.channelSettings(for: code)
+            return channel
+        }()]
+        graph.crewMembership.configure(crew: CrewChannelIdentity(code: code.canonical, psk: CrewKey.psk(for: code)))
+        // `resolveCrewChannelIndex()`, not a bare `Task { await
+        // refreshCrewChannelIndex() }`: the former CANCELS the resolve
+        // `AppGraph.init` already kicked off against an empty demo
+        // channel table, so that older read can never land afterwards
+        // and put this row back to "Not resolved yet".
+        graph.crewMembership.resolveCrewChannelIndex()
+
+        // A real pair, then a real hide (§4.5) — a dedicated demo id
+        // (this file's own header comment on why not Taylor/Dana/Sam).
+        graph.crewPairing.pair(nodeID: DemoCrew.hiddenFriend)
+        graph.crewMembership.hide(nodeID: DemoCrew.hiddenFriend)
+
+        // One overflow entry (§4.3) — seeded directly
+        // (`seedUntrackedForDemo`'s own header comment on why).
+        let now = Date()
+        graph.crewMembership.seedUntrackedForDemo(
+            nodeID: DemoCrew.overflowFriend,
+            firstHeard: now.addingTimeInterval(-9 * 60),
+            lastHeard: now.addingTimeInterval(-2 * 60))
     }
 
     /// `-FireflyDemoScreen flare`'s own request: a real inbound FLARE

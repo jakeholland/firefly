@@ -140,11 +140,23 @@ struct FireflyApp: App {
         // after A01's dependency list was frozen; adding three more
         // fields there for a feature this self-contained was not worth
         // widening a shared struct every other slice also constructs).
+        //
+        // PR #313 review — `profileStore:` is `graph.crewProfileStore`,
+        // NOT a second `CrewProfileStore()`: the graph configures
+        // `crewMembership` off that same store at `init`, and two
+        // instances would agree only by `UserDefaults` coincidence (and
+        // not at all in demo mode, where the graph's store is in-memory).
         let crewVM = CrewController(
             client: graph.dependencies.client,
-            profileStore: CrewProfileStore(),
+            profileStore: graph.crewProfileStore,
             snapshotStore: CrewSnapshotKeychainStore(),
             hiddenStore: CrewHiddenStore())
+        // …and the other direction: every Start/Join/switch/Leave points
+        // the membership engine at the crew the user is NOW on (or at
+        // none). `AppGraph.syncCrewMembershipWithProfile()` re-reads the
+        // store, so this closure carries no crew state of its own. No
+        // retain cycle: the graph does not hold `crewVM`.
+        crewVM.onProfileChanged = { [graph] in graph.syncCrewMembershipWithProfile() }
         _crew = State(initialValue: crewVM)
         // Slice C has landed (#306): the Crew page and Start's Joined
         // list read the REAL `CrewMembershipEngine` — "admitted since

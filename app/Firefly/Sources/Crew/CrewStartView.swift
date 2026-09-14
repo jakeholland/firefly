@@ -237,3 +237,21 @@ struct CrewStartView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
+
+/// §6.5's "Start a new crew" — the Advanced-only entry point, PUSHED
+/// (not `fullScreenCover`d like the first-launch onboarding container)
+/// since this is reached from deep inside the app, already on a crew.
+/// A thin wrapper, not a fork: `CrewStartView` itself is unchanged and
+/// does not know whether it was reached from onboarding or from here —
+/// the only Advanced-specific behaviour is `onDone` popping this screen
+/// with `dismiss()` instead of tearing down a modal cover.
+struct CrewStartNewCrewView: View {
+    let controller: CrewController
+    let membership: any CrewMembershipProviding
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        CrewStartView(controller: controller, membership: membership, onDone: { dismiss() })
+    }
+}

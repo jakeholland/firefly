@@ -611,6 +611,13 @@ struct RootView: View {
             crewOnboardingForceStep = .join
             showCrewOnboarding = true
         case "crew":
+            // A02 slice E, task scope item 4 — populate the Crew page
+            // and Advanced (`DemoRunner.seedCrewAdvancedDemo()`'s own
+            // comment on why this is its own call, not part of
+            // `start()`). `CrewProfileStore.demoFallback` already gives
+            // `crew.profile` a code for this exact screen name; this is
+            // the matching seed on `CrewMembershipEngine`.
+            demoRunner.seedCrewAdvancedDemo()
             selection = .more
             moreAutoOpen = .crew
         case "radar":

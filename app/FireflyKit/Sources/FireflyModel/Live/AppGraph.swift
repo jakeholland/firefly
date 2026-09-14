@@ -68,6 +68,13 @@ public final class AppGraph {
     /// through `CrewMembershipProviding` — `CoreStore.membership` sees
     /// only the gate half of the same object.
     public let crewMembership: CrewMembershipEngine
+    /// A02 §4.2 — the phone's own crew profile (code + human name), and
+    /// the ONE instance of it in the process: `FireflyApp` hands this
+    /// same object to `CrewController` rather than constructing a second
+    /// `CrewProfileStore`, so "which crew am I on" has a single answer
+    /// that the Crew page and `crewMembership` below cannot disagree
+    /// about.
+    public let crewProfileStore: any CrewProfileStoring
     /// "app: festpack from fest-almanac + Lineup" — the Lineup screen's
     /// data source. Demo mode (`dependencies.client is DemoMeshtasticClient`
     /// — the same downcast `FireflyApp.init` uses to recover its own
@@ -213,11 +220,13 @@ public final class AppGraph {
     /// test that wants to simulate "two launches sharing one store".
     public init(dependencies: AppDependencies = .current(), notifications: any NotificationSending = UNNotificationSending(),
                 skipLaunchAutoConnectUnderXCTest: Bool = false, historyStore: HistoryStore? = nil,
+                crewProfileStore: (any CrewProfileStoring)? = nil,
                 outboxIDGenerator: OutboxIDGenerator = .shared, inboundFeedIDGenerator: InboundFeedIDGenerator = .shared) {
         self.dependencies = dependencies
         self.notifications = notifications
         self.skipLaunchAutoConnectUnderXCTest = skipLaunchAutoConnectUnderXCTest
         self.historyStore = historyStore ?? (dependencies.store is InMemorySettingsStore ? .inMemory() : .live())
+        self.crewProfileStore = crewProfileStore ?? Self.makeCrewProfileStore(dependencies: dependencies)
         self.outboxIDGenerator = outboxIDGenerator
         self.inboundFeedIDGenerator = inboundFeedIDGenerator
         let rawInboxProvider = CoreInboxProvider(inbox: core.inbox, crew: core.crew)
@@ -299,6 +308,75 @@ public final class AppGraph {
         // be restored first or the first want_config replay would find
         // every returning member unpaired.
         core.membership = crewMembership
+        // A02 §4.1/§4.2, PR #313 review — THE production call site for
+        // `CrewMembershipEngine.configure(crew:)`. Without this the
+        // engine stays `.noCrew` for the whole life of the process no
+        // matter what the user started or joined, `admits(_:)` refuses
+        // everybody at clause 2, and slice C's entire auto-membership
+        // rule is inert in the shipped app (it was — nothing called
+        // `configure` outside demo mode until this line).
+        //
+        // Here, in `init`, for the same ordering reason `core.membership`
+        // above is: the gate must already know which crew it is gating
+        // for before `start()` can subscribe `core` to `nodeUpdates()`,
+        // or the first packets of a session would be judged against
+        // `.noCrew` and refused. The channel INDEX is resolved
+        // separately and asynchronously (`configure` -> `.resolving` ->
+        // `resolveCrewChannelIndex`), which is correct: at `init` there
+        // is no link yet, an unread channel table is `.resolving`, not
+        // "your puck isn't on this crew's channel", and `observe()` re-
+        // resolves on every `.ready` — i.e. after every want_config.
+        syncCrewMembershipWithProfile()
+    }
+
+    /// Point `crewMembership` at whatever crew this phone is actually on
+    /// — called at `init` and again by `CrewController` after every
+    /// Start, Join, switch and Leave (`FireflyApp.init` wires that
+    /// callback; `CrewController.onProfileChanged`).
+    ///
+    /// Reads the profile back out of the store rather than taking one as
+    /// an argument, deliberately: the store is the thing that persists,
+    /// so a caller can never hand this a crew that a relaunch would
+    /// disagree with. Leave clears the profile, so Leave lands here as
+    /// `configure(crew: nil)` with no separate "clear" path to forget.
+    ///
+    /// The PSK is DERIVED from the code (`CrewKey.psk(for:)`), never
+    /// stored alongside it and never read off the radio: §4.2 resolves
+    /// the channel index by name AND key, and a key taken from the radio
+    /// would make that comparison compare the radio with itself.
+    @discardableResult
+    public func syncCrewMembershipWithProfile() -> CrewChannelIdentity? {
+        guard let profile = crewProfileStore.load(),
+              let code = try? CrewCode.parse(profile.code) else {
+            crewMembership.configure(crew: nil)
+            return nil
+        }
+        let identity = CrewChannelIdentity(code: code.canonical, psk: CrewKey.psk(for: code))
+        crewMembership.configure(crew: identity)
+        return identity
+    }
+
+    /// The crew profile store for this composition. Demo mode gets an
+    /// in-memory one, pre-seeded ONLY for `-FireflyDemoScreen crew`
+    /// (`DemoCrew.profile`) — so the demo crew cannot persist (there is
+    /// nothing behind it to persist to) and cannot appear outside a
+    /// process that is genuinely running the demo world, since
+    /// `AppDependencies.current()` only ever builds a
+    /// `DemoMeshtasticClient` inside `#if targetEnvironment(simulator)`
+    /// and behind `DemoLaunch.isRequested()`. A stray
+    /// `-FireflyDemoScreen crew` on a real device reaches neither.
+    ///
+    /// Every other disposable stack (`.stub()`, tests) gets a plain
+    /// empty in-memory store, and only a real `.live()` composition
+    /// touches `UserDefaults` — the same `dependencies.store is
+    /// InMemorySettingsStore` tell `historyStore` above already uses.
+    private static func makeCrewProfileStore(dependencies: AppDependencies) -> any CrewProfileStoring {
+        guard dependencies.client is DemoMeshtasticClient else {
+            return dependencies.store is InMemorySettingsStore ? InMemoryCrewProfileStore() : CrewProfileStore()
+        }
+        let store = InMemoryCrewProfileStore()
+        if DemoLaunch.requestedScreen() == "crew" { store.save(DemoCrew.profile) }
+        return store
     }
 
     /// `FireflyApp`'s `ScenePhase` observation calls this — the one
@@ -424,6 +502,14 @@ public final class AppGraph {
         // subscription that outlives `stop()` is the leak `stopObserving`
         // exists to prevent.
         crewMembership.observe()
+        // `observe()` only re-resolves when a NEW `.ready` arrives, and
+        // `EventHub` is multicast, not replayed (S1) — so a graph that
+        // was stopped and started again while the link stayed up would
+        // otherwise keep an index resolved against the PREVIOUS session.
+        // Re-reading the table once here costs one admin round trip and
+        // removes the only path by which a cached index outlives the
+        // link it was read from.
+        crewMembership.resolveCrewChannelIndex()
         // Paired with `stop()`'s `radar?.stopObserving()` — without this,
         // backgrounding with background-connect off would stop Radar's
         // recompute loop permanently and coming back to the foreground

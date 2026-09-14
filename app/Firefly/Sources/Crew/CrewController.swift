@@ -27,6 +27,20 @@ final class CrewController {
     /// The crew this phone is currently on — `nil` before any Start/Join
     /// (or after Leave). Loaded from `profileStore` at init.
     private(set) var profile: CrewProfile?
+
+    /// Called whenever `profile` CHANGES — a Start, a Join, a "Start a
+    /// new crew" switch (§6.5), or a Leave. `FireflyApp` points this at
+    /// `AppGraph.syncCrewMembershipWithProfile()`, which is how
+    /// `CrewMembershipEngine` learns which crew to admit for; before PR
+    /// #313 nothing did, and auto-membership was inert in the shipped
+    /// app.
+    ///
+    /// A plain closure rather than a `CrewMembershipEngine` reference:
+    /// this controller has no business knowing the engine exists, and
+    /// every test in `CrewControllerTests` composes it without a graph.
+    /// Not called by `rename(humanName:)` — a rename changes the human
+    /// label, never the code, and the engine keys off the code.
+    var onProfileChanged: (@MainActor () -> Void)?
     var hasCrew: Bool { profile != nil }
 
     // MARK: - Region gate (§1.7)
@@ -134,7 +148,14 @@ final class CrewController {
     /// exclusive with everything else in this section. `nil` once
     /// `confirmApply()`/`cancelPending()` runs.
     enum PendingKind: Equatable {
-        case start(code: CrewCode, humanName: String)
+        /// `switchingFrom` is the crew this phone was on when THIS
+        /// Start began, or `nil` for the ordinary case (no crew yet).
+        /// Advanced -> "Start a new crew" (§6.5) is the only path that
+        /// ever populates it — the confirmation sheet's extra line
+        /// (`confirmationLines`) is what tells the user the old crew
+        /// stops seeing them, the same treatment `.join`'s own
+        /// `changingFrom` already gets for the mirror-image case.
+        case start(code: CrewCode, humanName: String, switchingFrom: String?)
         case join(code: CrewCode, name: String?, changingFrom: String?)
     }
     private(set) var pending: PendingKind?
@@ -148,15 +169,22 @@ final class CrewController {
     var isBusy: Bool { isPreparing || isApplying }
 
     /// §2.1: mint a fresh code and stage it for confirmation.
+    ///
+    /// §6.5's "Start a new crew" (Advanced, while already on one) calls
+    /// this exact function — there is no second minting path — so
+    /// `switchingFrom` is read off `profile` BEFORE `preparePlan()` can
+    /// touch anything, the same "capture the previous state first"
+    /// shape `beginJoin(code:name:)`'s own `changingFrom` already uses.
     @discardableResult
     func beginStart(humanName: String) async -> Bool {
         errorMessage = nil
         rejoinOwnCrewMessage = nil
+        let switchingFrom = profile?.humanName
         let code = CrewCode.generate()
         let trimmed = humanName.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = trimmed.isEmpty ? "My crew" : trimmed
         guard await preparePlan(for: code) else { return false }
-        pending = .start(code: code, humanName: name)
+        pending = .start(code: code, humanName: name, switchingFrom: switchingFrom)
         return true
     }
 
@@ -211,7 +239,7 @@ final class CrewController {
     /// "preset", "region", "PSK", "Meshtastic".
     var confirmationTitle: String {
         switch pending {
-        case .start(_, let name): return "Start \(name)?"
+        case .start(_, let name, _): return "Start \(name)?"
         case .join(_, _, .some): return "Join a new crew?"
         case .join(_, let name, nil): return "Join \(name ?? "this crew")?"
         case nil: return ""
@@ -236,14 +264,22 @@ final class CrewController {
         }
     }
 
-    /// The extra plain line a CHANGE-of-crew adds (§3.4) — and nothing
-    /// else. Start and a first-ever Join say everything they need to in
-    /// `confirmationPrimaryText`; repeating it here would print it
+    /// The extra plain line a CHANGE-of-crew adds (§3.4, and §6.5's
+    /// "Start a new crew" — the mirror-image case) — and nothing else.
+    /// An ordinary Start and a first-ever Join say everything they need
+    /// to in `confirmationPrimaryText`; repeating it here would print it
     /// twice on the sheet.
     var confirmationLines: [String] {
-        guard case .join(_, let name, .some(let previous)) = pending else { return [] }
-        let target = name ?? "the new crew"
-        return ["You'll leave \(previous) and join \(target). You can come back with \(previous)'s code."]
+        switch pending {
+        case .start(_, let name, .some(let previous)):
+            return ["This mints a brand-new crew called \(name). \(previous) stops seeing you, " +
+                     "and you can only get back into \(previous) with its own code."]
+        case .join(_, let name, .some(let previous)):
+            let target = name ?? "the new crew"
+            return ["You'll leave \(previous) and join \(target). You can come back with \(previous)'s code."]
+        default:
+            return []
+        }
     }
 
     /// The existing `ChannelApplySummary` lines, verbatim, behind
@@ -268,7 +304,7 @@ final class CrewController {
             return false
         }
         switch pending {
-        case .start(let code, let name):
+        case .start(let code, let name, _):
             adoptProfile(code: code, humanName: name)
         case .join(let code, let name, _):
             adoptProfile(code: code, humanName: name ?? code.canonical)
@@ -284,6 +320,7 @@ final class CrewController {
         let new = CrewProfile(code: code.canonical, humanName: humanName, createdAtMs: clock())
         profileStore.save(new)
         profile = new
+        onProfileChanged?()
     }
 
     // MARK: - Leave (§3.4)
@@ -320,6 +357,7 @@ final class CrewController {
         profileStore.rememberRecentCrew(RecentCrew(code: profile.code, humanName: profile.humanName))
         profileStore.clear()
         self.profile = nil
+        onProfileChanged?()
         return true
     }
 

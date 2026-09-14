@@ -33,7 +33,8 @@ import Foundation
 import MeshtasticProto
 
 @MainActor
-public final class CrewMembershipEngine: CrewMembershipGating, CrewMembershipProviding {
+public final class CrewMembershipEngine: CrewMembershipGating, CrewMembershipProviding,
+    CrewHeardListProviding, CrewDiagnosticsProviding {
     // MARK: - The rule's constants
 
     /// A02 §4.1 clause 6 — the four portnums that admit, BY RAW VALUE.
@@ -88,6 +89,17 @@ public final class CrewMembershipEngine: CrewMembershipGating, CrewMembershipPro
     public private(set) var untracked: [UntrackedCrewMember] = []
     public private(set) var joinedSinceCreated: [CrewJoinEvent] = []
     public private(set) var hidden: [UInt32] = []
+    /// A02 §6.5's "Crew diagnostics" row (`CrewDiagnosticsProviding`) —
+    /// admitted/refused-by-reason since this engine was created. Never
+    /// persisted, never consulted by `admits(_:)` itself: pure
+    /// read-only bookkeeping alongside the real decision, not a second
+    /// vote in it.
+    public private(set) var admissionCounters = CrewAdmissionCounters()
+    /// Epoch ms of the most recent admission, or `nil` if none has
+    /// happened yet this session — never 0 (`CrewHeardListProviding
+    /// .swift`'s own header comment on why UNKNOWN is never rendered as
+    /// a fabricated zero).
+    public private(set) var lastAdmissionAtMs: UInt64?
     private var hiddenSet: Set<UInt32> = []
     private var linkObservation: Task<Void, Never>?
     private var resolveTask: Task<Void, Never>?
@@ -134,6 +146,21 @@ public final class CrewMembershipEngine: CrewMembershipGating, CrewMembershipPro
         guard crew != crewChannel else { return }
         crewChannel = crew
         loadLocalState()
+        // PR #313 review. The counters and `lastAdmissionAtMs` are
+        // scoped to ONE crew, and this is the moment that scope ends:
+        // carrying them across a Leave or a "Start a new crew" would put
+        // the OLD crew's refusals and — worse — its "last admission
+        // 2 min ago" on a brand-new crew nobody has joined yet, which is
+        // a fabricated freshness claim of exactly the kind §4.4/§6.5
+        // refuse everywhere else. Zero here is honest: this crew really
+        // has admitted nobody, and "Never" is what the row reads.
+        //
+        // Only on a genuine CHANGE (the `guard` above), so a redundant
+        // `configure` with the same identity — which `syncCrewMembership
+        // WithProfile` can legitimately make, e.g. on a rename — never
+        // silently resets a live session's counts.
+        admissionCounters = CrewAdmissionCounters()
+        lastAdmissionAtMs = nil
         channelStatus = crew == nil ? .noCrew : .resolving
         resolveCrewChannelIndex()
     }
@@ -230,7 +257,10 @@ public final class CrewMembershipEngine: CrewMembershipGating, CrewMembershipPro
         // Hidden beats everything, including "already crew": §4.1 clause
         // 4 is what stops a hidden node being silently re-admitted by
         // its very next packet, and `hide` already unpaired them.
-        guard !hiddenSet.contains(id) else { return false }
+        guard !hiddenSet.contains(id) else {
+            admissionCounters.refusedHidden += 1
+            return false
+        }
         // Already crew — including every pre-existing, manually paired
         // member (§4.6: nothing is removed on upgrade). This is the
         // clause that makes the gate a MEMBERSHIP gate rather than an
@@ -257,24 +287,45 @@ public final class CrewMembershipEngine: CrewMembershipGating, CrewMembershipPro
         // prove the node was ever heard on our channel (§4.2). No
         // separate guard is needed for the replay, and that is the
         // point: it is structurally unable to admit anyone.
-        guard let meta = snapshot.rxMeta, meta.decrypted else { return false }
+        guard let meta = snapshot.rxMeta, meta.decrypted else {
+            admissionCounters.refusedNotDecrypted += 1
+            return false
+        }
         // Clause 2 — the index our crew channel occupies on THIS radio,
         // read from the live channel table. `.resolving`/`.noCrew`/
         // `.notOnCrewChannel` all admit nobody; there is no fallback to
         // index 0 anywhere in this file (AC14).
-        guard case .resolved(let crewIndex) = channelStatus else { return false }
-        guard meta.channelIndex == crewIndex else { return false }
+        guard case .resolved(let crewIndex) = channelStatus else {
+            admissionCounters.refusedChannelNotResolved += 1
+            return false
+        }
+        guard meta.channelIndex == crewIndex else {
+            admissionCounters.refusedWrongChannel += 1
+            return false
+        }
         // Clause 3 — not us. `connectedNodeNum` is nil before the
         // handshake names one, and an unknown self id is a reason to
         // admit nobody rather than to guess.
-        guard let me = client.connectedNodeNum else { return false }
-        guard meta.from != me, snapshot.num != me else { return false }
+        guard let me = client.connectedNodeNum else {
+            admissionCounters.refusedSelfOrUnknownRadio += 1
+            return false
+        }
+        guard meta.from != me, snapshot.num != me else {
+            admissionCounters.refusedSelfOrUnknownRadio += 1
+            return false
+        }
         // Clause 5 — never over MQTT. They may well hold our PSK if
         // someone bridged the crew, but a crew is people who are HERE,
         // and an MQTT path can replay.
-        guard !meta.viaMQTT else { return false }
+        guard !meta.viaMQTT else {
+            admissionCounters.refusedViaMQTT += 1
+            return false
+        }
         // Clause 6 — one of the four portnums, by raw value.
-        guard let portnum = meta.portnum, Self.admittingPortnums.contains(portnum) else { return false }
+        guard let portnum = meta.portnum, Self.admittingPortnums.contains(portnum) else {
+            admissionCounters.refusedWrongPortnum += 1
+            return false
+        }
 
         return admit(nodeID: snapshot.num)
     }
@@ -287,10 +338,13 @@ public final class CrewMembershipEngine: CrewMembershipGating, CrewMembershipPro
         case .paired:
             untracked.removeAll { $0.nodeID == nodeID }
             recordJoin(nodeID: nodeID)
+            admissionCounters.admitted += 1
+            lastAdmissionAtMs = UInt64((now().timeIntervalSince1970 * 1000).rounded())
             return true
         case .full:
             // NOT a silent drop — that is the behaviour §4.3 forbids.
             noteUntracked(nodeID: nodeID)
+            admissionCounters.refusedRosterFull += 1
             return false
         }
     }
@@ -429,5 +483,24 @@ public final class CrewMembershipEngine: CrewMembershipGating, CrewMembershipPro
         // Nothing else: they come back on their next qualifying packet.
         // Re-pairing them here would claim a presence nobody has
         // observed since the hide.
+    }
+
+    // MARK: - Demo-only seeding (§4.3/§4.7, `-FireflyDemoScreen crew`)
+
+    /// Appends a fabricated overflow entry directly, bypassing
+    /// `tryAdmit`/`admit` entirely — the same way `DemoRunner` seeds
+    /// CAMP's position straight onto `ff_crew` instead of synthesizing a
+    /// radio packet for a landmark that has no radio (`DemoRunner
+    /// .swift`'s own comment on that seam). A real "Not tracked" entry
+    /// requires `FF_CREW_MAX` (8) real, qualifying packets to arrive
+    /// first; a demo world that actually did that just to populate one
+    /// screenshot row would need eight fictional crew members with
+    /// nothing else to justify their existing. This can never be
+    /// reached from a real packet — nothing in `admits(_:)`/`tryAdmit`
+    /// calls it — and it never touches `admissionCounters`, which stays
+    /// an honest count of real admission decisions even in demo mode.
+    public func seedUntrackedForDemo(nodeID: UInt32, firstHeard: Date, lastHeard: Date) {
+        untracked.removeAll { $0.nodeID == nodeID }
+        untracked.append(UntrackedCrewMember(nodeID: nodeID, firstHeard: firstHeard, lastHeard: lastHeard))
     }
 }
