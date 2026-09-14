@@ -50,7 +50,9 @@
 		7FA385525E20C469998B9B83 /* HapticSignaling+UIKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDC28160EF0A8DD53FB3FFEB /* HapticSignaling+UIKit.swift */; };
 		8205769443841156A848715C /* MeshtasticProto in Frameworks */ = {isa = PBXBuildFile; productRef = 1302957B4A2DCE64A8D5EC14 /* MeshtasticProto */; };
 		89BC05B316F355E479A3633D /* fest-almanac-index.json in Resources */ = {isa = PBXBuildFile; fileRef = 5F7A5628340F712EE61F598C /* fest-almanac-index.json */; };
+		8E6EA5E5E4CEFF2B320671B4 /* NotificationTapRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE6C12AD5DA49E6EDD60B3B7 /* NotificationTapRouter.swift */; };
 		9097B73639F1D372A217DB5C /* MoreScreenNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C195EF4E6C11A4F328A8A7A2 /* MoreScreenNavigationTests.swift */; };
+		90A113F46964F486C0FA20CF /* BackgroundConnectionDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7514ADBDE19E177A62D1A1D5 /* BackgroundConnectionDiagnosticsTests.swift */; };
 		924A1E5F5BB64A7CBC361118 /* LineupScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 686F2EF2441AE3FF6FC88B41 /* LineupScreen.swift */; };
 		9CEECC7E8F408FEDB03E85E8 /* RadarColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E99266CE9867C281FAC9513 /* RadarColors.swift */; };
 		9D5C223B210A1F4B9644D6AB /* FireflyDebugStartDestinationLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = F05346761183CE52D605D57C /* FireflyDebugStartDestinationLaunch.swift */; };
@@ -145,6 +147,7 @@
 		688226395F6C22BD0D86BEB5 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		6B88FE658484B40308B28D13 /* LineupGridDemoFestpackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineupGridDemoFestpackTests.swift; sourceTree = "<group>"; };
 		701B9039C20B2BE20F035D30 /* CrewScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewScreen.swift; sourceTree = "<group>"; };
+		7514ADBDE19E177A62D1A1D5 /* BackgroundConnectionDiagnosticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundConnectionDiagnosticsTests.swift; sourceTree = "<group>"; };
 		762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
 		76CCF10D45320A527D0D8FFD /* CrewCopyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewCopyTests.swift; sourceTree = "<group>"; };
 		7C40E6DFE5C85637929993F5 /* FireflyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyApp.swift; sourceTree = "<group>"; };
@@ -183,6 +186,7 @@
 		F05346761183CE52D605D57C /* FireflyDebugStartDestinationLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyDebugStartDestinationLaunch.swift; sourceTree = "<group>"; };
 		F1F42EB3578D2B85C360FF91 /* FieldMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FieldMapView.swift; sourceTree = "<group>"; };
 		F7CF15579506E65D391E2A50 /* CrewCopy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewCopy.swift; sourceTree = "<group>"; };
+		FE6C12AD5DA49E6EDD60B3B7 /* NotificationTapRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationTapRouter.swift; sourceTree = "<group>"; };
 		FE6F9A5AF9F0435F34FF4D17 /* CrewJoinView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewJoinView.swift; sourceTree = "<group>"; };
 		FEAE3E2DCB691E1E510ACF57 /* FindPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindPanel.swift; sourceTree = "<group>"; };
 		FF2B70A0AD5BD84CDC921F8A /* CrewOnboardingContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewOnboardingContainer.swift; sourceTree = "<group>"; };
@@ -348,6 +352,7 @@
 		7D968AF42091B0CBB04FBE40 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				7514ADBDE19E177A62D1A1D5 /* BackgroundConnectionDiagnosticsTests.swift */,
 				E1D11A9DB791BDA805737DD3 /* ChannelApplySummaryTests.swift */,
 				B5AE4486A9AE4EFDBC5455E6 /* ConnectSettingsViewModelTests.swift */,
 				D6E0B231DEE30CCC9A730B76 /* CrewControllerTests.swift */,
@@ -411,6 +416,7 @@
 				F05346761183CE52D605D57C /* FireflyDebugStartDestinationLaunch.swift */,
 				AF57DA895520BCFCFEAE8099 /* MoreScreen.swift */,
 				E455F1EFCD0EFD761A051AEF /* MoreScreenNavigation.swift */,
+				FE6C12AD5DA49E6EDD60B3B7 /* NotificationTapRouter.swift */,
 				A1E30FCFD8A9260E48E8617D /* RootView.swift */,
 				543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */,
 				11421C91FBEAF497D1C0A149 /* Connect */,
@@ -589,6 +595,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				90A113F46964F486C0FA20CF /* BackgroundConnectionDiagnosticsTests.swift in Sources */,
 				3BFCFBA3D9771C3925E1CFBD /* ChannelApplySummaryTests.swift in Sources */,
 				F6C0D0DF3F349E930AD52E4C /* ChannelImportViewModel.swift in Sources */,
 				7DDDFABD54883171C0FD887A /* ConnectSettingsViewModelTests.swift in Sources */,
@@ -663,6 +670,7 @@
 				FD497E731EE22B6647C64FC1 /* MoreScreen.swift in Sources */,
 				66EDC012C80D95AA2646A1B1 /* MoreScreenNavigation.swift in Sources */,
 				63F4CB9CD8015973BF2A6A87 /* NearbyNodesViewModel.swift in Sources */,
+				8E6EA5E5E4CEFF2B320671B4 /* NotificationTapRouter.swift in Sources */,
 				736AA63B4C8C5FAD424729FA /* PeripheralDiscovery.swift in Sources */,
 				AC8AFA0CD87BCDBC83DDB4BD /* QRScannerSheet.swift in Sources */,
 				9CEECC7E8F408FEDB03E85E8 /* RadarColors.swift in Sources */,
@@ -738,7 +746,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 320;
+				CURRENT_PROJECT_VERSION = 312;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -928,7 +936,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 320;
+				CURRENT_PROJECT_VERSION = 312;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

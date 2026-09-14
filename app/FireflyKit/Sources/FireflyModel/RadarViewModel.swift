@@ -268,6 +268,15 @@ public protocol RadarComputing: AnyObject {
     /// no-op with zero paired members.
     func cycleSelection()
 
+    /// A03 §3.11.3 — select ONE named member, rather than cycling until
+    /// the right one comes up. Added for the FLARE deep link ("a FLARE
+    /// opens Find ▸ Radar with that member selected"), which names the
+    /// person; `cycleSelection()` was the only selection mutator on this
+    /// protocol and could not express that. A no-op for a node the crew
+    /// roster does not hold — never a selection of somebody we do not
+    /// have.
+    func select(nodeID: UInt32)
+
     /// Recompute the view for the given heading/position inputs.
     /// `headingDegrees == nil` mirrors `ff_geo_heading_deg`'s own
     /// negative "unreliable" sentinel — no magnetometer (macOS,
@@ -307,6 +316,16 @@ public final class MockRadarComputing: RadarComputing {
     public func cycleSelection() {
         cycleSelectionCallCount += 1
     }
+
+    /// Records, never invents: the mock selects whatever it is told to,
+    /// because a test asserting "the FLARE deep link selected Taylor"
+    /// needs the call to be observable, not simulated.
+    public func select(nodeID: UInt32) {
+        selectedNodeID = nodeID
+        selectCalls.append(nodeID)
+    }
+
+    public private(set) var selectCalls: [UInt32] = []
 
     public func compute(headingDegrees: Double?, myFix: LocationFix?, imperial: Bool, now: Date) -> RadarSnapshot {
         computeCallCount += 1
@@ -785,6 +804,14 @@ public final class RadarViewModel {
     /// nil when nobody is selected — the FIND affordance is disabled in
     /// that case, never silently pinging node 0.
     public var findTargetNodeID: UInt32? { radar.selectedNodeID }
+
+    /// A03 §3.11.3 — select a named member (the FLARE deep link's
+    /// destination). Forwards to the same `RadarComputing` seam
+    /// `cycleSelection()` uses, so the selection a notification tap
+    /// produces is indistinguishable from one a tap on the face made.
+    public func select(nodeID: UInt32) {
+        radar.select(nodeID: nodeID)
+    }
 
     /// Starts a FIND session against the currently selected member, or
     /// does nothing if nobody is selected. Available whenever a member

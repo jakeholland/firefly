@@ -135,13 +135,38 @@ public final class AppGraph {
     /// Injectable so a test never has to touch the real
     /// `UNUserNotificationCenter` (`UNNotificationSending`'s own doc
     /// comment on why that matters under bare `swift test`).
-    let notifications: any NotificationSending
+    /// `public` as of A03: the Diagnostics screen reads the
+    /// notification AUTHORIZATION through this same instance (§3.10's
+    /// "Firefly can't alert you" row), rather than constructing a second
+    /// seam of its own that could disagree with the one that posts.
+    public let notifications: any NotificationSending
     /// Whether the app is in the foreground right now — `FireflyApp`'s
     /// `ScenePhase` observation is the one caller (`setForegrounded(_:)`).
-    /// Starts `true`: the app IS foregrounded at the moment its own
-    /// composition root is built, before any `ScenePhase` event has ever
-    /// fired.
-    var isForegrounded = true
+    ///
+    /// A03 §3.2 — starts **`false`**, and this is a correction, not a
+    /// preference. It used to start `true` on the reasoning that "the
+    /// app IS foregrounded when its composition root is built" — which
+    /// is exactly what a CoreBluetooth background relaunch is not, and
+    /// `.onChange(of: scenePhase)` does not fire for an initial value,
+    /// so nothing corrected it. Any launch that begins in the background
+    /// left this graph believing someone was looking at the screen:
+    /// `handleInboundFlare` took the TAKEOVER branch and rendered a
+    /// full-screen view to nobody, and
+    /// `observeIncomingTextsForNotifications` skipped every arriving
+    /// message. Zero notifications on exactly the path notifications
+    /// exist for (audit 2.3.10).
+    ///
+    /// `false` is the honest default and it fails safe in the direction
+    /// that matters: an inbound FLARE on a path where nothing has told
+    /// us we are visible posts a notification rather than rendering a
+    /// takeover to an empty screen. `FireflyApp` seeds the real value
+    /// from the initial `scenePhase` at scene attach.
+    /// `public private(set)`: every WRITE still goes through
+    /// `setForegrounded(_:)` (one caller, `FireflyApp`'s scene-phase
+    /// observer), but A03_AC8 has to be able to READ the value without
+    /// `@testable` — "false on construction" is the criterion itself,
+    /// not an implementation detail.
+    public private(set) var isForegrounded = false
     /// The phone's own last known fix, kept live by `observeMyLocation()`
     /// — shared by `FlareTakeoverViewModel`'s bearing/distance and
     /// inbound RALLY's own distance/bearing text.
@@ -152,6 +177,16 @@ public final class AppGraph {
     var incomingTextNotificationObservation: Task<Void, Never>?
     /// PONG auto-reply's "one reply per nonce" memory.
     var repliedPongNonces = PongReplyDedup()
+    /// A03 §3.11.5 — the subscription that notices the first foreground
+    /// `.ready`, which is the moment permission is asked.
+    var notificationPermissionObservation: Task<Void, Never>?
+    /// Once per process, never reset by `stop()`: a second prompt is
+    /// something iOS would not show anyway.
+    private var hasRequestedNotificationAuthorization = false
+    /// A03 §3.11.3 — where a tapped notification (or a `firefly://` URL)
+    /// wants to land. The graph OWNS it; `RootView` is what can actually
+    /// act on it, since only it owns tab selection.
+    public let deepLinks = DeepLinkRouter()
 
     /// `FireflyApp.init()` alone passes `true` — see
     /// `autoConnectToLastKnownPeripheral()`'s own doc comment for why
@@ -271,6 +306,85 @@ public final class AppGraph {
     /// read to decide "takeover, or a local notification instead".
     public func setForegrounded(_ active: Bool) { isForegrounded = active }
 
+    /// A03 §3.11.5 — asked in the foreground, at a moment that can
+    /// actually answer.
+    ///
+    /// The first time the link reaches `.ready` WHILE THE APP IS IN THE
+    /// FOREGROUND, and never from a posting path. The bug this closes
+    /// (audit 2.3.11) is worth restating because it is not obvious:
+    /// authorization used to be requested lazily, on first need — and
+    /// the only callers were the backgrounded branches, so the first
+    /// FLARE of the festival asked for permission while iOS could not
+    /// present a prompt, read back `.notDetermined`, and dropped the
+    /// alert. The first notification of the festival was ALWAYS lost.
+    ///
+    /// Once per process (`hasRequestedNotificationAuthorization`): iOS
+    /// only ever shows the system prompt once anyway, and asking again
+    /// after a "no" is both useless and rude.
+    ///
+    /// §3.11.5's own pre-prompt — a one-line explanation with a single
+    /// button on the Connect screen — is S2: it is Connect-screen UI,
+    /// and the crew Start/Join work is in that file concurrently. What
+    /// ships here is the TIMING fix, which is the half that decides
+    /// whether an alert is ever delivered at all.
+    func observeLinkForNotificationPermission() {
+        guard notificationPermissionObservation == nil else { return }
+        let states = dependencies.client.linkState()
+        notificationPermissionObservation = Task { [weak self] in
+            for await state in states {
+                guard let self else { return }
+                guard state == .ready, self.isForegrounded else { continue }
+                await self.requestNotificationAuthorizationIfNeeded()
+            }
+        }
+    }
+
+    /// Public so the Connect screen's own button (S2) can call exactly
+    /// this, rather than growing a second path to the same prompt.
+    public func requestNotificationAuthorizationIfNeeded() async {
+        guard !hasRequestedNotificationAuthorization else { return }
+        guard Self.shouldRequestNotificationAuthorization(isDemoStack: isDemoStack) else { return }
+        hasRequestedNotificationAuthorization = true
+        await notifications.requestAuthorization()
+    }
+
+    /// REVIEW FIX (PR #310) — **never in the demo stack.**
+    ///
+    /// Found by running the UI smoke test: the demo client reaches
+    /// `.ready` on its own a moment after launch, which is exactly the
+    /// trigger §3.11.5 defines, so `-FireflyDemo` raised a real
+    /// SpringBoard "Firefly Would Like to Send You Notifications" alert
+    /// over the app. XCUITest's interruption handler dismissed it and
+    /// retried, but the alert's own dimming layer ate the next tab-bar
+    /// tap and `testDemoSmokeTapsThroughAllScreens` sat on
+    /// `Screen.Connect` for the full 60 s waiting for Radar. (The tell in
+    /// the failure attachments is `AdditionalDimmingOverlay` — a
+    /// SpringBoard alert's scrim — present in the snapshot alongside
+    /// `Screen.Connect`.)
+    ///
+    /// It is the right product behaviour independently of the test: the
+    /// demo stack has no radio and no crew, nothing in it can ever post
+    /// a notification, and a system permission prompt is exactly the
+    /// thing that must not appear in the middle of a scripted demo or a
+    /// marketing screenshot (S20's own premise).
+    ///
+    /// The two existing XCTest signals do not cover this: both
+    /// `isRunningUnderXCTest` and `isXCTestRuntimeLoaded` are false in
+    /// the app-under-test of a UI test — that process links no XCTest
+    /// runtime and carries no `XCTestConfigurationFilePath`, as
+    /// `shouldAutoRefreshFestpack`'s own doc comment says. The demo
+    /// stack is the signal that is actually true here.
+    public nonisolated static func shouldRequestNotificationAuthorization(isDemoStack: Bool) -> Bool {
+        !isDemoStack
+    }
+
+    /// Whether this graph was built over the scripted demo client
+    /// (`-FireflyDemo`/`FIREFLY_DEMO=1`, inside
+    /// `#if targetEnvironment(simulator)` — `AppDependencies.current()`).
+    /// Read from the client the composition root actually handed us
+    /// rather than from a second flag that could disagree with it.
+    public var isDemoStack: Bool { dependencies.client is DemoMeshtasticClient }
+
     /// Idempotent, the same convention every `observe()` in this app
     /// follows. Subscribes `CoreStore` to the client's streams, starts
     /// the phone-GPS uplink, starts the ack-timeout tick, and subscribes
@@ -334,7 +448,14 @@ public final class AppGraph {
         observePrivatePackets()
         observeMyLocation()
         observeIncomingTextsForNotifications()
+        observeLinkForNotificationPermission()
         observeHistoryOutboxFlush()
+        // A03 §1.10 — categories (and their actions) must be registered
+        // on EVERY launch, background relaunches included, or a delivered
+        // notification's category is unknown to the system and its
+        // action never appears. Idempotent; not awaited, because nothing
+        // below depends on it.
+        Task { [notifications] in await notifications.registerCategories() }
         Self.log("start(): awaiting uplink.start()")
         await uplink.start()
         Self.log("start(): uplink.start() returned")
@@ -582,6 +703,7 @@ public final class AppGraph {
         privateObservation?.cancel(); privateObservation = nil
         stopObservingMyLocation()
         stopObservingIncomingTextsForNotifications()
+        notificationPermissionObservation?.cancel(); notificationPermissionObservation = nil
         historyOutboxFlushObservation?.cancel(); historyOutboxFlushObservation = nil
         tickLoop?.cancel(); tickLoop = nil
         // Hardening QA pass: `stop()` used to cancel only the graph's
@@ -659,11 +781,12 @@ public final class AppGraph {
             // radio measured on THIS packet.
             replyToPing(from: packet.from, nonce: nonce, rssiDbm: packet.rssiDbm, snrDb: packet.snrDb)
         case .flare(let durationS):
-            handleInboundFlare(from: packet.from, to: packet.to, durationS: durationS)
+            handleInboundFlare(from: packet.from, to: packet.to, durationS: durationS, packetID: packet.packetID)
         case .flareEnd:
             handleInboundFlareEnd(from: packet.from)
         case .rally(let latitude, let longitude, let name):
-            handleInboundRally(from: packet.from, to: packet.to, latitude: latitude, longitude: longitude, name: name)
+            handleInboundRally(from: packet.from, to: packet.to, latitude: latitude, longitude: longitude,
+                                name: name, packetID: packet.packetID)
         case .rallyClear:
             handleInboundRallyClear(from: packet.from)
         case .status(let text):
@@ -841,7 +964,10 @@ public final class AppGraph {
     public func makeInboxViewModel() -> InboxViewModel {
         let model = InboxViewModel(provider: inboxProvider, client: dependencies.client, flareSender: packetSender,
                                     currentFix: { [weak self] in self?.myFix },
-                                    outboxIDGenerator: outboxIDGenerator, inboundFeedIDGenerator: inboundFeedIDGenerator)
+                                    outboxIDGenerator: outboxIDGenerator, inboundFeedIDGenerator: inboundFeedIDGenerator,
+                                    // A03 §3.11.3 — withdraw delivered
+                                    // notifications when a thread is read.
+                                    notifications: notifications)
         // Same fix as `makeRadarViewModel(haptics:)` just above, and for
         // the identical reason — see `makeConnectViewModel()`'s doc
         // comment for the full NavigationSplitView remount story this is

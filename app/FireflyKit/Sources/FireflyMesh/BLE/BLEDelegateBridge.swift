@@ -114,10 +114,36 @@ final class BLEDelegateBridge: NSObject, CBCentralManagerDelegate, CBPeripheralD
         Task { await transport?.handleFailedToConnect(peripheral: crossing.value, error: error) }
     }
 
+    /// The legacy 2-argument callback. iOS calls the 5-argument one
+    /// below instead once it is implemented (**[community]**, A03 §1.4:
+    /// "whether implementing the 5-argument delegate suppresses the
+    /// legacy 2-argument one is [community] (reported: yes). Implement
+    /// both."), so this stays for macOS and as a fallback.
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         let crossing = CoreBluetoothCrossing(value: peripheral)
         let transport = transport
         Task { await transport?.handleDisconnected(peripheral: crossing.value, error: error) }
+    }
+
+    /// A03 §3.4 — the iOS 17 / macOS 14 disconnect delegate.
+    ///
+    /// `isReconnecting` is whether the central manager will itself
+    /// attempt to reconnect (so we must NOT), and `timestamp` is when
+    /// the disconnection actually occurred — which matters precisely
+    /// because it may have happened while the app was suspended, and a
+    /// `Date()` taken here would be the time we WOKE, not the time we
+    /// lost the link (§1.7). `CFAbsoluteTime` is seconds since the 2001
+    /// reference date, so `Date(timeIntervalSinceReferenceDate:)` is the
+    /// exact, lossless conversion.
+    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
+                         timestamp: CFAbsoluteTime, isReconnecting: Bool, error: Error?) {
+        let crossing = CoreBluetoothCrossing(value: peripheral)
+        let transport = transport
+        let disconnectedAt = Date(timeIntervalSinceReferenceDate: timestamp)
+        Task {
+            await transport?.handleDisconnected(peripheral: crossing.value, disconnectedAt: disconnectedAt,
+                                                 isReconnecting: isReconnecting, error: error)
+        }
     }
 
     // MARK: - CBPeripheralDelegate

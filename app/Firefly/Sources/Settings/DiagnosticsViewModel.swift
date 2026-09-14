@@ -11,6 +11,7 @@
 //  EventHub multicast (S1) without stealing each other's events.
 //
 import FireflyMesh
+import FireflyModel
 import Foundation
 import Observation
 
@@ -45,10 +46,31 @@ final class DiagnosticsViewModel {
     private(set) var tickTrigger = 0
     /// Injectable — same convention as `ConnectViewModel.now`.
     private let now: () -> Date
+    /// A03 §3.6 — the transport's own reconnect counters, or `nil` on a
+    /// stack with no BLE at all (the stub graph, the iOS Simulator),
+    /// which renders as UNKNOWN rather than as zeros. A zero and a
+    /// "there is no radio here" are different facts and this screen has
+    /// never pretended otherwise.
+    private let linkDiagnostics: (any BLELinkDiagnosticsProviding)?
+    /// A03 §3.3/§3.10 — read once per refresh, not cached at
+    /// construction: the toggle can move while this screen is open.
+    private let backgroundConnectEnabled: () -> Bool
+    /// A03 §3.11.5 — whether Firefly may actually alert anyone. The
+    /// status line must not claim background coverage it does not have.
+    private let notifications: (any NotificationSending)?
 
-    init(client: any MeshtasticClientProtocol, now: @escaping () -> Date = Date.init) {
+    private(set) var diagnostics = BLELinkDiagnostics()
+    private(set) var notificationAuthorization: NotificationAuthorization = .notDetermined
+
+    init(client: any MeshtasticClientProtocol, now: @escaping () -> Date = Date.init,
+         linkDiagnostics: (any BLELinkDiagnosticsProviding)? = nil,
+         notifications: (any NotificationSending)? = nil,
+         backgroundConnectEnabled: @escaping () -> Bool = { false }) {
         self.client = client
         self.now = now
+        self.linkDiagnostics = linkDiagnostics
+        self.notifications = notifications
+        self.backgroundConnectEnabled = backgroundConnectEnabled
     }
 
     func observe() {
@@ -62,10 +84,25 @@ final class DiagnosticsViewModel {
         }
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
+                // A03 §3.6/§3.11 — the counters and the notification
+                // authorization are pulled on the SAME 1 s cadence the
+                // uptime label already redraws on, rather than on a
+                // second timer of their own.
+                guard let live = self, !Task.isCancelled else { return }
+                await live.refreshBackgroundConnectionState()
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard let self, !Task.isCancelled else { return }
-                self.tickTrigger &+= 1
+                guard let live = self, !Task.isCancelled else { return }
+                live.tickTrigger &+= 1
             }
+        }
+    }
+
+    private func refreshBackgroundConnectionState() async {
+        if let linkDiagnostics {
+            diagnostics = await linkDiagnostics.linkDiagnostics()
+        }
+        if let notifications {
+            notificationAuthorization = await notifications.authorization()
         }
     }
 
@@ -120,6 +157,69 @@ final class DiagnosticsViewModel {
     /// is the honest rendering the acceptance criterion asks for, not
     /// a placeholder number standing in for a real one.
     static let unknown = "UNKNOWN"
+
+    // MARK: - A03: the "Background connection" rows
+
+    /// A03 §3.10, cut to what this build can observe (§7.0). The line
+    /// itself is decided by `BackgroundConnectionStatus` in FireflyModel
+    /// — a pure function with its own honesty test — so this screen only
+    /// renders it.
+    var backgroundConnectionStatus: BackgroundConnectionStatus {
+        _ = tickTrigger
+        return BackgroundConnectionStatus.status(.init(
+            backgroundConnectEnabled: backgroundConnectEnabled(), link: link,
+            lastReconnectAt: diagnostics.lastReconnectAt, notifications: notificationAuthorization, now: now()))
+    }
+
+    var backgroundConnectionLabel: String {
+        let status = backgroundConnectionStatus
+        return "\(status.headline.rawValue) \u{00B7} \(status.detail)"
+    }
+
+    /// A03 §3.6 — how many rediscovery scan windows this process has
+    /// opened. UNKNOWN, not "0", where there is no BLE transport to ask:
+    /// "we did not scan" and "there is nothing here that could scan" are
+    /// different facts.
+    var scanStartsLabel: String {
+        _ = tickTrigger
+        guard linkDiagnostics != nil else { return Self.unknown }
+        return "\(diagnostics.scanStarts)"
+    }
+
+    /// A03 §3.4/§3.6 — how many times the link came back with nobody
+    /// tapping CONNECT.
+    var reconnectsLabel: String {
+        _ = tickTrigger
+        guard linkDiagnostics != nil else { return Self.unknown }
+        return "\(diagnostics.reconnects)"
+    }
+
+    /// When the most recent of those happened. UNKNOWN when it has not
+    /// happened in this process — never a fabricated date, and never
+    /// "never", which would claim more than we know.
+    var lastReconnectLabel: String {
+        _ = tickTrigger
+        guard linkDiagnostics != nil, let at = diagnostics.lastReconnectAt else { return Self.unknown }
+        return PresenceAge.ago(now().timeIntervalSince(at))
+    }
+
+    /// A03 §3.11.5 — said plainly, because a user whose notifications
+    /// are off has an app that will never tell them about a FLARE.
+    var notificationsLabel: String {
+        _ = tickTrigger
+        switch notificationAuthorization {
+        case .authorized: return "Allowed"
+        case .provisional: return "Quiet only"
+        case .denied: return "Not allowed"
+        case .notDetermined: return "Not asked yet"
+        }
+    }
+
+    /// Whether a given row's value came from something this process
+    /// actually observed — the Diagnostics screen colours live values
+    /// differently from ones it does not have, and a counter with no
+    /// transport behind it is NOT live.
+    var hasLinkDiagnostics: Bool { linkDiagnostics != nil }
 
     let heardInLast10MinCount = DiagnosticsViewModel.unknown
     let packetsIn = DiagnosticsViewModel.unknown

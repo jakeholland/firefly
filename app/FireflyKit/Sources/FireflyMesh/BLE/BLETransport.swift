@@ -80,7 +80,7 @@ public enum BLEPairingFailure: Error, Equatable, Sendable {
     }
 }
 
-public actor BLETransport: MeshTransport, NodeScanning {
+public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProviding {
     public let kind: TransportKind = .message
 
     private let hub = EventHub<TransportEvent>()
@@ -266,8 +266,32 @@ public actor BLETransport: MeshTransport, NodeScanning {
         // told apart from "this genuinely never ran" from the log alone —
         // fixed here, unconditionally, not only on the guard's failure
         // branch above.
-        BLETransport.log("issueConnect: calling central.connect(\(target.identifier))")
-        central?.connect(target, options: nil)
+        BLETransport.log("issueConnect: calling central.connect(\(target.identifier)) options=\(Self.connectOptions)")
+        // A03 §3.4 — `nil` before this slice. The pending connect stays
+        // the primary mechanism (it is the thing that costs nothing
+        // while the app is suspended); this option additionally asks the
+        // SYSTEM to re-establish the link on our behalf after a drop,
+        // which is strictly more than a pending connect does on its own.
+        central?.connect(target, options: Self.connectOptions.isEmpty ? nil : Self.connectOptions)
+    }
+
+    /// A03 §3.4, `[api]`-visible so `BLEContractTests` can pin it with
+    /// no `CBCentralManager` (that file imports `FireflyMesh` WITHOUT
+    /// `@testable`, the same constraint A03_AC2 calls out).
+    ///
+    /// iOS only, deliberately, per §3.4's own wording ("`#if os(iOS)`;
+    /// macOS keeps `nil`") — even though the symbol itself is available
+    /// on macOS 14. The Mac build is this project's hardware-test rig
+    /// (`FireflyHardwareTests`, `BLEReconnectHardwareTests`), and
+    /// handing the system a second, invisible reconnect actor there
+    /// would change what those tests are measuring. Revisit with a
+    /// bench run, not with an edit.
+    public static var connectOptions: [String: Bool] {
+        #if os(iOS)
+        [CBConnectPeripheralOptionEnableAutoReconnect: true]
+        #else
+        [:]
+        #endif
     }
 
     /// M2 follow-up (2026-09-11 bench power-cycle failure) — a bounded
@@ -329,14 +353,109 @@ public actor BLETransport: MeshTransport, NodeScanning {
         central?.stopScan()
     }
 
-    private func armReconnectFallback(for target: UUID) {
+    /// A03 §3.6 — "Any `.poweredOff` cancels the ladder; `.poweredOn`
+    /// restarts it at attempt 1", as a total function of the three
+    /// inputs it actually depends on. `public` for the same reason
+    /// `connectOptions` is: `BLEReconnectLadderTests` imports
+    /// `FireflyMesh` WITHOUT `@testable`, and a rule only reachable
+    /// through a live `CBCentralManager` is a rule no unit test can
+    /// check.
+    ///
+    /// Every non-`.poweredOn` state cancels — `.poweredOff`,
+    /// `.unauthorized`, `.unsupported`, `.resetting` and `.unknown`
+    /// alike. That is deliberately wider than §3.6's own sentence and
+    /// strictly safer: in none of those states can a scan be running or
+    /// usefully started, and a window left open across any of them is
+    /// the 2.2.6 battery bug. Which of them are TERMINAL versus
+    /// transient is §3.5's question, and §3.5 is S1b.
+    public static func ladderAction(forCentralState state: CBManagerState, shouldAutoReconnect: Bool,
+                                     hasPendingConnect: Bool) -> BLELadderPowerAction {
+        guard state == .poweredOn else { return .cancel }
+        return shouldAutoReconnect && hasPendingConnect ? .restartAtAttemptOne : .leaveAsIs
+    }
+
+    /// A03 §3.6 — the ladder itself. Pure state (`ReconnectLadder.swift`);
+    /// everything CoreBluetooth-shaped stays here.
+    private var ladder = ReconnectLadder()
+    /// A03 §3.4/§3.6 diagnostics — observations only, see
+    /// `BLELinkDiagnostics`.
+    private var diagnostics = BLELinkDiagnostics()
+    /// Injectable clock, same convention `ConnectViewModel.now` and
+    /// `DiagnosticsViewModel.now` already use, so a test can drive the
+    /// ladder's clock deltas without sleeping.
+    private let now: @Sendable () -> Date
+
+    /// A03 §3.6 — arm the ladder for a loss. `at:` is the iOS 17
+    /// `timestamp:` where we have one: a REAL observation of when the
+    /// link dropped, which can predate this callback by the whole span
+    /// the process was suspended (§1.7). Falls back to our own clock
+    /// only when CoreBluetooth did not give us one (the legacy 2-arg
+    /// delegate, and macOS).
+    private func armReconnectFallback(for target: UUID, at disconnectedAt: Date) {
+        ladder.arm(target: target, disconnectedAt: disconnectedAt)
+        BLETransport.log("reconnect ladder: armed for \(target) at \(disconnectedAt), " +
+                          "first window in \(ReconnectLadder.ladderDelaySeconds(forAttempt: 1))s (±20%)")
+        evaluateReconnectLadder()
+    }
+
+    /// THE ladder tick. Called from every CoreBluetooth callback this
+    /// transport handles — that is the whole design (§3.6: "evaluates
+    /// `Date.now - disconnectedAt` against the table at every
+    /// opportunity the OS actually gives us"), because a suspended
+    /// process gets no timers and every wake is a delegate callback.
+    private func evaluateReconnectLadder() {
+        guard ladder.isArmed else { return }
+        let action = ladder.evaluate(now: now(), shouldAutoReconnect: shouldAutoReconnect,
+                                      pendingConnectPeripheralID: pendingConnectPeripheralID)
+        switch action {
+        case .doNothing:
+            break
+        case .startScan(let attempt):
+            guard let central else { break }
+            BLETransport.log("reconnect ladder: opening a \(Int(ReconnectLadder.scanWindowSeconds))s scan window " +
+                              "(attempt \(attempt))")
+            isFallbackScanning = true
+            diagnostics.scanStarts += 1
+            central.scanForPeripherals(withServices: [Self.serviceUUID], options: nil)
+        case .endScan(let reason):
+            BLETransport.log("reconnect ladder: closing the scan window (\(reason)) — " +
+                              "next window in \(Int(ReconnectLadder.ladderDelaySeconds(forAttempt: ladder.attempt)))s (±20%)")
+            endFallbackScan()
+        }
+        scheduleLadderNudge()
+    }
+
+    /// The opportunistic nudge, and NOTHING more (§1.7): a sleeping task
+    /// that re-evaluates when the next rung or window edge is due, for
+    /// the case where the process happens to still be running. It is
+    /// cancelled and re-armed on every evaluation, it may never fire at
+    /// all while suspended, and no correctness depends on it — the
+    /// clock delta in `evaluateReconnectLadder()` is what is load-bearing.
+    private func scheduleLadderNudge() {
         reconnectFallbackTask?.cancel()
-        reconnectFallbackTask = Task { [weak self, reconnectFallbackDelay] in
-            try? await Task.sleep(for: reconnectFallbackDelay)
+        reconnectFallbackTask = nil
+        guard let deadline = ladder.nextDeadline() else { return }
+        let seconds = max(0.1, deadline.timeIntervalSince(now()))
+        reconnectFallbackTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
             guard !Task.isCancelled else { return }
-            await self?.runReconnectFallbackScan(for: target)
+            await self?.evaluateReconnectLadder()
         }
     }
+
+    /// A03 §3.6 — "Any `.poweredOff` cancels the ladder". The one place
+    /// the ladder is stood down, so the `stopScan()` it may still owe
+    /// can never be forgotten (the shape of the battery bug 2.2.6 was).
+    private func cancelReconnectLadder(reason: String) {
+        guard ladder.isArmed else { return }
+        BLETransport.log("reconnect ladder: cancelled (\(reason))")
+        let wasScanning = ladder.cancel()
+        if wasScanning { endFallbackScan() }
+        reconnectFallbackTask?.cancel()
+        reconnectFallbackTask = nil
+    }
+
+    public func linkDiagnostics() async -> BLELinkDiagnostics { diagnostics }
 
     /// Pure and testable with no `CBCentralManager`, same reasoning as
     /// `shouldIssueConnect(for:pendingConnectPeripheralID:)` above: split
@@ -355,19 +474,13 @@ public actor BLETransport: MeshTransport, NodeScanning {
         shouldAutoReconnect && pendingConnectPeripheralID == target
     }
 
-    private func runReconnectFallbackScan(for target: UUID) async {
-        guard Self.shouldRunReconnectFallbackScan(
-            for: target, pendingConnectPeripheralID: pendingConnectPeripheralID, shouldAutoReconnect: shouldAutoReconnect
-        ) else {
-            BLETransport.log("reconnect fallback: \(target) already resolved or superseded — not scanning")
-            return
-        }
-        guard let central else { return }
-        BLETransport.log("reconnect fallback: central.connect(\(target)) has not completed after " +
-                          "\(reconnectFallbackDelay) — scanning for it by identity")
-        isFallbackScanning = true
-        central.scanForPeripherals(withServices: [Self.serviceUUID], options: nil)
-    }
+    // `runReconnectFallbackScan(for:)` — the single, unbounded scan this
+    // predicate used to gate — is gone as of A03 §3.6: the same decision
+    // now lives in `ReconnectLadder.evaluate(now:...)`, which additionally
+    // CLOSES the window it opens (audit item 2.2.6). The predicate above
+    // stays because it is the honest statement of "is this backstop
+    // still warranted", it is pinned by `BLEContractTests`, and the
+    // ladder's own guard is the same two conditions.
 
     /// Fired from `setPreferredPeripheral(_:)` — the composition root's
     /// hook for persisting "which peripheral to auto-connect to at
@@ -425,8 +538,12 @@ public actor BLETransport: MeshTransport, NodeScanning {
         // it.
         reconnectFallbackDelay: Duration = .seconds(20),
         onPreferredPeripheralChanged: (@Sendable (UUID) -> Void)? = nil,
-        onBonded: (@Sendable (UUID) -> Void)? = nil
+        onBonded: (@Sendable (UUID) -> Void)? = nil,
+        // A03 §3.6 — the ladder is a clock, not a sleeping task, so the
+        // clock is injectable. Same convention as `ConnectViewModel.now`.
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
+        self.now = now
         self.preferredPeripheralID = preferredPeripheralID
         self.bondedPeripheralIDs = bondedPeripheralIDs
         self.connectRetryLimit = connectRetryLimit
@@ -616,6 +733,9 @@ public actor BLETransport: MeshTransport, NodeScanning {
         // away from.
         reconnectFallbackTask?.cancel()
         reconnectFallbackTask = nil
+        // A03 §3.6 — and the ladder with it: a user who asked to
+        // disconnect must not have a scan window open N minutes later.
+        cancelReconnectLadder(reason: "user disconnected")
         endFallbackScan()
         central?.stopScan()
         if let peripheral {
@@ -898,6 +1018,40 @@ public actor BLETransport: MeshTransport, NodeScanning {
 
     func handleCentralStateUpdate(_ state: CBManagerState) {
         BLETransport.log("centralManagerDidUpdateState \(state.rawValue) (waiters=\(poweredOnContinuations.count))")
+        // A03 §3.6 — "Any `.poweredOff` cancels the ladder; `.poweredOn`
+        // restarts it at attempt 1." This runs BEFORE the
+        // "nobody is waiting" guard below on purpose: that guard is the
+        // 2.2.3 audit finding (a state callback that does nothing at all
+        // unless someone happens to be parked in `waitForPoweredOn()`),
+        // and a scan window left open across a Bluetooth power cycle is
+        // exactly the battery bug this slice exists to close. The FULL
+        // §3.5 power-state machine — `retrievePeripherals`, the
+        // `powerStateAction(...)` table, the restore-ordering fix — is
+        // S1b; this is the ladder's half of it and nothing more.
+        // REVIEW FIX (PR #310): the decision is a pure function so it is
+        // reachable from `swift test` with no `CBCentralManager` — the
+        // same shape `shouldIssueConnect` and `BLEDisconnectAction`
+        // already use, and the reason deleting the `.poweredOff` cancel
+        // used to break no test.
+        switch Self.ladderAction(forCentralState: state, shouldAutoReconnect: shouldAutoReconnect,
+                                  hasPendingConnect: pendingConnectPeripheralID != nil) {
+        case .cancel:
+            cancelReconnectLadder(reason: "central state \(state.rawValue)")
+        case .restartAtAttemptOne:
+            // Bluetooth came back with a connect still outstanding.
+            // Restart at attempt 1 rather than resuming a ladder that
+            // spent the outage climbing: the radio may have been
+            // reachable the whole time. (Re-ISSUING a connect for a
+            // peripheral CoreBluetooth invalidated while powered off —
+            // `retrievePeripherals(withIdentifiers:)` — is §3.5, and
+            // §3.5 is S1b. Until it lands, a power cycle recovers here
+            // only through the ladder's own rediscovery.)
+            cancelReconnectLadder(reason: "bluetooth back on — restarting at attempt 1")
+            if let target = pendingConnectPeripheralID { armReconnectFallback(for: target, at: now()) }
+        case .leaveAsIs:
+            break
+        }
+        evaluateReconnectLadder()
         guard !poweredOnContinuations.isEmpty else { return }
         // State is one value, true for every current waiter at once —
         // unlike a write/read reply, which answers exactly one queued
@@ -928,6 +1082,12 @@ public actor BLETransport: MeshTransport, NodeScanning {
 
     func handleDiscovered(peripheral: CBPeripheral, name: String?, rssi: Int) {
         BLETransport.log("didDiscover \(peripheral.identifier) name=\(name ?? "nil") rssi=\(rssi)")
+        // A03 §3.6 — every delegate callback is an evaluation
+        // opportunity, including a sighting of some OTHER peripheral:
+        // that is how a scan window whose target never appears still
+        // closes on time (§1.5 — a window may yield no sighting at all,
+        // and that is no information, not evidence).
+        defer { evaluateReconnectLadder() }
         discoveryHub.yield(BLEDiscoveredPeripheral(id: peripheral.identifier, name: name, rssi: rssi))
 
         // M2 follow-up (`armReconnectFallback(for:)`'s own doc comment):
@@ -938,6 +1098,9 @@ public actor BLETransport: MeshTransport, NodeScanning {
         // inside an explicit `connect()`'s own `performConnectSequence()`)
         // and must not be cross-wired with this one.
         if isFallbackScanning, peripheral.identifier == pendingConnectPeripheralID {
+            // A03 §3.6: the window's job is done — the ladder stands
+            // down and `endFallbackScan()` stops the radio scanning.
+            ladder.noteDiscovered()
             endFallbackScan()
             BLETransport.log("reconnect fallback: rediscovered \(peripheral.identifier) — reissuing central.connect")
             self.peripheral = peripheral
@@ -970,8 +1133,23 @@ public actor BLETransport: MeshTransport, NodeScanning {
         completeConnect(throwing: error ?? TransportError.writeFailed("failed to connect"))
     }
 
+    /// The legacy 2-argument delegate. iOS 17 calls the 5-argument one
+    /// below instead when it is implemented (**[community]**, §1.4), so
+    /// this remains for macOS and as a fallback — with
+    /// `isReconnecting: false`, which is the honest reading: nothing
+    /// told us the system was retrying, so we must assume we are on our
+    /// own, and `timestamp: nil` means "no measured disconnect time",
+    /// not "now-ish" dressed up as an observation.
     func handleDisconnected(peripheral: CBPeripheral, error: Error?) {
-        BLETransport.log("didDisconnectPeripheral \(peripheral.identifier) error=\(String(describing: error))")
+        handleDisconnected(peripheral: peripheral, disconnectedAt: nil, isReconnecting: false, error: error)
+    }
+
+    /// A03 §3.4 — the iOS 17 disconnect delegate's payload, mapped onto
+    /// the one decision it actually changes (`BLEDisconnectAction`).
+    func handleDisconnected(peripheral: CBPeripheral, disconnectedAt: Date?, isReconnecting: Bool, error: Error?) {
+        BLETransport.log("didDisconnectPeripheral \(peripheral.identifier) " +
+                          "isReconnecting=\(isReconnecting) at=\(String(describing: disconnectedAt)) " +
+                          "error=\(String(describing: error))")
         // Whatever connect WAS pending (if any) is over now, from
         // CoreBluetooth's own perspective — cleared unconditionally
         // before the reconnect-on-loss branch below re-arms a fresh one
@@ -985,37 +1163,57 @@ public actor BLETransport: MeshTransport, NodeScanning {
         }
         toRadioChar = nil; fromRadioChar = nil; fromNumChar = nil; logRadioChar = nil
         failAllPending(error ?? TransportError.notConnected)
-        hub.yield(.disconnected(reason: error.map { String(describing: $0) }))
 
-        // M2 — reconnect-on-loss ("stays connected in a pocket,
-        // reconnects on its own", docs/specs/A01-companion-app.md). A
-        // lost bond is terminal (`BLEPairingFailure`'s own doc comment);
-        // any other unexpected loss re-issues `central.connect()` on the
-        // SAME `CBPeripheral` object rather than clearing it.
-        if shouldAutoReconnect, !isBondLost {
+        diagnostics.lastDisconnectAt = disconnectedAt
+        diagnostics.isSystemReconnecting = isReconnecting
+
+        // A03 §3.4's table, as a pure decision (`BLEDisconnectAction`).
+        switch BLEDisconnectAction.action(isReconnecting: isReconnecting, isBondLost: isBondLost,
+                                           shouldAutoReconnect: shouldAutoReconnect) {
+        case .systemIsReconnecting:
+            // §3.4: publish the honest link state and stop. Note the
+            // vocabulary — `TransportEvent` has no `.reconnecting` case
+            // and this slice does not add one; the CLIENT derives
+            // `LinkState.reconnecting(attempt:)` from this
+            // `.disconnected`, as it already does. The `reason` is what
+            // tells the two apart.
+            hub.yield(.disconnected(reason: Self.systemReconnectingReason))
+            // Deliberately NOT `issueConnect` and NOT the ladder: the
+            // system owns the retry, and a second connect plus a scan on
+            // top of it is duplicated radio work — the one thing §3.4
+            // exists to stop. `pendingConnectPeripheralID` stays cleared
+            // (CoreBluetooth's own connect is not ours), and the
+            // peripheral object is RETAINED, because releasing it
+            // implicitly cancels the very connection the system is
+            // rebuilding (§1.2).
+            cancelReconnectLadder(reason: "system is reconnecting")
+        case .reconnectOurselves:
+            hub.yield(.disconnected(reason: error.map { String(describing: $0) }))
             // This is a PENDING connect, not a poll: CoreBluetooth holds
             // it open — even backgrounded, given `bluetooth-central` in
             // `UIBackgroundModes` — until the peripheral is back in range
             // or powered back on, and resumes exactly where
-            // `handleConnected` picks up. No scanning, no timer for the
-            // ORDINARY case — the battery-conscious mechanism the M2 task
-            // calls out ("use that rather than polling scans").
-            // `issueConnect(_:)`, not a bare `central?.connect(...)` —
-            // SHOULD-FIX 4.
+            // `handleConnected` picks up.
             issueConnect(peripheral)
-            // Bounded backstop for the case that pending connect never
-            // completes on its own (`armReconnectFallback(for:)`'s own
-            // doc comment — a real Heltec power-cycle, bench-reproduced
-            // 2026-09-11) — a SINGLE scan, `reconnectFallbackDelay` from
-            // now, not a poll: `completeConnect(throwing:)` cancels this
-            // unconditionally the moment the pending connect above (or
-            // this fallback's own rediscovery) actually lands.
-            armReconnectFallback(for: peripheral.identifier)
-        } else {
+            // A03 §3.6 — the BOUNDED backstop, replacing the single
+            // unbounded scan armed by a `Task.sleep` that does not run
+            // while the process is suspended (audit 2.2.6/2.2.7, §1.7).
+            // `disconnectedAt` is CoreBluetooth's own measured timestamp
+            // where we have one; our clock only where we do not.
+            armReconnectFallback(for: peripheral.identifier, at: disconnectedAt ?? now())
+        case .stop:
+            hub.yield(.disconnected(reason: error.map { String(describing: $0) }))
+            cancelReconnectLadder(reason: isBondLost ? "bond lost" : "auto-reconnect is off")
             self.peripheral = nil
             shouldAutoReconnect = false
         }
     }
+
+    /// The `TransportEvent.disconnected(reason:)` string that means "the
+    /// system is reconnecting on its own" (§3.4). A named constant, not
+    /// a literal at two call sites, because the client and the status
+    /// line both read it.
+    public static let systemReconnectingReason = "system-reconnecting"
 
     func handleDiscoveredServices(peripheral: CBPeripheral, error: Error?) {
         BLETransport.log("didDiscoverServices error=\(String(describing: error)) services=\(String(describing: peripheral.services?.map(\.uuid)))")
@@ -1158,6 +1356,9 @@ public actor BLETransport: MeshTransport, NodeScanning {
         // instant this runs.
         reconnectFallbackTask?.cancel()
         reconnectFallbackTask = nil
+        // A03 §3.6 — the ladder stands down with it, for the same
+        // "success or failure, unconditionally" reason.
+        ladder.cancel()
         // THE FIX (hardening QA pass): this used to be a bare
         // `isFallbackScanning = false`, leaving the radio scanning
         // forever — see `endFallbackScan()`'s own doc comment.
@@ -1183,6 +1384,14 @@ public actor BLETransport: MeshTransport, NodeScanning {
         // must not resurrect a `.ready` for a connection nobody asked to
         // keep.
         guard peripheral != nil else { return }
+        // A03 §3.4/§3.6 diagnostics: NOBODY was awaiting this connect
+        // chain, which is exactly what "the link came back on its own"
+        // means — a background reconnect, not a CONNECT tap. Counted
+        // here and nowhere else, so the number on the Diagnostics screen
+        // is an observation rather than an inference.
+        diagnostics.reconnects += 1
+        diagnostics.lastReconnectAt = now()
+        diagnostics.isSystemReconnecting = false
         shouldAutoReconnect = true
         hub.yield(.ready)
     }

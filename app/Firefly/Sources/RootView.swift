@@ -141,7 +141,22 @@ struct RootView: View {
     /// `-FireflyDemoScreen crew-start|crew-join` — see
     /// `runInitialDemoScreen()`.
     @State private var crewOnboardingForceStep: CrewOnboardingContainer.Step?
+    /// A03 §3.11.3 — where a tapped notification wants to land, set by
+    /// `FireflyApp`'s `.onOpenURL` (and by the notification-tap
+    /// delegate, which routes through the same URL). Applied by
+    /// `applyPendingDeepLink()` below, because this view is the only
+    /// thing that owns tab selection.
+    let deepLinks: DeepLinkRouter
+    /// A03 §3.10 — handed to Diagnostics (through `MoreScreen`) so the
+    /// "Background connection" line can say whether Firefly is actually
+    /// allowed to alert anyone.
+    let notifications: (any NotificationSending)?
     @State private var selection: Destination = .more
+    /// A03 §3.11.3 — the conversation a deep link asked for, handed to
+    /// `InboxContainerView` and pushed through the SAME
+    /// `navigationDestination(item:)` a real tap uses — never a second,
+    /// parallel presentation path. Cleared once opened.
+    @State private var deepLinkThread: ConversationKind?
     /// Which row `MoreScreen` should push into the moment it next
     /// processes it (or, on macOS, the moment a sidebar row changes this
     /// while More is already selected) — `nil` opens on the plain list.
@@ -236,6 +251,11 @@ struct RootView: View {
             // launch trace that requires it.
             .onChange(of: selection, initial: true) { _, _ in applyFindLifecycle() }
             .onChange(of: findSegment) { _, _ in applyFindLifecycle() }
+            // A03 §3.11.3 — `initial: true` matters: a tap that LAUNCHED
+            // the app sets the pending route before this view's first
+            // frame, so a change-only observer would miss exactly the
+            // case notifications exist for.
+            .onChange(of: deepLinks.pending, initial: true) { _, _ in applyPendingDeepLink() }
 
             if flareTakeover.isActive {
                 FlareTakeoverView(model: flareTakeover)
@@ -368,6 +388,9 @@ struct RootView: View {
                                 onFind: { nodeID in mapFind(nodeID); findSegment = .radar },
                                 onMessage: { nodeID in mapMessage(nodeID); selection = .inbox })
         case .inbox: InboxContainerView(model: inbox, demoInitialThread: demoThreadTarget,
+                                         // A03 §3.11.3 — a tapped message
+                                         // notification opens its thread.
+                                         deepLinkThread: $deepLinkThread,
                                          colorblind: settings.colorblindPalette,
                                          // Owner note (build 304, item 3): Inbox's own
                                          // "no crew paired" empty state used to just SAY
@@ -378,13 +401,38 @@ struct RootView: View {
                                          onPairCrew: { selection = .more; moreAutoOpen = .connect })
         case .lineup: LineupScreen(model: lineup)
         case .more: MoreScreen(connect: connect, settings: settings, channelImport: channelImport,
-                                client: client, lineup: lineup, scanner: scanner, pairing: pairing,
+                                client: client, lineup: lineup, scanner: scanner,
+                                notifications: notifications, pairing: pairing,
                                 crew: crew, membership: membership,
                                 colorblind: settings.colorblindPalette,
                                 autoOpenDiagnosticsInSettings: initialDemoScreen == "diagnostics",
                                 autoOpen: moreAutoOpen,
                                 onAutoOpenHandled: { moreAutoOpen = nil },
                                 path: $morePath)
+        }
+    }
+
+    /// A03 §3.11.3 — apply a tapped notification's destination. A FLARE
+    /// opens Find ▸ Radar with that member selected; a message opens its
+    /// thread. `consume()` takes the route exactly once, so a redraw
+    /// cannot re-navigate under the user.
+    ///
+    /// Selecting the member goes through `RadarViewModel.select(nodeID:)`
+    /// — the same `RadarComputing` seam a tap on the face uses — and is
+    /// a no-op for somebody the crew roster does not hold, rather than
+    /// selecting a stranger. It deliberately does NOT start a FIND
+    /// session: FIND puts packets on the air, and a notification tap is
+    /// not somebody asking to transmit.
+    private func applyPendingDeepLink() {
+        guard let route = deepLinks.consume() else { return }
+        switch route {
+        case .find(let nodeID):
+            if let nodeID { radar.select(nodeID: nodeID) }
+            selection = .find
+            findSegment = .radar
+        case .thread(let conversation):
+            selection = .inbox
+            deepLinkThread = conversation
         }
     }
 

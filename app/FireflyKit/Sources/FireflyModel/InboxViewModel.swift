@@ -840,16 +840,52 @@ public final class InboxViewModel {
     /// `ingest(_:)` is this view model's own only minting call site.
     private let inboundFeedIDGenerator: InboundFeedIDGenerator
 
+    /// A03 §3.11.3 — "Delivered notifications for a conversation are
+    /// withdrawn when that thread is opened." `nil` (the default) for
+    /// every test and preview that has no notification seam; the live
+    /// graph passes its own (`AppGraph.makeInboxViewModel()`).
+    private let notifications: (any NotificationSending)?
+
     public init(provider: any InboxProviding, client: any MeshtasticClientProtocol,
                 flareSender: (any FireflyPacketSending)? = nil, currentFix: (() -> LocationFix?)? = nil,
                 outboxIDGenerator: OutboxIDGenerator = .shared,
-                inboundFeedIDGenerator: InboundFeedIDGenerator = .shared) {
+                inboundFeedIDGenerator: InboundFeedIDGenerator = .shared,
+                notifications: (any NotificationSending)? = nil) {
         self.provider = provider
         self.client = client
         self.flareSender = flareSender
         self.currentFix = currentFix
         self.outboxIDGenerator = outboxIDGenerator
         self.inboundFeedIDGenerator = inboundFeedIDGenerator
+        self.notifications = notifications
+    }
+
+    /// The `threadIdentifier` a conversation's notifications were
+    /// grouped under — the SAME strings `NotificationPlan` writes, so
+    /// opening a thread withdraws exactly what it posted, and **nothing
+    /// else**.
+    ///
+    /// REVIEW FIX (PR #310): this used to append `"flare"` and
+    /// `"rally"` to every conversation, on the reasoning that a FLARE
+    /// banner "from that person" is stale once their thread is read.
+    /// Those two threads are not per-person — §3.11.1 gives every FLARE
+    /// the single thread id `flare` — so opening ANY thread, the crew
+    /// room above all, withdrew every delivered FLARE banner from
+    /// everybody, including one nobody had looked at yet. A flare is the
+    /// one alert this product exists to deliver, and reading Taylor's
+    /// messages is not seeing Sam's flare. §3.11.3 scopes the rule to
+    /// the conversation that was opened; so does this.
+    ///
+    /// (Withdrawing a FLARE banner when its OWN destination — Find ▸
+    /// Radar — has been visited is a real behaviour worth having, but it
+    /// keys off the per-sender identifier `flare-<from>-<packetID>`, not
+    /// off a shared thread id, and it belongs with the S2 work that owns
+    /// that screen.)
+    static func notificationThreadIdentifiers(for conversation: ConversationKind) -> [String] {
+        switch conversation {
+        case .crew: return ["crew"]
+        case .member(let nodeID): return ["dm-\(nodeID)"]
+        }
     }
 
     /// Idempotent, like every other view model's `observe()`.
@@ -931,6 +967,12 @@ public final class InboxViewModel {
     /// is reflected here on the next `refresh()`.
     public func openThread(_ conversation: ConversationKind) -> ThreadViewModel {
         provider.markRead(conversation)
+        // A03 §3.11.3 — read means read: pull the already-DELIVERED
+        // banners for this conversation back off the lock screen.
+        if let notifications {
+            let threads = Self.notificationThreadIdentifiers(for: conversation)
+            Task { for thread in threads { await notifications.withdrawDelivered(threadIdentifier: thread) } }
+        }
         refresh()
         // M2: hand the Thread header the SAME name/colour the row it
         // was opened from just showed — read from `conversations` AFTER
