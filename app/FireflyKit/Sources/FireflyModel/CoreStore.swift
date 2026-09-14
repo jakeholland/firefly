@@ -218,11 +218,36 @@ public final class CoreStore {
         }
 
         // RSSI/SNR are per-packet and only attributable when the packet
-        // came directly (docs/specs/A01-companion-app.md, "NodeDB"): a
-        // bare `hopsAway == 0` is what the client layer (slice A) uses
-        // to mean DIRECT, never a default for "unknown".
-        let direct = nodeUpdate.hopsAway == 0
-        if direct, let rssiDbm = nodeUpdate.rssiDbm {
+        // came directly (docs/specs/A01-companion-app.md, "NodeDB").
+        //
+        // WHICH packet, though. When this snapshot came off a live
+        // `MeshPacket` (`rxMeta != nil`) the authority is THAT packet's
+        // own hop path and THAT packet's own reading — never
+        // `hopsAway`/`rssiDbm`, which are the nodeDB's latched summary
+        // of some earlier hearing. Measured (PR #306 review): without
+        // this, a crew member's MQTT-bridged or two-hop-relayed packet
+        // re-fed the RSSI their last DIRECT packet measured, with its
+        // age re-stamped to zero, and `heardDirect` stayed `true` — the
+        // radio reporting "standing next to you" for somebody on the
+        // other side of a bridge. This is the rule `ff_shell.c`'s
+        // `shell_ev_rx_meta` has always applied on the puck
+        // (`m->rx_path == MC_RX_PATH_DIRECT && m->has_rssi`).
+        //
+        // With no `rxMeta` this is a want_config nodeDB REPLAY entry and
+        // the pre-A02 rule stands unchanged: a bare `hopsAway == 0` is
+        // what the client layer uses to mean DIRECT, never a default for
+        // "unknown". Both branches only ever REFUSE to attribute — no
+        // path here attributes anything the old one would not have.
+        let direct: Bool
+        let attributableRSSI: Int16?
+        if let meta = nodeUpdate.rxMeta {
+            direct = meta.direct == true
+            attributableRSSI = meta.rssiDbm
+        } else {
+            direct = nodeUpdate.hopsAway == 0
+            attributableRSSI = nodeUpdate.rssiDbm
+        }
+        if direct, let rssiDbm = attributableRSSI {
             crew.onRSSI(nodeID: nodeUpdate.num, rssiDbm: rssiDbm)
         }
 

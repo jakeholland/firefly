@@ -313,7 +313,13 @@ public final class CrewMembershipEngine: CrewMembershipGating, CrewMembershipPro
             untracked.append(UntrackedCrewMember(nodeID: nodeID, firstHeard: stamp, lastHeard: stamp))
         }
         guard untracked.count > Self.maxUntrackedTracked else { return }
-        untracked.sort { $0.lastHeard < $1.lastHeard }
+        // A TOTAL order, for the same reason `currentMembers()` needs
+        // one: `sort(by:)` is not stable in Swift, so two ids last heard
+        // in the same instant would otherwise decide between themselves
+        // differently run to run — and this list is rendered ("Not
+        // tracked (N)", §4.3), so an arbitrary order is a UI that
+        // reshuffles for no reason. Ties fall back to the node id.
+        untracked.sort { $0.lastHeard == $1.lastHeard ? $0.nodeID < $1.nodeID : $0.lastHeard < $1.lastHeard }
         untracked.removeFirst(untracked.count - Self.maxUntrackedTracked)
     }
 

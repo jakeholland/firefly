@@ -1332,7 +1332,28 @@ the implementation is not literally what a sentence above says.
    one-method protocol (`CrewMembershipGating`), because `CoreStore`
    asks one question and should not be able to see the UI's readout.
 
-7. **The app's hide list is not capped at `FF_HIDDEN_MAX` (16).** That
+7. **Attribution rides on the packet, not on the node record.**
+   Added in review. Widening `applyRxMeta` (note 2) means a crew
+   member's MQTT-bridged and multi-hop packets now reach
+   `CoreStore.apply(nodeUpdate:)`, carrying the node's EXISTING record —
+   whose `hopsAway`/`rssiDbm` are the nodeDB's latched summary of an
+   earlier, DIRECT hearing. Attributing those to the new packet rendered
+   somebody on the far side of a gateway as "standing next to you", with
+   the reading's age re-stamped to zero (measured, PR #306 review:
+   `heardDirect` stayed `true` and `directSignal.ageMs` returned to 0
+   after a `via_mqtt` packet). So `MeshRxMeta` also carries THIS
+   packet's own hop path and THIS packet's own RSSI, and `CoreStore`
+   attributes off those whenever a snapshot came from a packet at all —
+   the rule `ff_shell.c`'s `shell_ev_rx_meta` has always applied on the
+   puck (`m->rx_path == MC_RX_PATH_DIRECT && m->has_rssi`). AC13's "the
+   four `crew.*` conditions are unchanged" is preserved in substance:
+   the replay path (`rxMeta == nil`) keeps the pre-A02 rule exactly, and
+   the packet path only ever REFUSES an attribution the old rule would
+   have made. This also fixes the side effect that a live NodeInfo —
+   which rebuilds a wrapper with no `hops_away` — otherwise cost a
+   member their direct-signal attribution for the rest of the session.
+
+8. **The app's hide list is not capped at `FF_HIDDEN_MAX` (16).** That
    bound is the puck's DRAM budget (S02's amendment §C); the phone
    stores hides as JSON per crew code and has no equivalent constraint,
    so it does not invent one. The puck's honest-failure copy at 16 is

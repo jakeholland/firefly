@@ -95,13 +95,33 @@ public struct MeshRxMeta: Sendable, Equatable {
     /// perform — and it is the load-bearing clause of A02 §4.1:
     /// possession of the PSK is what membership means.
     public let decrypted: Bool
+    /// THIS packet's own hop path: `true` = it arrived direct, `false` =
+    /// it was relayed or came over MQTT, `nil` = the hop fields could
+    /// not establish either (never "assume direct").
+    ///
+    /// Carried per packet because that is the only honest basis for
+    /// attributing a reading to a node. `MeshNodeSnapshot.hopsAway` is
+    /// the nodeDB's LATCHED summary of some earlier hearing, and reusing
+    /// it for a packet that came over MQTT is how a bridged packet ends
+    /// up rendered as "standing next to you" — the puck has never had
+    /// this bug, because `ff_shell.c`'s `shell_ev_rx_meta` gates on
+    /// `m->rx_path == MC_RX_PATH_DIRECT`, this packet's own path.
+    public let direct: Bool?
+    /// The RSSI OUR radio measured for THIS packet, already
+    /// plausibility-gated, or `nil` when it reported none. Never the
+    /// node record's previous reading: re-feeding that would re-stamp an
+    /// old measurement's age to zero.
+    public let rssiDbm: Int16?
 
-    public init(from: UInt32, channelIndex: UInt32, viaMQTT: Bool, portnum: Int32?, decrypted: Bool) {
+    public init(from: UInt32, channelIndex: UInt32, viaMQTT: Bool, portnum: Int32?, decrypted: Bool,
+                direct: Bool? = nil, rssiDbm: Int16? = nil) {
         self.from = from
         self.channelIndex = channelIndex
         self.viaMQTT = viaMQTT
         self.portnum = portnum
         self.decrypted = decrypted
+        self.direct = direct
+        self.rssiDbm = rssiDbm
     }
 }
 

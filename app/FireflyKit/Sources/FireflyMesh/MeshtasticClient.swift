@@ -1799,7 +1799,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             // — no force-unwraps, no crash on a malformed payload.
             guard let text = String(data: data.payload, encoding: .utf8) else { return }
             let rxTime: Date? = pkt.hasRxTime ? Date(timeIntervalSince1970: TimeInterval(pkt.rxTime)) : nil
-            let meta = rxMeta(for: pkt)
+            let meta = Self.rxMeta(for: pkt)
             incomingTextHub.yield(IncomingText(
                 from: pkt.from, to: pkt.to, channel: pkt.channel, packetID: pkt.id, text: text,
                 rxTime: rxTime, rssiDbm: meta.rssiDbm, snrDb: meta.snrDb, direct: meta.direct))
@@ -1817,7 +1817,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
                        // no consumer through MeshtasticClientProtocol)
             }
             let rxTime: Date? = pkt.hasRxTime ? Date(timeIntervalSince1970: TimeInterval(pkt.rxTime)) : nil
-            let meta = rxMeta(for: pkt)
+            let meta = Self.rxMeta(for: pkt)
             incomingPrivateHub.yield(IncomingPrivate(
                 from: pkt.from, to: pkt.to, channel: pkt.channel, packetID: pkt.id, payload: data.payload,
                 rxTime: rxTime, rssiDbm: meta.rssiDbm, snrDb: meta.snrDb, direct: meta.direct))
@@ -1829,7 +1829,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// case can report the SAME per-packet meta on `IncomingText`
     /// without duplicating the gating rules (or drifting from them).
     /// Pure — no NodeDB mutation, no hub yield.
-    private func rxMeta(for pkt: MeshPacket) -> (rssiDbm: Int16?, snrDb: Float?, path: RxPath, direct: Bool?) {
+    static func rxMeta(for pkt: MeshPacket) -> (rssiDbm: Int16?, snrDb: Float?, path: RxPath, direct: Bool?) {
         let hasDecodedBitfield: Bool = {
             if case .decoded(let d) = pkt.payloadVariant { return d.hasBitfield }
             return false
@@ -1874,8 +1874,15 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             if case .decoded(let d) = pkt.payloadVariant { return Int32(d.portnum.rawValue) }
             return nil
         }()
+        // THIS packet's own path and reading — never the node record's
+        // latched summary of an earlier hearing. `CoreStore` attributes
+        // RSSI and direct-ness off these whenever they are present, the
+        // same way `ff_shell.c`'s `shell_ev_rx_meta` gates on
+        // `m->rx_path`/`m->has_rssi` rather than on anything remembered.
+        let measured = rxMeta(for: pkt)
         return MeshRxMeta(from: pkt.from, channelIndex: pkt.channel, viaMQTT: pkt.viaMqtt,
-                          portnum: decodedPortnum, decrypted: decodedPortnum != nil)
+                          portnum: decodedPortnum, decrypted: decodedPortnum != nil,
+                          direct: measured.direct, rssiDbm: measured.rssiDbm)
     }
 
     /// `MeshPacket.rx_time` — OUR radio's own reception stamp — only
@@ -1899,7 +1906,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     }
 
     private func applyRxMeta(for pkt: MeshPacket) {
-        let meta = rxMeta(for: pkt)
+        let meta = Self.rxMeta(for: pkt)
         let facts = Self.rxMetaFacts(for: pkt)
         // A02 slice C: a snapshot is now published for EVERY packet
         // naming a sender, not only for one whose RSSI could be
