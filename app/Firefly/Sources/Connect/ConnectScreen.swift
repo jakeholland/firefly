@@ -285,7 +285,10 @@ struct ConnectScreen: View {
             }
             .frame(minHeight: 44, alignment: .leading)
         } else if scanDidTimeOut {
-            Text("No Meshtastic radios found — is it powered on and within range?")
+            // PR #304 review: the sibling branch below became "find
+            // your puck" while this one kept the brand name the same
+            // decision removed — one screen, one word for the thing.
+            Text("No puck found — is it powered on and nearby?")
                 .font(.footnote)
                 .foregroundStyle(Color.ffCaption)
         } else {

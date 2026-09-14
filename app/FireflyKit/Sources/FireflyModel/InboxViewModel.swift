@@ -102,14 +102,6 @@ public enum PresenceTag: String, Sendable, Equatable, CaseIterable {
         return .lost
     }
 
-    /// The puck's own three-word vocabulary (`ff_sigview_presence_t`,
-    /// `ff_sigview.h`) this tag collapses to — `.heard`/`.stale` -> SEEN,
-    /// `.lost` -> LOST, `.linked` -> LINKED. The phone's row keeps the
-    /// finer HEARD/STALE split (this app's own product choice, not a
-    /// puck-parity requirement — A01 is explicit that the app is not
-    /// obligated to mirror every puck screen decision); this computed
-    /// property is what proves the split stays a strict refinement of,
-    /// never a disagreement with, the shared core vocabulary.
     /// The plain-language label this tag renders as everywhere it
     /// appears — Inbox rows, Crew settings, Radar's own presence
     /// readouts (owner decision, 2026-09-13: "Presence/status words
@@ -149,6 +141,16 @@ public enum PresenceTag: String, Sendable, Equatable, CaseIterable {
         }
     }
 
+    /// The puck's own three-word vocabulary (`ff_sigview_presence_t`,
+    /// `ff_sigview.h`) this tag collapses to — `.heard`/`.stale` -> SEEN,
+    /// `.lost` -> LOST, `.linked` -> LINKED. The phone's row keeps the
+    /// finer HEARD/STALE split (this app's own product choice, not a
+    /// puck-parity requirement — A01 is explicit that the app is not
+    /// obligated to mirror every puck screen decision); this computed
+    /// property is what proves the split stays a strict refinement of,
+    /// never a disagreement with, the shared core vocabulary. (PR #304
+    /// review: this paragraph had been left stranded above `plainLabel`,
+    /// which was inserted between it and the property it describes.)
     public var ffSigviewPresence: ff_sigview_presence_t {
         switch self {
         case .heard, .stale: return FF_PRESENCE_SEEN
@@ -727,7 +729,11 @@ public enum PresenceAge {
         if minutes < 60 { return "\(minutes) min" }
         let hours = minutes / 60
         if hours < 24 { return "\(hours) hr" }
-        return "\(hours / 24) day"
+        // "min"/"hr" are abbreviations and take no plural; "day" is a
+        // whole word, so "3 day" reads as a typo on a screen whose whole
+        // point is plain English (PR #304 review).
+        let days = hours / 24
+        return days == 1 ? "1 day" : "\(days) days"
     }
 
     /// `words(_:)` glued to "ago" — except "just now", where "just now
@@ -738,6 +744,21 @@ public enum PresenceAge {
         let word = words(interval)
         return word == "just now" ? word : "\(word) ago"
     }
+}
+
+/// The two strings every "we have a crew member but no identity for
+/// them yet" surface shares — Inbox rows, Crew settings rows, Radar
+/// dots and map pins (owner decision, 2026-09-13: "any row without a
+/// name shows 'New crew member'... a colour and initial '?' — never a
+/// blank label"). One home, because PR #304 review found the same two
+/// literals being spelled out independently in three files and missing
+/// entirely in a fourth (the map pins).
+public enum CrewDisplayFallback {
+    /// Never a name this app invented for a person — a label for the
+    /// ROW, said in the words a reader would use for it themselves.
+    public static let namelessMember = "New crew member"
+    /// An honest "unknown", not a fabricated initial.
+    public static let unknownInitial: Character = "?"
 }
 
 /// The single-character glyph `InboxListView`'s member-row avatar
@@ -758,7 +779,7 @@ public enum PresenceAge {
 /// label right below it.
 public enum InboxAvatar {
     public static func avatarGlyph(for conversation: InboxConversationRow) -> String {
-        String(conversation.initial ?? conversation.displayName.first ?? "?")
+        String(conversation.initial ?? conversation.displayName.first ?? CrewDisplayFallback.unknownInitial)
     }
 }
 
@@ -771,7 +792,7 @@ public enum InboxAvatar {
 /// a real name ("CREW") and never reaches the fallback.
 public enum InboxDisplayName {
     public static func label(for conversation: InboxConversationRow) -> String {
-        conversation.displayName.isEmpty ? "New crew member" : conversation.displayName
+        conversation.displayName.isEmpty ? CrewDisplayFallback.namelessMember : conversation.displayName
     }
 }
 

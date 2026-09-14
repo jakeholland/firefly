@@ -654,6 +654,50 @@ final class RadarViewModelTests: XCTestCase {
         XCTAssertFalse(model.isObserving, "the pump itself must still stop on pause, same as stopObserving()")
     }
 
+    /// PR #304 review: a selection with no name yet is reachable
+    /// (paired, no NodeInfo — the same state the Inbox/Crew rows now
+    /// call "New crew member"), and this line used to render it as
+    /// "they's position".
+    func testANamelessSelectionsPositionLineIsStillEnglish() {
+        let s = snapshot(mode: .live, name: "", ageText: "4 MIN")
+        let (model, _, _) = makeModel(snapshot: s)
+        model.observe(); defer { model.stopObserving() }
+        XCTAssertEqual(model.theirPositionLine, "Their position: their puck GPS, 4 MIN ago")
+    }
+
+    /// PR #304 review, mutation check: the test above asserts
+    /// `isObserving == false`, and `isObserving` is `headingObservation
+    /// != nil` — a PROXY for "the pump stopped". Deleting
+    /// `recomputeLoop?.cancel()` from `pauseObserving()` satisfies that
+    /// proxy and violates the property: Radar's 1 Hz `ff_radar_compute`
+    /// pump would keep running after every segment switch, forever —
+    /// the exact leak `AppGraph.stop()`'s own comment says it was added
+    /// to close. Measured, not reasoned about: with the cancel removed
+    /// this test fails and no other does.
+    ///
+    /// The first sleep is not padding. `observe()`'s heading/location
+    /// subscriptions each deliver one buffered value and finish, and
+    /// those two deliveries land asynchronously AFTER a synchronous
+    /// pause returns — counting from before them would measure them
+    /// rather than the pump (measured while writing this test: an
+    /// assertion taken immediately after `pauseObserving()` sees +2 on
+    /// unmutated code, and would have "passed" the mutation for the
+    /// wrong reason in reverse). So: let observe() settle, THEN pause,
+    /// THEN watch two ticks' worth of wall clock go by.
+    func testPauseObservingActuallyStopsTheOneHertzPumpNotJustItsSubscriptions() async {
+        let s = snapshot(mode: .live, name: "DANA")
+        let (model, radar, _) = makeModel(snapshot: s)
+        model.observe()
+        try? await Task.sleep(nanoseconds: 1_200_000_000) // one tick, plus both one-shot streams
+        model.pauseObserving()
+        let afterPause = radar.computeCallCount
+
+        try? await Task.sleep(nanoseconds: 2_100_000_000) // two more ticks' worth
+
+        XCTAssertEqual(radar.computeCallCount, afterPause,
+                       "a paused Radar must not still be recomputing geometry once a second")
+    }
+
     /// The other half of the same contract: `stopObserving()` — what
     /// `AppGraph.stop()` calls directly on backgrounding, and what an
     /// explicit STOP tap reaches via `stopFind()` — still ends FIND.

@@ -49,13 +49,13 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Firefly shares your location with your puck so your crew can find you, even with no signal.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Firefly shares your location with your puck so your crew can find you, even with no signal.</string>
+	<string>Firefly shares your location with your puck so your crew can find you, even with no signal. Keeping this on in the background means your crew can still find you while your phone is in your pocket.</string>
 
 	<!-- Camera. iOS only — the Connect screen's channel-QR scan sheet
 	     (Slice C, QRScannerSheet.swift). macOS never asks: the same
 	     screen's paste field is the whole story there. -->
 	<key>NSCameraUsageDescription</key>
-	<string>Firefly uses the camera to scan a crew code.</string>
+	<string>Firefly uses the camera to scan your friend's crew code.</string>
 
 	<key>UIBackgroundModes</key>
 	<array>

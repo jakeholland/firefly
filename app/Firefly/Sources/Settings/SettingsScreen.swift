@@ -163,7 +163,11 @@ struct SettingsScreen: View {
             // M3" copy was stale the moment that PR landed. Plain words
             // about what actually happens, not a scope note nobody
             // reading Settings cares about.
-            Text("Rename on the radio. Applies after confirmation, radio restarts.")
+            // PR #304 review: this caption still said "radio restarts"
+            // while the confirmation sheet one tap away now says the
+            // puck blinks off — same event, two vocabularies, on one
+            // screen. A02 §6.4's own wording for this row.
+            Text("This is what your crew sees for you. Applies after confirmation.")
                 .font(.caption2)
                 .foregroundStyle(Color.ffCaption)
             LabeledField(label: "Long name") {

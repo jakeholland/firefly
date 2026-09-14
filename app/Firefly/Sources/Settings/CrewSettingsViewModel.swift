@@ -39,7 +39,7 @@ final class CrewSettingsViewModel {
         var displayName: String {
             if let nickname, !nickname.isEmpty { return nickname }
             if !meshName.isEmpty { return meshName }
-            return "New crew member"
+            return CrewDisplayFallback.namelessMember
         }
     }
 

@@ -65,7 +65,7 @@ struct GPSMapView: View {
                 }
             }
             ForEach(model.pins) { pin in
-                Annotation(pin.name, coordinate: CLLocationCoordinate2D(latitude: pin.latitude,
+                Annotation(pin.displayLabel, coordinate: CLLocationCoordinate2D(latitude: pin.latitude,
                                                                           longitude: pin.longitude)) {
                     crewAnnotation(pin)
                         .onTapGesture { onSelect(pin.id) }
@@ -130,8 +130,8 @@ struct GPSMapView: View {
             case .imprecise:
                 Circle().strokeBorder(color.opacity(0.7), lineWidth: 2).frame(width: 40, height: 40)
             }
-            if let initial = pin.initial, pin.treatment != .imprecise {
-                Text(String(initial)).font(.system(size: 10, weight: .bold))
+            if pin.treatment != .imprecise {
+                Text(String(pin.displayInitial)).font(.system(size: 10, weight: .bold))
                     .foregroundStyle(pin.treatment == .live ? Color.white : color)
             }
         }
@@ -155,7 +155,7 @@ struct GPSMapView: View {
             HStack {
                 Circle().fill(Color.mapCrew(colorIndex: pin.colorIndex, colorblind: colorblind))
                     .frame(width: 10, height: 10)
-                Text(pin.name).font(.headline).foregroundStyle(Color.ffInk)
+                Text(pin.displayLabel).font(.headline).foregroundStyle(Color.ffInk)
                 Spacer()
                 Button { onDeselect() } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(Color.ffCaption)

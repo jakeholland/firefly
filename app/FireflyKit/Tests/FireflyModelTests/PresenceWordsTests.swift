@@ -24,7 +24,11 @@ final class PresenceAgeTests: XCTestCase {
 
     func testHoursAndDays() {
         XCTAssertEqual(PresenceAge.words(2 * 3600), "2 hr")
-        XCTAssertEqual(PresenceAge.words(3 * 24 * 3600), "3 day")
+        // PR #304 review: "3 day" is not English, on a screen whose
+        // entire point is plain English. "min"/"hr" are abbreviations
+        // and stay singular; "day" is a whole word.
+        XCTAssertEqual(PresenceAge.words(24 * 3600), "1 day")
+        XCTAssertEqual(PresenceAge.words(3 * 24 * 3600), "3 days")
     }
 
     /// The owner's own example: "STALE 6M" -> "6 min ago".
