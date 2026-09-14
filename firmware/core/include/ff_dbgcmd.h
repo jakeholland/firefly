@@ -134,9 +134,11 @@
  * enumerate and no free-text argument to carry (the crew CODE is minted
  * by the puck from its own CSPRNG — a typed one would defeat the point).
  *   crew          — status: the crew code the radio reports, which index
- *                   it resolved to, the radio's LoRa region, whether a
- *                   pre-crew snapshot exists, and the current/last
- *                   operation's phase + failure reason. See
+ *                   it resolved to, the radio's LoRa region, the crew
+ *                   channel's own reported position_precision (#47 —
+ *                   "unreported" when the radio never stated one),
+ *                   whether a pre-crew snapshot exists, and the
+ *                   current/last operation's phase + failure reason. See
  *                   `ff_debug_console.c`'s `dbgconsole_crew_status` for
  *                   the exact line format
  *   crew start    — mint a code, write the derived channel to the comms
@@ -265,7 +267,7 @@ typedef enum {
     FF_DBGCMD_MIC_DUMP,     /* 2026-09-09 amendment: "mic dump <secs>" — u.mic_dump_secs, 1-10 */
     FF_DBGCMD_MUSIC,        /* S31: "music" bare — source/loudness/bpm-estimate */
     FF_DBGCMD_MUSIC_SEED,   /* S31: "music seed <n>" — u.music_seed, bench-determinism reseed */
-    FF_DBGCMD_CREW,         /* A02 slice D2: "crew" bare — crew code/index/region/operation status */
+    FF_DBGCMD_CREW,         /* A02 slice D2: "crew" bare — crew code/index/region/precision/operation status */
     FF_DBGCMD_CREW_START,   /* A02 slice D2: "crew start" */
     FF_DBGCMD_CREW_LEAVE,   /* A02 slice D2: "crew leave" */
 } ff_dbgcmd_kind_t;

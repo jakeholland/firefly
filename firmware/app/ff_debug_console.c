@@ -149,7 +149,7 @@ static void dbgconsole_help(ff_dbgconsole_reply_fn reply, void *user)
     reply_line(reply, user, "dbg: cal clear                drop the stored calibration back to identity");
     reply_line(reply, user, "dbg: name                     NAME in Settings: stored/mesh/confirmed status");
     reply_line(reply, user, "dbg: name <text>              set + push the Meshtastic owner update");
-    reply_line(reply, user, "dbg: crew                     crew code/index/region + START/LEAVE status");
+    reply_line(reply, user, "dbg: crew                     crew code/index/region/precision + START/LEAVE status");
     reply_line(reply, user, "dbg: crew start               mint a code, write the crew channel, verify it");
     reply_line(reply, user, "dbg: crew leave               restore the pre-crew channel, verify it");
     reply_line(reply, user, "dbg: diag                     DIAGNOSTICS: link/position/mesh/time/compass/device");
@@ -654,12 +654,24 @@ static void dbgconsole_crew_status(ff_shell_t *sh, ff_dbgconsole_reply_fn reply,
         snprintf(region_buf, sizeof(region_buf), "%u", (unsigned)st.region);
     }
 
-    char line[224];
+    /* A02 slice D2 amendment (#47) — what the crew channel's own row
+     * currently states about position_precision, exactly like
+     * `region_buf` above: a value when the radio reported one, else the
+     * honest "unreported" (never "0", which is a real, different value
+     * a radio can genuinely state). */
+    char precision_buf[16];
+    if (!st.precision_known) {
+        snprintf(precision_buf, sizeof(precision_buf), "unreported");
+    } else {
+        snprintf(precision_buf, sizeof(precision_buf), "%u", (unsigned)st.precision);
+    }
+
+    char line[256];
     snprintf(line, sizeof(line),
-             "dbg: crew code=%s index=%s region=%s snapshot=%d can_start=%d can_leave=%d op=%s phase=%s "
-             "fail=%s attempts=%u pending=%s",
-             (st.code[0] != '\0') ? st.code : "(none)", index_buf, region_buf, st.has_snapshot ? 1 : 0,
-             st.can_start ? 1 : 0, st.can_leave ? 1 : 0, dbgconsole_crew_op_name(st.op),
+             "dbg: crew code=%s index=%s region=%s precision=%s snapshot=%d can_start=%d can_leave=%d op=%s "
+             "phase=%s fail=%s attempts=%u pending=%s",
+             (st.code[0] != '\0') ? st.code : "(none)", index_buf, region_buf, precision_buf,
+             st.has_snapshot ? 1 : 0, st.can_start ? 1 : 0, st.can_leave ? 1 : 0, dbgconsole_crew_op_name(st.op),
              dbgconsole_crew_phase_name(st.phase), dbgconsole_crew_fail_name(st.fail), (unsigned)st.attempts,
              (st.pending_code[0] != '\0') ? st.pending_code : "(none)");
     reply_line(reply, user, line);

@@ -2176,6 +2176,17 @@ void app_main(void)
     ESP_LOGW(TAG, "firefly: FF_CREW_AUTO_ON_CHANNEL off — only explicit pairing grows the crew");
 #endif
 
+    /* A02 slice D2 amendment (#47) — same "re-stated from Kconfig at
+     * boot" pattern as auto_crew immediately above, for the same reason:
+     * the built image's behaviour is a property of its sdkconfig and
+     * visible in one place, not left to ff_shell_init's own default. */
+#if CONFIG_FF_CREW_PRECISION_STRICT
+    ff_shell_set_crew_precision_strict(&s_shell, true);
+#else
+    ff_shell_set_crew_precision_strict(&s_shell, false);
+    ESP_LOGW(TAG, "firefly: FF_CREW_PRECISION_STRICT off — an unreported crew precision will not block START");
+#endif
+
     /* A02 slice D2 (S02's 2026-09-14 amendment) — the CSPRNG the crew
      * code is minted from.
      *

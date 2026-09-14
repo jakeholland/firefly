@@ -1839,6 +1839,7 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
  *                    FIRE-4K9M7X
  *
  *        Anyone who scans or types this is in your crew.
+ *                       exact positions
  *                        [ BACK ]
  *
  * The code is DERIVED from the radio's own channel name (A02 §1.3 makes
@@ -1849,14 +1850,27 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
  * code somebody will type into their phone and then stand around
  * wondering why nobody appeared.
  *
+ * The PRECISION line (S02's 2026-09-14 amendment, #47) is the one other
+ * honest fact this face makes: "exact positions" when the crew
+ * channel's own `position_precision` is proven to be exactly 32, and
+ * "positions coarse — start the crew again" for every other case folded
+ * into one — stated-but-wrong, never reported, or no crew channel at
+ * all read the SAME to a wearer deciding whether to trust the puck's
+ * positions. Sourced from `ff_app_crew_page_t.precision_exact`
+ * (`shell_project_crew_page`), a live fact about the radio's channel
+ * table — true the moment the crew's own row proves it, whether or not
+ * a `ff_crewstart` START ever ran this session.
+ *
  * Geometry, against the round 412 glass — MEASURED off the committed
- * golden, not eyeballed. The `lv_qrcode` canvas is 190 px and carries a
- * 6 px light border as its quiet zone, so the white ground the camera
- * actually sees is 190 + 2*6 = 202 px square (confirmed: the near-white
- * bounding box in `crew_show_code.png` is exactly 202x202 at y=34). That
- * leaves the code line, the caption and a real 44 px BACK target room
- * below it inside the circle. `lv_qrcode` draws into a canvas of exactly
- * the size it is given, so the module size is whatever 190 / (modules +
+ * golden, not eyeballed. The `lv_qrcode` canvas is 170 px (trimmed from
+ * slice D's original 190 px to make room for the PRECISION line below
+ * the caption — still comfortably above the ~120 px floor a phone
+ * camera needs for this payload's short URL) and carries a 6 px light
+ * border as its quiet zone, so the white ground the camera actually
+ * sees is 170 + 2*6 = 182 px square. That leaves the code line, the
+ * caption, the PRECISION line and a real 44 px BACK target room below
+ * it inside the circle. `lv_qrcode` draws into a canvas of exactly the
+ * size it is given, so the module size is whatever 170 / (modules +
  * 2*quiet-zone) works out to for this payload's version — LVGL handles
  * that; what matters here is that the dark-on-light polarity is NOT
  * inverted (a scanner expects dark modules on a light ground, and a
@@ -1864,16 +1878,17 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
  *
  * The square is centred on the GLASS (FF_THEME_GLASS_CX = 208), not on
  * the 412 pixel array (206). That 2 px is not cosmetic: the panel sits
- * ~5 px left of the bezel's optical centre (ff_theme.h), and a 202 px
- * square hung off the panel centre puts its top-LEFT corner at
- * r = 200.5 from the glass centre — outside FF_THEME_GLASS_R, which is
- * itself already pulled 3 px in from the measured 203. Centred on the
- * glass both top corners land at r = 199.5 and the asymmetry is gone.
- * Pinned by the assert below rather than by the golden, because a golden
- * is a pixel-diff against itself and would happily keep a corner over
- * the bezel lip forever.
+ * ~5 px left of the bezel's optical centre (ff_theme.h), and a square
+ * hung off the panel centre instead puts its top-LEFT corner further
+ * from the glass centre than one centred on the glass itself — outside
+ * FF_THEME_GLASS_R on a large enough square, which is itself already
+ * pulled 3 px in from the measured 203. Centred on the glass both top
+ * corners land at the same radius and the asymmetry is gone. Pinned by
+ * the assert below rather than by the golden, because a golden is a
+ * pixel-diff against itself and would happily keep a corner over the
+ * bezel lip forever.
  * ------------------------------------------------------------------- */
-#define FF_CREWCODE_QR_PX     190
+#define FF_CREWCODE_QR_PX     170
 #define FF_CREWCODE_QR_BORDER 6 /* the QR's own quiet zone, in its light colour */
 #define FF_CREWCODE_QR_BOX    (FF_CREWCODE_QR_PX + 2 * FF_CREWCODE_QR_BORDER)
 /* TOP_MID aligns on the pixel array's centre; this nudges to the glass's. */
@@ -1881,6 +1896,9 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
 #define FF_CREWCODE_QR_Y      34
 #define FF_CREWCODE_CODE_Y    (FF_CREWCODE_QR_Y + FF_CREWCODE_QR_PX + 14)
 #define FF_CREWCODE_CAPTION_Y (FF_CREWCODE_CODE_Y + 46)
+/* A02 slice D2 amendment (#47) — the one PRECISION line, below the
+ * (up to two-line) caption. */
+#define FF_CREWCODE_PRECISION_Y (FF_CREWCODE_CAPTION_Y + 36)
 #define FF_CREWCODE_BTN_W     120
 #define FF_CREWCODE_BTN_H     FF_SETTINGS_ROW_H
 #define FF_CREWCODE_BTN_Y     326
@@ -1894,6 +1912,11 @@ _Static_assert((FF_CREWCODE_QR_BOX / 2) * (FF_CREWCODE_QR_BOX / 2) +
                        (FF_THEME_GLASS_CY - FF_CREWCODE_QR_Y) * (FF_THEME_GLASS_CY - FF_CREWCODE_QR_Y) <=
                    FF_THEME_GLASS_R * FF_THEME_GLASS_R,
                "SHOW CODE's QR (quiet zone included) must stay inside FF_THEME_GLASS_R");
+/* The PRECISION line has to land clear of the BACK pill above it — a
+ * one-line chip-font label needs about 20px, stated conservatively
+ * rather than measured off one render. */
+_Static_assert(FF_CREWCODE_PRECISION_Y + 20 <= FF_CREWCODE_BTN_Y,
+               "SHOW CODE's PRECISION line must clear the BACK button above it");
 _Static_assert(FF_CREWCODE_BTN_H >= FF_THEME_MIN_HIT_PX, "SHOW CODE's BACK button must clear the 44px hit floor");
 /* The BACK pill's lowest corners have to stay inside the glass. At its
  * bottom edge the inscribed chord is
@@ -1972,6 +1995,28 @@ static void settings_build_crew_code_page(lv_obj_t *parent, ff_app_crew_page_t c
         lv_obj_set_style_text_align(cap, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_align(cap, LV_ALIGN_TOP_MID, 0, FF_CREWCODE_CAPTION_Y);
         lv_obj_clear_flag(cap, LV_OBJ_FLAG_CLICKABLE);
+
+        /* A02 slice D2 amendment (#47) — the one other honest fact this
+         * face makes. "exact positions" only when the crew channel's OWN
+         * position_precision is PROVEN to be exactly 32; every other case
+         * (stated-but-wrong, never reported, or the radio simply hasn't
+         * answered this question yet) reads the same to a wearer deciding
+         * whether to trust what the map shows — "coarse", with the one
+         * thing that fixes it. */
+        lv_obj_t *prec = lv_label_create(puck);
+        lv_obj_set_width(prec, FF_THEME_PUCK_PX - 100);
+        lv_label_set_long_mode(prec, LV_LABEL_LONG_WRAP);
+        if (cw->precision_exact) {
+            lv_label_set_text(prec, "exact positions");
+            lv_obj_set_style_text_color(prec, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+        } else {
+            lv_label_set_text(prec, "positions coarse - start the crew again");
+            lv_obj_set_style_text_color(prec, lv_color_hex(FF_THEME_COLOR_STALE_AMBER), 0);
+        }
+        lv_obj_set_style_text_font(prec, FF_THEME_FONT_CHIP, 0);
+        lv_obj_set_style_text_align(prec, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(prec, LV_ALIGN_TOP_MID, 0, FF_CREWCODE_PRECISION_Y);
+        lv_obj_clear_flag(prec, LV_OBJ_FLAG_CLICKABLE);
     } else {
         /* The honest empty state. No QR, no placeholder code, and a
          * reason — a blank square with "----" under it would look like a

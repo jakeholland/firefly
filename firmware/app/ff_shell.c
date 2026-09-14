@@ -775,6 +775,29 @@ typedef struct {
     uint32_t crew_index;
     char     crew_code[FF_CREWCODE_LEN + 1u];
 
+    /* A02 slice D2 amendment (#47) — the crew index's own row's
+     * `position_precision`, presence-flagged exactly like
+     * `mc_channel_t`'s, rebuilt on the SAME lifecycle as `crew_index_known`
+     * (cleared on every handshake, rebuilt from THIS handshake's own
+     * Channel replies) — a live fact about the radio's channel table,
+     * not a display value worth preserving across a reconnect the way
+     * `crew_code` is. This is what the SHOW CODE face's honest line and
+     * the bench console's `precision=` field both read; it is
+     * independent of any `ff_crewstart` run having ever executed in this
+     * session. */
+    bool     crew_precision_known;
+    uint32_t crew_precision;
+
+    /* Whether an ABSENT `position_precision` on a crew START's own
+     * verifying read-back is trusted (READY, "unreported") or treated as
+     * the same MISMATCH a stated-but-wrong value is. `FF_CREW_PRECISION_
+     * STRICT`, Kconfig default y — re-stated from Kconfig at boot
+     * (app_main.c), the SAME pattern `auto_crew` above already sets.
+     * Passed into `ff_crewstart_begin_start` at the moment a START
+     * begins, never read by core any other way (core has no Kconfig of
+     * its own). */
+    bool     crew_precision_strict;
+
     /* The hide set (§C) and the crew code its persisted record belongs
      * to. `hidden_code` is "" until a crew channel resolves; when it
      * changes, the list is reloaded from that crew's own store key, so
@@ -1489,9 +1512,16 @@ static ff_crewstart_channel_t shell_channel_to_core(mc_channel_t const *ch)
     memcpy(out.psk, ch->psk, sizeof(out.psk));
     out.psk_len = ch->psk_len;
     out.is_primary = ch->is_primary;
-    /* A row that stated no precision is written back as an explicit 0
-     * (there is no way to say "absent" on a write) — see
-     * mc_channel_t.has_position_precision's own comment. */
+    /* PRESERVED, not collapsed: `ff_crewstart_on_channel` (#47) has to be
+     * able to tell "stated 0" from "never stated" on the verifying
+     * read-back, which this same struct carries that row in. Zeroed
+     * alongside the flag exactly like mc_channel_t's own field — never
+     * left as stack garbage when absent. (The pre-crew SNAPSHOT is a
+     * separate, narrower record — `ff_crewstart_snapshot_serialize`
+     * stores only the plain `position_precision` a restoring WRITE needs,
+     * which must always be a concrete number; see that function's own
+     * layout comment.) */
+    out.has_position_precision = ch->has_position_precision;
     out.position_precision = ch->has_position_precision ? ch->position_precision : 0u;
     return out;
 }
@@ -1539,6 +1569,12 @@ static void shell_ev_channel(void *u, mc_channel_t const *ch)
     sh->crew_index_known = true;
     sh->crew_index = ch->index;
     shell_copy_str(sh->crew_code, sizeof(sh->crew_code), ch->name);
+    /* A02 slice D2 amendment (#47) — same row, same moment: what the
+     * radio's own channel table currently states about THIS crew
+     * channel's precision, independent of whether any ff_crewstart run
+     * ever executed this session. */
+    sh->crew_precision_known = ch->has_position_precision;
+    sh->crew_precision = ch->has_position_precision ? ch->position_precision : 0u;
 
     /* Reload the hide list iff the crew actually changed, so an ordinary
      * reconnect costs no store read and an in-place hide made since the
@@ -1711,7 +1747,7 @@ static bool shell_crew_begin(shell_t *sh, ff_crewstart_op_t op)
     if (op == FF_CREWSTART_OP_START) {
         /* Before the first write, and only ever once. */
         shell_crew_snapshot_capture(sh);
-        return ff_crewstart_begin_start(&sh->crewstart, sh->rand_fn, sh->rand_ctx, now);
+        return ff_crewstart_begin_start(&sh->crewstart, sh->rand_fn, sh->rand_ctx, sh->crew_precision_strict, now);
     }
 
     /* begin_leave(NULL) reports NO_SNAPSHOT itself; routed through it
@@ -1843,6 +1879,8 @@ static ff_shell_crew_op_status_t shell_crew_op_status(shell_t const *sh)
     st.region = sh->region;
     st.crew_index_known = sh->crew_index_known;
     st.crew_index = sh->crew_index;
+    st.precision_known = sh->crew_precision_known;
+    st.precision = sh->crew_precision;
 
     shell_copy_str(st.code, sizeof(st.code), sh->crew_code);
     shell_copy_str(st.pending_code, sizeof(st.pending_code), ff_crewstart_code(&sh->crewstart));
@@ -2386,6 +2424,11 @@ static void shell_ev_state(void *u, mc_state_t s)
          * was named, and blanking the SHOW CODE face for the ~20 ms of
          * every reconnect would be a flicker that buys no honesty. */
         sh->crew_index_known = false;
+        /* A02 slice D2 amendment (#47) — same rule, same reason: a live
+         * fact about THIS handshake's channel table, rebuilt from this
+         * handshake's own Channel replies by shell_ev_channel. */
+        sh->crew_precision_known = false;
+        sh->crew_precision = 0u;
         /* A02 slice D2 — same rule, same reason: the region is a fact
          * about the radio on the other end of THIS handshake. A reboot
          * (which an admin channel write causes) can bring back a
@@ -3877,6 +3920,12 @@ static void shell_project_crew_page(shell_t const *sh, uint32_t now_ms, ff_app_s
      * one that never resolves by itself (ff_app_crew_page_t's own field
      * comment). "Reported, and it is 0" — never "not reported yet". */
     cw->region_unset = op.region_known && (op.region == 0u);
+    /* A02 slice D2 amendment (#47) — one honest line, not a raw number:
+     * "exact" iff the radio's own channel table states EXACTLY
+     * FF_CREWSTART_CREW_PRECISION for this crew. Unreported and
+     * stated-but-wrong fold into the same "not exact" a wearer acts on
+     * the same way either way. */
+    cw->precision_exact = op.precision_known && (op.precision == FF_CREWSTART_CREW_PRECISION);
     cw->op = op.op;
     cw->phase = op.phase;
     cw->fail = op.fail;
@@ -5231,6 +5280,10 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
      * product behaviour without having to remember to ask for it, which
      * is the point of a default. */
     sh->auto_crew = true;
+    /* A02 slice D2 amendment (#47) — the SHIPPED default
+     * (`FF_CREW_PRECISION_STRICT`, Kconfig default y), same "re-stated
+     * from Kconfig at boot" pattern `auto_crew` above already documents. */
+    sh->crew_precision_strict = true;
     /* fix/audio-init-order-seed-silence: unmuted at init — the caller
      * (ff_demo_seed, or this file's own handshake/settle pair) mutes for
      * a bounded window and always unmutes again; see the field's own doc
@@ -8587,6 +8640,17 @@ void ff_shell_dev_trust_all(ff_shell_t *sh_pub, bool enabled)
 /* ---------------------------------------------------------------------
  * A02 slice D — auto crew on the crew channel
  * ------------------------------------------------------------------- */
+
+void ff_shell_set_crew_precision_strict(ff_shell_t *sh_pub, bool strict)
+{
+    if (sh_pub == NULL) return;
+    shell_of(sh_pub)->crew_precision_strict = strict;
+}
+
+bool ff_shell_crew_precision_strict(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? false : shell_of_const(sh_pub)->crew_precision_strict;
+}
 
 void ff_shell_set_auto_crew(ff_shell_t *sh_pub, bool enabled)
 {
