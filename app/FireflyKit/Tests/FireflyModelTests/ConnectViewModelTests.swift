@@ -94,14 +94,25 @@ final class ConnectViewModelTests: XCTestCase {
         vm.apply(.ready)
         now = now.addingTimeInterval(95) // 1m 35s later
         vm.apply(.reconnecting(attempt: 1))
-        XCTAssertEqual(vm.lastConnectedLabel, "last connected 1m ago")
+        XCTAssertEqual(vm.lastConnectedLabel, "last connected 1 min ago")
     }
 
     func testRelativeAgoFormatting() {
         let base = Date(timeIntervalSince1970: 10_000)
-        XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(5)), "5s ago")
-        XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(125)), "2m ago")
-        XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(3 * 3600 + 60)), "3h ago")
+        XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(5)), "just now")
+        XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(125)), "2 min ago")
+        XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(3 * 3600 + 60)), "3 h ago")
+    }
+
+    /// Same ladder `FestpackSourceState.ageDescription` uses beyond the
+    /// "N h ago" window: past 48 hours this must read in days, exactly
+    /// like Festpack's own status text, never an ever-growing hour
+    /// count ("96 h ago") that no other screen in the app would show.
+    func testRelativeAgoSwitchesToDaysPastFortyEightHours() {
+        let base = Date(timeIntervalSince1970: 10_000)
+        XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(47 * 3600)), "47 h ago")
+        XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(48 * 3600)), "2 d ago")
+        XCTAssertEqual(ConnectViewModel.relativeAgo(from: base, to: base.addingTimeInterval(4 * 24 * 3600)), "4 d ago")
     }
 
     // MARK: - BLOCKING 2 (PR #272 review): the alreadyConnecting race

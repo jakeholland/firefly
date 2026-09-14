@@ -183,14 +183,9 @@ struct ConnectScreen: View {
     // MARK: - Header
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("FIREFLY")
-                .font(.system(.largeTitle, design: .rounded).weight(.heavy))
-                .foregroundStyle(Color.ffAmber)
-            Text("One crew. One channel. Nothing here is made up.")
-                .font(.caption)
-                .foregroundStyle(Color.ffMuted)
-        }
+        Text("FIREFLY")
+            .font(.system(.largeTitle, design: .rounded).weight(.heavy))
+            .foregroundStyle(Color.ffAmber)
     }
 
     // MARK: - Connection state
@@ -261,12 +256,14 @@ struct ConnectScreen: View {
 
             Button("RESCAN") { startScan() }
                 .buttonStyle(.bordered)
-                .tint(.ffMuted)
+                .tint(.ffAmber)
                 .frame(minHeight: 44)
 
-            Text("DISCONNECT keeps a radio remembered for next launch. FORGET clears it.")
-                .font(.caption2)
-                .foregroundStyle(Color.ffMuted)
+            if let hint = RadioListBuilder.rememberedRadioHint(rows: rows) {
+                Text(hint)
+                    .font(.caption2)
+                    .foregroundStyle(Color.ffMuted)
+            }
         }
     }
 
@@ -281,7 +278,7 @@ struct ConnectScreen: View {
             }
             .frame(minHeight: 44, alignment: .leading)
         } else if scanDidTimeOut {
-            Text("No Meshtastic radios found — is the node powered on and within range?")
+            Text("No Meshtastic radios found — is it powered on and within range?")
                 .font(.footnote)
                 .foregroundStyle(Color.ffMuted)
         } else {
@@ -371,7 +368,7 @@ struct ConnectScreen: View {
     private var nearbySection: some View {
         SectionBlock(title: "NEARBY") {
             if nearby.nodes.isEmpty {
-                Text("Nobody heard yet. This fills in once mesh traffic comes in — never before.")
+                Text("Nobody heard yet. This fills in as other radios are heard.")
                     .font(.footnote)
                     .foregroundStyle(Color.ffMuted)
             } else {
@@ -419,12 +416,12 @@ struct ConnectScreen: View {
 
                 Button("PASTE") { pasteFromClipboard() }
                     .buttonStyle(.bordered)
-                    .tint(.ffMuted)
+                    .tint(.ffAmber)
 
                 #if os(iOS)
                 Button("SCAN") { isShowingScanner = true }
                     .buttonStyle(.bordered)
-                    .tint(.ffMuted)
+                    .tint(.ffAmber)
                 #endif
             }
             .frame(minHeight: 44)
@@ -457,7 +454,7 @@ struct ConnectScreen: View {
                             .font(.footnote)
                             .foregroundStyle(Color.ffAlert)
                     }
-                    Text("Shown only — not sent to the node until you confirm exactly which " +
+                    Text("Shown only — not sent to the radio until you confirm exactly which " +
                          "slots will be written, disabled, or left untouched.")
                         .font(.caption2)
                         .foregroundStyle(Color.ffMuted)
@@ -468,7 +465,7 @@ struct ConnectScreen: View {
                     // only opens once that plan exists, so it can never
                     // show a placeholder for a write that might not be
                     // possible (e.g. an "add" import with no free slot).
-                    Button(channelImport.isPreparingPlan ? "CHECKING NODE…" : "APPLY TO NODE") {
+                    Button(channelImport.isPreparingPlan ? "CHECKING RADIO…" : "APPLY TO RADIO") {
                         Task {
                             if await channelImport.preparePlan() {
                                 isShowingApplyConfirmation = true
@@ -593,7 +590,7 @@ private struct RadioRow: View {
         case .disconnect:
             Button(primaryLabel, action: onPrimary)
                 .buttonStyle(.bordered)
-                .tint(.ffMuted)
+                .tint(.ffAmber)
                 .frame(minHeight: 44)
         case .unavailable:
             Button(primaryLabel) {}

@@ -282,14 +282,25 @@ struct RadioListRow: Identifiable, Equatable {
     /// The best name known for this radio — its own `NodeInfo` long
     /// name once want_config has reported one, else its BLE advertised
     /// name, else its raw node id, else (nothing at all is known — the
-    /// remembered-but-never-scanned case) a plain placeholder. Never a
-    /// bare UUID: `MeshPeripheralDiscovery`'s `id` is a `CBPeripheral`
-    /// identifier, meaningless to a human.
+    /// remembered-but-never-scanned case) `shortID` below. Never a bare
+    /// UUID: `MeshPeripheralDiscovery`'s `id` is a `CBPeripheral`
+    /// identifier, meaningless to a human. Never a generic placeholder
+    /// word either (owner direction 2026-09-13: "show the radio's
+    /// actual name... falling back to the short id when the name isn't
+    /// known yet") — a row always names an actual radio, never "a
+    /// radio".
     let title: String
     /// Whatever identity `title` did NOT already use, joined the same
     /// way `ConnectViewModel.headerStatusText` joins its own parts —
     /// nil when there is nothing left to add.
     let subtitle: String?
+    /// A short, human-scannable id for this radio — the last 4
+    /// characters of its node id hex, its BLE name's own `_XXXX` suffix,
+    /// or (last resort) the last 4 characters of its raw peripheral id.
+    /// `== title` exactly when `title` is already this same fallback
+    /// (nothing more specific was known) — callers use that to avoid
+    /// printing it twice, e.g. "Firefly 2 · e7d4" but never "e7d4 · e7d4".
+    let shortID: String
     let rssiDbm: Int?
     let status: Status
     /// Drives the FORGET row action — independent of `status`: a
@@ -341,7 +352,8 @@ enum RadioListBuilder {
             if let longName { identity.append(longName) }
             if let bleName { identity.append(bleName) }
             if let nodeID { identity.append(nodeID) }
-            let title = identity.first ?? "Remembered radio"
+            let shortID = Self.shortID(bleName: bleName, nodeIDHex: nodeID, rawID: id)
+            let title = identity.first ?? shortID
             let subtitleParts = identity.dropFirst()
 
             let isRemembered = remembered != nil
@@ -356,6 +368,7 @@ enum RadioListBuilder {
                 id: id,
                 title: title,
                 subtitle: subtitleParts.isEmpty ? nil : subtitleParts.joined(separator: " · "),
+                shortID: shortID,
                 rssiDbm: rssi,
                 status: status,
                 isRemembered: isRemembered,
@@ -364,15 +377,49 @@ enum RadioListBuilder {
         }
 
         for peripheral in discovered where !coveredIDs.contains(peripheral.id) {
+            let shortID = Self.shortID(bleName: peripheral.name, nodeIDHex: nil, rawID: peripheral.id)
             rows.append(RadioListRow(
                 id: peripheral.id,
                 title: peripheral.name ?? peripheral.id,
                 subtitle: nil,
+                shortID: shortID,
                 rssiDbm: peripheral.rssiDbm,
                 status: .none,
                 isRemembered: false,
                 action: connect.rowAction(isActivePeripheral: false)))
         }
         return rows
+    }
+
+    /// The last-resort identity `RadioListRow.shortID` documents: a
+    /// node id hex's own last 4 characters (`!02e5e3d4` → `e3d4`) when
+    /// one is known, else a `Meshtastic_XXXX`-style BLE name's own
+    /// suffix, else the last 4 characters of the raw id string (a
+    /// `CBPeripheral` UUID for a never-scanned remembered radio) —
+    /// always something that actually identifies this radio, never a
+    /// placeholder word.
+    private static func shortID(bleName: String?, nodeIDHex: String?, rawID: String) -> String {
+        if let nodeIDHex, nodeIDHex.count >= 4 {
+            return String(nodeIDHex.suffix(4))
+        }
+        if let bleName, let underscore = bleName.lastIndex(of: "_") {
+            let suffix = bleName[bleName.index(after: underscore)...]
+            if !suffix.isEmpty { return String(suffix) }
+        }
+        return String(rawID.suffix(4))
+    }
+
+    /// The Connect screen's DISCONNECT/FORGET caption (owner direction
+    /// 2026-09-13: name the actual radio, never the generic "a radio
+    /// remembered for next launch" — fall back to `RadioListRow.shortID`
+    /// when no name is known yet). `nil` when nothing is currently
+    /// remembered: FORGET has nothing to say about a session that never
+    /// persisted anything. A pure function of `rows` (rather than a
+    /// `ConnectScreen` view method) so it is directly testable without
+    /// SwiftUI, same rule this whole file already follows.
+    static func rememberedRadioHint(rows: [RadioListRow]) -> String? {
+        guard let row = rows.first(where: { $0.isRemembered }) else { return nil }
+        let label = row.title == row.shortID ? row.title : "\(row.title) · \(row.shortID)"
+        return "DISCONNECT keeps \(label) — it will reconnect next launch. FORGET clears it."
     }
 }

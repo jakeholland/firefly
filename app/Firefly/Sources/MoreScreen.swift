@@ -98,7 +98,7 @@ struct MoreScreen: View {
                             identifier: "MoreRow.Connect") { open(.connect) }
                 }
                 MoreBlock {
-                    MoreRow(title: "SETTINGS", subtitle: "Node, channel, units, crew",
+                    MoreRow(title: "SETTINGS", subtitle: "Radio, channel, units, crew",
                             systemImage: "slider.horizontal.3",
                             identifier: "MoreRow.Settings") { open(.settings) }
                     Divider().overlay(Color.ffMuted.opacity(0.2))

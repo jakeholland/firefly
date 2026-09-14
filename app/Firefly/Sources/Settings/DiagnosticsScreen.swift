@@ -16,12 +16,11 @@ struct DiagnosticsScreen: View {
                 row(label: "Packets in", value: model.packetsIn, isLive: false)
                 row(label: "Packets out", value: model.packetsOut, isLive: false)
                 row(label: "Ack rate", value: model.ackRate, isLive: false)
-                row(label: "Node battery", value: model.nodeBatteryPercent, isLive: false)
-                row(label: "Node voltage", value: model.nodeVoltage, isLive: false)
+                row(label: "Radio battery", value: model.nodeBatteryPercent, isLive: false)
+                row(label: "Radio voltage", value: model.nodeVoltage, isLive: false)
                 row(label: "Firmware version", value: model.firmwareVersion, isLive: false)
 
-                Text("Nothing here is inferred. Every value above either came from the node " +
-                     "directly (link state) or is UNKNOWN because the app doesn't have it yet.")
+                Text("Every value above comes from the connected radio, or reads UNKNOWN until the app has it.")
                     .font(.caption)
                     .foregroundStyle(Color.ffMuted)
                     .padding(.top, 12)
