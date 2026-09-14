@@ -237,6 +237,18 @@ public struct NodeConfigSnapshot: Sendable, Equatable {
     public var ownerShortName: String?
     public var region: Config.LoRaConfig.RegionCode?
     public var modemPreset: Config.LoRaConfig.ModemPreset?
+    /// Bench finding, 2026-09-14: Meshtastic's `--seturl` (and the
+    /// official apps' URL import) REPLACE the radio's entire
+    /// `lora_config` with whatever the URL carries — an ABSENT
+    /// `lora_config` writes an EMPTY one (`use_preset = false`,
+    /// `region = UNSET`), which goes deaf. `docs/specs/
+    /// A02-crew-join.md` §1.8's "Copy Meshtastic link" must carry the
+    /// CONNECTED radio's current values, which means this snapshot has
+    /// to carry them too — `region`/`modemPreset` alone (above,
+    /// pre-existing for Settings' read-only display) are not enough.
+    public var usePreset: Bool?
+    public var hopLimit: UInt32?
+    public var txEnabled: Bool?
     /// The PRIMARY channel's name (`Channel.Role.primary`). Meshtastic
     /// ships its own stock preset with an EMPTY name (the modem preset
     /// name, e.g. "LongFast", is implied rather than stored in
@@ -251,12 +263,38 @@ public struct NodeConfigSnapshot: Sendable, Equatable {
     public init(ownerLongName: String? = nil, ownerShortName: String? = nil,
                 region: Config.LoRaConfig.RegionCode? = nil,
                 modemPreset: Config.LoRaConfig.ModemPreset? = nil,
+                usePreset: Bool? = nil, hopLimit: UInt32? = nil, txEnabled: Bool? = nil,
                 primaryChannelName: String? = nil) {
         self.ownerLongName = ownerLongName
         self.ownerShortName = ownerShortName
         self.region = region
         self.modemPreset = modemPreset
+        self.usePreset = usePreset
+        self.hopLimit = hopLimit
+        self.txEnabled = txEnabled
         self.primaryChannelName = primaryChannelName
+    }
+
+    /// The full `Config.LoRaConfig` this snapshot has seen, or `nil`
+    /// until at least `region` has been reported (mirroring
+    /// `regionIsUnset`'s own "not yet known ≠ UNSET" distinction —
+    /// nothing here invents a value for a field this handshake never
+    /// actually sent). Unreported `usePreset`/`hopLimit`/`txEnabled`
+    /// fall back to Meshtastic's own proto3 zero defaults
+    /// (`false`/`0`/`false`) rather than blocking on them individually:
+    /// those three are read together with `region` from the SAME
+    /// `.config(.lora(...))` frame (`MeshtasticClient
+    /// .handle(fromRadio:)`), so in practice they arrive together or
+    /// not at all.
+    public var loraConfig: Config.LoRaConfig? {
+        guard let region else { return nil }
+        var lora = Config.LoRaConfig()
+        lora.region = region
+        if let modemPreset { lora.modemPreset = modemPreset }
+        if let usePreset { lora.usePreset = usePreset }
+        if let hopLimit { lora.hopLimit = hopLimit }
+        if let txEnabled { lora.txEnabled = txEnabled }
+        return lora
     }
 }
 

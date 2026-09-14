@@ -20,6 +20,12 @@ private enum Fixture {
         let psk_hex: String
         let psk_base64: String
         let channelset_hex: String
+        /// §1.8 amendment (2026-09-14): the "Copy Meshtastic link"
+        /// export's `ChannelSet` bytes — `channelset_hex` PLUS the
+        /// fixture's `export_lora_config`. `channelset_hex` itself is
+        /// unchanged: it is still exactly what Firefly's own join path
+        /// writes (§1.5/§1.7), with no `lora_config`.
+        let export_channelset_hex: String
         let meshtastic_url: String
         let deep_link: String?
     }
@@ -27,7 +33,19 @@ private enum Fixture {
         let input: String
         let why: String
     }
+    /// §1.8 amendment's canonical `lora_config` — the values the fixture
+    /// says an exporting radio's CURRENT LoRa config holds, used to
+    /// regenerate `export_channelset_hex`/`meshtastic_url` for every
+    /// vector.
+    struct ExportLoraConfig: Decodable {
+        let use_preset: Bool
+        let modem_preset: String
+        let region: String
+        let hop_limit: UInt32
+        let tx_enabled: Bool
+    }
     struct File: Decodable {
+        let export_lora_config: ExportLoraConfig
         let vectors: [Vector]
         let rejections: [Rejection]
     }
@@ -47,6 +65,26 @@ private enum Fixture {
         let data = try! Data(contentsOf: url) // swiftlint:disable:this force_try
         return try! JSONDecoder().decode(File.self, from: data) // swiftlint:disable:this force_try
     }()
+}
+
+/// `Fixture.ExportLoraConfig`, translated to the real proto type —
+/// `region`/`modem_preset` are strings in the fixture (matching the
+/// C test's own string-enum convention) so this is the one place that
+/// maps them, rather than every test doing it inline.
+private func fixtureLoraConfig(_ raw: Fixture.ExportLoraConfig) -> Config.LoRaConfig {
+    var lora = Config.LoRaConfig()
+    lora.usePreset = raw.use_preset
+    lora.hopLimit = raw.hop_limit
+    lora.txEnabled = raw.tx_enabled
+    switch raw.modem_preset {
+    case "LONG_FAST": lora.modemPreset = .longFast
+    default: XCTFail("unrecognised modem_preset \(raw.modem_preset) — extend fixtureLoraConfig")
+    }
+    switch raw.region {
+    case "US": lora.region = .us
+    default: XCTFail("unrecognised region \(raw.region) — extend fixtureLoraConfig")
+    }
+    return lora
 }
 
 final class CrewCodeTests: XCTestCase {
@@ -109,15 +147,48 @@ final class CrewCodeTests: XCTestCase {
         }
     }
 
+    /// §1.8 amendment (2026-09-14, bench finding): "Copy Meshtastic
+    /// link" now carries the exporting radio's CURRENT `lora_config` —
+    /// `--seturl` and the official apps' URL import REPLACE the target
+    /// radio's `lora_config` wholesale, so an absent one writes it
+    /// deaf (region UNSET, use_preset false), measured on a Heltec V3.
+    /// `export_channelset_hex`/`meshtastic_url` are the vectors for
+    /// THIS, built from `channelset_hex` (still lora-free — §1.5/§1.7,
+    /// Firefly's own join path is unaffected) plus the fixture's
+    /// `export_lora_config`.
     func testA02_AC3_meshtasticURLMatchesVectorAndRoundTrips() throws {
+        let lora = fixtureLoraConfig(Fixture.file.export_lora_config)
         for vector in Fixture.file.vectors {
             let code = try CrewCode.parse(vector.input)
-            let url = CrewChannel.meshtasticURL(for: code)
+
+            let exportSet = try CrewChannel.exportChannelSet(for: code, loraConfig: lora)
+            let exportData = try exportSet.serializedData()
+            XCTAssertEqual(exportData.hexEncoded, vector.export_channelset_hex, vector.note)
+            XCTAssertTrue(exportSet.hasLoraConfig, vector.note)
+            XCTAssertEqual(exportSet.loraConfig, lora, vector.note)
+
+            let url = try CrewChannel.meshtasticURL(for: code, loraConfig: lora)
             XCTAssertEqual(url, vector.meshtastic_url, vector.note)
 
             let parsed = try ChannelURL.parse(url)
-            XCTAssertEqual(parsed.channelSet, CrewChannel.channelSet(for: code), vector.note)
+            XCTAssertEqual(parsed.channelSet, exportSet, vector.note)
             XCTAssertFalse(parsed.addMode, vector.note)
+        }
+    }
+
+    /// §1.8 amendment: exporting with an UNSET region must refuse
+    /// rather than hand out a link that would write the importing
+    /// radio deaf — defense-in-depth, the same stance
+    /// `MeshtasticClient.setRegion` already takes on a write.
+    func testA02_AC3_exportRefusesUnsetRegion() throws {
+        let code = try CrewCode.parse(Fixture.file.vectors[0].input)
+        var unset = fixtureLoraConfig(Fixture.file.export_lora_config)
+        unset.region = .unset
+        XCTAssertThrowsError(try CrewChannel.exportChannelSet(for: code, loraConfig: unset)) { error in
+            XCTAssertEqual(error as? CrewChannel.ExportError, .regionUnset)
+        }
+        XCTAssertThrowsError(try CrewChannel.meshtasticURL(for: code, loraConfig: unset)) { error in
+            XCTAssertEqual(error as? CrewChannel.ExportError, .regionUnset)
         }
     }
 

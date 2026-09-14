@@ -334,6 +334,64 @@ final class CrewControllerTests: XCTestCase {
         XCTAssertFalse(controller.regionIsUnset)
     }
 
+    // MARK: - §1.8 amendment (2026-09-14, bench finding) — "Copy
+    // Meshtastic link" carries the connected radio's OWN, CURRENT LoRa
+    // config, and refuses to export one at all while region is UNSET.
+
+    func testMeshtasticURLCarriesConnectedRadiosLoraConfig() async throws {
+        let (controller, client) = makeController()
+        client.nodeConfig = NodeConfigSnapshot(
+            region: .us, modemPreset: .longFast, usePreset: true, hopLimit: 3, txEnabled: true)
+
+        let began = await controller.beginStart(humanName: "Camp Firefly")
+        XCTAssertTrue(began)
+        guard case .start(let code, _, _) = controller.pending else {
+            return XCTFail("expected a staged .start")
+        }
+
+        let url = controller.meshtasticURL(for: code)
+        XCTAssertNotNil(url, "region+lora config are known, export must succeed")
+        let expected = try CrewChannel.meshtasticURL(for: code, loraConfig: client.nodeConfig!.loraConfig!)
+        XCTAssertEqual(url, expected)
+
+        // The exported ChannelSet actually carries lora_config — the
+        // bug this amendment fixes: `--seturl` and the official apps'
+        // URL import REPLACE the target radio's lora_config wholesale,
+        // so an absent one writes it deaf (bench-confirmed on a Heltec
+        // V3, region UNSET / use_preset false).
+        let parsed = try ChannelURL.parse(url!)
+        XCTAssertTrue(parsed.channelSet.hasLoraConfig)
+        XCTAssertEqual(parsed.channelSet.loraConfig.region, .us)
+        XCTAssertTrue(parsed.channelSet.loraConfig.usePreset)
+    }
+
+    func testMeshtasticURLIsNilWhenRegionUnset() async {
+        let (controller, client) = makeController()
+        client.nodeConfig = NodeConfigSnapshot(region: .unset)
+
+        let began = await controller.beginStart(humanName: "Camp Firefly")
+        XCTAssertTrue(began)
+        guard case .start(let code, _, _) = controller.pending else {
+            return XCTFail("expected a staged .start")
+        }
+
+        XCTAssertNil(controller.meshtasticURL(for: code),
+                      "exporting with an UNSET region would write the importing radio deaf")
+    }
+
+    func testMeshtasticURLIsNilWhenNodeConfigNotYetKnown() async {
+        let (controller, client) = makeController()
+        client.nodeConfig = nil
+
+        let began = await controller.beginStart(humanName: "Camp Firefly")
+        XCTAssertTrue(began)
+        guard case .start(let code, _, _) = controller.pending else {
+            return XCTFail("expected a staged .start")
+        }
+
+        XCTAssertNil(controller.meshtasticURL(for: code), "no lora_config reported yet — never guess one")
+    }
+
     // MARK: - A02_AC10 — rejoin / leave
 
     func testA02_AC10_rejoiningOwnCodeWritesNothing() async {

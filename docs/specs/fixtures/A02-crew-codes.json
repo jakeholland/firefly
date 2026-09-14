@@ -9,6 +9,13 @@
     "length_bytes": 32,
     "ikm": "the canonical code, ASCII, 11 bytes, e.g. FIRE-4K9M7X"
   },
+  "export_lora_config": {
+    "use_preset": true,
+    "modem_preset": "LONG_FAST",
+    "region": "US",
+    "hop_limit": 3,
+    "tx_enabled": true
+  },
   "channel": {
     "index": 0,
     "role": "PRIMARY",
@@ -26,7 +33,8 @@
       "psk_hex": "743cc983ba326892fb91b6700b9ff3d08d7e002568b3f278db43244a249e71da",
       "psk_base64": "dDzJg7oyaJL7kbZwC5/z0I1+ACVos/J420MkSiSecdo=",
       "channelset_hex": "0a331220743cc983ba326892fb91b6700b9ff3d08d7e002568b3f278db43244a249e71da1a0b464952452d344b394d37583a020820",
-      "meshtastic_url": "https://meshtastic.org/e/#CjMSIHQ8yYO6MmiS-5G2cAuf89CNfgAlaLPyeNtDJEoknnHaGgtGSVJFLTRLOU03WDoCCCA",
+      "export_channelset_hex": "0a331220743cc983ba326892fb91b6700b9ff3d08d7e002568b3f278db43244a249e71da1a0b464952452d344b394d37583a02082012080801380140034801",
+      "meshtastic_url": "https://meshtastic.org/e/#CjMSIHQ8yYO6MmiS-5G2cAuf89CNfgAlaLPyeNtDJEoknnHaGgtGSVJFLTRLOU03WDoCCCASCAgBOAFAA0gB",
       "deep_link": "firefly://crew?v=1&code=FIRE-4K9M7X&name=Camp%20Firefly"
     },
     {
@@ -36,7 +44,8 @@
       "psk_hex": "06d97b31396bffe249b7cab5c196a3b90d6c9880e2024963485bd69136d60fda",
       "psk_base64": "Btl7MTlr/+JJt8q1wZajuQ1smIDiAkljSFvWkTbWD9o=",
       "channelset_hex": "0a33122006d97b31396bffe249b7cab5c196a3b90d6c9880e2024963485bd69136d60fda1a0b464952452d3030303030303a020820",
-      "meshtastic_url": "https://meshtastic.org/e/#CjMSIAbZezE5a__iSbfKtcGWo7kNbJiA4gJJY0hb1pE21g_aGgtGSVJFLTAwMDAwMDoCCCA",
+      "export_channelset_hex": "0a33122006d97b31396bffe249b7cab5c196a3b90d6c9880e2024963485bd69136d60fda1a0b464952452d3030303030303a02082012080801380140034801",
+      "meshtastic_url": "https://meshtastic.org/e/#CjMSIAbZezE5a__iSbfKtcGWo7kNbJiA4gJJY0hb1pE21g_aGgtGSVJFLTAwMDAwMDoCCCASCAgBOAFAA0gB",
       "deep_link": "firefly://crew?v=1&code=FIRE-000000&name=Camp%20Firefly"
     },
     {
@@ -46,7 +55,8 @@
       "psk_hex": "fc832c6c532dc39fd509a1fed984610226d30faa2ec782696699eb11170f812c",
       "psk_base64": "/IMsbFMtw5/VCaH+2YRhAibTD6oux4JpZpnrERcPgSw=",
       "channelset_hex": "0a331220fc832c6c532dc39fd509a1fed984610226d30faa2ec782696699eb11170f812c1a0b464952452d5a5a5a5a5a5a3a020820",
-      "meshtastic_url": "https://meshtastic.org/e/#CjMSIPyDLGxTLcOf1Qmh_tmEYQIm0w-qLseCaWaZ6xEXD4EsGgtGSVJFLVpaWlpaWjoCCCA",
+      "export_channelset_hex": "0a331220fc832c6c532dc39fd509a1fed984610226d30faa2ec782696699eb11170f812c1a0b464952452d5a5a5a5a5a5a3a02082012080801380140034801",
+      "meshtastic_url": "https://meshtastic.org/e/#CjMSIPyDLGxTLcOf1Qmh_tmEYQIm0w-qLseCaWaZ6xEXD4EsGgtGSVJFLVpaWlpaWjoCCCASCAgBOAFAA0gB",
       "deep_link": "firefly://crew?v=1&code=FIRE-ZZZZZZ&name=Camp%20Firefly"
     },
     {
@@ -56,7 +66,8 @@
       "psk_hex": "743cc983ba326892fb91b6700b9ff3d08d7e002568b3f278db43244a249e71da",
       "psk_base64": "dDzJg7oyaJL7kbZwC5/z0I1+ACVos/J420MkSiSecdo=",
       "channelset_hex": "0a331220743cc983ba326892fb91b6700b9ff3d08d7e002568b3f278db43244a249e71da1a0b464952452d344b394d37583a020820",
-      "meshtastic_url": "https://meshtastic.org/e/#CjMSIHQ8yYO6MmiS-5G2cAuf89CNfgAlaLPyeNtDJEoknnHaGgtGSVJFLTRLOU03WDoCCCA",
+      "export_channelset_hex": "0a331220743cc983ba326892fb91b6700b9ff3d08d7e002568b3f278db43244a249e71da1a0b464952452d344b394d37583a02082012080801380140034801",
+      "meshtastic_url": "https://meshtastic.org/e/#CjMSIHQ8yYO6MmiS-5G2cAuf89CNfgAlaLPyeNtDJEoknnHaGgtGSVJFLTRLOU03WDoCCCASCAgBOAFAA0gB",
       "deep_link": "firefly://crew?v=1&code=FIRE-4K9M7X&name=Camp%20Firefly"
     },
     {
@@ -66,7 +77,8 @@
       "psk_hex": "743cc983ba326892fb91b6700b9ff3d08d7e002568b3f278db43244a249e71da",
       "psk_base64": "dDzJg7oyaJL7kbZwC5/z0I1+ACVos/J420MkSiSecdo=",
       "channelset_hex": "0a331220743cc983ba326892fb91b6700b9ff3d08d7e002568b3f278db43244a249e71da1a0b464952452d344b394d37583a020820",
-      "meshtastic_url": "https://meshtastic.org/e/#CjMSIHQ8yYO6MmiS-5G2cAuf89CNfgAlaLPyeNtDJEoknnHaGgtGSVJFLTRLOU03WDoCCCA",
+      "export_channelset_hex": "0a331220743cc983ba326892fb91b6700b9ff3d08d7e002568b3f278db43244a249e71da1a0b464952452d344b394d37583a02082012080801380140034801",
+      "meshtastic_url": "https://meshtastic.org/e/#CjMSIHQ8yYO6MmiS-5G2cAuf89CNfgAlaLPyeNtDJEoknnHaGgtGSVJFLTRLOU03WDoCCCASCAgBOAFAA0gB",
       "deep_link": "firefly://crew?v=1&code=FIRE-4K9M7X&name=Camp%20Firefly"
     },
     {
@@ -76,7 +88,8 @@
       "psk_hex": "5fd7aca5431d0162c27803fb2f507419b2c3eb132214618eae5e9b249caf46d4",
       "psk_base64": "X9espUMdAWLCeAP7L1B0GbLD6xMiFGGOrl6bJJyvRtQ=",
       "channelset_hex": "0a3312205fd7aca5431d0162c27803fb2f507419b2c3eb132214618eae5e9b249caf46d41a0b464952452d344b314d37583a020820",
-      "meshtastic_url": "https://meshtastic.org/e/#CjMSIF_XrKVDHQFiwngD-y9QdBmyw-sTIhRhjq5emyScr0bUGgtGSVJFLTRLMU03WDoCCCA",
+      "export_channelset_hex": "0a3312205fd7aca5431d0162c27803fb2f507419b2c3eb132214618eae5e9b249caf46d41a0b464952452d344b314d37583a02082012080801380140034801",
+      "meshtastic_url": "https://meshtastic.org/e/#CjMSIF_XrKVDHQFiwngD-y9QdBmyw-sTIhRhjq5emyScr0bUGgtGSVJFLTRLMU03WDoCCCASCAgBOAFAA0gB",
       "deep_link": "firefly://crew?v=1&code=FIRE-4K1M7X&name=Camp%20Firefly"
     }
   ],

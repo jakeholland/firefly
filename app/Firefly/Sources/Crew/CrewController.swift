@@ -112,6 +112,22 @@ final class CrewController {
         }
     }
 
+    // MARK: - Meshtastic link export (§1.8 amendment, 2026-09-14)
+
+    /// §1.8's "Copy Meshtastic link" — the connected radio's OWN,
+    /// CURRENT `lora_config`, copied into the exported URL verbatim
+    /// (`CrewChannel.meshtasticURL`). `nil` when that config hasn't
+    /// been reported yet (`connectedNodeConfig?.loraConfig` is `nil`
+    /// until at least a region has been seen) or when its region is
+    /// `.unset` (`CrewChannel.ExportError.regionUnset`) — either way,
+    /// the screen shows "Set the radio region first" rather than a link
+    /// that would write the importing radio deaf (bench finding,
+    /// `docs/specs/A02-crew-join.md` §1.8).
+    func meshtasticURL(for code: CrewCode) -> String? {
+        guard let lora = client.connectedNodeConfig?.loraConfig else { return nil }
+        return try? CrewChannel.meshtasticURL(for: code, loraConfig: lora)
+    }
+
     // MARK: - Dependencies
 
     let importer: ChannelImportViewModel

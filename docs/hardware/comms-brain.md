@@ -151,10 +151,26 @@ silently sharing positions truncated to a grid. Do not rely on the
 slot.
 
 or, equivalently and preferably, import the crew's Meshtastic link
-(Firefly app → Crew → Advanced → **Copy Meshtastic link**), which
-carries exactly the same channel and no LoRa config — region and modem
-preset on the importing radio are never touched by a crew join (A02
-§1.7).
+(Firefly app → Crew → Advanced → **Copy Meshtastic link**), e.g. with
+`meshtastic --seturl <link>`.
+
+**The link carries LoRa config too — do not strip it.** This
+contradicted an earlier draft of this doc (and of A02 §1.8), which said
+the link carried "no LoRa config" on the theory that region/modem preset
+on the importing radio are none of a crew join's business (A02 §1.7,
+still true for Firefly's OWN join path — admin `set_channel` never
+touches them). That reasoning does not extend to this link: bench-found
+2026-09-14, `--seturl` (and the official apps' URL import) **replace**
+the target radio's entire `lora_config` with whatever the URL carries —
+an absent `lora_config` does not mean "leave it alone", it writes an
+EMPTY one (`region UNSET`, `use_preset false`), and a radio with region
+`UNSET` cannot hear anything (measured on a Heltec V3). So the exported
+link now carries the *exporting* radio's own, current `lora_config`
+(region, modem preset, hop limit, tx enabled), copied verbatim — never a
+guess, and refused (Copy Meshtastic link is disabled) while the
+exporting radio's own region is `UNSET`. If you are instead hand-editing
+`--ch-set` as above, this does not apply: `--ch-set` only ever touches
+the channel slot you name, never `lora_config`.
 
 Region still comes from the flash-time setup above and is never
 auto-set from a phone's locale; a radio with `region UNSET` blocks the
