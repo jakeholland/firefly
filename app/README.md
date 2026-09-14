@@ -498,14 +498,17 @@ wiring. Edit `project.yml`, never the pbxproj:
 
 ```sh
 brew install xcodegen
-cd app && FIREFLY_BUILD_NUMBER=1 xcodegen generate
+cd app && xcodegen generate
 ```
 
-`FIREFLY_BUILD_NUMBER` must be set (`project.yml`'s `CURRENT_PROJECT_VERSION`
-comment explains why — TestFlight build numbering, below); a bare
-`xcodegen generate` with it unset leaves that one setting as a literal,
-unresolved placeholder instead of a number. Commit both `project.yml`
-and the regenerated `Firefly.xcodeproj`.
+No environment variable needed — `xcodegen generate` is plain and
+idempotent (run it twice, `git diff` is empty). Commit both
+`project.yml` and the regenerated `Firefly.xcodeproj`.
+`app/tools/check_project.sh` (wired into CI, `.github/workflows/app.yml`)
+fails the build if the committed pbxproj ever carries an unresolved
+`${...}` template placeholder as a build setting — see that script's
+own header comment and `project.yml`'s `CURRENT_PROJECT_VERSION`
+comment for the incident this guards against.
 
 **The test plans** (`Firefly.xctestplan`, `FireflyUITests.xctestplan`) —
 xcodegen only wires the *reference* to these from `project.yml`'s scheme
@@ -523,9 +526,10 @@ app/tools/testflight.sh --archive-only  # archive only — no export/upload,
 
 Release is signed automatically for team `SU4T96VBX6` (the same
 `Config/Local.xcconfig` mechanism as "Signed local runs" above — the
-script wires it up on first use), and `CURRENT_PROJECT_VERSION` is set
-to `git rev-list --count HEAD` on every archive so no upload ever
-repeats a build number. See
+script wires it up on first use), and `CURRENT_PROJECT_VERSION` is
+passed on the `xcodebuild archive` command line as `git rev-list
+--count HEAD` on every archive (overriding `Config/Firefly.xcconfig`'s
+plain `1` default) so no upload ever repeats a build number. See
 [`docs/app/testflight.md`](../docs/app/testflight.md) for the one-time
 App Store Connect setup (app record, API key, adding a tester) and the
 full walkthrough, and `app/tools/testflight.sh`'s own header comment

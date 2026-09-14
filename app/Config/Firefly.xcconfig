@@ -1,12 +1,13 @@
 //
 // Firefly.xcconfig — committed, and wired into every target in
-// project.yml (`configFiles:`). It holds the signing DEFAULTS for a
-// clean checkout, so that `Local.xcconfig` — git-ignored, per-developer
-// — can override them with nothing but a file copy: no CLI flags, no
-// edit to a committed file, no team id in this repo's history.
+// project.yml (`configFiles:`). It holds build-setting DEFAULTS for a
+// clean checkout that must always be valid on their own — signing, and
+// the TestFlight build number below — so that a build which overrides
+// nothing on the command line still produces something real rather
+// than a broken or unresolved value.
 //
 // Order matters. An .xcconfig assignment is last-wins, and the
-// `#include?` at the bottom is what lets Local.xcconfig beat the two
+// `#include?` at the bottom is what lets Local.xcconfig beat the
 // defaults above it. Do not move it up.
 //
 // The "?" on the include is .xcconfig's own syntax for "include this
@@ -28,5 +29,27 @@
 // command line instead).
 CODE_SIGNING_ALLOWED = NO
 CODE_SIGNING_REQUIRED = NO
+
+// TestFlight build number. This is a plain, always-valid integer — NOT
+// templated from an environment variable — for exactly the reason
+// CODE_SIGNING_ALLOWED/REQUIRED above live here rather than in
+// project.yml's per-target `settings:`: a target-level build setting
+// BEATS an xcconfig, so CURRENT_PROJECT_VERSION must be absent from
+// BOTH of project.yml's `settings:` blocks (see that file's own
+// comment on this setting) for this default to actually take effect.
+// Before this, project.yml templated `${FIREFLY_BUILD_NUMBER}` here at
+// `xcodegen generate` time — any regeneration that forgot to set that
+// env var baked the literal, unresolved placeholder string into the
+// committed pbxproj as CFBundleVersion, and any build that didn't
+// override it on the command line (Xcode GUI, CI, an agent running a
+// plain `xcodebuild`) shipped that placeholder as its version. `1` here
+// is never what TestFlight actually sees uploaded:
+// app/tools/testflight.sh overrides this on the `xcodebuild archive`
+// command line with the real `git rev-list --count HEAD` value — see
+// that script's own header comment and app/README.md, "Shipping a
+// TestFlight build". app/tools/check_project.sh guards the committed
+// pbxproj against ever carrying an unresolved template placeholder
+// again.
+CURRENT_PROJECT_VERSION = 1
 
 #include? "Local.xcconfig"

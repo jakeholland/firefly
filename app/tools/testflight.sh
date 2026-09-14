@@ -31,28 +31,30 @@
 #      `signingStyle: automatic` + `method: app-store-connect`
 #      (ExportOptions.plist), not something this script has to force.
 #
-#   2. Version. CURRENT_PROJECT_VERSION (project.yml) is wired to
-#      ${FIREFLY_BUILD_NUMBER} — see that file's own comment. This
-#      script sets it to `git rev-list --count HEAD` and regenerates
-#      Firefly.xcodeproj with `xcodegen generate` so every archive
-#      TestFlight sees carries a build number it has never seen
-#      before (App Store Connect rejects a repeat). MARKETING_VERSION
-#      (the human-facing 0.1.0) is bumped by hand in project.yml when
-#      it actually changes.
-#
-#      That regenerate touches a file this repo COMMITS
-#      (Firefly.xcodeproj), so on exit this script restores it from
-#      git — the archive it already produced keeps the real build
-#      number regardless; there is nothing to gain by leaving that
-#      regenerated project sitting as an uncommitted diff. If
+#   2. Regenerate. Runs a plain `xcodegen generate` to keep
+#      Firefly.xcodeproj in sync with project.yml — not for versioning
+#      (see step 3): CURRENT_PROJECT_VERSION is no longer templated
+#      from an environment variable, so this regenerate is idempotent
+#      and produces no diff against a clean checkout. It still touches
+#      a file this repo COMMITS, so on exit this script restores it
+#      from git if it started clean — there is nothing to gain by
+#      leaving a no-op regeneration sitting as an uncommitted diff. If
 #      Firefly.xcodeproj already had uncommitted changes before this
 #      script ran, it leaves them alone and says so, rather than
 #      discarding something a developer was in the middle of editing.
 #
-#   3. Archive. `xcodebuild archive`, Release, `generic/platform=iOS`,
-#      `-allowProvisioningUpdates` (Xcode fetches/creates the
-#      Distribution certificate and App Store provisioning profile
-#      for team SU4T96VBX6 on its own — no manual profile wrangling).
+#   3. Archive + version. `xcodebuild archive`, Release,
+#      `generic/platform=iOS`, `-allowProvisioningUpdates` (Xcode
+#      fetches/creates the Distribution certificate and App Store
+#      provisioning profile for team SU4T96VBX6 on its own — no manual
+#      profile wrangling), with `CURRENT_PROJECT_VERSION=<git rev-list
+#      --count HEAD>` passed on the command line so every archive
+#      TestFlight sees carries a build number it has never seen before
+#      (App Store Connect rejects a repeat) — overriding, for this one
+#      invocation only, the plain `1` default in
+#      Config/Firefly.xcconfig (see that file's own comment).
+#      MARKETING_VERSION (the human-facing 0.1.0) is bumped by hand in
+#      project.yml when it actually changes.
 #
 #   4. Export + upload. `xcodebuild -exportArchive` with
 #      app/ExportOptions.plist (method: app-store-connect). With
@@ -99,6 +101,11 @@ PROJECT_REL="app/Firefly.xcodeproj"
 EXPORT_OPTIONS="$APP_DIR/ExportOptions.plist"
 LOCAL_XCCONFIG="$APP_DIR/Config/Local.xcconfig"
 LOCAL_XCCONFIG_EXAMPLE="$APP_DIR/Config/Local.xcconfig.example"
+
+# The real TestFlight build number — computed once, up front, so both
+# the log line and the `xcodebuild archive` override below (step 3) use
+# the exact same value. See this script's own header comment, step 3.
+BUILD_NUMBER="$(git -C "$REPO_ROOT" rev-list --count HEAD)"
 
 ARCHIVE_ONLY=0
 case "${1:-}" in
@@ -178,7 +185,11 @@ EOF
 }
 
 # ---------------------------------------------------------------------
-# 2. Version — CURRENT_PROJECT_VERSION from the git commit count
+# 2. Regenerate — keep Firefly.xcodeproj in sync with project.yml.
+#    No longer carries any build-number templating: a plain
+#    `xcodegen generate` is idempotent (project.yml's own comment), so
+#    this is a sync/sanity step, not part of how the build number
+#    reaches TestFlight (that's step 3, do_archive, below).
 # ---------------------------------------------------------------------
 PROJECT_WAS_CLEAN=0
 restore_project() {
@@ -199,13 +210,13 @@ regenerate_project() {
     warn "$PROJECT_REL already has uncommitted changes — leaving them as-is after this run instead of reverting them"
   fi
 
-  BUILD_NUMBER="$(git -C "$REPO_ROOT" rev-list --count HEAD)"
-  log "CURRENT_PROJECT_VERSION = $BUILD_NUMBER (git rev-list --count HEAD)"
-  ( cd "$APP_DIR" && FIREFLY_BUILD_NUMBER="$BUILD_NUMBER" xcodegen generate )
+  ( cd "$APP_DIR" && xcodegen generate )
 }
 
 # ---------------------------------------------------------------------
-# 3. Archive
+# 3. Archive — CURRENT_PROJECT_VERSION from the git commit count,
+#    passed as an xcodebuild command-line override (see this script's
+#    own header comment, step 3).
 # ---------------------------------------------------------------------
 ARCHIVE_ROOT="${FIREFLY_ARCHIVE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/firefly-testflight.XXXXXX")}"
 mkdir -p "$ARCHIVE_ROOT"
@@ -214,13 +225,15 @@ EXPORT_PATH="$ARCHIVE_ROOT/export"
 
 do_archive() {
   log "archiving (Release, generic/platform=iOS) to $ARCHIVE_PATH"
+  log "CURRENT_PROJECT_VERSION = $BUILD_NUMBER (git rev-list --count HEAD)"
   xcodebuild archive \
     -project "$PROJECT" \
     -scheme "$SCHEME" \
     -configuration Release \
     -destination 'generic/platform=iOS' \
     -archivePath "$ARCHIVE_PATH" \
-    -allowProvisioningUpdates
+    -allowProvisioningUpdates \
+    CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
 
   APP_INFO_PLIST="$ARCHIVE_PATH/Products/Applications/Firefly.app/Info.plist"
   [ -f "$APP_INFO_PLIST" ] || fail "archive succeeded but $APP_INFO_PLIST is missing — unexpected archive layout"
