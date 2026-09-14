@@ -139,8 +139,19 @@ public final class DeepLinkRouter {
     /// Takes the pending route, leaving nothing behind — a route must be
     /// applied exactly once, or a redraw would re-navigate under the
     /// user.
+    ///
+    /// REVIEW FIX (PR #310): the `defer { pending = nil }` this replaces
+    /// wrote to `@Observable` state on EVERY call, including the common
+    /// one where there was no route at all. `RootView` calls this from
+    /// `.onChange(of:initial: true)`, i.e. during the first view update,
+    /// so every launch mutated observed state mid-update for no reason —
+    /// the "Modifying state during view update" hazard, next door to a
+    /// `.crewOnboardingCover` whose presentation is driven by exactly
+    /// that kind of state. Nothing is written now unless something is
+    /// actually taken.
     public func consume() -> NotificationRoute? {
-        defer { pending = nil }
-        return pending
+        guard let route = pending else { return nil }
+        pending = nil
+        return route
     }
 }

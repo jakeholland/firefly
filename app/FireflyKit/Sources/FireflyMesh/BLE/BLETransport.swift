@@ -353,6 +353,27 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         central?.stopScan()
     }
 
+    /// A03 §3.6 — "Any `.poweredOff` cancels the ladder; `.poweredOn`
+    /// restarts it at attempt 1", as a total function of the three
+    /// inputs it actually depends on. `public` for the same reason
+    /// `connectOptions` is: `BLEReconnectLadderTests` imports
+    /// `FireflyMesh` WITHOUT `@testable`, and a rule only reachable
+    /// through a live `CBCentralManager` is a rule no unit test can
+    /// check.
+    ///
+    /// Every non-`.poweredOn` state cancels — `.poweredOff`,
+    /// `.unauthorized`, `.unsupported`, `.resetting` and `.unknown`
+    /// alike. That is deliberately wider than §3.6's own sentence and
+    /// strictly safer: in none of those states can a scan be running or
+    /// usefully started, and a window left open across any of them is
+    /// the 2.2.6 battery bug. Which of them are TERMINAL versus
+    /// transient is §3.5's question, and §3.5 is S1b.
+    public static func ladderAction(forCentralState state: CBManagerState, shouldAutoReconnect: Bool,
+                                     hasPendingConnect: Bool) -> BLELadderPowerAction {
+        guard state == .poweredOn else { return .cancel }
+        return shouldAutoReconnect && hasPendingConnect ? .restartAtAttemptOne : .leaveAsIs
+    }
+
     /// A03 §3.6 — the ladder itself. Pure state (`ReconnectLadder.swift`);
     /// everything CoreBluetooth-shaped stays here.
     private var ladder = ReconnectLadder()
@@ -1007,9 +1028,16 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         // §3.5 power-state machine — `retrievePeripherals`, the
         // `powerStateAction(...)` table, the restore-ordering fix — is
         // S1b; this is the ladder's half of it and nothing more.
-        if state != .poweredOn {
+        // REVIEW FIX (PR #310): the decision is a pure function so it is
+        // reachable from `swift test` with no `CBCentralManager` — the
+        // same shape `shouldIssueConnect` and `BLEDisconnectAction`
+        // already use, and the reason deleting the `.poweredOff` cancel
+        // used to break no test.
+        switch Self.ladderAction(forCentralState: state, shouldAutoReconnect: shouldAutoReconnect,
+                                  hasPendingConnect: pendingConnectPeripheralID != nil) {
+        case .cancel:
             cancelReconnectLadder(reason: "central state \(state.rawValue)")
-        } else if shouldAutoReconnect, let target = pendingConnectPeripheralID {
+        case .restartAtAttemptOne:
             // Bluetooth came back with a connect still outstanding.
             // Restart at attempt 1 rather than resuming a ladder that
             // spent the outage climbing: the radio may have been
@@ -1019,7 +1047,9 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
             // §3.5 is S1b. Until it lands, a power cycle recovers here
             // only through the ladder's own rediscovery.)
             cancelReconnectLadder(reason: "bluetooth back on — restarting at attempt 1")
-            armReconnectFallback(for: target, at: now())
+            if let target = pendingConnectPeripheralID { armReconnectFallback(for: target, at: now()) }
+        case .leaveAsIs:
+            break
         }
         evaluateReconnectLadder()
         guard !poweredOnContinuations.isEmpty else { return }

@@ -862,16 +862,29 @@ public final class InboxViewModel {
 
     /// The `threadIdentifier` a conversation's notifications were
     /// grouped under — the SAME strings `NotificationPlan` writes, so
-    /// opening a thread withdraws exactly what it posted. A member's
-    /// thread also clears any FLARE/RALLY banner from that person: those
-    /// group separately (one "flare" stack, one "rally" stack) and both
-    /// deep-link into this same conversation, so leaving them on the
-    /// lock screen after the user has read the thread would be a stale
-    /// alert for something already seen.
+    /// opening a thread withdraws exactly what it posted, and **nothing
+    /// else**.
+    ///
+    /// REVIEW FIX (PR #310): this used to append `"flare"` and
+    /// `"rally"` to every conversation, on the reasoning that a FLARE
+    /// banner "from that person" is stale once their thread is read.
+    /// Those two threads are not per-person — §3.11.1 gives every FLARE
+    /// the single thread id `flare` — so opening ANY thread, the crew
+    /// room above all, withdrew every delivered FLARE banner from
+    /// everybody, including one nobody had looked at yet. A flare is the
+    /// one alert this product exists to deliver, and reading Taylor's
+    /// messages is not seeing Sam's flare. §3.11.3 scopes the rule to
+    /// the conversation that was opened; so does this.
+    ///
+    /// (Withdrawing a FLARE banner when its OWN destination — Find ▸
+    /// Radar — has been visited is a real behaviour worth having, but it
+    /// keys off the per-sender identifier `flare-<from>-<packetID>`, not
+    /// off a shared thread id, and it belongs with the S2 work that owns
+    /// that screen.)
     static func notificationThreadIdentifiers(for conversation: ConversationKind) -> [String] {
         switch conversation {
-        case .crew: return ["crew", "flare", "rally"]
-        case .member(let nodeID): return ["dm-\(nodeID)", "flare", "rally"]
+        case .crew: return ["crew"]
+        case .member(let nodeID): return ["dm-\(nodeID)"]
         }
     }
 

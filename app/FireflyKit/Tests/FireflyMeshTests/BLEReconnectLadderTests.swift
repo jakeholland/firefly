@@ -8,6 +8,7 @@
 //  decision only reachable through a live manager is a decision no unit
 //  test can ever check.
 //
+import CoreBluetooth
 import FireflyMesh
 import XCTest
 
@@ -265,6 +266,72 @@ final class BLEReconnectLadderTests: XCTestCase {
         let event = TransportEvent.disconnected(reason: BLETransport.systemReconnectingReason)
         guard case .disconnected(let reason) = event else { return XCTFail("wrong case") }
         XCTAssertEqual(reason, "system-reconnecting")
+    }
+
+    // MARK: - A03 §3.6 — Bluetooth off, and back on
+
+    /// REVIEW FIX (PR #310). §3.6's last rule — "Any `.poweredOff`
+    /// cancels the ladder; `.poweredOn` restarts it at attempt 1" — was
+    /// implemented inline in `handleCentralStateUpdate`, which cannot be
+    /// reached without a live `CBCentralManager`. Deleting the cancel
+    /// outright left all 927 tests green, and a rediscovery scan window
+    /// left open across a Bluetooth power cycle is audit 2.2.6 in its
+    /// worst form. Every state, both booleans, pinned here.
+    func testA03_3_6_EveryNonPoweredOnStateCancelsTheLadder() {
+        let states: [CBManagerState] = [.unknown, .resetting, .unsupported, .unauthorized, .poweredOff]
+        for state in states {
+            for shouldAutoReconnect in [true, false] {
+                for hasPendingConnect in [true, false] {
+                    XCTAssertEqual(
+                        BLETransport.ladderAction(forCentralState: state,
+                                                   shouldAutoReconnect: shouldAutoReconnect,
+                                                   hasPendingConnect: hasPendingConnect),
+                        .cancel,
+                        "\(state.rawValue) must stand the ladder down — a window left open here is the battery bug")
+                }
+            }
+        }
+    }
+
+    /// Powered on restarts at attempt 1, but only when there is actually
+    /// something to reconnect to: auto-reconnect wanted AND a connect
+    /// still outstanding. Anything else leaves the ladder alone rather
+    /// than arming a scan nobody asked for.
+    func testA03_3_6_PoweredOnRestartsAtAttemptOneOnlyWithAConnectOutstanding() {
+        XCTAssertEqual(BLETransport.ladderAction(forCentralState: .poweredOn, shouldAutoReconnect: true,
+                                                  hasPendingConnect: true),
+                        .restartAtAttemptOne)
+        XCTAssertEqual(BLETransport.ladderAction(forCentralState: .poweredOn, shouldAutoReconnect: true,
+                                                  hasPendingConnect: false),
+                        .leaveAsIs)
+        XCTAssertEqual(BLETransport.ladderAction(forCentralState: .poweredOn, shouldAutoReconnect: false,
+                                                  hasPendingConnect: true),
+                        .leaveAsIs, "a user-initiated disconnect must not be undone by a power cycle")
+        XCTAssertEqual(BLETransport.ladderAction(forCentralState: .poweredOn, shouldAutoReconnect: false,
+                                                  hasPendingConnect: false),
+                        .leaveAsIs)
+    }
+
+    /// And the restart really is attempt 1, not a resumed climb: a radio
+    /// that was reachable the whole time the phone's Bluetooth was off
+    /// must be found in 20 s, not in 15 min.
+    func testA03_3_6_ARestartedLadderOpensItsFirstWindowAtTheFirstRung() {
+        var ladder = ReconnectLadder()
+        ladder.arm(target: target, disconnectedAt: t0, jitterFraction: 0)
+        // Climb to the cap.
+        var step = 0.0
+        while step <= 3 * 3600 {
+            _ = evaluate(&ladder, at: at(step), jitter: 0)
+            step += 5
+        }
+        XCTAssertGreaterThan(ladder.attempt, 5, "the ladder really did climb")
+
+        // Bluetooth off, then back on: the transport cancels and re-arms.
+        ladder.cancel()
+        ladder.arm(target: target, disconnectedAt: at(step), jitterFraction: 0)
+        XCTAssertEqual(ladder.attempt, 1)
+        XCTAssertEqual(evaluate(&ladder, at: at(step + 19), jitter: 0), .doNothing)
+        XCTAssertEqual(evaluate(&ladder, at: at(step + 20), jitter: 0), .startScan(attempt: 1))
     }
 
     // MARK: - Helpers

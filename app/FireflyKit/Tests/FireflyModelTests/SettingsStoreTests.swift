@@ -126,6 +126,45 @@ final class SettingsStoreTests: XCTestCase {
                         "an explicit OFF is a choice; the new default must not overrule it")
     }
 
+    /// A03_AC9, the migration proved against the DISK rather than
+    /// against our own setter (REVIEW FIX, PR #310).
+    ///
+    /// `testA03_AC9_AnExplicitFalseSurvivesTheDefaultFlip` above writes
+    /// through `SettingsStore`'s own setter, so it holds whatever key
+    /// that setter happens to use today — it would pass unchanged if the
+    /// key were renamed, while every real upgrade silently flipped to
+    /// ON. The migration claim is about a value written by a PREVIOUS
+    /// BUILD, so the only honest way to state it is to put that value
+    /// into `UserDefaults` by its literal key and read it back through
+    /// the new three-state getter.
+    ///
+    /// The literal is deliberately spelled out rather than composed from
+    /// `FireflyExtraSettingsKey` + the private prefix: a test that
+    /// derives the key from the same source the code does cannot detect
+    /// the key changing, which is the whole failure this test exists for.
+    func testA03_AC9_AnOffWrittenByAPreviousBuildIsStillOffAtTheRawKey() {
+        let key = "firefly.settings.backgroundConnectEnabled"
+        // Exactly what a build before A03 left behind for someone who
+        // turned the toggle off.
+        defaults.set(false, forKey: key)
+
+        let store = SettingsStore(defaults: defaults)
+        XCTAssertFalse(store.backgroundConnectEnabled,
+                        "an OFF written by an older build must survive the default flip")
+
+        // ...and the absence of that key — a fresh install, or an
+        // upgrade from a build that never wrote it — is the ON default.
+        defaults.removeObject(forKey: key)
+        XCTAssertNil(defaults.object(forKey: key), "the key really is unset")
+        XCTAssertTrue(SettingsStore(defaults: defaults).backgroundConnectEnabled)
+
+        // An explicit TRUE at the raw key reads true as well, so the
+        // three-state read is genuinely three-state and not "anything
+        // present means false".
+        defaults.set(true, forKey: key)
+        XCTAssertTrue(SettingsStore(defaults: defaults).backgroundConnectEnabled)
+    }
+
     /// The stand-in store must agree with the real one about the
     /// default, or every `.stub()`/demo composition exercises a
     /// lifecycle path no real install takes.

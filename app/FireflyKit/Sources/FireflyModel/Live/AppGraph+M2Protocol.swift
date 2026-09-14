@@ -120,7 +120,11 @@ extension AppGraph {
         // handed straight to the plan so the two can never disagree
         // about a distance.
         guard !isForegrounded else { return }
-        post(.rally(from: from, senderName: crewDisplayName(of: from), packetID: packetID, text: text))
+        // `isBroadcast:` is the SAME routing `pushInboundFeedItem` just
+        // used for the row above, so the deep link opens the thread the
+        // row is actually in (REVIEW FIX, PR #310).
+        post(.rally(from: from, senderName: crewDisplayName(of: from), packetID: packetID, text: text,
+                    isBroadcast: isBroadcastDestination(to)))
     }
 
     /// RALLY_CLEAR carries no place of its own to clear from the feed

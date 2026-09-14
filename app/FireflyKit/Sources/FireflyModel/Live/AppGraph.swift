@@ -343,9 +343,47 @@ public final class AppGraph {
     /// this, rather than growing a second path to the same prompt.
     public func requestNotificationAuthorizationIfNeeded() async {
         guard !hasRequestedNotificationAuthorization else { return }
+        guard Self.shouldRequestNotificationAuthorization(isDemoStack: isDemoStack) else { return }
         hasRequestedNotificationAuthorization = true
         await notifications.requestAuthorization()
     }
+
+    /// REVIEW FIX (PR #310) — **never in the demo stack.**
+    ///
+    /// Found by running the UI smoke test: the demo client reaches
+    /// `.ready` on its own a moment after launch, which is exactly the
+    /// trigger §3.11.5 defines, so `-FireflyDemo` raised a real
+    /// SpringBoard "Firefly Would Like to Send You Notifications" alert
+    /// over the app. XCUITest's interruption handler dismissed it and
+    /// retried, but the alert's own dimming layer ate the next tab-bar
+    /// tap and `testDemoSmokeTapsThroughAllScreens` sat on
+    /// `Screen.Connect` for the full 60 s waiting for Radar. (The tell in
+    /// the failure attachments is `AdditionalDimmingOverlay` — a
+    /// SpringBoard alert's scrim — present in the snapshot alongside
+    /// `Screen.Connect`.)
+    ///
+    /// It is the right product behaviour independently of the test: the
+    /// demo stack has no radio and no crew, nothing in it can ever post
+    /// a notification, and a system permission prompt is exactly the
+    /// thing that must not appear in the middle of a scripted demo or a
+    /// marketing screenshot (S20's own premise).
+    ///
+    /// The two existing XCTest signals do not cover this: both
+    /// `isRunningUnderXCTest` and `isXCTestRuntimeLoaded` are false in
+    /// the app-under-test of a UI test — that process links no XCTest
+    /// runtime and carries no `XCTestConfigurationFilePath`, as
+    /// `shouldAutoRefreshFestpack`'s own doc comment says. The demo
+    /// stack is the signal that is actually true here.
+    public nonisolated static func shouldRequestNotificationAuthorization(isDemoStack: Bool) -> Bool {
+        !isDemoStack
+    }
+
+    /// Whether this graph was built over the scripted demo client
+    /// (`-FireflyDemo`/`FIREFLY_DEMO=1`, inside
+    /// `#if targetEnvironment(simulator)` — `AppDependencies.current()`).
+    /// Read from the client the composition root actually handed us
+    /// rather than from a second flag that could disagree with it.
+    public var isDemoStack: Bool { dependencies.client is DemoMeshtasticClient }
 
     /// Idempotent, the same convention every `observe()` in this app
     /// follows. Subscribes `CoreStore` to the client's streams, starts

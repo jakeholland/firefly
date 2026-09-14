@@ -38,13 +38,31 @@ final class NotificationPlanTests: XCTestCase {
 
     func testA03_AC10_RallyIsActiveAndCarriesTheComposedLine() {
         let plan = NotificationPlan.plan(for: .rally(from: 4_100, senderName: "Taylor", packetID: 12,
-                                                      text: "MY SPOT \u{2014} 210 m NE of you"))
+                                                      text: "MY SPOT \u{2014} 210 m NE of you",
+                                                      isBroadcast: true))
         XCTAssertEqual(plan.interruptionLevel, .active)
         XCTAssertEqual(plan.threadIdentifier, "rally")
         XCTAssertEqual(plan.categoryIdentifier, "RALLY")
         XCTAssertEqual(plan.identifier, "rally-4100-12")
         XCTAssertEqual(plan.title, "Taylor set a meeting spot")
         XCTAssertEqual(plan.body, "MY SPOT \u{2014} 210 m NE of you")
+    }
+
+    /// REVIEW FIX (PR #310) — a RALLY's tap destination is the thread
+    /// its FEED ROW went to, decided by the same `isBroadcastDestination`
+    /// call `pushInboundFeedItem` makes. The link used to be
+    /// `thread/dm/<from>` unconditionally, so the ordinary case — a crew
+    /// broadcast — opened an empty 1:1 instead of the rally.
+    func testRallyDeepLinkOpensTheThreadItsRowIsIn() {
+        let broadcast = NotificationPlan.plan(for: .rally(from: 4_100, senderName: "Taylor", packetID: 12,
+                                                           text: "MY SPOT", isBroadcast: true))
+        XCTAssertEqual(broadcast.deepLink, "firefly://thread/crew")
+        XCTAssertEqual(FireflyDeepLink.route(for: URL(string: broadcast.deepLink)!), .thread(.crew))
+
+        let direct = NotificationPlan.plan(for: .rally(from: 4_100, senderName: "Taylor", packetID: 12,
+                                                        text: "MY SPOT", isBroadcast: false))
+        XCTAssertEqual(direct.deepLink, "firefly://thread/dm/4100")
+        XCTAssertEqual(FireflyDeepLink.route(for: URL(string: direct.deepLink)!), .thread(.member(4_100)))
     }
 
     func testA03_AC10_DirectMessageIsActiveAndThreadsPerSender() {
@@ -87,7 +105,7 @@ final class NotificationPlanTests: XCTestCase {
     /// permission" (§8). This test is that divergence, pinned.
     func testA03_AC10_OnlyAFlareBreaksThroughFocus() {
         let events: [NotificationEvent] = [
-            .rally(from: 1, senderName: "T", packetID: 1, text: "x"),
+            .rally(from: 1, senderName: "T", packetID: 1, text: "x", isBroadcast: true),
             .directMessage(from: 1, senderName: "T", packetID: 2, text: "x"),
             .crewMessage(from: 1, senderName: "T", packetID: 3, text: "x"),
         ]
@@ -127,7 +145,8 @@ final class NotificationPlanTests: XCTestCase {
                 identifiers.insert(NotificationPlan.plan(
                     for: .flare(from: from, senderName: nil, packetID: packetID)).identifier)
                 identifiers.insert(NotificationPlan.plan(
-                    for: .rally(from: from, senderName: nil, packetID: packetID, text: "x")).identifier)
+                    for: .rally(from: from, senderName: nil, packetID: packetID, text: "x",
+                                     isBroadcast: true)).identifier)
             }
         }
         XCTAssertEqual(identifiers.count, 75, "25 of each kind, none of them colliding")
@@ -153,7 +172,7 @@ final class NotificationPlanTests: XCTestCase {
         let events: [NotificationEvent] = [
             .flare(from: 4_098, senderName: "Taylor", packetID: 1),
             .flare(from: 4_098, senderName: nil, packetID: 1),
-            .rally(from: 4_100, senderName: "Taylor", packetID: 2, text: "MY SPOT"),
+            .rally(from: 4_100, senderName: "Taylor", packetID: 2, text: "MY SPOT", isBroadcast: true),
             .directMessage(from: 8_193, senderName: "Taylor", packetID: 3, text: "on my way"),
             .crewMessage(from: 8_194, senderName: "Taylor", packetID: 4, text: "at the rail"),
         ]
@@ -185,7 +204,7 @@ final class NotificationPlanTests: XCTestCase {
     func testEveryPlanDeepLinkParses() {
         let events: [NotificationEvent] = [
             .flare(from: 4_098, senderName: "T", packetID: 1),
-            .rally(from: 4_100, senderName: "T", packetID: 2, text: "x"),
+            .rally(from: 4_100, senderName: "T", packetID: 2, text: "x", isBroadcast: true),
             .directMessage(from: 8_193, senderName: "T", packetID: 3, text: "x"),
             .crewMessage(from: 8_194, senderName: "T", packetID: 4, text: "x"),
         ]

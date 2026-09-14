@@ -203,6 +203,32 @@ public enum BLEDisconnectAction: Sendable, Equatable {
     }
 }
 
+/// A03 §3.6's other decision — "Any `.poweredOff` cancels the ladder;
+/// `.poweredOn` restarts it at attempt 1" — extracted for exactly the
+/// reason `BLEDisconnectAction` above is (REVIEW FIX, PR #310: the rule
+/// lived inline in `handleCentralStateUpdate`, which needs a live
+/// `CBCentralManager` to reach, so deleting the cancel outright broke no
+/// test at all — and a scan window left open across a Bluetooth power
+/// cycle is the battery bug 2.2.6 in its worst form).
+///
+/// The `CBManagerState` -> action mapping itself is
+/// `BLETransport.ladderAction(forCentralState:shouldAutoReconnect:
+/// hasPendingConnect:)`; this enum is the pure half, same as every other
+/// decision type in this file. It is the ladder's share of §3.5 and
+/// nothing more: the full power-state machine (`retrievePeripherals`,
+/// `powerStateAction(...)`, the restore-ordering fix) is S1b.
+public enum BLELadderPowerAction: Sendable, Equatable {
+    /// Stand the ladder down, closing any scan window it still owes a
+    /// `stopScan()` for.
+    case cancel
+    /// Bluetooth is back with a connect still outstanding: cancel and
+    /// re-arm at attempt 1, rather than resuming a ladder that spent the
+    /// outage climbing.
+    case restartAtAttemptOne
+    /// Powered on with nothing for the ladder to do.
+    case leaveAsIs
+}
+
 /// A03 §3.4/§3.6's diagnostics, all three of them observations rather
 /// than estimates — Diagnostics renders these verbatim and says UNKNOWN
 /// where there is no observation yet, never a zero standing in for one.

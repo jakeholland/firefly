@@ -40,7 +40,16 @@ public enum NotificationEvent: Sendable, Equatable {
     /// you", or just the name when either fix is missing) — composed by
     /// `AppGraph.formatRallyText`, never re-derived here, so the feed
     /// row and the notification can never disagree about a distance.
-    case rally(from: UInt32, senderName: String?, packetID: UInt32, text: String)
+    ///
+    /// `isBroadcast` is the SAME routing decision `pushInboundFeedItem`
+    /// makes for the feed row this notification is about
+    /// (`isBroadcastDestination(to)`), and it exists so the deep link
+    /// lands on the thread the row is actually IN. REVIEW FIX (PR #310):
+    /// the link was unconditionally `thread/dm/<from>`, while a RALLY is
+    /// normally a crew broadcast whose row goes to the crew thread — so
+    /// tapping "Taylor set a meeting spot" opened an empty 1:1 instead
+    /// of the rally.
+    case rally(from: UInt32, senderName: String?, packetID: UInt32, text: String, isBroadcast: Bool)
     /// A text addressed to us specifically.
     case directMessage(from: UInt32, senderName: String?, packetID: UInt32, text: String)
     /// A text broadcast on the crew channel.
@@ -150,7 +159,7 @@ public struct NotificationPlan: Sendable, Equatable {
                 interruptionLevel: .timeSensitive,
                 playsSound: true,
                 deepLink: "\(scheme)://find/\(from)")
-        case .rally(let from, let senderName, let packetID, let text):
+        case .rally(let from, let senderName, let packetID, let text, let isBroadcast):
             let name = displayName(senderName)
             let known = isKnown(senderName)
             return NotificationPlan(
@@ -165,7 +174,9 @@ public struct NotificationPlan: Sendable, Equatable {
                 // until the owner says otherwise.
                 interruptionLevel: .active,
                 playsSound: true,
-                deepLink: "\(scheme)://thread/dm/\(from)")
+                // The thread the rally ROW is in — crew for a broadcast
+                // (the ordinary case), the sender's 1:1 for a direct one.
+                deepLink: isBroadcast ? "\(scheme)://thread/crew" : "\(scheme)://thread/dm/\(from)")
         case .directMessage(let from, let senderName, let packetID, let text):
             return NotificationPlan(
                 identifier: "msg-\(from)-\(packetID)",

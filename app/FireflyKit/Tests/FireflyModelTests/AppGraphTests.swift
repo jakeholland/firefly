@@ -1807,6 +1807,37 @@ final class AppGraphTests: XCTestCase {
         await graph.stop()
     }
 
+    /// REVIEW FIX (PR #310) — the demo stack never asks.
+    ///
+    /// The demo client reaches `.ready` on its own seconds after launch,
+    /// so §3.11.5's trigger fires immediately under `-FireflyDemo` and
+    /// raised a real SpringBoard permission alert over the app — which
+    /// is how `FireflyUITests.testDemoSmokeTapsThroughAllScreens` came
+    /// to sit on `Screen.Connect` for 60 s waiting for Radar (the
+    /// alert's dimming layer ate the tab-bar tap). Neither existing
+    /// XCTest signal covers the app-under-test of a UI test; the demo
+    /// stack is the one that is actually true there. It is also simply
+    /// right: nothing in a scripted demo can ever post a notification.
+    func testA03_3_11_5_TheDemoStackNeverAsksForNotificationPermission() async {
+        XCTAssertFalse(AppGraph.shouldRequestNotificationAuthorization(isDemoStack: true))
+        XCTAssertTrue(AppGraph.shouldRequestNotificationAuthorization(isDemoStack: false))
+
+        // The REAL demo composition the `-FireflyDemo` launch builds,
+        // not a stand-in that merely resembles it.
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: AppDependencies.demo(), notifications: notifications)
+        XCTAssertTrue(graph.isDemoStack)
+        await graph.start()
+        graph.setForegrounded(true)
+        try? await graph.dependencies.client.connect()
+
+        try? await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(notifications.authorizationRequests, 0,
+                        "a scripted demo must never raise a system permission alert")
+
+        await graph.stop()
+    }
+
     /// A03 §1.10 — categories are registered on EVERY launch (a
     /// background relaunch included), or a delivered notification's
     /// category is unknown to the system and its action never appears.
@@ -1830,11 +1861,20 @@ final class AppGraphTests: XCTestCase {
 
         _ = inbox.openThread(.member(0x0000_2001))
         await waitUntil { notifications.withdrawnThreads.contains("dm-8193") }
-        XCTAssertTrue(notifications.withdrawnThreads.contains("flare"),
-                        "a FLARE banner from that person is stale once their thread is read")
+        // REVIEW FIX (PR #310): and NOTHING else. `flare` and `rally`
+        // are single, app-wide thread ids (§3.11.1), so withdrawing them
+        // here would pull an unread FLARE from somebody ELSE off the
+        // lock screen because the user opened Taylor's messages. The
+        // proxy this replaces — `contains("flare")` — was satisfied by
+        // exactly that over-broad behaviour.
+        XCTAssertFalse(notifications.withdrawnThreads.contains("flare"),
+                        "reading one person's thread is not seeing another person's flare")
+        XCTAssertFalse(notifications.withdrawnThreads.contains("rally"))
 
         _ = inbox.openThread(.crew)
         await waitUntil { notifications.withdrawnThreads.contains("crew") }
+        XCTAssertEqual(Set(notifications.withdrawnThreads), ["dm-8193", "crew"],
+                        "a thread withdraws its own banners and no others")
     }
 }
 
