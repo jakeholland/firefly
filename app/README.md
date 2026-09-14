@@ -178,6 +178,34 @@ That is not a bug to chase.
   drives a real CONNECT against a real peripheral rather than synthetic
   demo data, so it is not something a shipping build should honor even
   inertly.
+- `-FireflyStartTab <name>` / `-FireflyFindSegment <name>` — land on a
+  specific tab/segment against the REAL composition graph
+  (`FireflyDebugStartDestinationLaunch`). **`#if DEBUG` only.**
+- `-FireflyDebugJoinCrew <code>` — once a puck is actually connected,
+  perform A02's Join non-interactively with that code
+  (`FireflyDebugCrewLaunch`). The argument is anything
+  `CrewScanPayload.classify` accepts: `FIRE-4K9M7X`, `fire 4kim7x`, or a
+  full `firefly://crew?…` link. **`#if DEBUG` only.**
+- `-FireflyDebugStartCrew [name]` — likewise for Start; bare, the crew is
+  called "My crew", or pass a name (`-FireflyDebugStartCrew "Camp
+  Firefly"`). A following *flag* is never taken as a name. **`#if DEBUG`
+  only.**
+
+  Both crew flags go through the ordinary `beginJoin`/`beginStart` →
+  `confirmApply()` path, radio gate and all — they skip the TAPPING, not
+  the checks — and wait (bounded, 45 s) for a connected puck first, so
+  they compose with `-FireflyAutoConnect`:
+
+  ```sh
+  # Mac bench: connect to Firefly 2, then join a crew, then land on Find
+  open -a Firefly.app --args \
+    -FireflyAutoConnect Meshtastic_e7d4 -FireflyDebugJoinCrew FIRE-4K9M7X
+  ```
+
+  With no puck in reach the run ends on the honest "connect your puck"
+  state rather than hanging. Combined with `-FireflyDemoScreen`, the
+  requested screen wins and the app stays on it after a successful join —
+  which is how the "joined" milestone screenshot is captured.
 
 ### Run the hardware tests
 

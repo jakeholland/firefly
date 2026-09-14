@@ -57,6 +57,86 @@ public final class ConnectViewModel {
     }
     public private(set) var connectedRadio: ConnectedRadioSummary?
 
+    // MARK: - Why a connect failed, in words (A02 §6.1 connect step)
+
+    /// The connect-first onboarding step (owner report, build 328:
+    /// "better handling on that screen for connecting to a puck")
+    /// needs to tell a first-time user which of a small number of
+    /// FIXABLE things is wrong, not print a Swift enum case at them.
+    /// `lastError` keeps its existing contract untouched (the raw
+    /// `String(describing:)`, still shown on the Connect screen and in
+    /// logs); this is the same failure, classified.
+    public enum RadioTrouble: Equatable, Sendable {
+        case bluetoothOff
+        case bluetoothNotAllowed
+        case bluetoothUnsupported
+        /// A real connect attempt that failed for some other reason —
+        /// carries the underlying description rather than inventing a
+        /// cause it does not know.
+        case other(String)
+
+        /// Plain language, no "node"/"Meshtastic"/"BLE" (A02 §6.4). Each
+        /// one names the next action where there IS one, and says so
+        /// plainly where there is not.
+        public var plainMessage: String {
+            switch self {
+            case .bluetoothOff:
+                return "Bluetooth is off. Turn it on in Settings, then try again."
+            case .bluetoothNotAllowed:
+                return "Firefly isn't allowed to use Bluetooth. Turn it on for Firefly in " +
+                    "Settings, then try again."
+            case .bluetoothUnsupported:
+                return "This device has no Bluetooth, so it can't talk to a puck."
+            case .other(let detail):
+                return "Couldn't connect to your puck: \(detail)"
+            }
+        }
+
+        /// `false` only where retrying cannot possibly help — the screen
+        /// hides its TRY AGAIN rather than offering dead chrome.
+        public var isRetryable: Bool { self != .bluetoothUnsupported }
+    }
+
+    /// Non-nil only after a real failed connect attempt, cleared at the
+    /// start of the next one and on any `.ready`.
+    public private(set) var lastTrouble: RadioTrouble?
+
+    /// Pure and typed — `BluetoothUnavailable` first (the phone's own
+    /// radio), then anything else described as itself. Exposed
+    /// `static` so it is testable with no client at all.
+    public static func trouble(for error: Error) -> RadioTrouble {
+        switch error {
+        case BluetoothUnavailable.poweredOff: return .bluetoothOff
+        case BluetoothUnavailable.notAllowed: return .bluetoothNotAllowed
+        case BluetoothUnavailable.unsupported: return .bluetoothUnsupported
+        default: return .other(String(describing: error))
+        }
+    }
+
+    /// What the connect-first onboarding step puts under its spinner —
+    /// the SAME link states `statusLabel` reports, said the way A02 §6
+    /// says them (pucks and people, never nodes and radios), and naming
+    /// the puck whenever its name is known. One property so the view
+    /// renders it verbatim (MVVM convention 5), exactly like
+    /// `headerStatusText`.
+    public var puckStatusText: String {
+        let name = connectedRadio?.longName ?? connectedRadio?.bleName
+        switch link {
+        case .disconnected:
+            return "Not connected"
+        case .connecting:
+            return name.map { "Connecting to \($0)…" } ?? "Connecting…"
+        case .handshaking:
+            return name.map { "Setting up \($0)…" } ?? "Setting up…"
+        case .ready:
+            return name.map { "Connected to \($0)" } ?? "Connected"
+        case .reconnecting:
+            return name.map { "Reconnecting to \($0)…" } ?? "Reconnecting…"
+        case .failed:
+            return lastTrouble?.plainMessage ?? "Couldn't connect to your puck."
+        }
+    }
+
     private let client: any MeshtasticClientProtocol
     /// SHOULD-FIX 5 (PR #272 review) — "Forget this node". Optional, and
     /// appended after `client` with a `nil` default, so every existing
@@ -142,6 +222,7 @@ public final class ConnectViewModel {
     public func connect() async {
         Self.log("connect() called — current link=\(link)")
         lastError = nil
+        lastTrouble = nil
         do {
             try await client.connect()
             Self.log("connect(): client.connect() returned successfully (link=\(link))")
@@ -163,6 +244,7 @@ public final class ConnectViewModel {
         } catch {
             Self.log("connect(): client.connect() threw \(error) — publishing .failed")
             lastError = String(describing: error)
+            lastTrouble = Self.trouble(for: error)
             link = .failed(String(describing: error))
         }
     }
@@ -223,7 +305,10 @@ public final class ConnectViewModel {
         link = state
         switch state {
         case .failed(let message): lastError = message
-        case .ready: lastConnectedAt = now()
+        // A reached link is the end of whatever went wrong last time —
+        // leaving `lastTrouble` set would keep "Bluetooth is off" under
+        // a CONNECTED header.
+        case .ready: lastConnectedAt = now(); lastTrouble = nil
         // A fully dropped link has no "which radio" to keep naming —
         // the honest reset is back to plain NOT CONNECTED, same as
         // before any radio was ever picked. `.failed`/`.reconnecting`

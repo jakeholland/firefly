@@ -144,6 +144,69 @@ final class FireflyUITests: XCTestCase {
         assertScreen("Screen.Connect", in: app)
     }
 
+    /// A02 §6.1's connect-first flow, on the launch that actually has
+    /// no radio: a PLAIN simulator launch (no `-FireflyDemo`) runs
+    /// `AppDependencies.stub()`, whose client is never connected and
+    /// whose scanner is nil — the honest "I just installed this and my
+    /// puck is in my bag" state, and exactly the one the owner hit on
+    /// build 328 ("tried to join but nothing happened").
+    ///
+    /// Welcome -> Connect your puck -> Join, asserting the thing that
+    /// was missing: JOIN is disabled, the reason is ON SCREEN next to
+    /// it, and the persistent banner offers the connect step. A tap that
+    /// silently does nothing is what this pins shut.
+    func testFirstLaunchWithNoPuckGoesThroughTheConnectStepAndGatesJoin() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        assertScreen("Screen.CrewWelcome", in: app)
+        tapWhenHittable(app.descendants(matching: .any)["CrewWelcome.Join"])
+
+        // The connect step, because no puck is connected. (With one, the
+        // container skips it entirely — `testDemoSmokeSkipsTheConnectStepWhenAPuckIsAlreadyConnected`.)
+        assertScreen("Screen.CrewConnectPuck", in: app)
+        XCTAssertTrue(app.descendants(matching: .any)["CrewConnect.Status"].waitForExistence(timeout: Self.uiTimeout),
+                      "the connect step must say what the link is doing")
+        XCTAssertTrue(app.buttons["CrewConnect.Rescan"].exists, "RESCAN must be reachable")
+        XCTAssertTrue(app.descendants(matching: .any)["CrewConnect.NoPuck"].exists,
+                      "\"Don't have a puck yet?\" must be reachable")
+
+        // "Do this later" goes ON to Join rather than dead-ending, so
+        // the banner can explain in place.
+        tapWhenHittable(app.descendants(matching: .any)["CrewConnect.Later"])
+        assertScreen("Screen.CrewJoin", in: app)
+
+        XCTAssertTrue(app.descendants(matching: .any)["CrewBanner.NeedsRadio"].waitForExistence(timeout: Self.uiTimeout),
+                      "Join must carry the persistent \"connect your puck\" banner with no radio")
+        XCTAssertTrue(app.descendants(matching: .any)["CrewJoin.DisabledReason"].exists,
+                      "the reason JOIN is disabled must be visible without tapping it")
+        XCTAssertFalse(app.buttons["CrewJoin.Join"].isEnabled,
+                       "JOIN must not be tappable while it could only be a no-op")
+
+        // …and the banner's CONNECT goes back to the same one connect
+        // step, not a second parallel one.
+        tapWhenHittable(app.descendants(matching: .any)["CrewBanner.Connect"])
+        assertScreen("Screen.CrewConnectPuck", in: app)
+    }
+
+    /// The other half of §6.1's rule — "the step is skipped
+    /// automatically when already connected". Demo mode connects its
+    /// client during `DemoRunner.start()`, so JOIN A CREW here must go
+    /// straight to Join, with no banner and a live JOIN button.
+    func testDemoSmokeSkipsTheConnectStepWhenAPuckIsAlreadyConnected() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-FireflyDemo"]
+        app.launch()
+
+        assertScreen("Screen.CrewWelcome", in: app)
+        tapWhenHittable(app.descendants(matching: .any)["CrewWelcome.Join"])
+        assertScreen("Screen.CrewJoin", in: app)
+        XCTAssertFalse(app.descendants(matching: .any)["Screen.CrewConnectPuck"].exists,
+                       "a connected puck must not be asked to connect again")
+        XCTAssertFalse(app.descendants(matching: .any)["CrewBanner.NeedsRadio"].exists,
+                       "no banner when a puck is connected")
+    }
+
     /// Taps one of `FindScreen`'s own segmented-control buttons
     /// (`FindScreen.swift`'s `"Find.Segment.<name>"` identifiers) —
     /// plain buttons, not a native segmented control, so this is a

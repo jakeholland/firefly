@@ -43,6 +43,87 @@ final class CrewController {
     var onProfileChanged: (@MainActor () -> Void)?
     var hasCrew: Bool { profile != nil }
 
+    // MARK: - Radio gate (A02 §2.1 step 1 / §3.3 step 1)
+    //
+    // Owner report, 2026-09-14, build 328 on the iPhone: "Tried to join
+    // but nothing happened, still on the Join a crew screen."
+    //
+    // Root cause, traced end to end: JOIN -> `beginJoin(payload:)` ->
+    // `beginJoin(code:name:)`'s `guard await preparePlan(for: code) else
+    // { return false }` -> `preparePlan(for:)`'s `importer.preparePlan()`
+    // -> `ChannelImportViewModel.currentOccupiedIndexes()` ->
+    // `client.currentChannelTable()`, which throws
+    // `AdminWriteError.notConnected` the moment there is no radio
+    // (`MeshtasticClient.requireConnectedNode()`). That error was not an
+    // `ChannelWritePlanError`, so `ChannelImportViewModel.planMessage(for:)`
+    // fell through to `String(describing:)` and the whole failure reached
+    // the screen as the single word `notConnected`, in grey `.footnote`
+    // under a JOIN button that stayed enabled — a silent no-op in every
+    // way that matters to the person holding the phone.
+    //
+    // The fix is two-sided: the message is plain language now
+    // (`planMessage(for:)`), AND the attempt is refused up front, here,
+    // with a state the screens render as a banner instead of letting a
+    // doomed write start.
+
+    /// This controller's own `@Observable` mirror of `client.linkState()`.
+    ///
+    /// It exists for SwiftUI's benefit, not for the gate's: the ANSWER
+    /// to "is a radio connected" is `client.connectedNodeNum`, and a
+    /// `MeshtasticClientProtocol` is not `@Observable`, so a view
+    /// reading it directly would never be invalidated when it changed —
+    /// the "Connect your puck to join" banner would stay up forever
+    /// after a successful connect, which is the same class of bug as
+    /// the one this whole change fixes.
+    private(set) var radioLink: LinkState = .disconnected
+    private var linkObservation: Task<Void, Never>?
+
+    /// Whether a radio is connected well enough for an admin write to
+    /// even be attempted.
+    ///
+    /// `client.connectedNodeNum != nil` is not a proxy for that — it is
+    /// EXACTLY the precondition both radio calls this flow makes enforce
+    /// for themselves (`MeshtasticClient.requireConnectedNode()`, which
+    /// gates `currentChannelTable()` and `applyChannelSet()`; the stub
+    /// and demo clients check the same property). It goes non-nil only
+    /// once `my_info` has landed, so it is also honest about the window
+    /// where the transport is up but the handshake has not started:
+    /// before that it reads `false`, which is the right answer — a write
+    /// sent then would fail.
+    var hasConnectedRadio: Bool {
+        // Load-bearing, not decorative: reading `radioLink` is what
+        // registers this computed property's SwiftUI observation
+        // dependency (see that property's own doc comment). The value
+        // returned is still, only, the live precondition.
+        _ = radioLink
+        return client.connectedNodeNum != nil
+    }
+
+    /// Starts mirroring `client.linkState()`. Idempotent, and called
+    /// from `init` so no composition root has to remember to — every
+    /// caller that builds a `CrewController` wants the banner to be
+    /// right, and there is no case where it does not.
+    private func observeRadioLink() {
+        guard linkObservation == nil else { return }
+        let stream = client.linkState()
+        linkObservation = Task { [weak self] in
+            for await state in stream {
+                guard let self else { return }
+                self.radioLink = state
+            }
+        }
+    }
+
+    /// The persistent banner both Start and Join show while
+    /// `hasConnectedRadio` is `false` (never a toast, never only after a
+    /// tap): title, one sentence of why, and a button that opens the
+    /// connect step.
+    static let needRadioBannerTitle = "Connect your puck to join"
+    static let needRadioBannerDetail =
+        "Firefly puts the crew on your puck itself, so your puck has to be connected first."
+    /// What a REFUSED attempt says, as opposed to the standing banner.
+    static let needRadioMessage = "Your puck isn't connected yet. Connect it, then try again."
+
     // MARK: - Region gate (§1.7)
 
     /// `true` only when the connected radio has EXPLICITLY reported
@@ -156,6 +237,7 @@ final class CrewController {
         self.clock = clock
         self.profile = profileStore.load()
         self.regionSelection = Self.suggestedRegion()
+        observeRadioLink()
     }
 
     // MARK: - Shared prepare/confirm state (Start AND Join both use this)
@@ -173,7 +255,67 @@ final class CrewController {
         /// `changingFrom` already gets for the mirror-image case.
         case start(code: CrewCode, humanName: String, switchingFrom: String?)
         case join(code: CrewCode, name: String?, changingFrom: String?)
+
+        /// The crew code either case is staging — what `confirmApply()`
+        /// verifies the radio's read-back against.
+        var code: CrewCode {
+            switch self {
+            case .start(let code, _, _), .join(let code, _, _): return code
+            }
+        }
     }
+    /// Where a Start/Join attempt has actually got to — the one thing
+    /// both screens render their progress and failure from, so neither
+    /// can ever be in the "button tapped, nothing on screen" state build
+    /// 328 shipped.
+    ///
+    /// The three progress phases are named for steps that ACTUALLY run,
+    /// not for a storyboard: `.checkingPuck` is `preparePlan()` reading
+    /// the radio's live channel table, `.writing` is
+    /// `applyChannelSet()` (one indivisible call that writes AND makes
+    /// the radio read its own values back — the app cannot honestly
+    /// narrate the inside of it), and `.verifying` is this app's own
+    /// check of what came back against the code it asked for. A fourth
+    /// label describing something unobserved would be exactly the kind
+    /// of invented progress CLAUDE.md's honest-data rule forbids.
+    enum ApplyPhase: Equatable {
+        case idle
+        /// An attempt was refused because no radio is connected. **No
+        /// write was attempted** — `preparePlan()` is never even
+        /// reached, so nothing touched the radio.
+        case needsRadio
+        case checkingPuck
+        case writing
+        case verifying
+        case joined
+        case failed(String)
+    }
+    private(set) var phase: ApplyPhase = .idle
+
+    /// The one progress line the screens show, or `nil` when there is
+    /// nothing in flight.
+    var progressLabel: String? {
+        switch phase {
+        case .checkingPuck: return "Checking your puck…"
+        case .writing: return "Writing to your puck…"
+        case .verifying: return "Checking…"
+        case .joined: return "Joined"
+        case .idle, .needsRadio, .failed: return nil
+        }
+    }
+
+    /// The honest failure text for whatever just went wrong — a radio
+    /// that disconnected mid-write, a NAK, a timeout, a read-back
+    /// mismatch, an UNSET region — always with something the user can
+    /// do next. `nil` when nothing has failed.
+    var failureMessage: String? {
+        switch phase {
+        case .failed(let message): return message
+        case .needsRadio: return Self.needRadioMessage
+        default: return nil
+        }
+    }
+
     private(set) var pending: PendingKind?
     private(set) var isPreparing = false
     private(set) var isApplying = false
@@ -195,6 +337,7 @@ final class CrewController {
     func beginStart(humanName: String) async -> Bool {
         errorMessage = nil
         rejoinOwnCrewMessage = nil
+        guard requireRadio() else { return false }
         let switchingFrom = profile?.humanName
         let code = CrewCode.generate()
         let trimmed = humanName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -222,24 +365,49 @@ final class CrewController {
     private func beginJoin(code: CrewCode, name: String?) async -> Bool {
         errorMessage = nil
         rejoinOwnCrewMessage = nil
+        // §3.4's "you're already in this crew" is answered BEFORE the
+        // radio gate on purpose: it is true, and actionable, whether or
+        // not a puck happens to be connected, and telling someone to go
+        // connect a radio for a write that would never happen anyway
+        // would be a worse answer than the real one.
         if let profile, profile.code == code.canonical {
             rejoinOwnCrewMessage = "You're already in \(profile.humanName)."
             return false
         }
+        guard requireRadio() else { return false }
         let changingFrom = profile?.humanName
         guard await preparePlan(for: code) else { return false }
         pending = .join(code: code, name: name, changingFrom: changingFrom)
         return true
     }
 
+    /// The ONE place an attempt is refused for want of a radio — and the
+    /// reason it is refused HERE, before `preparePlan()`, rather than
+    /// left to the radio call's own throw: a refusal that never touches
+    /// the radio is the only kind this app can honestly promise
+    /// attempted nothing.
+    private func requireRadio() -> Bool {
+        guard hasConnectedRadio else {
+            phase = .needsRadio
+            errorMessage = Self.needRadioMessage
+            return false
+        }
+        return true
+    }
+
     private func preparePlan(for code: CrewCode) async -> Bool {
         isPreparing = true
+        phase = .checkingPuck
         defer { isPreparing = false }
         await snapshotCurrentPrimaryIfNeeded()
         let url = ChannelURL.encode(CrewChannel.channelSet(for: code), addMode: false)
         importer.importURL(url)
         let ok = await importer.preparePlan()
-        if !ok { errorMessage = importer.planErrorMessage ?? "Couldn't prepare that crew." }
+        if !ok {
+            let message = importer.planErrorMessage ?? "Couldn't prepare that crew."
+            errorMessage = message
+            phase = .failed(message)
+        }
         return ok
     }
 
@@ -247,6 +415,17 @@ final class CrewController {
         pending = nil
         importer.clear()
         errorMessage = nil
+        phase = .idle
+    }
+
+    /// Clears a refusal/failure so a screen coming back from the connect
+    /// step (or a plain TRY AGAIN) starts from a clean state rather than
+    /// showing the previous attempt's words next to a fresh one.
+    func clearFailure() {
+        if case .joined = phase { return }
+        phase = .idle
+        errorMessage = nil
+        rejoinOwnCrewMessage = nil
     }
 
     // MARK: - Plain-language confirmation copy (§2.2, §3.3, AC8)
@@ -312,11 +491,39 @@ final class CrewController {
     @discardableResult
     func confirmApply() async -> Bool {
         guard let pending else { return false }
+        // Re-checked here, not only in `beginStart`/`beginJoin`: a puck
+        // can drop between the plan and the tap on CONFIRM (a pocket, a
+        // flat battery, someone walking off with it), and that window is
+        // exactly where a silent failure would be least explicable.
+        guard requireRadio() else { return false }
+        errorMessage = nil
         isApplying = true
+        phase = .writing
         defer { isApplying = false }
         let ok = await importer.confirmApply()
         guard ok else {
-            errorMessage = importer.applyErrorMessage ?? "Couldn't apply that crew."
+            // Every honest `AdminWriteError` — a radio that disconnected
+            // mid-write, a NAK/partial apply, a timeout, a read-back
+            // mismatch, an UNSET region — already has its own sentence
+            // in `writeMessage(for:)`. This just puts it somewhere the
+            // screens can see it.
+            let message = importer.applyErrorMessage ?? "Couldn't apply that crew."
+            errorMessage = message
+            phase = .failed(message)
+            return false
+        }
+        // The app's own check of what the radio reported back, as
+        // distinct from the radio agreeing with itself inside
+        // `applyChannelSet`. Cheap (no extra round trip — this is the
+        // report that call already returned) and real: a report with no
+        // primary, or a primary carrying some other channel's name, is
+        // not a crew this app may claim the user joined.
+        phase = .verifying
+        guard Self.report(importer.lastAppliedReport, carries: pending.code) else {
+            let message = "Your puck didn't come back with \(pending.code.canonical). " +
+                "Nothing is certain until it does — try again."
+            errorMessage = message
+            phase = .failed(message)
             return false
         }
         switch pending {
@@ -326,7 +533,17 @@ final class CrewController {
             adoptProfile(code: code, humanName: name ?? code.canonical)
         }
         self.pending = nil
+        phase = .joined
         return true
+    }
+
+    /// Pure, so it is testable without a client: the written primary's
+    /// name IS the crew code (§1.3, "why the channel name is the code"),
+    /// so a read-back that carries it is the whole verification.
+    static func report(_ report: ChannelWriteReport?, carries code: CrewCode) -> Bool {
+        guard let report else { return false }
+        guard let primary = report.channels.first(where: { $0.role == .primary }) else { return false }
+        return primary.settings.name == code.canonical
     }
 
     private func adoptProfile(code: CrewCode, humanName: String) {
@@ -349,6 +566,16 @@ final class CrewController {
     @discardableResult
     func leaveCrew() async -> Bool {
         guard let profile else { return false }
+        // Leave is a WRITE (§3.4's "leaving writes the radio back, it is
+        // not a local forget"), so it needs the same up-front refusal
+        // Start/Join get — a local-only forget while the puck kept
+        // transmitting on the crew channel is the outcome §3.4 calls
+        // the worst possible one.
+        guard hasConnectedRadio else {
+            leaveErrorMessage = "Your puck isn't connected. Leaving has to be written to your " +
+                "puck, so connect it first."
+            return false
+        }
         isApplying = true
         leaveErrorMessage = nil
         defer { isApplying = false }

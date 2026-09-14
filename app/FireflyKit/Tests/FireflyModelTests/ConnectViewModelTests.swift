@@ -450,4 +450,73 @@ final class ConnectViewModelTests: XCTestCase {
         XCTAssertEqual(vm.rowAction(isActivePeripheral: true), .disconnect)
         XCTAssertTrue(vm.isDisconnectable, "a stuck retry loop must always be abortable")
     }
+
+    // MARK: - A02 §6.1 connect step — why a connect failed, in words
+
+    /// The three Bluetooth states a person can actually do something
+    /// about, classified from the typed error `BLETransport
+    /// .throwIfTerminal(_:)` throws. Before the connect-first
+    /// onboarding, "Bluetooth is off" arrived as
+    /// `TransportError.notConnected` and reached the screen as the word
+    /// `notConnected`.
+    func testTroubleClassifiesTheFixableBluetoothStates() {
+        XCTAssertEqual(ConnectViewModel.trouble(for: BluetoothUnavailable.poweredOff), .bluetoothOff)
+        XCTAssertEqual(ConnectViewModel.trouble(for: BluetoothUnavailable.notAllowed), .bluetoothNotAllowed)
+        XCTAssertEqual(ConnectViewModel.trouble(for: BluetoothUnavailable.unsupported), .bluetoothUnsupported)
+    }
+
+    /// Anything else keeps its own description rather than being
+    /// flattened into a guess about a cause this app does not know.
+    func testTroubleNeverInventsACauseForAnUnknownFailure() {
+        let trouble = ConnectViewModel.trouble(for: TransportError.writeFailed("boom"))
+        guard case .other(let detail) = trouble else { return XCTFail("expected .other, got \(trouble)") }
+        XCTAssertTrue(detail.contains("boom"))
+    }
+
+    func testEveryTroubleMessageIsPlainAndNamesTheNextStepWhereThereIsOne() {
+        for trouble: ConnectViewModel.RadioTrouble in [.bluetoothOff, .bluetoothNotAllowed, .bluetoothUnsupported] {
+            let message = trouble.plainMessage
+            XCTAssertFalse(message.contains("CBManagerState"), "\(trouble): raw CoreBluetooth vocabulary")
+            for jargon in ["node", "Meshtastic", "BLE", "unauthorized", "poweredOff"] {
+                XCTAssertFalse(message.contains(jargon), "\(trouble): \"\(jargon)\"")
+            }
+            XCTAssertTrue(message.hasSuffix("."), "\(trouble): not a sentence")
+        }
+        // Retrying cannot conjure Bluetooth hardware — the screen hides
+        // its TRY AGAIN there rather than offering dead chrome.
+        XCTAssertFalse(ConnectViewModel.RadioTrouble.bluetoothUnsupported.isRetryable)
+        XCTAssertTrue(ConnectViewModel.RadioTrouble.bluetoothOff.isRetryable)
+    }
+
+    /// The connect step's one status line, across the whole link
+    /// ladder — pucks and people, never nodes and radios (A02 §6).
+    func testPuckStatusTextNamesThePuckWhenItsNameIsKnown() {
+        let vm = ConnectViewModel(client: StubMeshtasticClient())
+        vm.apply(.disconnected)
+        XCTAssertEqual(vm.puckStatusText, "Not connected")
+
+        vm.noteSelectedPeripheral(name: "Meshtastic_e7d4", rssiDbm: -56)
+        vm.apply(.connecting)
+        XCTAssertEqual(vm.puckStatusText, "Connecting to Meshtastic_e7d4…")
+        vm.apply(.handshaking)
+        XCTAssertEqual(vm.puckStatusText, "Setting up Meshtastic_e7d4…")
+        vm.apply(.ready)
+        XCTAssertEqual(vm.puckStatusText, "Connected to Meshtastic_e7d4")
+
+        for text in [vm.puckStatusText] {
+            XCTAssertFalse(text.contains("dBm"))
+            XCTAssertFalse(text.contains("!"))
+        }
+    }
+
+    /// A `.ready` clears whatever went wrong last time — otherwise
+    /// "Bluetooth is off" would sit under a CONNECTED header.
+    func testReachingReadyClearsTheLastTrouble() async {
+        let client = StubMeshtasticClient()
+        let vm = ConnectViewModel(client: client)
+        vm.apply(.failed("x"))
+        XCTAssertNil(vm.lastTrouble, "apply(_:) alone never classifies — only a real connect() does")
+        vm.apply(.ready)
+        XCTAssertNil(vm.lastTrouble)
+    }
 }
