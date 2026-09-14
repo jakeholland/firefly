@@ -2345,6 +2345,241 @@ static void S24_omw_chip_real_touch_on_long_overflowing_1to1_thread(void)
     TEST_ASSERT_EQUAL(FF_WIRING_REPLY_OMW, s_spy.last.u.reply);
 }
 
+/* PR #311 review (B1) — the chip strip must not be under the FAB.
+ *
+ * The defect this guards: the tap-target sizing pass moved the compose
+ * FAB's hit anchor to (268,268), which pulled the chips' right-hand
+ * clearance line to 260, but the strip was still 252px wide against a
+ * 214px opening and `inbox_build_chips` fell back to `x = margin` with
+ * no clamp. The FLARE chip painted from x 224 to 297 while the FAB's hit
+ * rect started at 268 and, being built later, won LVGL's hit test: a
+ * press at (285,290) — on glass, on top of the drawn FLARE chip —
+ * emitted FF_INTENT_INBOX_NEW.
+ *
+ * Deliberately a SYNTHETIC INDEV PRESS at a fixed point rather than a
+ * tap at the chip's own centre: a centre tap passes even with the strip
+ * overrunning (the centre is left of 268), which is precisely why the
+ * existing OMW test did not catch this. The point is the one a thumb
+ * aiming at the right-hand end of the strip would land on. */
+static void S24_thread_chip_strip_press_reaches_the_chip_not_the_fab(void)
+{
+    ff_app_inbox_t v;
+    s24_make_direct_thread_long(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_inbox_build(parent, &v, false);
+    lv_obj_update_layout(parent);
+
+    lv_obj_t *flare = find_button_with_label(parent, "FLARE");
+    TEST_ASSERT_NOT_NULL(flare);
+    lv_area_t chip;
+    lv_obj_get_coords(flare, &chip);
+
+    lv_obj_t *fab = find_clickable_by_size(parent, FF_TEST_FAB_HIT_PX, FF_TEST_FAB_HIT_PX);
+    TEST_ASSERT_NOT_NULL_MESSAGE(fab, "the compose FAB must exist for this test to mean anything");
+    lv_area_t fab_a;
+    lv_obj_get_coords(fab, &fab_a);
+
+    /* Geometric half of the property, measured on the rendered tree: the
+     * chip and the FAB's hit rect must not overlap AT ALL, and must in
+     * fact keep the 8px adjacency floor. This is what the buggy geometry
+     * violated by 30px. */
+    TEST_ASSERT_GREATER_OR_EQUAL_INT_MESSAGE(8, fab_a.x1 - (chip.x2 + 1),
+                                             "the FLARE chip's right edge must clear the compose FAB's hit rect by "
+                                             "the 8px adjacency floor — it used to run 30px INSIDE it");
+
+    /* Behavioural half: a press at the chip's own right-hand end — the
+     * part the FAB used to swallow — must flare. Right-hand end, not the
+     * centre: a centre tap passed even with the strip overrunning, which
+     * is exactly why the existing OMW test did not catch this. */
+    tap_at(chip.x2 - 4, (chip.y1 + chip.y2) / 2);
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL_MESSAGE(FF_INTENT_INBOX_FLARE, s_spy.last.kind,
+                              "a press on the FLARE chip must flare, not open the composer — the compose FAB's hit "
+                              "rect is built later and wins hit-testing wherever the two overlap");
+
+    /* And the regression's own witness point: puck-local (285,290), i.e.
+     * 17px right and 22px down from the FAB's near corner at (268,268).
+     * Expressed relative to the measured corner because this test's bare
+     * `lv_obj_create` parent carries default-theme padding, so puck-local
+     * coordinates are not screen coordinates here (the same reason
+     * S24_crew_thread_no_row_ever_under_the_fab_slice derives its circle
+     * centre at runtime).
+     *
+     * Under the buggy geometry that point was drawn FLARE chip and
+     * emitted FF_INTENT_INBOX_NEW. With the strip back inside its
+     * clearance line it is unambiguously the FAB — no chip is painted
+     * there, so INBOX_NEW is now the honest answer rather than a lie
+     * about what the user was aiming at. */
+    int32_t const witness_x = fab_a.x1 + (285 - 268);
+    int32_t const witness_y = fab_a.y1 + (290 - 268);
+    TEST_ASSERT_FALSE_MESSAGE(chip.x1 <= witness_x && witness_x <= chip.x2 && chip.y1 <= witness_y &&
+                                  witness_y <= chip.y2,
+                              "the (285,290) witness point must no longer be inside the FLARE chip — that overlap "
+                              "WAS the bug");
+    s_spy.count = 0;
+    tap_at(witness_x, witness_y);
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL_MESSAGE(FF_INTENT_INBOX_NEW, s_spy.last.kind,
+                              "(285,290) is bare FAB now — it must open the composer, and nothing else may claim it");
+}
+
+/* The other half of the same property: the FAB itself must still be the
+ * FAB. A fix that simply moved the chips under the FAB's own rect (or
+ * shrank the FAB) would pass the test above and break this one. */
+static void S24_thread_fab_press_still_emits_inbox_new(void)
+{
+    ff_app_inbox_t v;
+    s24_make_direct_thread_long(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_inbox_build(parent, &v, false);
+    lv_obj_update_layout(parent);
+
+    /* The FAB's own near corner, plus half the 80px on-glass square the
+     * sizing pass sized it for: the middle of the target a thumb has.
+     * Located from the rendered tree rather than by puck-local literals —
+     * this test's bare parent carries default-theme padding. */
+    lv_obj_t *fab = find_clickable_by_size(parent, FF_TEST_FAB_HIT_PX, FF_TEST_FAB_HIT_PX);
+    TEST_ASSERT_NOT_NULL(fab);
+    lv_area_t fab_a;
+    lv_obj_get_coords(fab, &fab_a);
+    tap_at(fab_a.x1 + 40, fab_a.y1 + 40);
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL_MESSAGE(FF_INTENT_INBOX_NEW, s_spy.last.kind,
+                              "the compose FAB must still open the composer from the centre of its on-glass square");
+}
+
+/* PR #311 review (N-series) — Settings captions vs their control group.
+ *
+ * Re-framing every Settings band against the bezel's glass narrowed the
+ * rows from 262px to 240px, which moved every right-aligned pill group
+ * 22px left and put the "COLORBLIND" caption 2px from its ON pill.
+ * Checked here on the REAL rendered screen (caption label's right edge
+ * against the leftmost control in the row's right half) rather than by
+ * arithmetic over the layout constants, per AGENTS.md's measure-don't-
+ * reason rule. */
+/* 12px is FF_SETTINGS_VALUE_GAP — the gap this face's own value rows are
+ * built to, and the tightest one any row is DESIGNED to have (the name
+ * row's caption is a fixed-width ellipsizing label that always lands
+ * exactly there). Anything under it is a collision, not a tight layout.
+ * Measured on the default page: CLOCK 60, SCREEN 14, COLORBLIND 22,
+ * SOUNDS 64, UI TICKS 64, QUIET HOURS 23, UNITS 67, COMPASS 59, name row
+ * 12. Before this fix COLORBLIND was 2. */
+#define S_SET_CAPTION_CLEARANCE_PX 12
+
+static lv_obj_t *settings_first_label(lv_obj_t *obj)
+{
+    uint32_t const n = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *c = lv_obj_get_child(obj, i);
+        if (lv_obj_check_type(c, &lv_label_class)) {
+            return c;
+        }
+        lv_obj_t *deeper = settings_first_label(c);
+        if (deeper != NULL) {
+            return deeper;
+        }
+    }
+    return NULL;
+}
+
+static void settings_check_row_clearance(lv_obj_t *row, int *out_rows_checked)
+{
+    lv_area_t row_a;
+    lv_obj_get_coords(row, &row_a);
+
+    /* The caption: the first DIRECT label child of the row. The control
+     * group: the leftmost DIRECT button child that does not start at the
+     * row's own left edge.
+     *
+     * That exclusion is exactly one shape — settings_build_value_row's
+     * transparent `hit` button, which deliberately covers the caption so
+     * the row's left half is not dead (one setting, two places to tap
+     * it, and the adjacency sweep's own composite-control exclusion
+     * already knows about the pair). Every real pill group on this face
+     * is RIGHT-aligned, so none of them can start at x == row.x1.
+     *
+     * "Not at the left edge", not "in the right half": SCREEN's pill
+     * pair is 162px wide and starts 78px into a 240px row, i.e. in the
+     * LEFT half — a right-half filter silently measured against its
+     * SECOND pill and reported a 94px gap for a row whose real clearance
+     * is 12. */
+    /* The caption is the row's FIRST label in build order, at any depth:
+     * a toggle row puts it directly on the row, a value row nests it
+     * inside the transparent `hit` box that makes the caption itself
+     * tappable. Both builders add it before any control, so depth-first
+     * in child order finds the caption, never a pill's own label. */
+    uint32_t const n = lv_obj_get_child_count(row);
+    lv_obj_t *caption = settings_first_label(row);
+    if (caption == NULL) {
+        return;
+    }
+    lv_area_t cap_a;
+    lv_obj_get_coords(caption, &cap_a);
+
+    /* ...and only controls that share the caption's LINE. The BRIGHTNESS
+     * row stacks its caption over a separate stepper row inside one
+     * container, so its -/+ pills sit 5px to the right of the caption's
+     * right edge but 30px BELOW it — horizontally tight, never
+     * simultaneously in the way. A horizontal-only check reported that
+     * as a 5px clearance violation, which is the wrong quantity: the
+     * question is whether the caption and the control collide, and two
+     * things on different lines do not. */
+    int32_t group_x = INT32_MAX;
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *c = lv_obj_get_child(row, i);
+        if (!lv_obj_check_type(c, &lv_button_class)) {
+            continue;
+        }
+        lv_area_t b;
+        lv_obj_get_coords(c, &b);
+        if (b.y2 < cap_a.y1 || b.y1 > cap_a.y2) {
+            continue; /* not on the caption's line */
+        }
+        if (b.x1 > row_a.x1 && b.x1 < group_x) {
+            group_x = b.x1;
+        }
+    }
+    if (group_x == INT32_MAX) {
+        return; /* a row with no right-hand control group on the caption's line */
+    }
+    int32_t const gap = group_x - (cap_a.x2 + 1);
+    char msg[160];
+    snprintf(msg, sizeof(msg), "settings caption '%s' clears its control group by only %d px (floor %d)",
+             lv_label_get_text(caption), (int)gap, (int)S_SET_CAPTION_CLEARANCE_PX);
+    TEST_ASSERT_GREATER_OR_EQUAL_INT_MESSAGE(S_SET_CAPTION_CLEARANCE_PX, gap, msg);
+    (*out_rows_checked)++;
+}
+
+static void settings_walk_rows(lv_obj_t *obj, int *out_rows_checked)
+{
+    uint32_t const n = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *c = lv_obj_get_child(obj, i);
+        settings_check_row_clearance(c, out_rows_checked);
+        settings_walk_rows(c, out_rows_checked);
+    }
+}
+
+static void S_SET_every_settings_caption_clears_its_control_group(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.brightness_pct = 70;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+
+    int rows_checked = 0;
+    settings_walk_rows(lv_screen_active(), &rows_checked);
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(4, rows_checked,
+                                         "the settings list must render several caption+control rows for this "
+                                         "sweep to prove anything");
+}
+
 /* =================================================================== */
 /* S24 slice d — action popup + Rally screen emitters                  */
 /* =================================================================== */
@@ -3390,6 +3625,40 @@ static void scroll_into_view(lv_obj_t *obj)
 {
     lv_obj_scroll_to_view_recursive(obj, LV_ANIM_OFF);
     lv_obj_update_layout(lv_screen_active());
+}
+
+/* PR #311 review (N-series): the crew row's status must render in full.
+ *
+ * #303 replaced "LOST" with "NO SIGNAL <age>" and #307 sized the row's
+ * action pill so that wording stays legible; this PR then narrowed every
+ * Settings band by 22px and truncated it to "NO SIGNAL 15 ...".
+ * FF_CREW_ACTION_PILL_W's own comment carries the arithmetic — this test
+ * is the measurement, run against the WORST case ff_fmt_age can produce
+ * (48 minutes, the widest two-digit pair at this font) rather than the
+ * 15 that happened to be in the fixture.
+ *
+ * "No ellipsis" is checked on the RENDERED label: LV_LABEL_LONG_DOT
+ * rewrites the label's own text when it truncates, so the dots are
+ * observable through lv_label_get_text — no pixel comparison needed. */
+static void S_CREW_worst_case_status_renders_in_full(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+    s.crew.paired_count = 1;
+    s.crew.paired[0].node_id = 0xC0FFEEu;
+    strncpy(s.crew.paired[0].name, "KEV", sizeof(s.crew.paired[0].name) - 1);
+    s.crew.paired[0].initial = 'K';
+    s.crew.paired[0].presence = FF_PRESENCE_LOST;
+    s.crew.paired[0].presence_age_ms = 48u * 60u * 1000u; /* -> "NO SIGNAL 48 MIN" */
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+
+    TEST_ASSERT_NOT_NULL_MESSAGE(find_label_exact(lv_screen_active(), "NO SIGNAL 48 MIN"),
+                                 "the crew row's worst-case status must render in full — a truncated delivery/"
+                                 "presence state is the defect #303's wording change exists to avoid, and the "
+                                 "label column is sized for it in FF_CREW_ACTION_PILL_W");
 }
 
 static void s12_build_crew_page_with_one_of_each(ff_app_crew_page_t *cw)
@@ -4515,6 +4784,9 @@ int main(void)
     RUN_TEST(S24_thread_scroll_resets_to_newest_on_new_message);
     RUN_TEST(S24_thread_scroll_resets_to_newest_on_different_thread);
     RUN_TEST(S24_omw_chip_real_touch_on_long_overflowing_1to1_thread);
+    RUN_TEST(S24_thread_chip_strip_press_reaches_the_chip_not_the_fab);
+    RUN_TEST(S24_thread_fab_press_still_emits_inbox_new);
+    RUN_TEST(S_SET_every_settings_caption_clears_its_control_group);
     RUN_TEST(S24d_popup_compose_row_emits_popup_compose);
     RUN_TEST(S24d_popup_rally_row_emits_popup_rally);
     RUN_TEST(S24d_popup_flare_row_emits_popup_flare);
@@ -4556,6 +4828,7 @@ int main(void)
     RUN_TEST(S_name_edit_del_key_emits_name_t9_backspace);
     RUN_TEST(S_name_edit_mode_chip_emits_name_t9_mode);
     RUN_TEST(S_name_edit_123_digit_key_emits_name_t9_insert);
+    RUN_TEST(S_CREW_worst_case_status_renders_in_full);
     RUN_TEST(S_name_edit_done_emits_commit);
     RUN_TEST(S_name_edit_back_emits_back_intent);
 

@@ -441,26 +441,49 @@ static inline int32_t ff_theme_glass_cy(bool flip)
  *  which are a reading surface first and a tap target second. */
 #define FF_THEME_HIT_LIST_PX 72
 
-/** ~5.6mm — the invisible hit area around a Radar crew ring dot. The dot
- *  itself stays RADAR_LAYOUT_DOT_PX (34) so the face's look is
- *  unchanged; the hit area is a transparent sibling object, clamped to
- *  stay inside the bezel's glass circle (see scr_radar.c). Lower than
- *  FF_THEME_HIT_PRIMARY_PX because up to 8 dots share one ring: at 80px
- *  a full crew's hit areas would overlap, which trades one mis-tap risk
- *  for a worse one. */
+/** ~5.6mm — the floor for a small round control that is bounded by the
+ *  things stacked around it rather than by the face's own room.
+ *
+ *  WHAT IT ACTUALLY FLOORS TODAY: exactly one control — scr_inbox.c's
+ *  action-popup close (FF_INBOX_POPUP_CLOSE_PX, 64), which sits under
+ *  three 80px rows in a modal whose stack is already flush against the
+ *  glass, so the close gets what is left rather than the 80px floor.
+ *
+ *  It was NAMED for the Radar crew-ring dots, and that hit area is NOT
+ *  BUILT: scr_radar.c still clears LV_OBJ_FLAG_CLICKABLE on every ring
+ *  dot, so there is no transparent hit sibling anywhere in this codebase
+ *  and nothing in scr_radar.c references this constant. Why that slice
+ *  did not land — the dots carry no node id to emit a selection with,
+ *  and 64px boxes on a 185px ring overlap each other — is written up in
+ *  docs/hardware/tap-targets.md ("Crew dots on Radar — not delivered")
+ *  with a matching ## Questions note in docs/specs/S06-radar-face.md.
+ *  The 64 stays derived from that future case (up to 8 dots share one
+ *  ring; at 80px a full crew's hit areas would overlap, trading one
+ *  mis-tap risk for a worse one), which is why the number is right for
+ *  the popup close too. */
 #define FF_THEME_HIT_DOT_PX 64
 
-/** ~5.9mm — the compose T9 keypad's own floor. This is the ONE place
+/** ~4.4mm — the compose T9 keypad's own floor. This is the ONE place
  *  the owner's 80x80 target is geometrically unreachable rather than
- *  merely inconvenient, and the number is the measured best fit rather
+ *  merely inconvenient, and the number is the measured CEILING rather
  *  than an aspiration: a 3-column x 4-row keypad at 80px keys needs
  *  3*80+2*8 = 256px of width, and a 256px-wide band fits inside the
  *  r=196 safe circle only across y in [58,354] — 296px of vertical
  *  band, against the 4*80+3*8 = 344px such a keypad needs. There is no
  *  header, margin or gap to reclaim that closes an inherent 48px
  *  deficit; the constraint is the circle. See
- *  docs/hardware/tap-targets.md, "Compose: why 80x80 keys do not fit". */
-#define FF_THEME_HIT_KEY_PX 68
+ *  docs/hardware/tap-targets.md, "Compose: why 80x80 keys do not fit".
+ *
+ *  50, not 68. This constant was landed at 68 and enforced NOWHERE,
+ *  while the doc table and this file's own prose quoted 50 — a number
+ *  that describes a floor no build would ever fail is worse than no
+ *  number, because it reads like a guard rail. 50 is what the keypad
+ *  measurably is (FF_COMPOSE_GRID_ROW_H), and scr_compose.c now carries
+ *  the build-time assert that holds it there, so lowering a key silently
+ *  is a compile error rather than a doc that quietly goes stale. Raising
+ *  this constant is a deliberate act that must come WITH the geometry to
+ *  pay for it. */
+#define FF_THEME_HIT_KEY_PX 50
 
 /** ~4.6mm — quick-reply chips and other in-list secondary controls on
  *  the Inbox thread, which sit in a horizontal strip whose height is

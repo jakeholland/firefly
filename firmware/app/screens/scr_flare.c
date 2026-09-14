@@ -150,8 +150,10 @@ _Static_assert((int)FLARE_TAKEOVER_DISMISS_DY - FLARE_TAKEOVER_DISMISS_BTN_H / 2
  * the countdown is available — the only bound is the glass. At 140px
  * wide, centred, the farthest corner is |dx| = 72 from the glass centre,
  * which allows |dy| up to sqrt(200^2 - 72^2) = 186.5. The status and
- * countdown lines lift 10px and 14px respectively to open the room the
- * taller button needs, keeping the same status -> countdown -> CANCEL
+ * countdown lines lift 6px (78 -> 72) and 12px (118 -> 106) respectively
+ * to open the room the taller button needs, and CANCEL's own centre lifts
+ * 6px (158 -> 152) so its bottom edge lands at dy 184, inside that bound
+ * with 2.5px to spare — keeping the same status -> countdown -> CANCEL
  * reading order and no overlap (verified against the rendered
  * flaring_self / flaring_self_nomesh goldens, not this arithmetic). */
 #define FLARE_SENDER_STATUS_DY    72.0f

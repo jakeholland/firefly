@@ -71,7 +71,10 @@
  * MATH they feed, ff_layout.h, is the shared/tested part).
  * ------------------------------------------------------------------- */
 
-#define FF_INBOX_SAFETY_PX 10.0f /* see scr_compose.c's FF_COMPOSE_SAFETY_PX — same rationale */
+#define FF_INBOX_SAFETY_PX_I 10 /* see scr_compose.c's FF_COMPOSE_SAFETY_PX — same rationale */
+#define FF_INBOX_SAFETY_PX ((float)FF_INBOX_SAFETY_PX_I) /* the integer twin exists so the quick-chip
+ * strip's chord bound below can be a _Static_assert: _Static_assert needs an INTEGER constant
+ * expression, and a float one (10.0f) is not one. */
 
 /* Header: centered "INBOX" caption (renamed 2026-09-01; was "SIGNALS") + the numbered unread badge. Not a
  * control — nothing here is clickable, so no adjacency partner for the
@@ -225,7 +228,22 @@ _Static_assert(FF_INBOX_FAB_HIT_PX >= FF_THEME_HIT_PRIMARY_PX, "FAB tap target m
  * clips its children to its own bounds (LVGL default), so at this
  * exact boundary there is no ambiguity: nothing in the list can ever
  * paint past y=280 regardless of x. */
-#define FF_INBOX_THREAD_LIST_H_1TO1  182 /* -> y 262; the chip strip sits below (2px clearance, not the 8px hit floor — the list's own touch target is the exempt FLOATING catcher, Exclusion 4, so this gap is a visual choice, not a hit-adjacency requirement) */
+/* -> y 256. The quick-chip strip starts 2px below that (FF_INBOX_CHIP_Y,
+ * asserted just below its own definition), so the band and the strip do
+ * not overlap at all. 2px, not the 8px hit floor: the list's own touch
+ * target is the exempt FLOATING scroll catcher (test_face_hit_targets.c
+ * Exclusion 4), so this gap is a visual choice, not a hit-adjacency
+ * requirement.
+ *
+ * Review of this PR (blocking, B4): this was 182 -> y 262, i.e. the band
+ * ran SIX PIXELS PAST the chip strip's own top at y 256, and the chips
+ * are built after the list so they win the paint. The measured
+ * consequence is in inbox_thread_outbox_states.png: the newest message's
+ * delivery line ("NOT SENT now") is sliced in half by the OMW chip — a
+ * delivery state is exactly the kind of thing this project refuses to
+ * render ambiguously. The comment above it claimed a 2px clearance the
+ * arithmetic never had. */
+#define FF_INBOX_THREAD_LIST_H_1TO1  176
 #define FF_INBOX_THREAD_FADE_H       16  /* PR #149 review round 3: short, so it never meaningfully dims the newest message (was the shared 40px default) */
 
 /* Quick-reply chips: OMW / IN 5 MIN / FLARE, one row, capped on the
@@ -242,19 +260,94 @@ _Static_assert(FF_INBOX_FAB_HIT_PX >= FF_THEME_HIT_PRIMARY_PX, "FAB tap target m
  * unlike 1:1 its band (FF_INBOX_THREAD_LIST_H_CREW) is NOT pre-shrunk to
  * reserve chip room, so a long CREW thread has none to give without
  * covering messages. */
-#define FF_INBOX_CHIP_Y         256
+#define FF_INBOX_CHIP_Y         258
+_Static_assert(FF_INBOX_CHIP_Y >= FF_INBOX_THREAD_LIST_TOP_Y + FF_INBOX_THREAD_LIST_H_1TO1 + 2,
+               "the quick-chip strip must start BELOW the 1:1 thread's own message band — a chip painted over the "
+               "newest message's delivery line is how inbox_thread_outbox_states.png shipped with 'NOT SENT now' "
+               "sliced in half");
 /* Tap-target sizing pass (2026-09-14): 44 -> 52. The quick-reply strip is
  * bounded ABOVE by the thread's own message band (shrinking it costs
  * messages, which is what the user opened the thread to read) and BELOW
  * by the glass, so it does not get the 80px row floor — it gets
- * FF_THEME_HIT_CHIP_PX, and the strip lifts 8px so the extra height comes
- * out of neither neighbour. */
+ * FF_THEME_HIT_CHIP_PX. */
 #define FF_INBOX_CHIP_H         FF_THEME_HIT_CHIP_PX
 #define FF_INBOX_CHIP_GAP       8
 #define FF_INBOX_CHIP_MAX_RIGHT (FF_INBOX_FAB_HIT_X - FF_HIT_MIN_GAP_PX)
 _Static_assert(FF_INBOX_CHIP_H >= FF_THEME_HIT_CHIP_PX, "quick chips must clear the sizing pass chip floor");
 _Static_assert(FF_INBOX_CHIP_GAP >= FF_HIT_MIN_GAP_PX,
                "adjacent quick chips must clear the 8px adjacency floor");
+
+/* ---- The strip's own widths, and the chord that has to hold them ----
+ *
+ * Review of this PR (blocking, B1). Moving the FAB's hit anchor to 268
+ * pulled FF_INBOX_CHIP_MAX_RIGHT down to 260, and the strip was 252px
+ * wide (66 + 96 + 74 + two 8px gaps) against a chord at y 256 that only
+ * offers 214px of room left of 260. `inbox_build_chips` centred the
+ * strip "if it fits" and otherwise fell back to `x = margin` with NO
+ * clamp, so it did not fit, did not complain, and ran to x2 = 297 —
+ * 30px INSIDE the FAB's hit rect, which is built later and therefore
+ * wins LVGL's hit test. Measured: a synthetic press at (285,290), on
+ * glass, on top of the visibly-drawn FLARE chip, emitted
+ * FF_INTENT_INBOX_NEW (open the composer) instead of
+ * FF_INTENT_INBOX_FLARE. Guarded now by
+ * S24_thread_chip_strip_press_reaches_the_chip_not_the_fab
+ * (test_scr_intent.c) and by the build-time chord bound below.
+ *
+ * No y fixes this by itself: the widest chord this glass offers a 52px
+ * band is 2*(200 - 10 - 2) = 376px of row, which leaves at most 240px
+ * left of x 260 — under the 252 the old labels needed at ANY height. So
+ * the strip narrows, which means the padding around the labels narrows;
+ * the labels themselves are unchanged (they are the plain-language
+ * wording #303/#304 settled) and every chip stays over both the 44px
+ * absolute floor and the 52px chip floor in its short axis.
+ *
+ * Widths = MEASURED label width + 2 * FF_INBOX_CHIP_PAD_X, not guesses.
+ * lv_text_get_size at FF_THEME_FONT_CHIP (Montserrat 14): "OMW" 41px,
+ * "IN 5 MIN" 59px, "FLARE" 46px. At FF_INBOX_CHIP_H (52) the pill's end
+ * cap has radius 26, and a 16px-tall centred line only intrudes ~1px
+ * into that curve, so 8px of padding is 7px clear of the cap — tight by
+ * design, not by accident. */
+#define FF_INBOX_CHIP_PAD_X     8
+#define FF_INBOX_CHIP_W_OMW     (41 + 2 * FF_INBOX_CHIP_PAD_X) /* 57 */
+#define FF_INBOX_CHIP_W_5MIN    (59 + 2 * FF_INBOX_CHIP_PAD_X) /* 75 */
+#define FF_INBOX_CHIP_W_FLARE   (46 + 2 * FF_INBOX_CHIP_PAD_X) /* 62 */
+#define FF_INBOX_CHIP_STRIP_W \
+    (FF_INBOX_CHIP_W_OMW + FF_INBOX_CHIP_W_5MIN + FF_INBOX_CHIP_W_FLARE + 2 * FF_INBOX_CHIP_GAP) /* 210 */
+_Static_assert(FF_INBOX_CHIP_W_OMW >= FF_THEME_MIN_HIT_PX && FF_INBOX_CHIP_W_5MIN >= FF_THEME_MIN_HIT_PX &&
+                   FF_INBOX_CHIP_W_FLARE >= FF_THEME_MIN_HIT_PX,
+               "every quick chip must stay at least 44px wide as well as 52px tall");
+
+/* The chord bound, as an EXACT integer inequality so it is a build error
+ * rather than a silent runtime fallback.
+ *
+ * inbox_safe_margin_x(FF_INBOX_CHIP_Y, FF_INBOX_CHIP_H) returns
+ *   ceil( PUCK_RADIUS - (sqrt(GLASS_R^2 - far_dy^2) - SAFETY - (GLASS_CX - PUCK_RADIUS)) )
+ * and the strip fits iff margin + STRIP_W <= CHIP_MAX_RIGHT. Because
+ * CHIP_MAX_RIGHT and STRIP_W are integers, `ceil(a) <= n` is exactly
+ * `a <= n`, so the ceil drops out and the condition rearranges to
+ *   sqrt(GLASS_R^2 - far_dy^2) >= NEED_CHORD
+ * with no rounding left in it — and squaring both sides (both
+ * non-negative) removes the sqrt, leaving integers only.
+ *
+ * far_dy is the band's BOTTOM edge: the strip sits below the glass
+ * centre, so the bottom corners are the far ones (ff_layout_bezel_
+ * margin_x picks the same edge at runtime). Measured at these values:
+ * NEED_CHORD 168, far_dy 104, 168^2 + 104^2 = 39040 <= 200^2 = 40000 —
+ * 2.8px of chord to spare, which lands the strip at x 49..259 with a 9px
+ * gap to the FAB's hit rect at 268. */
+#define FF_INBOX_CHIP_FAR_DY (FF_INBOX_CHIP_Y + FF_INBOX_CHIP_H - FF_THEME_GLASS_CY)
+#define FF_INBOX_CHIP_NEED_CHORD                                                                  \
+    (FF_INBOX_CHIP_STRIP_W + FF_THEME_PUCK_RADIUS_PX - FF_INBOX_CHIP_MAX_RIGHT + FF_INBOX_SAFETY_PX_I + \
+     (FF_THEME_GLASS_CX - FF_THEME_PUCK_RADIUS_PX))
+_Static_assert(FF_INBOX_CHIP_FAR_DY > 0 && FF_INBOX_CHIP_NEED_CHORD > 0,
+               "the chip strip is assumed to sit below the glass centre and to need a positive chord — if either "
+               "stops being true, re-derive the bound below rather than deleting it");
+_Static_assert(FF_INBOX_CHIP_NEED_CHORD * FF_INBOX_CHIP_NEED_CHORD +
+                       FF_INBOX_CHIP_FAR_DY * FF_INBOX_CHIP_FAR_DY <=
+                   FF_THEME_GLASS_R * FF_THEME_GLASS_R,
+               "the quick-chip strip does not fit on the glass to the LEFT of the compose FAB's hit rect — widen "
+               "nothing, lift the strip (and the 1:1 band with it) or shorten the chips; the old code silently ran "
+               "the strip UNDER the FAB instead, which stole the FLARE chip's taps");
 
 /* The CREW thread's free-space gate (2026-09-03 maintainer decision: put
  * the quick-reply chips in the group thread's unused space instead of
@@ -279,15 +372,24 @@ _Static_assert(FF_INBOX_CHIP_GAP >= FF_HIT_MIN_GAP_PX,
  * the whole stack re-spaced to fit them. The popup is a modal whose ONLY
  * content is three primary actions plus a close, so unlike the thread it
  * has nothing to trade away — the rows simply take the room. Re-derived
- * bottom-up against the glass: a 280px-wide row spans x 66..346, so its
- * farthest corner is |dx| = 138 from the glass centre and
- * FF_THEME_GLASS_R caps |dy| at sqrt(200^2 - 138^2) = 144.8, i.e. the
- * stack must live inside y [61,351]. Three 80px rows at a 12px gap span
- * 66..342; the 64px close then sits at y 350..414 — past that bound at
- * 280px width, but the close is only 64px wide (|dx| = 32), which allows
- * |dy| up to 197, so y 350..414 would still overrun the PANEL. Lifted to
- * 348 and the rows tightened to an 8px gap (the adjacency floor) so the
- * whole stack lands at 66..338 with the close at 346..410. */
+ * bottom-up against the glass, and re-checked against the constants
+ * actually below after this PR's review caught the first pass's numbers
+ * drifting from them:
+ *
+ *   - a 280px-wide ROW spans x 66..346, so its farthest corner is
+ *     |dx| = 138 from the glass centre (208,206) and FF_THEME_GLASS_R
+ *     caps |dy| at sqrt(200^2 - 138^2) = 144.8 — every row must live
+ *     inside y [61.2, 350.8];
+ *   - the CLOSE is only 64px wide and centred (x 174..238), so its own
+ *     |dx| is 34 and its bound is much looser: |dy| <= sqrt(200^2 -
+ *     34^2) = 197.1, i.e. y [8.9, 403.1].
+ *
+ * Three 80px rows at the 8px adjacency floor start at y 74 and land at
+ * 74..154, 162..242, 250..330 — inside the row bound with 20px to spare
+ * at the bottom. The close then takes the next 8px gap: y 338..402,
+ * inside its own looser bound by 1.1px. A 12px row gap would have pushed
+ * the close to 350..414, past the 412px PANEL, which is why the rows sit
+ * at the floor gap rather than a comfortable one. */
 #define FF_INBOX_POPUP_ROW_H   80
 #define FF_INBOX_POPUP_ROW1_Y  74
 #define FF_INBOX_POPUP_ROW2_Y  162
@@ -366,13 +468,33 @@ _Static_assert(FF_INBOX_POPUP_CLOSE_PX >= FF_THEME_HIT_DOT_PX, "popup close must
  * ------------------------------------------------------------------- */
 #define FF_INBOX_RALLY_LIST_TOP_Y   88 /* clears the pinned close/back (bottom y79) by the 8px floor */
 /* Tap-target sizing pass (2026-09-14). The WHERE rows are list rows and
- * take the 80px floor like every other list row on this face: pitch 52
- * -> 88, which is 80px of tap target after the 4px hit inset. The list
- * shortens (206 -> 184) to make room for the taller footer below, so it
- * shows two rows at rest instead of three and a half — the same trade
- * FF_INBOX_ROW_H's own comment documents, and the same answer: the list
- * scrolls, a mis-tap on "where are we meeting" does not undo itself. */
-#define FF_INBOX_RALLY_LIST_H       178
+ * take the 80px floor like every other list row on this face: row height
+ * 52 -> 88, which is 80px of tap target after the 4px hit inset. The
+ * list shortens (206 -> 176) to make room for the taller footer below,
+ * so it shows one row and part of the next at rest instead of three and
+ * a half — the same trade FF_INBOX_ROW_H's own comment documents, and
+ * the same answer: the list scrolls, a mis-tap on "where are we meeting"
+ * does not undo itself. */
+/* Review of this PR (B5): 178 is not a whole number of rows. The
+ * viewport ran 88..266 while the first PLACE row (the one the fixtures
+ * select) occupies 206..294, so the selected row was cut off 60px in,
+ * mid-border, right under inbox_build_bottom_fade's own gradient — a
+ * violet selection outline with no bottom edge, visible in
+ * inbox_rally.png. 176 = 2 * FF_INBOX_RALLY_ROW_H, and it keeps a 10px
+ * gap to the pinned footer at y 274 (the 8px adjacency floor plus 2).
+ *
+ * Stated honestly, because the number alone does NOT fix it: 176 is the
+ * biggest this band can be (the footer's own bottom edge is already
+ * against the glass at y 354), and On Me (88) + the PLACES divider (22)
+ * + one place row (88) is 198px of content — so NO viewport this face
+ * can afford shows both the On Me row and a place row whole. Whichever
+ * row is at the bottom edge is always partly cut; the defect was that
+ * this could be the SELECTED row, i.e. the user could not see their own
+ * choice. That half is fixed by scrolling the selected row into view
+ * (inbox_build_rally below), which is also what makes the 6-place
+ * inbox_rally_scrolled fixture render differently from the 2-place
+ * inbox_rally one instead of byte-identically. */
+#define FF_INBOX_RALLY_LIST_H       176
 #define FF_INBOX_RALLY_ROW_H        88
 #define FF_INBOX_RALLY_ROW_HIT_INSET_Y 4
 _Static_assert(FF_INBOX_RALLY_ROW_H - 2 * FF_INBOX_RALLY_ROW_HIT_INSET_Y >= FF_THEME_HIT_PRIMARY_PX,
@@ -389,6 +511,10 @@ _Static_assert(FF_INBOX_RALLY_ROW_H - 2 * FF_INBOX_RALLY_ROW_HIT_INSET_Y >= FF_T
 #define FF_INBOX_RALLY_FOOTER_H     80
 _Static_assert(FF_INBOX_RALLY_FOOTER_H >= FF_THEME_HIT_PRIMARY_PX,
                "the Rally footer (WHEN / Send Rally) must clear the outdoor primary-action floor");
+/* An 8px+ gap between the scroll list's viewport bottom and the pinned
+ * footer, so a row parked at the viewport edge never crowds the footer.
+ * (This file used to carry the same inequality twice, once rearranged —
+ * one copy is the guard, two copies are a thing to keep in sync.) */
 _Static_assert(FF_INBOX_RALLY_FOOTER_Y >= FF_INBOX_RALLY_LIST_TOP_Y + FF_INBOX_RALLY_LIST_H + FF_HIT_MIN_GAP_PX,
                "the Rally footer must clear the WHERE list's viewport by the adjacency floor");
 #define FF_INBOX_RALLY_WHEN_W       86
@@ -400,10 +526,6 @@ _Static_assert(2 * FF_INBOX_RALLY_ROW_HIT_INSET_Y >= FF_HIT_MIN_GAP_PX,
 _Static_assert(FF_INBOX_RALLY_FOOTER_H >= FF_THEME_MIN_HIT_PX, "rally footer controls must clear the 44px hit floor");
 _Static_assert(FF_INBOX_RALLY_FOOTER_GAP >= FF_HIT_MIN_GAP_PX,
                "rally WHEN chip and Send must clear the 8px adjacency floor");
-/* An 8px+ gap between the scroll list's viewport bottom and the pinned
- * footer, so a row parked at the viewport edge never crowds the footer. */
-_Static_assert(FF_INBOX_RALLY_FOOTER_Y - (FF_INBOX_RALLY_LIST_TOP_Y + FF_INBOX_RALLY_LIST_H) >= FF_HIT_MIN_GAP_PX,
-               "rally footer must clear the WHERE list viewport by the 8px floor");
 
 /* Message-row internals (heights follow the canvas's single-line rows;
  * long content ellipsizes rather than wraps, so the pitch stays fixed
@@ -1810,19 +1932,35 @@ static void inbox_build_chip(lv_obj_t *parent, int32_t x, int32_t w, char const 
  * function needed no change to work for CREW, only its caller did). */
 static void inbox_build_chips(lv_obj_t *parent)
 {
-    static const int32_t w_omw = 66, w_5min = 96, w_flare = 74;
     int32_t const margin = inbox_safe_margin_x(FF_INBOX_CHIP_Y, FF_INBOX_CHIP_H);
-    int32_t const strip_w = w_omw + w_5min + w_flare + 2 * FF_INBOX_CHIP_GAP;
     int32_t const avail = FF_INBOX_CHIP_MAX_RIGHT - margin;
-    int32_t x = margin + (avail > strip_w ? (avail - strip_w) / 2 : 0);
+    int32_t x = margin + (avail - FF_INBOX_CHIP_STRIP_W) / 2;
 
-    inbox_build_chip(parent, x, w_omw, "OMW", false, inbox_chip_reply_cb,
+    /* The strip is centred between the chord margin and the FAB's
+     * clearance line, and FF_INBOX_CHIP_NEED_CHORD's _Static_assert above
+     * is the BUILD-TIME proof that `avail >= FF_INBOX_CHIP_STRIP_W`, so
+     * the centring never produces a negative offset.
+     *
+     * The clamp is deliberately still here, and it clamps the RIGHT edge
+     * rather than falling back to the left margin. That is the whole
+     * lesson of this PR's B1: the previous code's `avail > strip_w ? ...
+     * : 0` fallback turned "does not fit" into "start at the margin and
+     * run off the right-hand end, under the FAB", i.e. a geometry failure
+     * silently became a WRONG INTENT on a real press. If anything ever
+     * defeats the assert (a build that reaches this file with different
+     * constants, a future chip added at runtime), the failure mode is now
+     * a visibly cramped left margin, never a chip the FAB eats. */
+    if (x + FF_INBOX_CHIP_STRIP_W > FF_INBOX_CHIP_MAX_RIGHT) {
+        x = FF_INBOX_CHIP_MAX_RIGHT - FF_INBOX_CHIP_STRIP_W;
+    }
+
+    inbox_build_chip(parent, x, FF_INBOX_CHIP_W_OMW, "OMW", false, inbox_chip_reply_cb,
                        (uintptr_t)FF_WIRING_REPLY_OMW);
-    x += w_omw + FF_INBOX_CHIP_GAP;
-    inbox_build_chip(parent, x, w_5min, "IN 5 MIN", false, inbox_chip_reply_cb,
+    x += FF_INBOX_CHIP_W_OMW + FF_INBOX_CHIP_GAP;
+    inbox_build_chip(parent, x, FF_INBOX_CHIP_W_5MIN, "IN 5 MIN", false, inbox_chip_reply_cb,
                        (uintptr_t)FF_WIRING_REPLY_5MIN);
-    x += w_5min + FF_INBOX_CHIP_GAP;
-    inbox_build_chip(parent, x, w_flare, "FLARE", true, inbox_chip_flare_cb, 0u);
+    x += FF_INBOX_CHIP_W_5MIN + FF_INBOX_CHIP_GAP;
+    inbox_build_chip(parent, x, FF_INBOX_CHIP_W_FLARE, "FLARE", true, inbox_chip_flare_cb, 0u);
 }
 
 /* ---------------------------------------------------------------------
@@ -1877,14 +2015,13 @@ static void inbox_build_thread(lv_obj_t *parent, ff_app_inbox_t const *v, bool c
     lv_obj_clear_flag(list, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
-    /* Bottom padding: the scroll-to-newest below parks the LAST message
-     * this far above the hard clip, so the newest signal reads at full
-     * strength instead of dying under the fade. CREW only (PR #149 review
-     * round 3) — 1:1's list never approaches the FAB (it stops well above
-     * the chip strip) and round 2 already found 0 pad was the right call
-     * there (needed for its own rows-visible AC); only CREW's newest-row-
-     * under-the-fade defect needs this back. */
-    lv_obj_set_style_pad_bottom(list, crew_thread ? 0 : 0, 0);
+    /* No bottom padding on either thread type: both bands are already at
+     * their measured ceiling (PR #149 review round 3 for CREW, this PR's
+     * own FF_INBOX_THREAD_LIST_H_1TO1 for 1:1) and every pixel of pad
+     * costs a message row. The newest row is kept out from under the
+     * bottom fade by only DRAWING that fade when there is something below
+     * to fade towards — see the gate at the end of this function. */
+    lv_obj_set_style_pad_bottom(list, 0, 0);
     /* Observe the live scroll offset so the NEXT rebuild (see below) can
      * restore it instead of always snapping to newest. */
     lv_obj_add_event_cb(list, inbox_thread_scroll_cb, LV_EVENT_SCROLL, NULL);
@@ -2008,10 +2145,28 @@ static void inbox_build_thread(lv_obj_t *parent, ff_app_inbox_t const *v, bool c
      * dim most or all of the newest message, which must read at FULL
      * strength ("the newest message is the one that must never be
      * hidden") — FF_INBOX_THREAD_FADE_H is a much shorter cue, just
-     * enough to signal "content continues below" without touching the
-     * newest row's own text (its natural height clears the fade given the
-     * list's own bottom_pad above). */
-    inbox_build_bottom_fade_h(parent, FF_INBOX_THREAD_LIST_TOP_Y + list_h, FF_INBOX_THREAD_FADE_H);
+     * enough to signal "content continues below".
+     *
+     * PR #311 review (B4) adds the gate. A bottom fade MEANS "there is
+     * more below"; drawn unconditionally on a list that is parked at its
+     * own bottom it says something untrue, and it charges for the lie in
+     * the worst possible place — the newest row's delivery line. Measured
+     * in inbox_thread_outbox_states.png: "NOT SENT now" rendered inside
+     * the gradient, its lower half at roughly half opacity. Whether a
+     * message left the device is exactly the kind of state this project
+     * refuses to render ambiguously.
+     *
+     * The gate is the honest condition, not a per-fixture exception:
+     * draw the fade iff, at the scroll offset this build actually
+     * settled on, content really does continue past the viewport. A
+     * thread scrolled up shows it; a thread at newest does not, because
+     * there is nothing down there to suggest. Padding the list instead
+     * was tried and measured to cost the 4th visible row
+     * (S24_direct_thread_shows_at_least_4_rows_at_rest drops to 3). */
+    lv_obj_update_layout(list);
+    if (lv_obj_get_scroll_bottom(list) > 0) {
+        inbox_build_bottom_fade_h(parent, FF_INBOX_THREAD_LIST_TOP_Y + list_h, FF_INBOX_THREAD_FADE_H);
+    }
 
     /* Quick-reply strip: 1:1 unconditionally (see FF_INBOX_CHIP_Y's
      * comment — its band already reserves the room, always); CREW only
@@ -2137,8 +2292,8 @@ static void inbox_build_popup(lv_obj_t *parent, ff_app_inbox_t const *v, bool co
 /* One WHERE radio row inside the scroll list. `sel` draws the violet
  * selected treatment + a check; `enabled` false renders a disabled On Me
  * (honest reason, no tap target). `idx` rides to RALLY_SELECT_PLACE. */
-static void inbox_build_rally_row(lv_obj_t *list, int32_t y, uint8_t idx, char const *name,
-                                    char const *sub, bool selected, bool enabled)
+static lv_obj_t *inbox_build_rally_row(lv_obj_t *list, int32_t y, uint8_t idx, char const *name,
+                                         char const *sub, bool selected, bool enabled)
 {
     int32_t const margin = inbox_safe_margin_x(FF_INBOX_RALLY_LIST_TOP_Y, FF_INBOX_RALLY_LIST_H);
     int32_t const w = FF_THEME_PUCK_PX - 2 * margin;
@@ -2188,6 +2343,7 @@ static void inbox_build_rally_row(lv_obj_t *list, int32_t y, uint8_t idx, char c
         lv_obj_t *ck = inbox_mk_label(row, LV_SYMBOL_OK, FF_THEME_FONT_CHIP, FF_THEME_CREW_VIOLET);
         lv_obj_align(ck, LV_ALIGN_RIGHT_MID, -14, 0);
     }
+    return row;
 }
 
 /* A small centered "PLACES" divider between On Me and the landmark rows. */
@@ -2319,11 +2475,15 @@ static void inbox_build_rally(lv_obj_t *parent, ff_app_inbox_t const *v, bool co
     }
 
     int32_t y = 0;
+    lv_obj_t *sel_row = NULL;
     /* On Me (index 0), pinned first. Disabled with an honest reason when
      * my position is unknown — never a fabricated location. */
-    inbox_build_rally_row(list, y, 0u, "On Me",
-                            r->on_me_ok ? "rally to my live location" : "no position yet",
-                            r->sel == 0u && r->on_me_ok, r->on_me_ok);
+    lv_obj_t *on_me = inbox_build_rally_row(list, y, 0u, "On Me",
+                                              r->on_me_ok ? "rally to my live location" : "no position yet",
+                                              r->sel == 0u && r->on_me_ok, r->on_me_ok);
+    if (r->sel == 0u && r->on_me_ok) {
+        sel_row = on_me;
+    }
     y += FF_INBOX_RALLY_ROW_H + FF_HIT_MIN_GAP_PX;
 
     if (r->place_count > 0u) {
@@ -2331,9 +2491,33 @@ static void inbox_build_rally(lv_obj_t *parent, ff_app_inbox_t const *v, bool co
         y += FF_INBOX_RALLY_DIVIDER_H;
         for (uint8_t i = 0; i < r->place_count && i < FF_APP_RALLY_MAX_PLACES; i++) {
             uint8_t const idx = (uint8_t)(i + 1u);
-            inbox_build_rally_row(list, y, idx, r->place_names[i], NULL, r->sel == idx, true);
+            lv_obj_t *row = inbox_build_rally_row(list, y, idx, r->place_names[i], NULL, r->sel == idx, true);
+            if (r->sel == idx) {
+                sel_row = row;
+            }
             y += FF_INBOX_RALLY_ROW_H + FF_HIT_MIN_GAP_PX;
         }
+    }
+
+    /* Review of this PR (B5): show the user their own choice. The WHERE
+     * band is 176px and one row plus the PLACES divider is already 198px
+     * (see FF_INBOX_RALLY_LIST_H), so SOMETHING is always cut at the
+     * bottom edge — the defect was that it could be the SELECTED row,
+     * which is the single thing on this face the user needs to be able to
+     * read before pressing Send. A selection further down a real
+     * festpack's list (5 stages + Camp) was not merely cut but entirely
+     * off-viewport, with no cue that the list had scrolled past it.
+     *
+     * lv_obj_scroll_to_view is the MINIMAL scroll that brings the row
+     * fully inside the viewport, so a sel=0/sel=1 render still sits at
+     * the top of the list exactly as before; only a selection that would
+     * otherwise be clipped moves anything. LV_ANIM_OFF because this runs
+     * during a screen build, not in response to a touch — the face must
+     * render its final geometry in one pass for the golden dump and for
+     * the S21 scroll-aware hit sweep. */
+    if (sel_row != NULL) {
+        lv_obj_update_layout(list);
+        lv_obj_scroll_to_view(sel_row, LV_ANIM_OFF);
     }
 
     inbox_build_bottom_fade(parent, FF_INBOX_RALLY_LIST_TOP_Y + FF_INBOX_RALLY_LIST_H);

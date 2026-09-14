@@ -190,6 +190,109 @@ static void safe_margin_zero_radius_needs_full_width(void)
 
 
 /* ---------------------------------------------------------------------
+ * ff_layout_bezel_margin_x — the tap-target sizing pass's own primitive
+ * (2026-09-14, docs/hardware/tap-targets.md): the same chord arithmetic
+ * as ff_layout_safe_margin_x, but for a band centred on the PUCK while
+ * the circle it must stay inside is the BEZEL's glass, which sits 2px
+ * right of and 6px smaller than the framebuffer's inscribed circle.
+ *
+ * It landed in PR #311 with no direct unit tests at all — only the
+ * screens' own goldens exercised it, which is exactly backwards for a
+ * pure-geometry function this header exists to make testable without a
+ * display (PR #311 review, N-series).
+ * ------------------------------------------------------------------- */
+
+static void bezel_margin_reduces_to_safe_margin_when_the_centres_coincide(void)
+{
+    /* The documented contract: ff_layout_safe_margin_x IS this function
+     * with band_cx == cx == cy == center, so the two can never disagree
+     * about the chord arithmetic. Swept across the whole band rather
+     * than spot-checked at one y. */
+    for (float top = 0.0f; top <= 412.0f; top += 4.0f) {
+        float const a = ff_layout_safe_margin_x(top, 48.0f, 206.0f, 206.0f, 10.0f);
+        float const b = ff_layout_bezel_margin_x(top, 48.0f, 206.0f, 206.0f, 206.0f, 206.0f, 10.0f);
+        TEST_ASSERT_FLOAT_WITHIN(0.001f, a, b);
+    }
+}
+
+static void bezel_margin_charges_the_centre_offset_once(void)
+{
+    /* A circle centred 2px to the RIGHT of the band's own centre line
+     * costs the band 2px of half-width — once, not twice, and not zero
+     * times. Measured against the same call with the offset removed. */
+    float const centred = ff_layout_bezel_margin_x(100.0f, 48.0f, 206.0f, 206.0f, 206.0f, 200.0f, 10.0f);
+    float const offset = ff_layout_bezel_margin_x(100.0f, 48.0f, 206.0f, 208.0f, 206.0f, 200.0f, 10.0f);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, centred + 2.0f, offset);
+}
+
+static void bezel_margin_is_symmetric_in_the_sign_of_the_offset(void)
+{
+    /* The band stays symmetric about band_cx, so the corner on the FAR
+     * side of the circle's centre binds whichever side that is: a circle
+     * 2px LEFT of the band costs exactly what a circle 2px right costs.
+     * This is the `band_cx > cx` case — the one the sizing pass never
+     * exercises on this hardware (the glass is always to the RIGHT) and
+     * therefore the one nothing else would have caught. */
+    float const right = ff_layout_bezel_margin_x(100.0f, 48.0f, 206.0f, 208.0f, 206.0f, 200.0f, 10.0f);
+    float const left = ff_layout_bezel_margin_x(100.0f, 48.0f, 206.0f, 204.0f, 206.0f, 200.0f, 10.0f);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, right, left);
+
+    /* And with band_cx > cx by a large amount, the margin keeps growing
+     * rather than wrapping around or going negative. */
+    float const far_left_circle = ff_layout_bezel_margin_x(100.0f, 48.0f, 206.0f, 106.0f, 206.0f, 200.0f, 10.0f);
+    TEST_ASSERT_TRUE_MESSAGE(far_left_circle > left, "a circle further from the band's centre must cost more margin");
+}
+
+static void bezel_margin_uses_the_circles_own_cy_not_the_bands(void)
+{
+    /* cy is a separate parameter for a reason: the chord is measured
+     * from the CIRCLE's centre-y. Moving the circle down by 10px is the
+     * same as moving the band up by 10px. */
+    float const a = ff_layout_bezel_margin_x(100.0f, 48.0f, 206.0f, 208.0f, 216.0f, 200.0f, 10.0f);
+    float const b = ff_layout_bezel_margin_x(90.0f, 48.0f, 206.0f, 208.0f, 206.0f, 200.0f, 10.0f);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, a, b);
+}
+
+static void bezel_margin_is_never_negative(void)
+{
+    /* Both clamps: an enormous radius (half-width past band_cx) and a
+     * band entirely off the circle (no width at all). */
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f,
+                              ff_layout_bezel_margin_x(0.0f, 10.0f, 5.0f, 5.0f, 5.0f, 1000.0f, 0.0f));
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 206.0f,
+                              ff_layout_bezel_margin_x(600.0f, 48.0f, 206.0f, 208.0f, 206.0f, 200.0f, 10.0f));
+}
+
+static void bezel_margin_round_trips_through_rect_in_circle(void)
+{
+    /* The property that matters: a band inset by this margin really does
+     * fit inside the GLASS circle, at every height it is asked about —
+     * and one pixel wider on either side really does not. Measured
+     * against ff_layout_rect_in_circle rather than re-derived. */
+    float const cx = 208.0f, cy = 206.0f, r = 200.0f, band_cx = 206.0f;
+    /* A small non-zero safety on purpose: at safety 0 the binding corner
+     * lands EXACTLY on the circle (that is what the arithmetic is for),
+     * and "exactly on" is decided by float rounding rather than by the
+     * property under test. 0.5px puts it just inside, which still leaves
+     * the 1.5px-wider probe comfortably outside. */
+    float const safety = 0.5f;
+    for (float top = 10.0f; top <= 350.0f; top += 5.0f) {
+        float const h = 48.0f;
+        float const m = ff_layout_bezel_margin_x(top, h, band_cx, cx, cy, r, safety);
+        if (m >= band_cx) {
+            continue; /* nothing fits at this height — no rect to check */
+        }
+        ff_layout_rect_t fits = {m, top, 2.0f * band_cx - m, top + h};
+        TEST_ASSERT_TRUE_MESSAGE(ff_layout_rect_in_circle(fits, cx, cy, r),
+                                 "a band inset by the returned margin must fit inside the glass circle");
+        ff_layout_rect_t too_wide = {m - 1.5f, top, 2.0f * band_cx - m + 1.5f, top + h};
+        TEST_ASSERT_FALSE_MESSAGE(ff_layout_rect_in_circle(too_wide, cx, cy, r),
+                                  "the margin must be TIGHT — 1.5px wider on each side must not fit");
+    }
+}
+
+
+/* ---------------------------------------------------------------------
  * ff_layout_centered_band_max_width (PR #41 code review — the disclosure
  * chip's byte cap did not bound its rendered width).
  * ------------------------------------------------------------------- */
@@ -311,6 +414,13 @@ int main(void)
     RUN_TEST(safe_margin_matches_compose_back_button_worked_example);
     RUN_TEST(safe_margin_is_never_negative);
     RUN_TEST(safe_margin_zero_radius_needs_full_width);
+
+    RUN_TEST(bezel_margin_reduces_to_safe_margin_when_the_centres_coincide);
+    RUN_TEST(bezel_margin_charges_the_centre_offset_once);
+    RUN_TEST(bezel_margin_is_symmetric_in_the_sign_of_the_offset);
+    RUN_TEST(bezel_margin_uses_the_circles_own_cy_not_the_bands);
+    RUN_TEST(bezel_margin_is_never_negative);
+    RUN_TEST(bezel_margin_round_trips_through_rect_in_circle);
 
     RUN_TEST(centered_band_at_center_is_the_full_diameter);
     RUN_TEST(centered_band_is_bound_by_its_far_edge_not_its_center);

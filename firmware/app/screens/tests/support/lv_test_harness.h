@@ -154,14 +154,20 @@ static inline lv_obj_t *find_label_exact(lv_obj_t *root, char const *text)
 /* An lv_button whose (any-depth) label descendant matches exactly.
  *
  * This used to only look at the button's DIRECT children, despite that
- * doc line — which was fine for as long as every control in this app put
- * its label immediately inside the button. The tap-target sizing pass
- * (2026-09-14) broke that assumption for the first time: `scr_banner.c`'s
- * notification pill is now a non-clickable decoration nested inside a
- * taller transparent hit wrapper, so its sender-name label is a
- * GRANDchild of the button, and `test_ctl_flare_sequence.c`'s "find the
- * banner by its DANA label" lookup started returning NULL. Fixed to match
- * what the comment always claimed.
+ * doc line promising any depth — a silent mismatch between contract and
+ * behaviour, where the failure mode is a NULL that reads as "no such
+ * button" rather than as "this helper cannot see that deep".
+ *
+ * Stated honestly, because the first version of this comment was not
+ * (PR #311 review, N-series): NO test in the tree needs the deeper
+ * search today. It claimed `scr_banner.c` had gained a transparent hit
+ * wrapper around its pill and that `test_ctl_flare_sequence.c` had
+ * started failing; neither is true — scr_banner.c is untouched by this
+ * PR and its labels are still direct children of the strip button.
+ * Verified by reverting this function to the direct-children version and
+ * running the full suite: 98/98 green. It is kept because the contract
+ * above is the right one and matching it costs nothing, not because
+ * something demanded it.
  *
  * DEEPEST match wins: children are searched before the node itself, so a
  * nested button carrying the label is returned in preference to an

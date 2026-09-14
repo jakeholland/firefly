@@ -371,6 +371,20 @@ _Static_assert(FF_COMPOSE_MODE_W >= 48, "MODE must clear the reviewer's explicit
 _Static_assert(FF_COMPOSE_GRID_ROW_H >= FF_THEME_MIN_HIT_PX, "compose grid keys must clear the 44px hit-target floor");
 _Static_assert(FF_COMPOSE_BOTTOM_ROW_H >= FF_THEME_MIN_HIT_PX,
                "compose bottom row must clear the 44px hit-target floor");
+/* Tap-target sizing pass (2026-09-14), docs/hardware/tap-targets.md.
+ * FF_THEME_HIT_KEY_PX is the T9 keypad's OWN floor — the one place on
+ * this device where the owner's 80px primary-action target is
+ * geometrically unreachable rather than merely inconvenient — and until
+ * this assert existed it was enforced nowhere at all, in either
+ * direction. These two lines are the enforcement: the keypad is what
+ * holds the constant up, so a future "just take 4px off the keys"
+ * cannot pass the build without moving the documented floor with it and
+ * re-deriving the millimetre number in ff_theme.h and the doc table. */
+_Static_assert(FF_COMPOSE_GRID_ROW_H >= FF_THEME_HIT_KEY_PX,
+               "compose grid keys must clear the T9 keypad floor (FF_THEME_HIT_KEY_PX) — if this key row genuinely "
+               "has to shrink, lower FF_THEME_HIT_KEY_PX with it and update docs/hardware/tap-targets.md's table");
+_Static_assert(FF_COMPOSE_BOTTOM_ROW_H >= FF_THEME_HIT_KEY_PX,
+               "compose bottom row (DEL/SPACE/MODE) must clear the T9 keypad floor (FF_THEME_HIT_KEY_PX)");
 _Static_assert(FF_COMPOSE_KEY_GAP >= FF_HIT_MIN_GAP_PX,
                "compose grid key gap (both within-row and between-row) must clear the adjacency floor");
 

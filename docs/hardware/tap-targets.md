@@ -40,15 +40,28 @@ control on every face must clear, enforced device-wide by
 things that check it would weaken that sweep. The pass adds a *second,
 higher* bar (`ff_theme.h`):
 
-| constant | px | mm | what it governs |
-|---|---:|---:|---|
-| `FF_THEME_MIN_HIT_PX` | 44 | 3.85 | absolute floor, every face (unchanged) |
-| `FF_THEME_HIT_CHIP_PX` | 52 | 4.55 | in-list secondary controls (quick-reply chips) |
-| `FF_THEME_HIT_KEY_PX` | 50 | 4.37 | compose T9 keys — see "why 80×80 does not fit" |
-| `FF_THEME_HIT_DOT_PX` | 64 | 5.59 | invisible hit areas around small indicators |
-| `FF_THEME_HIT_LIST_PX` | 72 | 6.29 | dense secondary lists |
-| `FF_THEME_HIT_PRIMARY_PX` | 80 | 6.99 | **primary actions and list rows** |
-| `FF_THEME_HIT_COMFORT_PX` | 100 | 8.74 | the "ideally" target, where the face allows |
+| constant | px | mm | what it governs | enforced by |
+|---|---:|---:|---|---|
+| `FF_THEME_MIN_HIT_PX` | 44 | 3.85 | absolute floor, every face (unchanged) | `test_face_hit_targets.c` |
+| `FF_THEME_HIT_CHIP_PX` | 52 | 4.55 | in-list secondary controls (quick-reply chips) | `_Static_assert` in `scr_inbox.c` |
+| `FF_THEME_HIT_KEY_PX` | 50 | 4.37 | compose T9 keys — see "why 80×80 does not fit" | `_Static_assert` in `scr_compose.c` |
+| `FF_THEME_HIT_DOT_PX` | 64 | 5.59 | the inbox action-popup's close, the one small round control bounded by its own stack | `_Static_assert` in `scr_inbox.c` |
+| `FF_THEME_HIT_LIST_PX` | 72 | 6.29 | dense secondary lists | **nothing yet** — see "Lineup" |
+| `FF_THEME_HIT_PRIMARY_PX` | 80 | 6.99 | **primary actions and list rows** | `test_tap_target_sizing.c` R2 + asserts |
+| `FF_THEME_HIT_COMFORT_PX` | 100 | 8.74 | the "ideally" target, where the face allows | `test_tap_target_sizing.c` R1 (launcher) |
+
+Two corrections from this PR's own review, both of the "a number that
+guards nothing reads like a guard rail" kind:
+
+- `FF_THEME_HIT_KEY_PX` shipped at **68** in `ff_theme.h` while this table
+  and that file's own prose said 50, and nothing anywhere checked either
+  value. It is 50 now — the keypad's true, measured ceiling — and
+  `scr_compose.c` carries the `_Static_assert` that holds
+  `FF_COMPOSE_GRID_ROW_H` and `FF_COMPOSE_BOTTOM_ROW_H` above it.
+- `FF_THEME_HIT_DOT_PX` was described as the hit area around a Radar crew
+  ring dot. That hit area **does not exist** (see "Crew dots on Radar —
+  not delivered"). The only thing it actually floors today is the inbox
+  action-popup's close button, and its comment now says so.
 
 ## The second circle: the bezel, not the framebuffer
 
@@ -96,8 +109,28 @@ are the ones that reached the owner's 80 px (7 mm) floor.
 
 Room check: the satellites orbit 128 px from the puck centre, so at 100 px
 across their farthest corner sits ~181 px from the glass centre — 19 px
-inside `FF_THEME_GLASS_R` — while their inner edge still clears the hub's
-by 18 px.
+inside `FF_THEME_GLASS_R` — while their inner **disc** edge still clears
+the hub's by 18 px (128 − (60 + 50)).
+
+**Round controls now hit-test round** (added in this PR's review round,
+and it is the reason the 100 px satellites survived it). Repairing
+`test_face_hit_targets.c`'s composite-control detection — see "The
+adjacency sweep was checking almost nothing" below — immediately
+surfaced this face: the hub's 120×120 hit rect and the two lower
+satellites' 100×100 ones **overlap by 35×7 px at their corners**. The
+overlap is not new (at the old 88 px satellites the same corners touched
+with a 29×1 px sliver) and it is not a placement error — the discs are 18
+px apart. It is a shape error: LVGL's default hit test is the bounding
+square, so a tap on visibly empty glass just down-left of the RADAR hub
+opened MAP. `scr_launcher.c` now gives the hub and satellites an
+`LV_EVENT_HIT_TEST` handler that requires the point to be inside the
+disc, and the sweep measures two such controls disc-to-disc
+(`sweep_is_disc_control`, a geometric classifier: advanced hit-testing +
+a square rect + `LV_RADIUS_CIRCLE`). Shrinking a control back under its
+documented floor was the alternative, and there was no version of it that
+worked — at the binding satellite angle (144°/216°, |dy| = 103.6) two
+squares need `60 + sat/2 + 8 ≤ 103.6`, i.e. a 71 px satellite, *smaller
+than the 88 px this pass started from*.
 
 One consequence worth knowing: `ff_scr_nav_remainder_clears_floor`
 (`scr_nav.c`), which decides whether a control partly covered by the
@@ -159,9 +192,10 @@ is inherent to a 3×4 keypad on a 36 mm circle.
 Pagination is worse than shrinking here, not better: splitting the keypad
 across two pages doubles the keystrokes for every character on a keyboard
 whose whole problem is already keystrokes-per-word. The T9 keypad's
-current geometry is at its measured ceiling; `FF_COMPOSE_GRID_ROW_H` and
-`FF_COMPOSE_BOTTOM_ROW_H` are held there by build-time asserts against
-`FF_THEME_HIT_KEY_PX`. Getting real 7 mm keys on this face needs a
+current geometry is at its measured ceiling; `FF_COMPOSE_GRID_ROW_H` (50)
+and `FF_COMPOSE_BOTTOM_ROW_H` (56) are held there by build-time asserts
+against `FF_THEME_HIT_KEY_PX` — which this PR's review pointed out did
+not exist when that sentence was first written, and now do. Getting real 7 mm keys on this face needs a
 different input method (a swipe/wheel selector, or the companion app),
 not a re-layout.
 
@@ -171,10 +205,10 @@ not a re-layout.
 |---|---|---|---:|---|
 | feed rows (hit) | 288×60 | **268×80** | 23.4 × 7.0 | ★ |
 | picker rows (hit) | 288×60 | **256×80** | 22.4 × 7.0 | ★ |
-| thread quick-reply chips | 66/96/74 × 44 | 66/96/74 × **52** | 4.6 tall | chip floor |
+| thread quick-reply chips | 66/96/74 × 44 | 57/75/62 × **52** | 4.6 tall | chip floor; narrowed — see "The chip strip" |
 | action popup rows | 280×66 | **280×80** | 24.5 × 7.0 | ★ |
 | action popup close | 54×54 | **64×64** | 5.6 | |
-| Rally WHERE rows (hit) | 308×44 | **298×80** | 26.0 × 7.0 | ★ |
+| Rally WHERE rows (hit) | 308×44 | **298×80** | 26.0 × 7.0 | ★ (list viewport 178 → 176) |
 | Rally WHEN | 86×56 | **86×80** | 7.5 × 7.0 | ★ |
 | Rally Send | 166×56 | **148×80** | 12.9 × 7.0 | ★ |
 | compose FAB (on-glass square) | 48×48 | **80×80** | 7.0 | ★ — see below |
@@ -196,10 +230,44 @@ framebuffer's centre instead of the glass's and came out at 63. Solving
 gives an anchor of (268,268), which is where it now sits. The visible
 amber lens and the `+` glyph are unchanged; the reachable target went
 **4.2 mm → 7.0 mm** — the FAB was, by this measure, the worst-placed
-control on the device, exactly as `ux-puck-maya` §(e) called it. The rows' and chips' right-hand clearance is derived
-from the anchor, so they gave up the 32 px the FAB gained rather than
-colliding with it. `test_tap_target_sizing.c` checks the inscribed square
-rather than the rect for exactly this class of control.
+control on the device, exactly as `ux-puck-maya` §(e) called it.
+`test_tap_target_sizing.c` checks the inscribed square rather than the
+rect for exactly this class of control.
+
+**The chip strip, and the tap the FAB was stealing.** The rows' and
+chips' right-hand clearance is derived from the FAB's anchor
+(`FF_INBOX_ROW_HIT_CLEAR_X` / `FF_INBOX_CHIP_MAX_RIGHT`, both 268 − 8 =
+260), so they give up the 32 px the FAB gained rather than colliding with
+it. The feed rows do. The quick-reply chips, as first landed, **did
+not**: the strip was 252 px wide (66 + 96 + 74 plus two 8 px gaps)
+against a chord at y 256 offering 214 px left of 260, and
+`inbox_build_chips` centred the strip *"if it fits"* and otherwise fell
+back to `x = margin` with no clamp. It did not fit, did not complain, and
+ran to x2 = 297 — 30 px inside the FAB's hit rect, which is built later
+and therefore wins LVGL's hit test. Measured: a press at (285,290), on
+glass, on the visibly-drawn FLARE chip, emitted `FF_INTENT_INBOX_NEW`.
+
+No height fixes that on its own. The widest chord this glass grants a 52
+px band is 2 × (200 − 10 − 2) = 376 px of row, which leaves at most 240
+px left of x 260 — under the 252 the old labels needed at *any* y. So the
+padding around the labels narrows (the labels themselves are #303/#304's
+plain-language wording and are unchanged): measured at Montserrat 14,
+"OMW" is 41 px, "IN 5 MIN" 59, "FLARE" 46, and each chip takes its label
+plus 8 px a side → 57 / 75 / 62, a 210 px strip. The 1:1 message band
+gives back 6 px (182 → 176) so the strip can sit at y 258, clear of the
+band — see the Rally/thread note below. Measured after: chips at x
+49..258, FAB hit at 268, a 9 px gap.
+
+The clearance is now a **build-time** guarantee rather than a runtime
+hope. `FF_INBOX_CHIP_NEED_CHORD`'s `_Static_assert` is the fit condition
+with the `sqrt` and the `ceil` algebraically removed — `NEED_CHORD² +
+far_dy² ≤ GLASS_R²`, integers only, 168² + 104² = 39 040 ≤ 40 000 — so a
+strip that does not fit is a compile error. The runtime clamp stayed, but
+it now clamps the strip's RIGHT edge instead of falling back to the left
+margin: if anything ever defeats the assert the failure mode is a cramped
+left margin, never a chip the FAB eats. Guarded behaviourally by
+`S24_thread_chip_strip_press_reaches_the_chip_not_the_fab` and
+`S24_thread_fab_press_still_emits_inbox_new` (`test_scr_intent.c`).
 
 **The back button — the one thing on this face that could not grow.** It
 is a circle pinned to the left of a row whose *centre* carries the
@@ -217,6 +285,45 @@ BACK** on every sub-screen, and a rim gesture is not a 3.8 mm target.
 The feed shows three rows at rest instead of four. That is the deliberate
 trade: the list scrolls, so a fourth row is one flick away, whereas a row
 a gloved thumb cannot hit is not recoverable by scrolling.
+
+**The thread band, and the delivery line.** `FF_INBOX_THREAD_LIST_H_1TO1`
+was 182 (band ends y 262) with the chip strip starting at y 256 — a six
+pixel overlap, against a comment claiming 2 px of clearance. The chips
+are built after the list, so they won the paint, and
+`inbox_thread_outbox_states.png` shipped with the newest message's
+delivery line — "NOT SENT now" — sliced in half by the OMW chip. Fixed
+both ways: the band is 176 (ends 256), the strip starts at 258, and a
+`_Static_assert` ties the two together.
+
+That exposed a second, quieter version of the same problem. With the chip
+gone, the delivery line landed inside `inbox_build_bottom_fade`'s own 16
+px gradient and rendered at roughly half opacity. A bottom fade *means*
+"there is more below"; drawn unconditionally on a list parked at its own
+bottom it says something untrue, and it charges for it on the one line
+that says whether the message left the device. The thread's fade is now
+gated on `lv_obj_get_scroll_bottom(list) > 0` — drawn exactly when
+content really does continue past the viewport. Padding the list instead
+was tried and measured to cost the fourth visible row
+(`S24_direct_thread_shows_at_least_4_rows_at_rest` drops to 3).
+
+**Rally's WHERE list.** `FF_INBOX_RALLY_LIST_H` was 178 against an 88 px
+row height, so the viewport (y 88..266) cut the first PLACE row (206..294)
+60 px in — a violet *selected* outline with no bottom edge, under the
+fade, in `inbox_rally.png`. 176 = 2 × `FF_INBOX_RALLY_ROW_H` and keeps a
+10 px gap to the pinned footer. Stated honestly, the number alone does not
+fix it: 176 is the most this band can be (the footer's bottom edge is
+already against the glass at y 354) and On Me (88) + the PLACES divider
+(22) + one place row (88) is 198 px of content, so *no* viewport this face
+can afford shows both whole. Whichever row sits at the bottom edge is
+always partly cut; the defect was that it could be the **selected** one.
+The list now scrolls the selected row into view (`lv_obj_scroll_to_view`,
+the minimal scroll — a sel=0/sel=1 render still sits at the top). That is
+also what makes the 6-place `inbox_rally_scrolled` fixture render
+differently from the 2-place `inbox_rally` one: the two goldens had become
+byte-identical, because at this row height both showed the same first
+place and nothing else. Its `sel` moved to a landmark deep in the list
+(The Grove, index 4) so the fixture named "scrolled" actually exercises
+scrolling.
 
 ### Flare
 
@@ -260,8 +367,53 @@ branch owns the Settings → CREW page):
 | element | before | after | |
 |---|---|---|---|
 | title card | framed to r=206 @ (206,206) | framed to `FF_THEME_GLASS_*` | the "flat shoulders" are gone |
-| SCREEN toggle pills | 84×48 | 78×48 | the narrower band moved the pill group onto the "SCREEN" caption; 78 restores the 8 px gap |
+| SCREEN toggle pills | 84×48 | 76×48 | see below |
+| ON/OFF toggle pills | 58×48 | 48×48 | see below |
+| CREW row action pill | 96×48 | 76×48 | see below |
 | all other rows | 48 tall | 48 tall | **not raised — follow-up** |
+
+Those three widths are all the same measurement. Re-framing every
+Settings band against the bezel's glass narrows the list rows from 262 px
+to 240 px — 11 px per side — which moves every right-aligned control
+group 22 px left and takes 22 px off every label column. Three places
+could not absorb it, and each is fixed by sizing the control to the text
+it actually carries rather than by nudging one row:
+
+- **SCREEN** (`NORMAL`/`FLIPPED`): at 84 px pills the group started at
+  x 66 against a "SCREEN" caption measuring 68 px — a 2 px overlap, in
+  the golden. At 76 the group starts at 82 and the gap is 14. "FLIPPED"
+  is 62 px, so it still has 7 px of padding a side.
+- **COLORBLIND** (`ON`/`OFF`): the longest caption on any toggle row,
+  116 px. At the shared 58 px pill the group started at 118 — a **2 px**
+  gap, down from 24 before the pass. `ON`/`OFF` measure 23 and 30 px, so
+  48 px pills are 9 px of padding on the wider of them and put the group
+  at 138: a 22 px gap, back above where it started. Applied to every
+  ON/OFF row, not just this one.
+- **CREW rows**: #303 replaced "LOST" with "NO SIGNAL 15 MIN" and #307
+  sized this row so that wording stays legible; the narrower band took
+  the label column from 154 px to 132 and truncated it to
+  "NO SIGNAL 15 …" in `crew_default.png`. The widest status
+  `ff_fmt_age` can produce is "NO SIGNAL 48 MIN" at 150 px (swept over
+  every two-digit minute value); the widest action word is "UNHIDE" at
+  58. A 76 px pill leaves the column 152.
+
+Checked on the rendered screen, not by this arithmetic:
+`S_SET_every_settings_caption_clears_its_control_group` walks the built
+page and requires every caption to clear its row's control group by
+≥ 12 px (`FF_SETTINGS_VALUE_GAP`, the tightest gap this face is *designed*
+to have), and `S_CREW_worst_case_status_renders_in_full` renders the
+48-minute status and asserts `LV_LABEL_LONG_DOT` did not rewrite it.
+Measured after: CLOCK 60, SCREEN 14, COLORBLIND 22, SOUNDS 64, UI TICKS
+64, QUIET HOURS 23, UNITS 67, COMPASS 59, name row 12.
+
+**Compass calibration.** The same 22 px took the instruction band from
+302 px to 282, and "Rotate the puck slowly in a figure eight" is 289 px —
+so it wrapped, leaving "eight" alone on a second line. The band's own
+*top* edge binds here (it is 128 px above the glass centre), so the fix is
+6 px of descent rather than smaller type or shorter copy:
+`FF_CALCAL_INSTR_Y` 78 → 84 gives a 292 px chord, the sentence is one
+line again, and its far corner sits √(148² + 122²) = 191.8 px from the
+glass centre.
 
 Settings list rows are 48 px (4.2 mm). They are list rows and by the
 owner's own rule they should be 80, and the face can afford it (the list
@@ -304,15 +456,60 @@ Two notes for the bench:
    inside; the pass changed the amount, not the kind. A fast diagonal
    flick starting on the MUSIC satellite can be read as BACK — the same
    as before, and BACK from the launcher is a no-op (S28's own AC14).
-2. The compose bottom row moved *out* of the BACK band (x 93→105) and the
-   left key column moved right (x 15→23), both as a consequence of the
-   bezel-accurate margins. Small improvement, not a designed one.
+2. The compose bottom row's left edge moved right (x 93→105) and the left
+   key column moved right with it (x 15→23), both as a consequence of the
+   bezel-accurate margins. **Neither crosses the BACK band's own
+   boundary**: the band is x ≤ 52, so the bottom row at x 93 was already
+   well clear of it before the pass, and keys 1/4/7 are still inside it at
+   x 23 (they were at 15). This entry previously claimed the bottom row
+   moved "out of the BACK band", which is not a thing it was ever in — the
+   pass shifted two rows a few pixels rightward and changed no zone
+   membership at all. Recorded because the zone table above is only useful
+   if it is read against the actual numbers.
+
+## The adjacency sweep was checking almost nothing
+
+Found in this PR's review, and fixed here because this pass leans on the
+sweep to prove its own geometry.
+
+`test_face_hit_targets.c`'s `sweep_same_composite_control` decides whether
+two hit rects are really *one* control wearing two tap targets (a settings
+row's dim label and its own value chip, say) and, if so, skips the 8 px
+adjacency check between them. It identified a control by event descriptor
+**index 0** — and `ff_scr_button_create` registers the shared
+`ff_sound_emit(FF_SOUND_TAP)` handler, with a constant `NULL` user_data,
+first on *every* button in the app. So index 0 was the same
+`(cb, user_data)` pair everywhere, and every pair of real app buttons read
+as one composite control.
+
+Measured on the committed fixtures, with this pass's own geometry in
+place: **576 pairs gap-checked, 3 464 skipped as "composite"**. After the
+fix: **3 901 checked, 81 skipped** (81 is the real number of
+label-plus-chip pairings), 819 by the other exclusions, 0 violations.
+`scr_nav.c` carried a long comment asserting that the shared handler
+"never accidentally aliases two DIFFERENT controls"; it is corrected in
+place, including its own empirical note, which was the same fact read the
+wrong way round.
+
+Identity is now the control's whole **action set** — every
+`(cb, user_data)` pair that is not one of `ff_scr_button_create`'s shared
+infrastructure handlers, with that handler set *discovered at runtime* by
+building one throwaway button through the real factory. A set, not "the
+first non-shared descriptor": while fixing this, `scr_launcher.c` gained
+an `LV_EVENT_HIT_TEST` handler (see Launcher above) registered ahead of
+its intent callbacks, and under a first-descriptor rule every launcher
+disc immediately aliased to every other one — 70 more pairs silently
+skipped. There is no ordering dependency left to get wrong, and
+`S17b_AC2_composite_control_detection` now asserts that directly.
 
 ## Crew dots on Radar — not delivered, and why
 
 The brief asked for an invisible ≥64 px hit area around each 34 px crew
-ring dot. **This is not in the change.** Three findings, in the order
-they blocked it:
+ring dot. **This is not in the change** — `FF_THEME_HIT_DOT_PX` exists and
+is named for it, but nothing in `scr_radar.c` references that constant and
+no hit sibling is built; its only enforcement today is the inbox popup's
+close button, which its comment now says plainly. Three findings, in the
+order they blocked it:
 
 1. **The dots are not interactive today.** `scr_radar.c` clears
    `LV_OBJ_FLAG_CLICKABLE` on every ring dot ("indicator only in this
@@ -351,3 +548,19 @@ Ranked by how much finger is missing, for whoever picks up the follow-up:
 | takeover DISMISS | 4.9 mm | −2.1 mm | the 16 px safety gap, which is worth more than the millimetres |
 | Radar FLARE | 5.1 mm | −1.9 mm | CLOSE mode's own stack |
 | Radar crew dots | 3.0 mm | −4.0 mm | not interactive; see above |
+
+## What this PR's review changed
+
+Recorded here rather than only in the PR thread, because several of the
+numbers above moved:
+
+| finding | what it was | what it is |
+|---|---|---|
+| inbox chip strip ran under the compose FAB | a press on the drawn FLARE chip emitted `FF_INTENT_INBOX_NEW` | chips 57/75/62, strip at x 49..258, 9 px clear of the FAB, `_Static_assert`ed |
+| adjacency sweep aliased every button | 576 pairs checked, 3 464 skipped | 3 901 checked, 81 skipped, 0 violations |
+| launcher hub/satellite squares overlapped | 35×7 px, never reported | round controls hit-test round; sweep measures discs |
+| `FF_THEME_HIT_KEY_PX` | 68 in code, 50 in this doc, enforced nowhere | 50, asserted in `scr_compose.c` |
+| 1:1 thread band overlapped the chip strip | "NOT SENT now" sliced, then faded | band 176, strip 258, fade drawn only on real overflow |
+| Rally WHERE viewport | 178 px, selected row guillotined; the two goldens byte-identical | 176 px + scroll-to-selected; `inbox_rally_scrolled` genuinely scrolled |
+| Settings caption clearances | COLORBLIND 2 px, CREW status truncated, cal instruction wrapped | 22 px, full status, one line — all measured by tests |
+| `ff_layout_bezel_margin_x` | no direct unit tests | 6, including the `band_cx > cx` case nothing else exercises |

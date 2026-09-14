@@ -280,6 +280,7 @@
 #include "ff_layout.h"
 #include "ff_theme.h"
 #include "fixture.h"
+#include "scr_nav.h" /* ff_scr_button_create — the real factory this sweep probes for its shared handler set */
 
 #ifndef FF_FIXTURE_DIR
 #define FF_FIXTURE_DIR "tests/fixtures/"
@@ -340,6 +341,13 @@ static uint32_t sweep_tick_cb(void)
 typedef struct {
     int checked;
     int gap_checked; /* AC2: number of PAIRS the adjacency floor was applied to */
+    /* AC2: pairs the floor was NOT applied to, by reason. Counted (and
+     * printed in the summary) because this PR's own review found the
+     * composite-control exclusion silently swallowing 3214 of 3787 pairs
+     * — a sweep that reports only "0 violations" cannot tell you it has
+     * stopped checking anything. */
+    int gap_skipped_composite;
+    int gap_skipped_other;
     int violations;
 } sweep_result_t;
 
@@ -359,10 +367,18 @@ typedef struct {
 typedef struct {
     lv_obj_t *obj;
     ff_layout_rect_t rect; /* EXCLUSIVE far edge, ff_layout.h convention — same as the AC1 circle check uses */
-    void *cb;              /* first registered click callback, or NULL if none registered */
-    void *user_data;       /* that callback's user_data — together, the "same logical control" signature */
+    /* The control's DISTINGUISHING action set: every (cb, user_data) pair
+     * it registers that is not one of ff_scr_button_create's shared
+     * infrastructure handlers. See sweep_identify. */
+#define SWEEP_MAX_ACTS 6
+    void *acts_cb[SWEEP_MAX_ACTS];
+    void *acts_ud[SWEEP_MAX_ACTS];
+    int n_acts;
+    void *cb;        /* acts_cb[0], or NULL if the object registers no action at all */
+    void *user_data; /* acts_ud[0] — kept for Exclusion 4's "is this inert" question */
     bool is_whole_puck;    /* exact FF_THEME_PUCK_PX x FF_THEME_PUCK_PX match — see sweep_check_adjacency's
                              * Exclusion 3 for why this needs its own field, distinct from ancestor/descendant */
+    bool is_disc;          /* hit-tests as a DISC, not as its bounding square — see sweep_is_disc_control */
 } sweep_clickable_t;
 
 /* Generous headroom over any single fixture's total clickable-element
@@ -401,27 +417,177 @@ static float sweep_rect_gap_px(ff_layout_rect_t a, ff_layout_rect_t b)
     return sqrtf(dx * dx + dy * dy);
 }
 
+/* ---------------------------------------------------------------------
+ * Which event descriptor identifies a control — and the bug that made
+ * this whole exclusion a no-op.
+ *
+ * This sweep used to read `lv_obj_get_event_dsc(obj, 0)` — event
+ * descriptor INDEX 0 — as a control's identity. Every button in this app
+ * is built by `ff_scr_button_create` (scr_nav.c), and the FIRST thing
+ * that function registers is the shared tap-sound handler, with a
+ * CONSTANT NULL user_data. So index 0 was (same_sound_cb, NULL) on every
+ * single button in the codebase, and `sweep_same_composite_control`
+ * therefore answered "yes, one composite control" for EVERY pair of real
+ * app buttons. Measured before this fix: 3214 of 3787 candidate pairs
+ * skipped, 573 actually gap-checked — and the ones skipped were exactly
+ * the app's own buttons, i.e. the sweep was checking almost nothing it
+ * exists to check. (scr_nav.c carried a comment asserting the opposite,
+ * fixed alongside this.)
+ *
+ * The fix: identity is the first descriptor that is NOT one of
+ * ff_scr_button_create's own shared infrastructure handlers — in
+ * practice the intent-dispatch callback the screen file wired. The
+ * infrastructure set is DISCOVERED at runtime by building one throwaway
+ * button through the real factory and recording the callbacks it
+ * installs (sweep_learn_shared_cbs), rather than hard-coding a list the
+ * test cannot see (those handlers are static to scr_nav.c) or exporting
+ * them into a public header for a test's benefit. If scr_nav.c ever adds
+ * another shared handler, the probe picks it up on the next run instead
+ * of silently re-opening this hole.
+ * ------------------------------------------------------------------- */
+#define SWEEP_MAX_SHARED_CBS 8
+static void *s_sweep_shared_cbs[SWEEP_MAX_SHARED_CBS];
+static int s_sweep_n_shared_cbs;
+
+/* Build one button through the REAL factory on the current screen and
+ * record every callback it arrives with. Must be called after a display
+ * exists and before the tree walk; the probe is deleted immediately. */
+static void sweep_learn_shared_cbs(void)
+{
+    s_sweep_n_shared_cbs = 0;
+    lv_obj_t *probe = ff_scr_button_create(lv_screen_active());
+    uint32_t const ec = lv_obj_get_event_count(probe);
+    for (uint32_t i = 0; i < ec && s_sweep_n_shared_cbs < SWEEP_MAX_SHARED_CBS; i++) {
+        void *cb = (void *)lv_event_dsc_get_cb(lv_obj_get_event_dsc(probe, i));
+        bool seen = false;
+        for (int k = 0; k < s_sweep_n_shared_cbs; k++) {
+            if (s_sweep_shared_cbs[k] == cb) {
+                seen = true;
+            }
+        }
+        if (!seen) {
+            s_sweep_shared_cbs[s_sweep_n_shared_cbs++] = cb;
+        }
+    }
+    lv_obj_delete(probe);
+}
+
+static bool sweep_cb_is_shared_infrastructure(void *cb)
+{
+    for (int k = 0; k < s_sweep_n_shared_cbs; k++) {
+        if (s_sweep_shared_cbs[k] == cb) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* sweep_identify — fill in `s`'s distinguishing action SET: every
+ * (cb, user_data) pair the object registers that is not one of
+ * ff_scr_button_create's shared infrastructure handlers. Empty means
+ * "this object does not DO anything", which is also what Exclusion 4's
+ * inert scroll catchers are.
+ *
+ * A SET, not "descriptor index N". Picking any single index is what went
+ * wrong the first time (index 0 is the shared tap sound), and it goes
+ * wrong again the moment a screen adds a non-action handler: while
+ * fixing this, scr_launcher.c gained an LV_EVENT_HIT_TEST handler to
+ * give its round buttons round tap shapes, registered before their
+ * intent callbacks — under a first-non-shared-descriptor rule every
+ * launcher disc immediately aliased to every other one (measured: 70
+ * more pairs silently skipped). Comparing the whole set has no ordering
+ * dependency left to get wrong. */
+static void sweep_identify(lv_obj_t *obj, sweep_clickable_t *s)
+{
+    s->n_acts = 0;
+    uint32_t const ec = lv_obj_get_event_count(obj);
+    for (uint32_t i = 0; i < ec && s->n_acts < SWEEP_MAX_ACTS; i++) {
+        lv_event_dsc_t *dsc = lv_obj_get_event_dsc(obj, i);
+        void *cb = (void *)lv_event_dsc_get_cb(dsc);
+        if (sweep_cb_is_shared_infrastructure(cb)) {
+            continue;
+        }
+        s->acts_cb[s->n_acts] = cb;
+        s->acts_ud[s->n_acts] = lv_event_dsc_get_user_data(dsc);
+        s->n_acts++;
+    }
+    s->cb = (s->n_acts > 0) ? s->acts_cb[0] : NULL;
+    s->user_data = (s->n_acts > 0) ? s->acts_ud[0] : NULL;
+}
+
+/* sweep_is_disc_control — true iff this object's REAL touchable shape is
+ * the disc inscribed in its hit rect rather than the rect itself.
+ *
+ * Three conditions, all read off the object (a geometric classifier, not
+ * a per-screen exception list): it carries LV_OBJ_FLAG_ADV_HITTEST and an
+ * LV_EVENT_HIT_TEST handler, so LVGL asks rather than assuming the box;
+ * its hit rect is square; and its main-part radius is LV_RADIUS_CIRCLE,
+ * so what it PAINTS is the same disc. scr_launcher.c's hub and satellites
+ * are the only controls in the codebase that qualify today — see
+ * `launcher_round_hit`'s comment there for why they had to.
+ *
+ * This exists because the corner of a disc's bounding square is not
+ * touchable and never was: measuring two discs corner-to-corner reports
+ * an overlap that no finger can produce, which is the same class of
+ * wrong-quantity error FF_HIT_MIN_GAP_PX's own comment rejects
+ * centre-to-centre for. */
+static bool sweep_is_disc_control(lv_obj_t *obj, ff_layout_rect_t rect)
+{
+    if (!lv_obj_has_flag(obj, LV_OBJ_FLAG_ADV_HITTEST)) {
+        return false;
+    }
+    if ((rect.x2 - rect.x1) != (rect.y2 - rect.y1)) {
+        return false;
+    }
+    return lv_obj_get_style_radius(obj, LV_PART_MAIN) == LV_RADIUS_CIRCLE;
+}
+
+/* sweep_disc_gap_px — edge-to-edge gap between two discs: the distance
+ * between their centres less the two radii, floored at 0 when they
+ * overlap. */
+static float sweep_disc_gap_px(ff_layout_rect_t a, ff_layout_rect_t b)
+{
+    float const ra = (a.x2 - a.x1) / 2.0f;
+    float const rb = (b.x2 - b.x1) / 2.0f;
+    float const dx = (a.x1 + ra) - (b.x1 + rb);
+    float const dy = (a.y1 + ra) - (b.y1 + rb);
+    float const gap = sqrtf(dx * dx + dy * dy) - ra - rb;
+    return (gap > 0.0f) ? gap : 0.0f;
+}
+
 /* sweep_same_composite_control — true iff `a` and `b` are two hit-rects
  * for the SAME logical control (e.g. a row's dim label and its own value
  * chip, both wired to the identical setter) rather than two independent
  * controls — see this file's header comment ("S17 slice b: the adjacency
  * floor", Exclusion 1) for the full rationale. A pair where EITHER side
- * registered no click callback at all is never treated as composite —
- * only a genuine, matching (cb, user_data) pair collapses the gap check.
+ * registered no DISTINGUISHING callback at all is never treated as
+ * composite — only a genuine, matching (cb, user_data) pair collapses
+ * the gap check, and `cb` here is the intent-dispatch descriptor found
+ * by sweep_identify above, never the shared tap-sound handler every
+ * button carries.
  *
- * Unit-tested directly below (S17b_AC2_composite_control_detection) —
- * every currently-committed fixture's composite pairs sit at a 24px gap
- * (scr_settings.c's FF_SETTINGS_CHIP_GAP, well above the 8px floor
- * either way), so no fixture's PASS/FAIL outcome depends on this
- * function actually excluding anything; the direct unit test is what
- * proves it does. See that test's own comment for why no fixture can
- * exercise this end-to-end by construction. */
+ * Unit-tested directly below (S17b_AC2_composite_control_detection),
+ * including the regression this PR's review found: two buttons built
+ * through the real ff_scr_button_create factory with DIFFERENT intent
+ * callbacks must not read as composite. */
 static bool sweep_same_composite_control(sweep_clickable_t const *a, sweep_clickable_t const *b)
 {
-    if (a->cb == NULL || b->cb == NULL) {
+    if (a->n_acts == 0 || b->n_acts == 0 || a->n_acts != b->n_acts) {
         return false;
     }
-    return a->cb == b->cb && a->user_data == b->user_data;
+    for (int i = 0; i < a->n_acts; i++) {
+        bool found = false;
+        for (int j = 0; j < b->n_acts; j++) {
+            if (a->acts_cb[i] == b->acts_cb[j] && a->acts_ud[i] == b->acts_ud[j]) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /* sweep_is_inert_scroll_catcher — true iff `s` is a callback-less
@@ -642,15 +808,8 @@ static void sweep_walk(lv_obj_t *obj, char const *fixture_name, sweep_result_t *
                 s->obj = child;
                 s->rect = r;
                 s->is_whole_puck = is_whole_puck_gesture_region;
-                uint32_t ec = lv_obj_get_event_count(child);
-                if (ec > 0) {
-                    lv_event_dsc_t *dsc = lv_obj_get_event_dsc(child, 0);
-                    s->cb = (void *)lv_event_dsc_get_cb(dsc);
-                    s->user_data = lv_event_dsc_get_user_data(dsc);
-                } else {
-                    s->cb = NULL;
-                    s->user_data = NULL;
-                }
+                s->is_disc = sweep_is_disc_control(child, r);
+                sweep_identify(child, s);
             }
         }
 
@@ -729,15 +888,19 @@ static void sweep_check_adjacency(sweep_clickable_list_t const *list, char const
             sweep_clickable_t const *b = &list->items[j];
 
             if (a->is_whole_puck || b->is_whole_puck) {
+                out->gap_skipped_other++;
                 continue;
             }
             if (sweep_is_ancestor(a->obj, b->obj) || sweep_is_ancestor(b->obj, a->obj)) {
+                out->gap_skipped_other++;
                 continue;
             }
             if (sweep_is_inert_scroll_catcher(a) || sweep_is_inert_scroll_catcher(b)) {
+                out->gap_skipped_other++;
                 continue;
             }
             if (sweep_same_composite_control(a, b)) {
+                out->gap_skipped_composite++;
                 continue;
             }
 
@@ -754,11 +917,16 @@ static void sweep_check_adjacency(sweep_clickable_list_t const *list, char const
                 /* One side is a scroll-list member that cannot be
                  * scrolled into the other's y-range at all — never
                  * simultaneously touchable, not a real mis-tap risk. */
+                out->gap_skipped_other++;
                 continue;
             }
 
             out->gap_checked++;
-            float gap = sweep_rect_gap_px(ra, rb);
+            /* Disc-to-disc only when BOTH sides really are discs: a disc
+             * against a rectangular control still has to answer for its
+             * own bounding box, because the rectangle's corner can reach
+             * into the disc's box where the disc itself is not. */
+            float gap = (a->is_disc && b->is_disc) ? sweep_disc_gap_px(ra, rb) : sweep_rect_gap_px(ra, rb);
             if (gap < (float)FF_HIT_MIN_GAP_PX) {
                 out->violations++;
                 printf("  HIT-TARGETS-TOO-CLOSE [%s]  rect_a=(%.0f,%.0f)-(%.0f,%.0f)  "
@@ -798,7 +966,13 @@ static sweep_result_t sweep_fixture(char const *path, char const *name)
     ff_build_face_screen(&state);
     lv_refr_now(disp);
 
-    sweep_result_t result = {0, 0, 0};
+    /* Learn ff_scr_button_create's shared handler set from the real
+     * factory before the walk reads any identity off the tree — see
+     * sweep_learn_shared_cbs. Per fixture, because each one gets a fresh
+     * lv_init/lv_deinit pair (the probe object cannot outlive that). */
+    sweep_learn_shared_cbs();
+
+    sweep_result_t result = {0, 0, 0, 0, 0};
     sweep_clickable_list_t clickables = {.n = 0};
     sweep_walk(lv_screen_active(), name, &result, &clickables);
     sweep_check_adjacency(&clickables, name, &result);
@@ -821,6 +995,8 @@ static void S08_hit_targets_every_committed_fixture_fits_the_glass(void)
 
     int total_checked = 0;
     int total_gap_checked = 0;
+    int total_gap_skipped_composite = 0;
+    int total_gap_skipped_other = 0;
     int total_violations = 0;
     int fixtures_swept = 0;
 
@@ -853,14 +1029,17 @@ static void S08_hit_targets_every_committed_fixture_fits_the_glass(void)
         sweep_result_t r = sweep_fixture(path, name);
         total_checked += r.checked;
         total_gap_checked += r.gap_checked;
+        total_gap_skipped_composite += r.gap_skipped_composite;
+        total_gap_skipped_other += r.gap_skipped_other;
         total_violations += r.violations;
         fixtures_swept++;
     }
     closedir(d);
 
     printf("test_face_hit_targets: swept %d fixture(s), checked %d clickable element(s), %d pair(s) for the "
-           "adjacency floor, %d violation(s)\n",
-           fixtures_swept, total_checked, total_gap_checked, total_violations);
+           "adjacency floor (%d skipped as one composite control, %d by the other exclusions), %d violation(s)\n",
+           fixtures_swept, total_checked, total_gap_checked, total_gap_skipped_composite, total_gap_skipped_other,
+           total_violations);
 
     /* Sanity: the sweep must actually have found fixtures and clickable
      * elements to check — a silently-empty directory or an all-skipped
@@ -912,6 +1091,13 @@ static void sweep_test_dummy_click_cb(lv_event_t *e)
     (void)e;
 }
 
+/* A SECOND distinct handler, so "two real buttons wired to two different
+ * intents" can be expressed below — the shape the index-0 bug got wrong. */
+static void sweep_test_other_click_cb(lv_event_t *e)
+{
+    (void)e;
+}
+
 static void S17b_AC2_composite_control_detection(void)
 {
     lv_init();
@@ -941,19 +1127,15 @@ static void S17b_AC2_composite_control_detection(void)
     lv_obj_add_event_cb(btn_b, sweep_test_dummy_click_cb, LV_EVENT_CLICKED, &dummy_data_x);
     lv_obj_add_event_cb(btn_c, sweep_test_dummy_click_cb, LV_EVENT_CLICKED, &dummy_data_y);
 
-    sweep_clickable_t a = {.obj = btn_a,
-                            .rect = {0},
-                            .cb = (void *)lv_event_dsc_get_cb(lv_obj_get_event_dsc(btn_a, 0)),
-                            .user_data = lv_event_dsc_get_user_data(lv_obj_get_event_dsc(btn_a, 0))};
-    sweep_clickable_t b = {.obj = btn_b,
-                            .rect = {0},
-                            .cb = (void *)lv_event_dsc_get_cb(lv_obj_get_event_dsc(btn_b, 0)),
-                            .user_data = lv_event_dsc_get_user_data(lv_obj_get_event_dsc(btn_b, 0))};
-    sweep_clickable_t c = {.obj = btn_c,
-                            .rect = {0},
-                            .cb = (void *)lv_event_dsc_get_cb(lv_obj_get_event_dsc(btn_c, 0)),
-                            .user_data = lv_event_dsc_get_user_data(lv_obj_get_event_dsc(btn_c, 0))};
-    sweep_clickable_t no_cb = {.obj = scr, .rect = {0}, .cb = NULL, .user_data = NULL};
+    sweep_learn_shared_cbs();
+    sweep_clickable_t a = {.obj = btn_a, .rect = {0}};
+    sweep_clickable_t b = {.obj = btn_b, .rect = {0}};
+    sweep_clickable_t c = {.obj = btn_c, .rect = {0}};
+    sweep_clickable_t no_cb = {.obj = scr, .rect = {0}};
+    sweep_identify(btn_a, &a);
+    sweep_identify(btn_b, &b);
+    sweep_identify(btn_c, &c);
+    sweep_identify(scr, &no_cb);
 
     TEST_ASSERT_TRUE_MESSAGE(sweep_same_composite_control(&a, &b),
                               "same callback + same user_data must be detected as one logical control");
@@ -961,6 +1143,68 @@ static void S17b_AC2_composite_control_detection(void)
                                "same callback but DIFFERENT user_data must NOT be treated as composite");
     TEST_ASSERT_FALSE_MESSAGE(sweep_same_composite_control(&a, &no_cb),
                                "a side with no registered callback must never collapse into a false composite match");
+
+    /* The regression this PR's review found (B2). Two buttons built
+     * through the REAL factory — which installs the shared tap-sound
+     * handler at descriptor index 0 with a constant NULL user_data on
+     * both — and wired to two DIFFERENT intent callbacks. Reading index 0
+     * as identity made these look like one composite control, which is
+     * how 3214 of 3787 candidate pairs got skipped across the committed
+     * fixtures. sweep_identify must look past the shared handler.
+     *
+     * The mirror case is asserted too: two factory buttons wired to the
+     * SAME intent callback and user_data (scr_settings.c's label+chip
+     * pairing, the shape Exclusion 1 exists for) must still read as one
+     * control, so this fix does not simply disable the exclusion. */
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, s_sweep_n_shared_cbs,
+                                         "ff_scr_button_create must install at least one shared handler for this "
+                                         "probe to be meaningful — if it stops doing so, the index-0 identity bug "
+                                         "cannot recur and this test should be revisited");
+
+    lv_obj_t *real_a = ff_scr_button_create(scr);
+    lv_obj_t *real_b = ff_scr_button_create(scr);
+    lv_obj_t *real_c = ff_scr_button_create(scr);
+    lv_obj_add_event_cb(real_a, sweep_test_dummy_click_cb, LV_EVENT_CLICKED, &dummy_data_x);
+    lv_obj_add_event_cb(real_b, sweep_test_other_click_cb, LV_EVENT_CLICKED, &dummy_data_x);
+    lv_obj_add_event_cb(real_c, sweep_test_dummy_click_cb, LV_EVENT_CLICKED, &dummy_data_x);
+
+    TEST_ASSERT_EQUAL_PTR_MESSAGE(lv_event_dsc_get_cb(lv_obj_get_event_dsc(real_a, 0)),
+                                  lv_event_dsc_get_cb(lv_obj_get_event_dsc(real_b, 0)),
+                                  "test is vacuous unless the factory really does share descriptor 0 between two "
+                                  "different controls");
+
+    sweep_clickable_t ra = {.obj = real_a, .rect = {0}};
+    sweep_clickable_t rb = {.obj = real_b, .rect = {0}};
+    sweep_clickable_t rc = {.obj = real_c, .rect = {0}};
+    sweep_identify(real_a, &ra);
+    sweep_identify(real_b, &rb);
+    sweep_identify(real_c, &rc);
+
+    TEST_ASSERT_EQUAL_PTR_MESSAGE((void *)sweep_test_dummy_click_cb, ra.cb,
+                                  "sweep_identify must return the INTENT callback, not the shared tap-sound one");
+    TEST_ASSERT_FALSE_MESSAGE(sweep_same_composite_control(&ra, &rb),
+                              "two real factory buttons wired to DIFFERENT intents must be gap-checked, not skipped "
+                              "as one composite control — this is the bug that silenced 3214 of 3787 pairs");
+    TEST_ASSERT_TRUE_MESSAGE(sweep_same_composite_control(&ra, &rc),
+                             "two real factory buttons wired to the SAME intent + user_data are still one control");
+
+    /* And the ordering trap that a "first non-shared descriptor" rule
+     * would fall into: a NON-action handler registered BEFORE the intent
+     * one (scr_launcher.c's LV_EVENT_HIT_TEST shape handler is exactly
+     * this) must not make two different controls look alike. */
+    lv_obj_t *shaped_a = ff_scr_button_create(scr);
+    lv_obj_t *shaped_b = ff_scr_button_create(scr);
+    lv_obj_add_event_cb(shaped_a, sweep_test_other_click_cb, LV_EVENT_HIT_TEST, NULL);
+    lv_obj_add_event_cb(shaped_b, sweep_test_other_click_cb, LV_EVENT_HIT_TEST, NULL);
+    lv_obj_add_event_cb(shaped_a, sweep_test_dummy_click_cb, LV_EVENT_CLICKED, &dummy_data_x);
+    lv_obj_add_event_cb(shaped_b, sweep_test_dummy_click_cb, LV_EVENT_CLICKED, &dummy_data_y);
+    sweep_clickable_t sa = {.obj = shaped_a, .rect = {0}};
+    sweep_clickable_t sb = {.obj = shaped_b, .rect = {0}};
+    sweep_identify(shaped_a, &sa);
+    sweep_identify(shaped_b, &sb);
+    TEST_ASSERT_FALSE_MESSAGE(sweep_same_composite_control(&sa, &sb),
+                              "a shared NON-action handler registered ahead of the intent one must not alias two "
+                              "different controls — identity is the whole action SET, not one descriptor index");
 
     free(buf);
     lv_deinit();
@@ -998,13 +1242,13 @@ static void S24_AC7_inert_scroll_catcher_predicate(void)
 
     lv_obj_t *plain_no_cb = lv_obj_create(scr); /* CLICKABLE by default, NOT floating */
 
-    sweep_clickable_t catcher = {.obj = floating_no_cb, .rect = {0}, .cb = NULL, .user_data = NULL};
-    sweep_clickable_t real_floating = {
-        .obj = floating_with_cb,
-        .rect = {0},
-        .cb = (void *)lv_event_dsc_get_cb(lv_obj_get_event_dsc(floating_with_cb, 0)),
-        .user_data = lv_event_dsc_get_user_data(lv_obj_get_event_dsc(floating_with_cb, 0))};
-    sweep_clickable_t forgotten_handler = {.obj = plain_no_cb, .rect = {0}, .cb = NULL, .user_data = NULL};
+    sweep_learn_shared_cbs();
+    sweep_clickable_t catcher = {.obj = floating_no_cb, .rect = {0}};
+    sweep_clickable_t real_floating = {.obj = floating_with_cb, .rect = {0}};
+    sweep_clickable_t forgotten_handler = {.obj = plain_no_cb, .rect = {0}};
+    sweep_identify(floating_no_cb, &catcher);
+    sweep_identify(floating_with_cb, &real_floating);
+    sweep_identify(plain_no_cb, &forgotten_handler);
 
     TEST_ASSERT_TRUE_MESSAGE(sweep_is_inert_scroll_catcher(&catcher),
                              "a callback-less FLOATING object must be recognized as an inert scroll catcher");
@@ -1085,7 +1329,8 @@ static lv_obj_t *sweep_add_row(lv_obj_t *list, int32_t x, int32_t y, int32_t w, 
 static sweep_result_t sweep_run_current_screen(char const *name)
 {
     lv_refr_now(lv_display_get_default());
-    sweep_result_t result = {0, 0, 0};
+    sweep_learn_shared_cbs(); /* same contract as sweep_fixture's — identity needs the factory's handler set */
+    sweep_result_t result = {0, 0, 0, 0, 0};
     sweep_clickable_list_t clickables = {.n = 0};
     sweep_walk(lv_screen_active(), name, &result, &clickables);
     sweep_check_adjacency(&clickables, name, &result);

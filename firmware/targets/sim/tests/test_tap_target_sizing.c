@@ -573,10 +573,37 @@ static void S_TAP_rule_table_covers_all_four_named_faces(void)
     /* And must NOT quietly claim faces it makes no promises about. */
     TEST_ASSERT_NULL_MESSAGE(sizing_rule_for("map_nofix.json"), "map must not be claimed by this pass's rules");
     TEST_ASSERT_NULL_MESSAGE(sizing_rule_for("settings_default.json"), "settings must not be claimed by this pass");
-    /* Longest-prefix wins: banner_on_radar must not fall through to a
-     * shorter, more permissive entry. */
-    TEST_ASSERT_EQUAL_PTR_MESSAGE(sizing_rule_for("banner_on_radar.json"), sizing_rule_for("banner_on_radar.json"),
-                                  "unstable rule lookup");
+    /* Longest-prefix wins: "banner_on_radar.json" matches BOTH the
+     * "radar"-less short entries it could fall through to and its own
+     * long one, so this is the entry the lookup must return.
+     *
+     * The first version of this assertion compared sizing_rule_for's
+     * result with ITSELF, which proves only that the function is
+     * deterministic — it would have passed just as happily if the
+     * fall-through picked the wrong, more permissive rule. (PR #311
+     * review, N-series; AGENTS.md's proxy check: what input satisfies
+     * this assertion and violates the property?) Compare against the
+     * table entry by NAME instead, and prove the two candidates really
+     * are different so the test cannot pass vacuously. */
+    sizing_rule_t const *banner_rule = NULL;
+    sizing_rule_t const *radar_rule = NULL;
+    for (int i = 0; i < SIZING_N_RULES; i++) {
+        if (strcmp(SIZING_RULES[i].prefix, "banner_on_radar") == 0) {
+            banner_rule = &SIZING_RULES[i];
+        }
+        if (strcmp(SIZING_RULES[i].prefix, "radar") == 0) {
+            radar_rule = &SIZING_RULES[i];
+        }
+    }
+    TEST_ASSERT_NOT_NULL_MESSAGE(banner_rule, "the rule table must still carry a banner_on_radar entry");
+    TEST_ASSERT_NOT_NULL_MESSAGE(radar_rule, "the rule table must still carry a radar entry");
+    TEST_ASSERT_TRUE_MESSAGE(banner_rule->primary_min_h_px != radar_rule->primary_min_h_px,
+                             "test is vacuous unless the two candidate rules actually differ");
+    TEST_ASSERT_EQUAL_PTR_MESSAGE(banner_rule, sizing_rule_for("banner_on_radar.json"),
+                                  "longest prefix must win: banner_on_radar must take its OWN rule, not fall "
+                                  "through to the shorter, more permissive 'radar' entry");
+    TEST_ASSERT_EQUAL_PTR_MESSAGE(radar_rule, sizing_rule_for("radar_live.json"),
+                                  "a plain radar fixture must still take the radar rule");
 }
 
 int main(void)

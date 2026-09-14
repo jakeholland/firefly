@@ -199,9 +199,36 @@
 _Static_assert(FF_SETTINGS_ROW_H >= FF_THEME_MIN_HIT_PX, "settings pill rows must clear the 44px hit-target floor");
 
 /* Toggle-pair pills: two >=44px pills at a tight 6px gap (safe because a
- * pair shares one callback — see sweep composite-control exclusion). */
+ * pair shares one callback — see sweep composite-control exclusion).
+ * 58 is sized for "GHOST" (51px at FF_THEME_FONT_CHIP, measured), the
+ * longest label any pair other than SCREEN's carries. */
 #define FF_SETTINGS_TOGGLE_PILL_W 58
 #define FF_SETTINGS_TOGGLE_GAP    6
+
+/* ON/OFF pairs get their OWN, narrower width — PR #311 review,
+ * N-series ("Settings pill groups moved 11px left; restore the
+ * COLORBLIND caption clearance").
+ *
+ * The measurement. This pass re-framed every Settings band against the
+ * BEZEL's glass instead of the framebuffer's circle, which narrowed the
+ * list rows from 262px to 240px — so each right-aligned pill group's
+ * LEFT edge moved 22px left (11px per side). Every caption cleared it
+ * except the longest one on a toggle row: "COLORBLIND" renders 116px
+ * wide at FF_THEME_FONT_LABEL with this file's 2px letter-spacing
+ * (lv_text_get_size, measured), and the shared 58px pair puts `grp_x` at
+ * 240 - (2*58 + 6) = 118 — a 2px gap, visible as a collision in
+ * settings_scrolled_mid.png. It was 24px before the pass.
+ *
+ * The fix is a width sized to the labels it actually carries, not a
+ * per-row nudge: "ON"/"OFF" measure 23px and 30px, so 48px is 9px of
+ * padding on the widest of them and still 4px over FF_THEME_MIN_HIT_PX.
+ * That puts grp_x at 240 - (2*48 + 6) = 138, clearing "COLORBLIND" by
+ * 22px — back above the pre-pass clearance, and checked on the rendered
+ * screen by S_SET_every_settings_caption_clears_its_control_group
+ * (test_scr_intent.c) rather than by this arithmetic alone. */
+#define FF_SETTINGS_ONOFF_PILL_W 48
+_Static_assert(FF_SETTINGS_ONOFF_PILL_W >= FF_THEME_MIN_HIT_PX,
+               "ON/OFF pills must still clear the 44px hit floor in their short axis");
 #define FF_SETTINGS_TOGGLE_GRP_W  (2 * FF_SETTINGS_TOGGLE_PILL_W + FF_SETTINGS_TOGGLE_GAP) /* 122 */
 
 /* SCREEN's own pill width (format v8 amendment): "NORMAL"/"FLIPPED" are
@@ -220,14 +247,17 @@ _Static_assert(FF_SETTINGS_ROW_H >= FF_THEME_MIN_HIT_PX, "settings pill rows mus
  * floor and the round-glass containment at this width. */
 /* Tap-target sizing pass (2026-09-14): 84 -> 78. The settings rows'
  * width now comes from the BEZEL's glass circle rather than the
- * framebuffer's (settings_safe_margin_x), which narrowed every row by
- * ~11px — and this row is the only one where that mattered: its pill
- * group is the widest on the face, so its left edge moved back onto the
- * "SCREEN" caption (measured: grp_x 66 against a ~70px caption, a 4px
- * overlap, visible in the rendered golden). 78px still renders "FLIPPED"
- * in full and keeps both pills well over the hit floor; it restores an
- * 8px caption-to-pill gap. */
-#define FF_SETTINGS_SCREEN_PILL_W 78
+ * framebuffer's (settings_safe_margin_x), narrowing every row from 262px
+ * to 240px — 11px per side — and this row's pill group is the widest on
+ * the face. At 84 that put grp_x at 240 - (2*84 + 6) = 66 against a
+ * "SCREEN" caption measuring 68px, a 2px overlap visible in the rendered
+ * golden. At 78, grp_x is 78 and the gap is 10px. "FLIPPED" measures
+ * 62px at FF_THEME_FONT_CHIP, so it still renders in full with 8px of
+ * padding a side, and both pills stay well over the hit floor.
+ * (Numbers re-measured for the PR #311 review, which caught the first
+ * pass quoting "~70px caption / 4px overlap / 8px gap" from arithmetic
+ * rather than from lv_text_get_size.) */
+#define FF_SETTINGS_SCREEN_PILL_W 76
 
 /* Value pill (WATER/QUIET): one pill wide enough for "120 MIN"/"4A-10A". */
 #define FF_SETTINGS_VALUE_PILL_W 96
@@ -1234,7 +1264,30 @@ static int32_t settings_build_section_header(lv_obj_t *list, int32_t y, int32_t 
 #define FF_CREW_ROW_STEP (FF_CREW_ROW_H + FF_CREW_ROW_GAP)
 _Static_assert(FF_CREW_ROW_H >= FF_THEME_MIN_HIT_PX, "crew rows must clear the 44px hit-target floor");
 
-#define FF_CREW_ACTION_PILL_W FF_SETTINGS_VALUE_PILL_W
+/* PR #311 review (N-series): the crew row's action pill gets its OWN
+ * width instead of borrowing FF_SETTINGS_VALUE_PILL_W (96).
+ *
+ * #307's own comment records why this number matters: #303 replaced
+ * "LOST" with "NO SIGNAL 15 MIN", and the crew row's label column has to
+ * be wide enough to render that status in full — a truncated "NO SIGNAL
+ * 15 ..." is the exact defect that PR sized this pill to avoid. This PR
+ * then narrowed every Settings band from 262px to 240px (the bezel's
+ * glass, not the framebuffer's circle), which took the label column from
+ * 154px to 132px and truncated it again in crew_default.png.
+ *
+ * Measured, at FF_THEME_FONT_CHIP with this row's 1px letter-spacing:
+ * the widest status ff_fmt_age can produce is "NO SIGNAL 48 MIN" at
+ * 150px (swept over all two-digit minute values; "NO SIGNAL 23 HR" is
+ * 139, "off your radar" 111, "NOT SEEN YET" 114). The widest action word
+ * is "UNHIDE" at 58px. So the pill takes 76 — 9px of padding either side
+ * of "UNHIDE", still 32px over FF_THEME_MIN_HIT_PX — and leaves the
+ * label column 240 - 76 - 12 = 152px, clear of the worst case by 2px.
+ * Held there by S_CREW_worst_case_status_renders_in_full
+ * (test_scr_intent.c), which renders the row and asserts no ellipsis
+ * rather than trusting this arithmetic. */
+#define FF_CREW_ACTION_PILL_W 76
+_Static_assert(FF_CREW_ACTION_PILL_W >= FF_THEME_MIN_HIT_PX,
+               "the crew row's action pill must still clear the 44px hit floor");
 #define FF_CREW_ACTION_GAP    FF_SETTINGS_VALUE_GAP
 
 /* [api] A02 slice D — the PAIRED row's action is **HIDE**, and REMOVE is
@@ -2196,7 +2249,22 @@ static void settings_build_crew_status_page(lv_obj_t *parent, ff_app_crew_page_t
  * here needs to scroll.
  * ------------------------------------------------------------------- */
 #define FF_CALCAL_TITLE_Y    34
-#define FF_CALCAL_INSTR_Y    78
+/* PR #311 review (N-series): 78 -> 84. The instruction line is one
+ * sentence, "Rotate the puck slowly in a figure eight", which measures
+ * 289px at FF_THEME_FONT_CHIP (lv_text_get_size). Re-framing this band
+ * against the BEZEL's glass narrowed it from 302px to 282px, so the line
+ * started wrapping — and wrapping a 39-character sentence at 282px
+ * leaves "eight" alone on the second row, which is what
+ * compass_cal_ritual.png showed.
+ *
+ * The band's own top edge is what binds here (it is 128px above the
+ * glass centre; the bottom edge is nearer), so the fix is 6px of
+ * descent, not a narrower font or shorter copy: at y 84 the chord gives
+ * 292px, the sentence fits on one line again, and the line's far corner
+ * sits sqrt(148^2 + 122^2) = 191.8px from the glass centre — 8px inside
+ * FF_THEME_GLASS_R. The ring below starts at y 130, so a 16px line at 84
+ * still clears it by 30px. */
+#define FF_CALCAL_INSTR_Y    84
 #define FF_CALCAL_INSTR_H    50
 #define FF_CALCAL_RING_DIAM  140
 #define FF_CALCAL_RING_Y     130
@@ -3226,16 +3294,16 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
     settings_build_toggle_row_ex(list, y, row_w, "SCREEN", "NORMAL", "FLIPPED", s_settings.screen_flip ? 1 : 0,
                                  FF_SETTINGS_SCREEN_PILL_W, settings_screen_cb);
     y += FF_SETTINGS_ROW_STEP;
-    settings_build_toggle_row(list, y, row_w, "COLORBLIND", "ON", "OFF", s_settings.colorblind ? 0 : 1,
-                              settings_colorblind_cb);
+    settings_build_toggle_row_ex(list, y, row_w, "COLORBLIND", "ON", "OFF", s_settings.colorblind ? 0 : 1,
+                                 FF_SETTINGS_ONOFF_PILL_W, settings_colorblind_cb);
     y += FF_SETTINGS_ROW_H; /* last row of DISPLAY: no trailing gap, the next header adds it */
 
     y = settings_build_section_header(list, y, row_w, "SOUND", /*first=*/false);
-    settings_build_toggle_row(list, y, row_w, "SOUNDS", "ON", "OFF", s_settings.sounds_on ? 0 : 1,
-                              settings_sounds_cb);
+    settings_build_toggle_row_ex(list, y, row_w, "SOUNDS", "ON", "OFF", s_settings.sounds_on ? 0 : 1,
+                                 FF_SETTINGS_ONOFF_PILL_W, settings_sounds_cb);
     y += FF_SETTINGS_ROW_STEP;
-    settings_build_toggle_row(list, y, row_w, "UI TICKS", "ON", "OFF", s_settings.ui_ticks ? 0 : 1,
-                              settings_ui_ticks_cb);
+    settings_build_toggle_row_ex(list, y, row_w, "UI TICKS", "ON", "OFF", s_settings.ui_ticks ? 0 : 1,
+                                 FF_SETTINGS_ONOFF_PILL_W, settings_ui_ticks_cb);
     y += FF_SETTINGS_ROW_STEP;
     settings_quiet_preset_t const *quiet = settings_current_quiet(s_settings.quiet_from_min, s_settings.quiet_to_min);
     bool const quiet_off = (quiet != NULL) && (quiet->from_min == 0) && (quiet->to_min == 0);
@@ -3297,14 +3365,14 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
 #endif
 #if FF_SETTINGS_ROW_ENABLE_HAPTICS
     y += FF_SETTINGS_ROW_GAP;
-    settings_build_toggle_row(list, y, row_w, "HAPTICS", "ON", "OFF", s_settings.haptics ? 0 : 1,
-                              settings_haptics_cb);
+    settings_build_toggle_row_ex(list, y, row_w, "HAPTICS", "ON", "OFF", s_settings.haptics ? 0 : 1,
+                                 FF_SETTINGS_ONOFF_PILL_W, settings_haptics_cb);
     y += FF_SETTINGS_ROW_H;
 #endif
 #if FF_SETTINGS_ROW_ENABLE_GLOW
     y += FF_SETTINGS_ROW_GAP;
-    settings_build_toggle_row(list, y, row_w, "GLOW", "ON", "OFF", s_settings.night_glow ? 0 : 1,
-                              settings_night_glow_cb);
+    settings_build_toggle_row_ex(list, y, row_w, "GLOW", "ON", "OFF", s_settings.night_glow ? 0 : 1,
+                                 FF_SETTINGS_ONOFF_PILL_W, settings_night_glow_cb);
     y += FF_SETTINGS_ROW_H;
 #endif
 #if FF_SETTINGS_ROW_ENABLE_WATER

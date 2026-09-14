@@ -127,6 +127,16 @@
 #include "scr_inbox.h" /* ff_scr_inbox_unread_count — the Inbox circle's badge */
 #include "scr_nav.h" /* ff_scr_nav_mask_clickables_under_banner — the shared banner-coverage rule */
 #include "lvgl.h"
+/* LVGL 9 exposes lv_event_get_hit_test_info() from its PUBLIC header but
+ * leaves `lv_hit_test_info_t` itself opaque there, so a custom
+ * LV_EVENT_HIT_TEST handler — the only way to give a control a
+ * non-rectangular tap shape — cannot be written against the public API
+ * alone. Upstream's own widgets (lv_arc.c, lv_slider.c, lv_image.c) do
+ * exactly this. Narrow, single-purpose, and bounded: LVGL is pinned by
+ * commit hash in firmware/third_party (AGENTS.md), so this cannot drift
+ * under us without a deliberate bump that would fail the build loudly.
+ * See launcher_round_hit_cb below for what needs it and why. */
+#include "src/core/lv_obj_event_private.h"
 
 /* ---------------------------------------------------------------------
  * Layout constants.
@@ -181,10 +191,11 @@ _Static_assert(LAUNCHER_SAT_DIAM >= 56, "launcher satellites must clear the spec
 _Static_assert(LAUNCHER_SAT_DIAM >= FF_THEME_MIN_HIT_PX, "launcher satellites must clear the shared 44px hit floor");
 _Static_assert(LAUNCHER_HUB_DIAM >= FF_THEME_MIN_HIT_PX, "launcher hub must clear the shared 44px hit floor");
 /* Hub<->satellite edge-to-edge gap at the fixed 128px orbit radius:
- * 128 - (HUB_DIAM/2 + SAT_DIAM/2) must clear FF_HIT_MIN_GAP_PX. See this
- * file's top comment for the full numeric proof (hub/satellite corners
- * and the satellite-to-satellite gap, which is even larger and not worth
- * a second assert). */
+ * 128 - (HUB_DIAM/2 + SAT_DIAM/2) must clear FF_HIT_MIN_GAP_PX. This is
+ * the DISC-to-disc gap, which is the one that governs now that both
+ * controls hit-test as discs (launcher_round_hit below); their bounding
+ * SQUARES do overlap at the corners at this orbit radius, and did at the
+ * pre-sizing-pass 88px too. */
 _Static_assert((int32_t)LAUNCHER_ORBIT_RADIUS_PX - (LAUNCHER_HUB_DIAM / 2 + LAUNCHER_SAT_DIAM / 2) >=
                    FF_HIT_MIN_GAP_PX,
                "hub/satellite edge gap must clear the adjacency floor");
@@ -551,12 +562,67 @@ static void launcher_make_orbit_ring(lv_obj_t *puck)
     launcher_mk_arc(puck, (int32_t)(2.0f * LAUNCHER_ORBIT_RADIUS_PX), 1, 0.0f, 360.0f, LAUNCHER_OPA_16);
 }
 
+/* ---------------------------------------------------------------------
+ * Round controls, round taps.
+ *
+ * PR #311 review (B2) fixed test_face_hit_targets.c's composite-control
+ * detection, which had been skipping essentially every pair of real app
+ * buttons — and the first thing the repaired sweep reported was this
+ * face: the hub's 120x120 hit rect and the two lower satellites' 100x100
+ * ones OVERLAP by 35x7px at their corners. The overlap is not new (at
+ * the old 88px satellites the same corners touched with a 29x1px sliver)
+ * and it is not a placement error either: the radial gap between the
+ * discs is 128 - (60 + 50) = 18px, comfortably over FF_HIT_MIN_GAP_PX.
+ * It is a SHAPE error. These controls are discs, every millimetre figure
+ * in docs/hardware/tap-targets.md describes them as discs, and the only
+ * reason they collide is that LVGL's default hit test is the bounding
+ * SQUARE — so a tap on visibly empty glass just outside the RADAR hub,
+ * down and to the left, opened MAP.
+ *
+ * Fixed where it is actually wrong, in the hit test, rather than by
+ * shrinking a control back under its documented floor: the point must be
+ * inside the disc. Scoped to this face because this is the only face in
+ * the codebase where two round controls come close enough for the corner
+ * to matter, and because doing it in ff_scr_button_create would change
+ * the hit shape of every pill in the app (most of which are rounded
+ * RECTANGLES, where the bounding box is the right answer).
+ *
+ * The sweep is taught the same thing: a clickable carrying
+ * LV_OBJ_FLAG_ADV_HITTEST whose hit rect is square and whose radius is
+ * LV_RADIUS_CIRCLE is measured disc-to-disc, not corner-to-corner. That
+ * classifier is geometric — it reads what the object IS — not a
+ * per-screen exception list.
+ * ------------------------------------------------------------------- */
+static void launcher_round_hit_cb(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_target(e);
+    lv_hit_test_info_t *info = lv_event_get_hit_test_info(e);
+    if (info == NULL || info->point == NULL) {
+        return;
+    }
+    lv_area_t a;
+    lv_obj_get_coords(obj, &a);
+    float const r = (float)(a.x2 - a.x1 + 1) / 2.0f;
+    float const cx = (float)a.x1 + r;
+    float const cy = (float)a.y1 + (float)(a.y2 - a.y1 + 1) / 2.0f;
+    float const dx = (float)info->point->x - cx;
+    float const dy = (float)info->point->y - cy;
+    info->res = (dx * dx + dy * dy) <= (r * r);
+}
+
+static void launcher_round_hit(lv_obj_t *btn)
+{
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_ADV_HITTEST);
+    lv_obj_add_event_cb(btn, launcher_round_hit_cb, LV_EVENT_HIT_TEST, NULL);
+}
+
 static void launcher_make_hub(lv_obj_t *puck)
 {
     lv_obj_t *btn = ff_scr_button_create(puck);
     lv_obj_remove_style_all(btn);
     lv_obj_set_size(btn, LAUNCHER_HUB_DIAM, LAUNCHER_HUB_DIAM);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+    launcher_round_hit(btn);
     lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(btn, 2, 0);
@@ -646,6 +712,7 @@ static void launcher_make_satellite(lv_obj_t *puck, void (*icon_fn)(lv_obj_t *, 
     lv_obj_remove_style_all(btn);
     lv_obj_set_size(btn, LAUNCHER_SAT_DIAM, LAUNCHER_SAT_DIAM);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+    launcher_round_hit(btn);
     lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(btn, 1, 0);
