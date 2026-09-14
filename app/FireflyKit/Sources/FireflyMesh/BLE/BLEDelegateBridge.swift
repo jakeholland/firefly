@@ -30,6 +30,14 @@
 //  contains that one boundary-crossing `@unchecked Sendable`, rather
 //  than sprinkling the annotation across call sites.
 //
+//  A03 S1b / §3.1: the hop is no longer a bare, independent `Task` per
+//  callback. Every method below goes through `BLEDelegateDelivery`,
+//  which chains the hops so the actor sees callbacks in CoreBluetooth's
+//  own delivery order — and `willRestoreState` raises its restore
+//  marker synchronously on the delegate queue before hopping at all.
+//  `BLEDelegateDelivery`'s own header is where the race that forces
+//  both halves is written up.
+//
 import Foundation
 @preconcurrency import CoreBluetooth
 
@@ -69,28 +77,53 @@ private struct CoreBluetoothCrossing<Value>: @unchecked Sendable {
 
 final class BLEDelegateBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     weak var transport: BLETransport?
+    /// A03 §3.1 — the ordering fix. Every callback below is delivered
+    /// through this, so the actor sees them in the order CoreBluetooth
+    /// delivered them; `willRestoreState` additionally raises its
+    /// restore marker SYNCHRONOUSLY here, before any hop exists. See
+    /// `BLEDelegateDelivery`'s own header for why both halves are
+    /// needed and what breaks without them.
+    let delivery: BLEDelegateDelivery
 
-    init(transport: BLETransport) {
+    init(transport: BLETransport, delivery: BLEDelegateDelivery) {
         self.transport = transport
+        self.delivery = delivery
+    }
+
+    /// The one hop. `transport` is hoisted into a local `let` BEFORE the
+    /// closure is built, for the reason this file's header gives:
+    /// capturing `self` (a plain, non-`Sendable` `NSObject`) into a
+    /// `@Sendable` closure is what strict concurrency flags; capturing
+    /// the local actor reference is not.
+    private func deliver(_ work: @escaping @Sendable (BLETransport) async -> Void) {
+        guard let transport else { return }
+        delivery.enqueue { await work(transport) }
     }
 
     // MARK: - CBCentralManagerDelegate
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        let transport = transport
         let state = central.state
-        Task { await transport?.handleCentralStateUpdate(state) }
+        deliver { await $0.handleCentralStateUpdate(state) }
     }
 
     /// M2 — CoreBluetooth state restoration
     /// (`BLETransport.ensureCentralManagerExists`'s own doc comment).
     /// Only fires on iOS, and only when the manager was created with
     /// `CBCentralManagerOptionRestoreIdentifierKey`.
+    ///
+    /// A03 §3.1 — `markRestorePending()` is called FIRST, synchronously,
+    /// on the delegate queue, before the hop below is built and before
+    /// this method returns to CoreBluetooth. That is the half of the
+    /// ordering fix which does not depend on task scheduling at all: the
+    /// delegate queue is serial, so every later callback on it — the
+    /// `didUpdateState` Apple delivers right after this one — sees the
+    /// marker already set.
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+        delivery.markRestorePending()
         let peripherals = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral]) ?? []
         let crossing = CoreBluetoothCrossing(value: peripherals)
-        let transport = transport
-        Task { await transport?.handleWillRestoreState(peripherals: crossing.value) }
+        deliver { await $0.handleWillRestoreState(peripherals: crossing.value) }
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
@@ -98,20 +131,17 @@ final class BLEDelegateBridge: NSObject, CBCentralManagerDelegate, CBPeripheralD
         let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name
         let crossing = CoreBluetoothCrossing(value: peripheral)
         let rssi = RSSI.intValue
-        let transport = transport
-        Task { await transport?.handleDiscovered(peripheral: crossing.value, name: name, rssi: rssi) }
+        deliver { await $0.handleDiscovered(peripheral: crossing.value, name: name, rssi: rssi) }
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         let crossing = CoreBluetoothCrossing(value: peripheral)
-        let transport = transport
-        Task { await transport?.handleConnected(peripheral: crossing.value) }
+        deliver { await $0.handleConnected(peripheral: crossing.value) }
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         let crossing = CoreBluetoothCrossing(value: peripheral)
-        let transport = transport
-        Task { await transport?.handleFailedToConnect(peripheral: crossing.value, error: error) }
+        deliver { await $0.handleFailedToConnect(peripheral: crossing.value, error: error) }
     }
 
     /// The legacy 2-argument callback. iOS calls the 5-argument one
@@ -121,8 +151,7 @@ final class BLEDelegateBridge: NSObject, CBCentralManagerDelegate, CBPeripheralD
     /// both."), so this stays for macOS and as a fallback.
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         let crossing = CoreBluetoothCrossing(value: peripheral)
-        let transport = transport
-        Task { await transport?.handleDisconnected(peripheral: crossing.value, error: error) }
+        deliver { await $0.handleDisconnected(peripheral: crossing.value, error: error) }
     }
 
     /// A03 §3.4 — the iOS 17 / macOS 14 disconnect delegate.
@@ -138,11 +167,10 @@ final class BLEDelegateBridge: NSObject, CBCentralManagerDelegate, CBPeripheralD
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
                          timestamp: CFAbsoluteTime, isReconnecting: Bool, error: Error?) {
         let crossing = CoreBluetoothCrossing(value: peripheral)
-        let transport = transport
         let disconnectedAt = Date(timeIntervalSinceReferenceDate: timestamp)
-        Task {
-            await transport?.handleDisconnected(peripheral: crossing.value, disconnectedAt: disconnectedAt,
-                                                 isReconnecting: isReconnecting, error: error)
+        deliver {
+            await $0.handleDisconnected(peripheral: crossing.value, disconnectedAt: disconnectedAt,
+                                        isReconnecting: isReconnecting, error: error)
         }
     }
 
@@ -150,33 +178,28 @@ final class BLEDelegateBridge: NSObject, CBCentralManagerDelegate, CBPeripheralD
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         let crossing = CoreBluetoothCrossing(value: peripheral)
-        let transport = transport
-        Task { await transport?.handleDiscoveredServices(peripheral: crossing.value, error: error) }
+        deliver { await $0.handleDiscoveredServices(peripheral: crossing.value, error: error) }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         let crossing = CoreBluetoothCrossing(value: service)
-        let transport = transport
-        Task { await transport?.handleDiscoveredCharacteristics(service: crossing.value, error: error) }
+        deliver { await $0.handleDiscoveredCharacteristics(service: crossing.value, error: error) }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic,
                      error: Error?) {
         let crossing = CoreBluetoothCrossing(value: characteristic)
-        let transport = transport
-        Task { await transport?.handleNotificationStateUpdate(characteristic: crossing.value, error: error) }
+        deliver { await $0.handleNotificationStateUpdate(characteristic: crossing.value, error: error) }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         let value = characteristic.value
         let crossing = CoreBluetoothCrossing(value: characteristic)
-        let transport = transport
-        Task { await transport?.handleValueUpdate(characteristic: crossing.value, value: value, error: error) }
+        deliver { await $0.handleValueUpdate(characteristic: crossing.value, value: value, error: error) }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
         let crossing = CoreBluetoothCrossing(value: characteristic)
-        let transport = transport
-        Task { await transport?.handleWriteConfirmation(characteristic: crossing.value, error: error) }
+        deliver { await $0.handleWriteConfirmation(characteristic: crossing.value, error: error) }
     }
 }

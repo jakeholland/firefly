@@ -45,6 +45,27 @@ public protocol MeshTransport: AnyObject, Sendable {
     /// Write one `ToRadio` message. For `.stream` transports the client
     /// has already applied `StreamFramer.frame(_:)`.
     func send(_ data: Data) async throws
+    /// A03 §3.1 — whether this transport ALREADY has a live link right
+    /// now, asked by a client that is only just attaching to it.
+    ///
+    /// This exists for exactly one ordering problem, and it is the
+    /// restoration path's: on a CoreBluetooth background relaunch the
+    /// system adopts the session (`willRestoreState`) during the launch
+    /// cycle, and `BLETransport` can reach `.ready` again before
+    /// `MeshtasticClient.beginListening()` has subscribed — `EventHub`
+    /// is multicast but NOT replayed (S1), so that `.ready` would simply
+    /// be gone. A client that can ASK "are you already up?" closes the
+    /// race from the other side; it does not depend on winning it.
+    ///
+    /// Default `false`: a transport that cannot be restored into (every
+    /// one but BLE) is never already up when a listener attaches — it is
+    /// `connect()` that brings it up, and `connect()` awaits its own
+    /// `.ready`.
+    var isLinkReady: Bool { get async }
+}
+
+public extension MeshTransport {
+    var isLinkReady: Bool { get async { false } }
 }
 
 public enum TransportError: Error, Equatable, Sendable {
@@ -80,13 +101,47 @@ public final class LoopbackTransport: MeshTransport, @unchecked Sendable {
     }
 
     public func connect() async throws {
+        setLinkReady(true)
         hub.yield(.connecting)
         hub.yield(.ready)
     }
 
     public func disconnect() async {
+        setLinkReady(false)
         hub.yield(.disconnected(reason: nil))
         hub.finish()
+    }
+
+    /// A03 §3.1 — an honest answer, kept current by every path below
+    /// that takes this transport up or down, rather than a constant.
+    public var isLinkReady: Bool {
+        get async { readLinkReady() }
+    }
+    private var linkReady = false
+
+    /// Its own synchronous function for the reason `record(_:)` above is
+    /// one: `NSLock` may not be locked from an asynchronous context.
+    private func readLinkReady() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return linkReady
+    }
+
+    private func setLinkReady(_ value: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        linkReady = value
+    }
+
+    /// A03 §3.1 — the link is ALREADY up and nothing was listening when
+    /// it came up: CoreBluetooth state restoration adopted the session
+    /// during the launch cycle, before `MeshtasticClient` existed, so
+    /// the `.ready` it published reached nobody (`EventHub` is multicast
+    /// but never replayed — S1).
+    ///
+    /// Deliberately does NOT yield `.ready`: a test that wants the event
+    /// has `simulateReconnect()`. This is the OTHER ordering, and the
+    /// only thing that can recover from it is a client that ASKS.
+    public func simulateRestoredSessionWithNoListener() {
+        setLinkReady(true)
     }
 
     public func send(_ data: Data) async throws {
@@ -248,6 +303,7 @@ public final class LoopbackTransport: MeshTransport, @unchecked Sendable {
     /// `BLETransport` would: `.disconnected` now, `.ready` again later
     /// via `simulateReconnect()`.
     public func simulateDisconnect(reason: String? = nil) {
+        setLinkReady(false)
         hub.yield(.disconnected(reason: reason))
     }
 
@@ -278,6 +334,7 @@ public final class LoopbackTransport: MeshTransport, @unchecked Sendable {
     /// The transport-level half of "reconnects on its own" — see
     /// `simulateDisconnect(reason:)`.
     public func simulateReconnect() {
+        setLinkReady(true)
         hub.yield(.ready)
     }
 }

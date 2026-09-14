@@ -193,6 +193,25 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     private var receiveTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var hasCompletedInitialConnect = false
+    /// A03 §3.1 — whether a `connect()` call is currently AWAITING the
+    /// transport's next `.ready`.
+    ///
+    /// This replaces `hasCompletedInitialConnect` as the gate on the
+    /// `.ready` branch of `consumeTransportEvents`, and the difference
+    /// is the whole restoration path: "a `.ready` that nobody is
+    /// awaiting is, by definition, a restored or reconnected session and
+    /// must run the handshake". `hasCompletedInitialConnect` could not
+    /// say that — on a background relaunch this process has never
+    /// connected, so it reads `false` and the restored session's
+    /// `.ready` was silently dropped.
+    ///
+    /// Set immediately before `transport.connect()` is awaited, and
+    /// CONSUMED by the first `.ready` the listener sees, which closes a
+    /// second, older race in the same place: the `.ready` an explicit
+    /// connect produces is delivered through the event stream, so it can
+    /// be processed AFTER `connect()` has already returned — at which
+    /// point the old gate would have started a duplicate handshake.
+    private var awaitedTransportReady = false
     private var lastRxAt: Date?
     /// Guards `connect()` against a second, overlapping call — see
     /// `MeshtasticClientError.alreadyConnecting`'s own doc comment.
@@ -384,6 +403,44 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         linkHub.yield(state)
     }
 
+    /// A03 §3.1 — **`[api]`, S1b.** Attach to the transport: subscribe
+    /// to its events, and adopt a link that is ALREADY up.
+    ///
+    /// Called once by `AppGraph.start()`, before any connect, so a
+    /// CoreBluetooth state restoration has a listener. Two halves,
+    /// because the restore and this call race and neither ordering is
+    /// guaranteed:
+    ///
+    /// * **Subscribe.** `events()` is multicast but NOT replayed (S1), so
+    ///   a `.ready` published before anyone subscribed is gone. This is
+    ///   the half that catches a restore whose `.ready` has not happened
+    ///   yet — the common case, since the adopted session still has to
+    ///   rediscover services.
+    /// * **Ask.** `transport.isLinkReady` is the half that catches the
+    ///   other ordering: the session was adopted and reached `.ready`
+    ///   while this client was still being built. `restartReconnectTask()`
+    ///   is the same bounded handshake-retry loop a mid-session reconnect
+    ///   uses, and it rebuilds the nodeDB exactly once (A01 deliberately
+    ///   does not persist it).
+    ///
+    /// Idempotent: a second call with a listener already running is a
+    /// no-op, and `restartReconnectTask()` supersedes rather than
+    /// duplicates (`reconnectTask`'s own doc comment), so even both
+    /// halves firing leaves at most one handshake outstanding.
+    public func beginListening() async {
+        if receiveTask == nil {
+            Self.log("beginListening(): subscribing to transport events")
+            let events = transport.events()
+            receiveTask = Task { [weak self] in
+                await self?.consumeTransportEvents(events)
+            }
+        }
+        guard !isConnectAttemptInFlight, !hasCompletedInitialConnect, reconnectTask == nil else { return }
+        guard await transport.isLinkReady else { return }
+        Self.log("beginListening(): the transport is ALREADY up (a restored session) — running the handshake")
+        restartReconnectTask()
+    }
+
     public func connect() async throws {
         Self.log("connect() called (isConnectAttemptInFlight=\(isConnectAttemptInFlight))")
         // Reentrancy guard — see `MeshtasticClientError.alreadyConnecting`'s
@@ -402,7 +459,12 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         // Subscribe to the transport's events BEFORE calling connect():
         // `events()` is multicast via EventHub (S1) and does not replay,
         // so a subscription registered after `.ready` is published would
-        // simply miss it.
+        // simply miss it. (A03 §3.1 moved the FIRST subscription out to
+        // `beginListening()`, which `AppGraph.start()` calls before any
+        // connect; this one re-subscribes after `resetSessionState()`
+        // above tore the previous listener down, and is what makes a
+        // manual CONNECT behave identically whether or not anything ever
+        // called `beginListening()`.)
         let events = transport.events()
         receiveTask = Task { [weak self] in
             await self?.consumeTransportEvents(events)
@@ -410,6 +472,9 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
 
         publish(.connecting)
         do {
+            // A03 §3.1 — from here until the listener sees it, the next
+            // `.ready` belongs to THIS call (see `awaitedTransportReady`).
+            awaitedTransportReady = true
             // For BLE this does not return until the FROMNUM
             // subscription is ACKed (MeshtasticBLE.swift,
             // FromRadioDrainPolicy) — only then is it safe to send
@@ -419,6 +484,10 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             Self.log("connect(): transport.connect() returned successfully")
         } catch {
             Self.log("connect(): transport.connect() threw \(error)")
+            // No `.ready` is coming for this attempt — release the claim
+            // so a LATER one (the transport reconnecting on its own) is
+            // correctly read as unawaited.
+            awaitedTransportReady = false
             publish(.failed(String(describing: error)))
             throw error
         }
@@ -1359,6 +1428,14 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             do {
                 try await performHandshake()
                 guard !Task.isCancelled else { return }
+                // A03 §3.1 — a restored session that handshakes here is
+                // a session that has reached `.ready`, and the NEXT loss
+                // must publish an honest `.reconnecting` rather than
+                // silence (`consumeTransportEvents`'s `.disconnected`
+                // branch reads this flag). Before S1b nothing set it on
+                // this path, because this path could only be reached
+                // AFTER `connect()` had already set it.
+                hasCompletedInitialConnect = true
                 startHeartbeatLoopIfNeeded()
                 publish(.ready)
                 return
@@ -1469,6 +1546,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         framer = StreamFramer()
         lastRxAt = nil
         hasCompletedInitialConnect = false
+        awaitedTransportReady = false
     }
 
     // MARK: - Wire I/O
@@ -1507,7 +1585,17 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
                 // most one handshake attempt outstanding at a time (the
                 // client-level "no duplicate" guarantee — see
                 // `reconnectTask`'s own doc comment).
-                if hasCompletedInitialConnect {
+                //
+                // A03 §3.1 — the gate is "is a `connect()` awaiting
+                // this?", NOT `hasCompletedInitialConnect`. A `.ready`
+                // nobody is awaiting is a restored or reconnected
+                // session, and on a background relaunch this process has
+                // never connected at all, so the old gate dropped
+                // exactly the event restoration exists to deliver.
+                if awaitedTransportReady {
+                    awaitedTransportReady = false
+                    Self.log("consumeTransportEvents: .ready claimed by the in-flight connect()")
+                } else {
                     restartReconnectTask()
                 }
             case .received(let data):

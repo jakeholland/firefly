@@ -9,7 +9,48 @@
 //
 import FireflyMesh
 import FireflyModel
+import Foundation
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
+
+#if os(iOS)
+/// A03 §3.1 — **the hook iOS actually guarantees runs on a background
+/// relaunch.** A SwiftUI `.task` is not: a CoreBluetooth relaunch has no
+/// scene, so nothing attached to a scene's content ever runs.
+///
+/// Everything it does lives in `AppGraph.handleDidFinishLaunching
+/// (isForegrounded:)` — platform-free, and therefore actually testable
+/// (`FireflyAppTests`/`AppGraphTests` are macOS; this file is not). What
+/// stays here is the two things only UIKit can answer: that this method
+/// was called at all, and what `applicationState` says (§3.2 — the only
+/// foreground signal that exists before a scene does).
+///
+/// The graph is handed over by `FireflyApp.init()`, which SwiftUI runs
+/// BEFORE this method. If that ever stopped being true the consequence
+/// is bounded and not silent: `graph` reads nil, the log line below says
+/// so, and `FireflyApp.init()`'s own `prepareForRestoration()` call —
+/// §3.1's deliberate second path — has already constructed the manager.
+final class FireflyAppDelegate: NSObject, UIApplicationDelegate {
+    @MainActor static var graph: AppGraph?
+
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        guard let graph = FireflyAppDelegate.graph else {
+            FileHandle.standardError.write(Data("[FireflyApp] didFinishLaunching with no graph yet\n".utf8))
+            return true
+        }
+        // `.active` only — `.inactive` is a transient mid-transition
+        // state on a normal launch and is treated as "not on screen"
+        // everywhere else in this app (the scene-phase observers below).
+        // A background relaunch reports `.background`, which is the
+        // reading that matters here.
+        graph.handleDidFinishLaunching(isForegrounded: application.applicationState == .active)
+        return true
+    }
+}
+#endif
 
 @main
 struct FireflyApp: App {
@@ -80,6 +121,12 @@ struct FireflyApp: App {
     /// `@Environment`, not a `@State` this file otherwise constructs —
     /// SwiftUI owns this value.
     @Environment(\.scenePhase) private var scenePhase
+    /// A03 §3.1 — see `FireflyAppDelegate`'s own doc comment. Held as a
+    /// property wrapper because that is the only way to install an
+    /// application delegate in a SwiftUI lifecycle app; nothing reads it.
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(FireflyAppDelegate.self) private var appDelegate
+    #endif
     /// A03 §3.11.3 — the notification-centre delegate. Held as `@State`
     /// because `UNUserNotificationCenter` retains its delegate WEAKLY:
     /// an object created in `init()` and not stored anywhere would be
@@ -121,6 +168,23 @@ struct FireflyApp: App {
         let graph = AppGraph(skipLaunchAutoConnectUnderXCTest: true)
         #endif
         _graph = State(initialValue: graph)
+        // A03 §3.1 — both launch paths, in the order §3.1 specifies.
+        //
+        // `FireflyAppDelegate` is the PRIMARY: it is the only one of the
+        // two Apple documents as running on a background relaunch. This
+        // handover has to happen here, in `init()`, because SwiftUI runs
+        // it before `didFinishLaunchingWithOptions`.
+        //
+        // The `prepareForRestoration()` call right after is the BACKSTOP,
+        // not the design — it exists for the ordering question SwiftUI
+        // does not document, and it is idempotent with the delegate's own
+        // call (at most one `CBCentralManager` is ever constructed;
+        // `BLECentralStore`'s own doc comment). It is a no-op on macOS's
+        // and the Simulator's stacks alike.
+        #if os(iOS)
+        FireflyAppDelegate.graph = graph
+        #endif
+        graph.prepareForRestoration()
         let connectVM = graph.makeConnectViewModel()
         _connect = State(initialValue: connectVM)
         // M3 — `client:` passed through explicitly (its default,

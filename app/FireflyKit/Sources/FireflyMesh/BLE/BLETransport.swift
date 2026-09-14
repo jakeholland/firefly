@@ -86,8 +86,21 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
     private let hub = EventHub<TransportEvent>()
     private let discoveryHub = EventHub<BLEDiscoveredPeripheral>()
 
-    private var central: CBCentralManager?
-    private lazy var bridge = BLEDelegateBridge(transport: self)
+    /// A03 §3.1 — the manager and its delegate bridge live in a
+    /// lock-guarded box OUTSIDE this actor's isolation, so
+    /// `prepareForRestoration()` can build them synchronously on the
+    /// launch run-loop turn (see that method's own doc comment). The
+    /// actor's own `central`/`bridge` below read the very same
+    /// references; there is one manager, not two views of one.
+    private let centralStore = BLECentralStore()
+    /// A03 §3.1 — the bridge's ordering state, shared with
+    /// `BLEDelegateBridge`: the restore-pending marker and the serial
+    /// delivery chain (`BLEDelegateDelivery`'s own header).
+    private let delivery = BLEDelegateDelivery()
+    private var central: CBCentralManager? { centralStore.current }
+    private nonisolated var bridge: BLEDelegateBridge {
+        centralStore.bridge(for: self, delivery: delivery)
+    }
 
     private var peripheral: CBPeripheral?
     private var toRadioChar: CBCharacteristic?
@@ -367,7 +380,11 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
     /// strictly safer: in none of those states can a scan be running or
     /// usefully started, and a window left open across any of them is
     /// the 2.2.6 battery bug. Which of them are TERMINAL versus
-    /// transient is §3.5's question, and §3.5 is S1b.
+    /// transient is §3.5's question, answered separately by
+    /// `powerStateAction(for:shouldAutoReconnect:hasPreferred:restorePending:)`
+    /// — `handleCentralStateUpdate` applies this one first, because a
+    /// scan window left open across a power cycle is a battery bug
+    /// regardless of what the session does next.
     public static func ladderAction(forCentralState state: CBManagerState, shouldAutoReconnect: Bool,
                                      hasPendingConnect: Bool) -> BLELadderPowerAction {
         guard state == .poweredOn else { return .cancel }
@@ -391,8 +408,10 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
     /// the process was suspended (§1.7). Falls back to our own clock
     /// only when CoreBluetooth did not give us one (the legacy 2-arg
     /// delegate, and macOS).
-    private func armReconnectFallback(for target: UUID, at disconnectedAt: Date) {
-        ladder.arm(target: target, disconnectedAt: disconnectedAt)
+    private func armReconnectFallback(for target: UUID, at disconnectedAt: Date,
+                                      requiresPendingConnect: Bool = true) {
+        ladder.arm(target: target, disconnectedAt: disconnectedAt,
+                   requiresPendingConnect: requiresPendingConnect)
         BLETransport.log("reconnect ladder: armed for \(target) at \(disconnectedAt), " +
                           "first window in \(ReconnectLadder.ladderDelaySeconds(forAttempt: 1))s (±20%)")
         evaluateReconnectLadder()
@@ -743,6 +762,7 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         }
         failAllPending(TransportError.notConnected)
         peripheral = nil
+        isReady = false
         pendingConnectPeripheralID = nil
         toRadioChar = nil; fromRadioChar = nil; fromNumChar = nil; logRadioChar = nil
         hub.yield(.disconnected(reason: nil))
@@ -925,9 +945,92 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
     // MARK: - Setup
 
     private func ensureCentralManagerExists() {
-        guard central == nil else { return }
-        central = CBCentralManager(delegate: bridge, queue: nil, options: Self.centralManagerOptions)
+        constructCentralManagerIfNeeded(reason: "connect/scan")
     }
+
+    /// A03 §3.1 (A03_AC1) — **construct the `CBCentralManager` before
+    /// iOS wants to talk to it**, and do it before returning.
+    ///
+    /// `nonisolated` and SYNCHRONOUS, and that is a constraint rather
+    /// than a style choice. This actor runs under Swift 6 with
+    /// `-strict-concurrency=complete`, so an ordinary `public func` here
+    /// would be `async` to every caller, and
+    /// `Task { await transport.prepareForRestoration() }` from
+    /// `didFinishLaunchingWithOptions` hops off the launch run-loop turn
+    /// — which is the same failure this method exists to fix, one order
+    /// of magnitude smaller. iOS wants a manager carrying the matching
+    /// restore identifier to exist DURING the launch cycle, and "shortly
+    /// after, on another executor" is not that. Hence the lock-guarded
+    /// `centralStore` (its own doc comment) rather than actor state.
+    ///
+    /// Idempotent — `centralStore` constructs at most one manager ever,
+    /// so whichever of the AppDelegate and `FireflyApp.init()` runs
+    /// first wins and the second is a no-op. Issues no `connect()` and
+    /// starts no scan: restoration must be allowed to ADOPT the session
+    /// rather than race a fresh connect.
+    ///
+    /// **The one exception to "on every launch"** (§3.1, from
+    /// Meshtastic-Apple's own `BLETransport.swift:83-85`): never while
+    /// `CBCentralManager.authorization == .notDetermined`. Constructing
+    /// the manager is what raises the system Bluetooth prompt, and
+    /// raising it ahead of Firefly's own onboarding is a worse first run
+    /// than a missed restore. It costs nothing: a relaunch that has a
+    /// session to restore is by definition a launch whose authorization
+    /// was already determined, so this gate only ever fires on a fresh
+    /// install — where there is nothing to restore.
+    public nonisolated func prepareForRestoration() {
+        let authorization = CBCentralManager.authorization
+        guard Self.shouldConstructCentralManagerAtLaunch(authorization: authorization) else {
+            BLETransport.log("prepareForRestoration: CBCentralManager.authorization is .notDetermined — " +
+                              "NOT constructing a manager (that would raise the system prompt before onboarding)")
+            return
+        }
+        constructCentralManagerIfNeeded(reason: "prepareForRestoration")
+    }
+
+    /// The ONE place a `CBCentralManager` is ever constructed — shared
+    /// by `ensureCentralManagerExists()` (the connect/scan path, which
+    /// legitimately raises the permission prompt because a user just
+    /// asked for it) and `prepareForRestoration()` above (the launch
+    /// path, which must not).
+    private nonisolated func constructCentralManagerIfNeeded(reason: String) {
+        let built = centralStore.makeCentralIfNeeded(transport: self, delivery: delivery,
+                                                      options: Self.centralManagerOptions)
+        if built {
+            BLETransport.log("constructed CBCentralManager (\(reason)) options=\(Self.centralManagerOptions.keys.sorted())")
+        }
+    }
+
+    /// §3.1's authorization gate, split out so it is checkable with no
+    /// `CBCentralManager` at all (`BLEStateRestorationTests`) — the same
+    /// reason every other decision in this file is a pure function.
+    public static func shouldConstructCentralManagerAtLaunch(authorization: CBManagerAuthorization) -> Bool {
+        authorization != .notDetermined
+    }
+
+    /// A03 §3.6 — "evaluates `Date.now - disconnectedAt` against the
+    /// table at every opportunity the OS actually gives us: each
+    /// CoreBluetooth delegate callback, each `centralManagerDidUpdateState`,
+    /// and **each foreground transition**." The delegate callbacks call
+    /// `evaluateReconnectLadder()` themselves; this is the foreground
+    /// transition, which nothing inside CoreBluetooth can see.
+    ///
+    /// It is a ladder TICK and nothing more: no scan is started that the
+    /// clock delta does not already say is due, and none is left open
+    /// past its window.
+    public func appDidBecomeActive() {
+        BLETransport.log("appDidBecomeActive: evaluating the reconnect ladder")
+        evaluateReconnectLadder()
+    }
+
+    /// A03 §3.1 — `MeshtasticClient.beginListening()` asks this when it
+    /// attaches, so a session a restore already adopted gets a handshake
+    /// even though its `.ready` was published before anyone subscribed.
+    /// An OBSERVATION of this transport's own state, not a guess: set by
+    /// `completeConnect(throwing: nil)` and cleared by every path that
+    /// takes the link down.
+    public var isLinkReady: Bool { isReady }
+    private var isReady = false
 
     /// M2 — CoreBluetooth state restoration
     /// (`CBCentralManagerOptionRestoreIdentifierKey`). A FIXED identifier
@@ -948,13 +1051,37 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
     /// do there — the M2 task's own scope note, "on macOS: reconnect on
     /// loss the same way minus restoration". An empty options dict on
     /// macOS is the honest "nothing extra requested" default.
-    private static var centralManagerOptions: [String: Any] {
+    /// A03_AC2 — `public` for exactly the reason `connectOptions` above
+    /// is: `BLEContractTests` imports `FireflyMesh` WITHOUT `@testable`,
+    /// and "the iOS options carry a FIXED restore identifier and
+    /// `ShowPowerAlert: false`; the macOS options carry neither" is a
+    /// criterion that must be checkable with no `CBCentralManager`.
+    /// (A03_AC2 offers `internal` + `@testable` as the alternative;
+    /// `public` follows the precedent S1a already set on the sibling
+    /// options dictionary rather than introducing a second convention.)
+    public static var centralManagerOptions: [String: Any] {
         #if os(iOS)
-        [CBCentralManagerOptionRestoreIdentifierKey: "com.jakeholland.Firefly.ble-central"]
+        [
+            CBCentralManagerOptionRestoreIdentifierKey: Self.restoreIdentifier,
+            // A03 §3.5 — Meshtastic-Apple's own `BLETransport.swift:125`,
+            // and their issue #2139/PR #2162: the system power alert
+            // blips `scenePhase`, which restarts discovery, which
+            // re-triggers the alert — a dismiss/reappear loop. Firefly's
+            // Connect screen already says Bluetooth is off in its own
+            // words; a system alert on top of that is a second, worse
+            // voice.
+            CBCentralManagerOptionShowPowerAlertKey: false,
+        ]
         #else
         [:]
         #endif
     }
+
+    /// The restore identifier itself — a FIXED literal, because Apple's
+    /// own requirement is that it "must be identical across executions
+    /// of the app" (§1.2). Named rather than inlined so a test can pin
+    /// the exact string a future edit would otherwise be free to change.
+    public static let restoreIdentifier = "com.jakeholland.Firefly.ble-central"
 
     /// Waits for `CBManagerState.poweredOn`. Throws plainly for the
     /// terminal states that a silent wait would otherwise hang on
@@ -1017,40 +1144,34 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
     // MARK: - Delegate callbacks (forwarded from BLEDelegateBridge)
 
     func handleCentralStateUpdate(_ state: CBManagerState) {
-        BLETransport.log("centralManagerDidUpdateState \(state.rawValue) (waiters=\(poweredOnContinuations.count))")
-        // A03 §3.6 — "Any `.poweredOff` cancels the ladder; `.poweredOn`
-        // restarts it at attempt 1." This runs BEFORE the
-        // "nobody is waiting" guard below on purpose: that guard is the
-        // 2.2.3 audit finding (a state callback that does nothing at all
-        // unless someone happens to be parked in `waitForPoweredOn()`),
-        // and a scan window left open across a Bluetooth power cycle is
-        // exactly the battery bug this slice exists to close. The FULL
-        // §3.5 power-state machine — `retrievePeripherals`, the
-        // `powerStateAction(...)` table, the restore-ordering fix — is
-        // S1b; this is the ladder's half of it and nothing more.
-        // REVIEW FIX (PR #310): the decision is a pure function so it is
-        // reachable from `swift test` with no `CBCentralManager` — the
-        // same shape `shouldIssueConnect` and `BLEDisconnectAction`
-        // already use, and the reason deleting the `.poweredOff` cancel
-        // used to break no test.
-        switch Self.ladderAction(forCentralState: state, shouldAutoReconnect: shouldAutoReconnect,
-                                  hasPendingConnect: pendingConnectPeripheralID != nil) {
-        case .cancel:
-            cancelReconnectLadder(reason: "central state \(state.rawValue)")
-        case .restartAtAttemptOne:
-            // Bluetooth came back with a connect still outstanding.
-            // Restart at attempt 1 rather than resuming a ladder that
-            // spent the outage climbing: the radio may have been
-            // reachable the whole time. (Re-ISSUING a connect for a
-            // peripheral CoreBluetooth invalidated while powered off —
-            // `retrievePeripherals(withIdentifiers:)` — is §3.5, and
-            // §3.5 is S1b. Until it lands, a power cycle recovers here
-            // only through the ladder's own rediscovery.)
-            cancelReconnectLadder(reason: "bluetooth back on — restarting at attempt 1")
-            if let target = pendingConnectPeripheralID { armReconnectFallback(for: target, at: now()) }
-        case .leaveAsIs:
-            break
+        // A03 §3.1 — READ AND CONSUME, in that order, and before
+        // anything else in this method. `willRestoreState` raised this
+        // marker synchronously on the delegate queue (the bridge's own
+        // comment) precisely so THIS callback can see it; consuming it
+        // here is what keeps it from suppressing the NEXT, unrelated
+        // `.poweredOn` — the Bluetooth-off-and-back-on recovery below is
+        // the whole point of §3.5.
+        let restorePending = delivery.consumeRestorePending()
+        BLETransport.log("centralManagerDidUpdateState \(state.rawValue) " +
+                          "(waiters=\(poweredOnContinuations.count), restorePending=\(restorePending))")
+
+        // A03 §3.6 — the ladder's share of this callback. Suppressed
+        // entirely while a restore is being adopted, for the same reason
+        // §3.5's own action is: nothing about a session we just adopted
+        // should be torn down or re-armed by the state update that
+        // arrives alongside it.
+        if !(restorePending && state == .poweredOn) {
+            applyLadderPowerAction(for: state)
         }
+
+        // A03 §3.5 — the full power-state table (A03_AC4), as a pure
+        // function so every row is pinned with no `CBCentralManager`.
+        let action = Self.powerStateAction(for: state, shouldAutoReconnect: shouldAutoReconnect,
+                                            hasPreferred: preferredPeripheralID != nil,
+                                            restorePending: restorePending)
+        BLETransport.log("centralManagerDidUpdateState: powerStateAction = \(action)")
+        apply(action)
+
         evaluateReconnectLadder()
         guard !poweredOnContinuations.isEmpty else { return }
         // State is one value, true for every current waiter at once —
@@ -1070,6 +1191,172 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         }
         // .resetting / .unknown: transient, keep waiting.
     }
+
+    /// A03 §3.5's decision table, whole and total over `CBManagerState`
+    /// (A03_AC4). Pure — no `CBCentralManager`, no clock, no I/O — for
+    /// the reason every other decision in this file is
+    /// (`shouldIssueConnect`, `ladderAction`, `BLEDisconnectAction`):
+    /// constructing a manager outside a signed `.app` aborts the
+    /// process, so a rule only reachable through a live one is a rule no
+    /// unit test can check.
+    ///
+    /// `restorePending` is §3.1's ordering fix: while it is set,
+    /// `.poweredOn` returns `.doNothing` rather than
+    /// `retrievePeripherals` + `issueConnect`, because that retrieve
+    /// returns a DIFFERENT `CBPeripheral` instance than the restore
+    /// dictionary's, and releasing the restored one implicitly cancels
+    /// the very connection the restore was adopting (§1.2).
+    ///
+    /// `.poweredOff` never clears `shouldAutoReconnect` — this function
+    /// cannot, it returns a value; and its caller must not, because the
+    /// user turning Bluetooth off is not the user asking us never to
+    /// reconnect.
+    public static func powerStateAction(for state: CBManagerState, shouldAutoReconnect: Bool,
+                                         hasPreferred: Bool, restorePending: Bool) -> BLEPowerStateAction {
+        switch state {
+        case .poweredOn:
+            guard !restorePending else { return .doNothing }
+            guard shouldAutoReconnect, hasPreferred else { return .doNothing }
+            return .retrieveAndConnect
+        case .poweredOff:
+            return .bluetoothOff
+        case .resetting:
+            return .transientLoss
+        case .unauthorized:
+            return .unauthorized
+        case .unsupported:
+            return .unsupported
+        case .unknown:
+            return .doNothing
+        @unknown default:
+            // A state this build has never heard of says nothing about
+            // the link. Saying nothing is the honest answer.
+            return .doNothing
+        }
+    }
+
+    private func apply(_ action: BLEPowerStateAction) {
+        switch action {
+        case .doNothing:
+            break
+        case .retrieveAndConnect:
+            retrieveAndReconnectPreferred()
+        case .bluetoothOff:
+            handleBluetoothPoweredOff()
+        case .transientLoss:
+            // §3.5: transient, not terminal. The CLIENT turns this into
+            // `.reconnecting(attempt: 1)`; `TransportEvent` has no
+            // `.reconnecting` case and this slice does not add one
+            // (§3.4's vocabulary note).
+            //
+            // `isReady = false` for the same reason `.poweredOff` clears
+            // it: this publishes `.disconnected`, and `isLinkReady`'s own
+            // contract is "cleared by EVERY path that takes the link
+            // down". A transport that answers "yes, the link is up" to
+            // the next `beginListening()` after publishing `.disconnected`
+            // is exactly the stale-true `isLinkReady` exists to avoid —
+            // and "honest data over pretty data" binds this accessor as
+            // much as it binds a screen.
+            isReady = false
+            hub.yield(.disconnected(reason: Self.bluetoothResettingReason))
+        case .unauthorized:
+            isReady = false
+            hub.yield(.disconnected(reason: Self.bluetoothUnauthorizedReason))
+        case .unsupported:
+            isReady = false
+            hub.yield(.disconnected(reason: Self.bluetoothUnsupportedReason))
+        }
+    }
+
+    /// §3.5's `.poweredOff` row. Everything here is a teardown of state
+    /// CoreBluetooth has ALREADY invalidated — the pending connect above
+    /// all, which does not survive a power cycle — with one deliberate
+    /// omission: `shouldAutoReconnect` is preserved, so `.poweredOn`
+    /// below can recover with no user action at all.
+    private func handleBluetoothPoweredOff() {
+        cancelReconnectLadder(reason: "bluetooth off")
+        endFallbackScan()
+        isReady = false
+        toRadioChar = nil; fromRadioChar = nil; fromNumChar = nil; logRadioChar = nil
+        pendingConnectPeripheralID = nil
+        failAllPending(TransportError.notConnected)
+        // `peripheral` is deliberately NOT released: §1.2 — "deallocating
+        // `peripheral` also implicitly calls
+        // `cancelPeripheralConnection(_:)`" — and holding the object is
+        // also what lets `.poweredOn` below recognise the same radio.
+        hub.yield(.disconnected(reason: Self.bluetoothOffReason))
+    }
+
+    /// §3.5's `.poweredOn` row: `retrievePeripherals(withIdentifiers:)`
+    /// then a pending `connect()` — **never a scan first**. A pending
+    /// connect costs nothing while the app is suspended (§1.3); a scan
+    /// is the most expensive thing an iPhone can be asked to do (§4.1).
+    private func retrieveAndReconnectPreferred() {
+        guard let central, let preferredPeripheralID else { return }
+        // Defence in depth for §1.2's rule, independent of the
+        // restore-pending marker that is SUPPOSED to have covered this:
+        // overwriting `self.peripheral` while a session is live releases
+        // the old object, which implicitly cancels its connection. If we
+        // already have one up (or coming up), there is nothing here to
+        // recover.
+        if let existing = peripheral, existing.state == .connected || existing.state == .connecting {
+            BLETransport.log("poweredOn: \(existing.identifier) is already \(existing.state.rawValue) — " +
+                              "leaving the live session alone")
+            return
+        }
+        guard let known = central.retrievePeripherals(withIdentifiers: [preferredPeripheralID]).first else {
+            // §3.5: "If the identifier no longer resolves, arm the §3.6
+            // ladder instead." There is no `CBPeripheral` to connect to,
+            // so the ladder runs WITHOUT a pending connect behind it —
+            // see `ReconnectLadder.requiresPendingConnect`.
+            BLETransport.log("poweredOn: \(preferredPeripheralID) no longer resolves — " +
+                              "arming the rediscovery ladder instead")
+            cancelReconnectLadder(reason: "bluetooth back on — rediscovering")
+            armReconnectFallback(for: preferredPeripheralID, at: now(), requiresPendingConnect: false)
+            return
+        }
+        BLETransport.log("poweredOn: retrieved \(known.identifier) — issuing a pending connect")
+        peripheral = known
+        known.delegate = bridge
+        issueConnect(known)
+        // A03 §3.6 — "`.poweredOn` restarts [the ladder] at attempt 1",
+        // as the backstop BEHIND that pending connect. `now()`, not the
+        // measured `lastDisconnectAt`: the radio may have been reachable
+        // for the whole outage and it is Bluetooth coming back, not the
+        // original loss, that starts this clock.
+        cancelReconnectLadder(reason: "bluetooth back on — restarting at attempt 1")
+        armReconnectFallback(for: known.identifier, at: now())
+    }
+
+    /// A03 §3.6's share of `centralManagerDidUpdateState`, unchanged
+    /// from S1a except that it is now skipped while a restore is being
+    /// adopted (`handleCentralStateUpdate`'s own comment).
+    private func applyLadderPowerAction(for state: CBManagerState) {
+        switch Self.ladderAction(forCentralState: state, shouldAutoReconnect: shouldAutoReconnect,
+                                  hasPendingConnect: pendingConnectPeripheralID != nil) {
+        case .cancel:
+            cancelReconnectLadder(reason: "central state \(state.rawValue)")
+        case .restartAtAttemptOne:
+            // Bluetooth came back with a connect still outstanding.
+            // Restart at attempt 1 rather than resuming a ladder that
+            // spent the outage climbing: the radio may have been
+            // reachable the whole time.
+            cancelReconnectLadder(reason: "bluetooth back on — restarting at attempt 1")
+            if let target = pendingConnectPeripheralID { armReconnectFallback(for: target, at: now()) }
+        case .leaveAsIs:
+            break
+        }
+    }
+
+    /// §3.5's link reasons, named rather than written as literals at the
+    /// call site, for the same reason `systemReconnectingReason` is: the
+    /// client and §3.10's status line both read them, and "Bluetooth is
+    /// off" and "Firefly can't use Bluetooth" are different sentences to
+    /// a user.
+    public static let bluetoothOffReason = "bluetooth-off"
+    public static let bluetoothResettingReason = "bluetooth-resetting"
+    public static let bluetoothUnauthorizedReason = "bluetooth-unauthorized"
+    public static let bluetoothUnsupportedReason = "bluetooth-unsupported"
 
     private func terminalError(for state: CBManagerState) -> Error? {
         do {
@@ -1097,7 +1384,15 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         // a completely different caller (`discoverTarget(central:)`,
         // inside an explicit `connect()`'s own `performConnectSequence()`)
         // and must not be cross-wired with this one.
-        if isFallbackScanning, peripheral.identifier == pendingConnectPeripheralID {
+        // The target this window is looking for: the pending connect's
+        // identifier in the ordinary case, and the ladder's own target
+        // in §3.5's "the identifier no longer resolves" case, where
+        // there is no pending connect to name it (`ReconnectLadder
+        // .requiresPendingConnect`). Both nil means no reconnect is in
+        // progress at all, and `nil == peripheral.identifier` is false,
+        // so an ordinary node-picker sighting still falls through.
+        let reconnectTarget = pendingConnectPeripheralID ?? ladder.target
+        if isFallbackScanning, peripheral.identifier == reconnectTarget {
             // A03 §3.6: the window's job is done — the ladder stands
             // down and `endFallbackScan()` stops the radio scanning.
             ladder.noteDiscovered()
@@ -1156,6 +1451,15 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         // through `issueConnect(_:)`, so a stale identifier here can
         // never suppress a legitimate re-arm.
         pendingConnectPeripheralID = nil
+        isReady = false
+        // A03 §3.1 — belt and braces on the restore marker. It is
+        // normally consumed by the `didUpdateState` Apple delivers right
+        // after `willRestoreState`; if that update never came (nothing
+        // documents it as optional, but nothing guarantees it either),
+        // the session it was protecting is over now, and a marker left
+        // standing would suppress one later, unrelated `.poweredOn` —
+        // i.e. one Bluetooth-off-and-back-on recovery, silently.
+        delivery.clearRestorePending()
         var isBondLost = false
         if let error, let failure = BLEPairingFailure(classifying: error) {
             lastPairingFailure = failure
@@ -1364,6 +1668,7 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         // forever — see `endFallbackScan()`'s own doc comment.
         endFallbackScan()
         if let error {
+            isReady = false
             guard let cont = connectContinuation else { return }
             connectContinuation = nil
             cont.resume(throwing: error)
@@ -1372,6 +1677,7 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         if let cont = connectContinuation {
             connectContinuation = nil
             shouldAutoReconnect = true
+            isReady = true
             hub.yield(.ready)
             cont.resume()
             return
@@ -1393,6 +1699,7 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         diagnostics.lastReconnectAt = now()
         diagnostics.isSystemReconnecting = false
         shouldAutoReconnect = true
+        isReady = true
         hub.yield(.ready)
     }
 
@@ -1414,11 +1721,26 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
     /// copied source: branch on the restored peripheral's own
     /// `CBPeripheralState` rather than assume one.
     func handleWillRestoreState(peripherals: [CBPeripheral]) {
-        guard let restored = peripherals.first(where: { $0.identifier == preferredPeripheralID }) ?? peripherals.first else {
+        guard let restored = Self.peripheralToRestore(from: peripherals, preferred: preferredPeripheralID) else {
             BLETransport.log("willRestoreState: no peripherals in the restore dictionary")
+            // Nothing was adopted, so there is nothing for the marker to
+            // protect: clear it rather than let it suppress the
+            // `.poweredOn` that is about to arrive (§3.5's recovery).
+            delivery.clearRestorePending()
             return
         }
-        BLETransport.log("willRestoreState: restoring \(restored.identifier), CBPeripheralState=\(restored.state.rawValue)")
+        let action = BLERestoreAction.action(forPeripheralState: restored.state)
+        BLETransport.log("willRestoreState: restoring \(restored.identifier), " +
+                          "CBPeripheralState=\(restored.state.rawValue) -> \(action)")
+        // A03 S1b diagnostics — an OBSERVATION, counted at the one place
+        // a restore actually happens, with the state it restored INTO
+        // (§3.10/S3: "restore events, and the `CBPeripheralState` each
+        // restored into"). Never a zero standing in for "we did not
+        // look" — `BLELinkDiagnostics.lastRestoreAt` stays nil until
+        // this runs.
+        diagnostics.restores += 1
+        diagnostics.lastRestoreAt = now()
+        diagnostics.lastRestoreAction = action
         peripheral = restored
         restored.delegate = bridge
         // `setPreferredPeripheral(_:)`, not a raw assignment: on the
@@ -1430,16 +1752,23 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         setPreferredPeripheral(restored.identifier)
         shouldAutoReconnect = true
 
-        switch restored.state {
-        case .connected:
+        switch action {
+        case .adoptConnected:
             // Already connected at the GATT level. THIS process's own
             // characteristic references are gone (a fresh launch) —
             // rediscover them; no `central.connect()` needed, it already
             // is connected. Flows into the same `handleDiscoveredServices`
             // → ... → `completeConnect(throwing: nil)` chain as any other
-            // connect, so `.ready` is published the same honest way.
+            // connect, so `.ready` is published the same honest way — and
+            // `MeshtasticClient.beginListening()` is what guarantees that
+            // `.ready` has a listener (and, if it already went out, that
+            // the client asks `isLinkReady` and runs the handshake
+            // anyway). §3.1: the handshake IS re-run, because A01
+            // deliberately does not persist the nodeDB, so this process
+            // has none — one `want_config` per background relaunch,
+            // accepted and stated rather than hidden.
             restored.discoverServices([Self.serviceUUID])
-        case .connecting:
+        case .keepPendingConnect:
             // A pending connect from before the relaunch — CoreBluetooth
             // resumes it on its own; `didConnect` fires when it lands.
             // Recorded as pending (SHOULD-FIX 4, PR #272 review) so an
@@ -1448,7 +1777,7 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
             // not redundantly issue a SECOND native `central.connect()`
             // for the very same peripheral.
             pendingConnectPeripheralID = restored.identifier
-        default:
+        case .reconnect:
             // .disconnected/.disconnecting: re-arm a pending connect the
             // same way `handleDisconnected` does for a mid-session drop.
             // `issueConnect(_:)` (SHOULD-FIX 4, PR #272 review) is what
@@ -1464,6 +1793,30 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
             // reciprocal direction.
             issueConnect(restored)
         }
+        // The marker is NOT cleared here. It is consumed by the
+        // `centralManagerDidUpdateState` that Apple delivers right after
+        // this callback (`handleCentralStateUpdate`'s own comment) —
+        // which is the single callback it exists to guard, and which
+        // this delivery chain guarantees runs after this method, not
+        // before it. Clearing it here would put the race back.
+    }
+
+    /// Which restored peripheral this transport adopts: the remembered
+    /// one if the dictionary carries it, else the first one there is.
+    ///
+    /// Split out as a pure function over identifiers so
+    /// `BLEStateRestorationTests` can pin the choice without a
+    /// `CBPeripheral` (which cannot be constructed at all outside
+    /// CoreBluetooth).
+    public static func indexOfPeripheralToRestore(identifiers: [UUID], preferred: UUID?) -> Int? {
+        if let preferred, let match = identifiers.firstIndex(of: preferred) { return match }
+        return identifiers.isEmpty ? nil : 0
+    }
+
+    private static func peripheralToRestore(from peripherals: [CBPeripheral], preferred: UUID?) -> CBPeripheral? {
+        guard let index = indexOfPeripheralToRestore(identifiers: peripherals.map(\.identifier),
+                                                      preferred: preferred) else { return nil }
+        return peripherals[index]
     }
 
     // MARK: - Test-only hook (`FireflyHardwareTests`, via `@testable
@@ -1480,9 +1833,92 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
     /// `internal`, not `public`: this is a test seam, not an app-facing
     /// operation — the 2026-09-11 bench power-cycle investigation's own
     /// hardware-verification test reaches it via `@testable import`.
+    /// A03_AC1's app-hosted half (`BLERestorationHostTests`): whether a
+    /// `CBCentralManager` exists at all, and which one. `internal`, not
+    /// `public`: this is a test seam for a criterion that cannot be
+    /// reached any other way (a manager can only be constructed inside a
+    /// signed `.app`), never an app-facing accessor — nothing in the app
+    /// has any business holding the manager directly.
+    /// `ObjectIdentifier`, not the manager itself: `CBCentralManager` is
+    /// not `Sendable` (CoreBluetooth predates it), so handing one across
+    /// this actor's boundary is a strict-concurrency error — and the
+    /// question the test actually asks is identity ("is this the SAME
+    /// manager as before?"), which an identifier answers exactly.
+    var centralManagerIdentityForTesting: ObjectIdentifier? { central.map(ObjectIdentifier.init) }
+    var hasCentralManagerForTesting: Bool { central != nil }
+    /// CoreBluetooth's own observation of itself — A03_AC1's "never
+    /// issues a scan" is checked against the framework, not against a
+    /// flag of ours that could simply be wrong.
+    var isScanningForTesting: Bool { central?.isScanning ?? false }
+
     func simulateUnexpectedDisconnectForTesting() {
         guard let central, let peripheral else { return }
         BLETransport.log("simulateUnexpectedDisconnectForTesting: cancelPeripheralConnection(\(peripheral.identifier))")
         central.cancelPeripheralConnection(peripheral)
+    }
+}
+
+/// A03 §3.1 — the `CBCentralManager` and its delegate bridge, held
+/// behind a lock OUTSIDE `BLETransport`'s actor isolation.
+///
+/// This exists for one reason and it is a hard requirement, not a
+/// preference: `prepareForRestoration()` has to construct the manager
+/// **synchronously, before it returns to UIKit**, so the manager
+/// carrying the restore identifier exists during the launch cycle
+/// (§3.1, A03_AC1). An `actor`'s stored properties cannot be touched
+/// synchronously from a `nonisolated` method, so the reference lives
+/// here instead and the actor's own `central`/`bridge` read it.
+///
+/// `@unchecked Sendable` for the ordinary reason: both stored
+/// properties are private and only ever touched under `lock`. The
+/// manager and the bridge themselves are safe to hand out —
+/// `CBCentralManager`'s instance methods are documented as callable
+/// from any thread (`CoreBluetoothCrossing`'s own doc comment), and
+/// `BLEDelegateBridge` is only ever called BY CoreBluetooth, on the
+/// delegate queue.
+final class BLECentralStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var central: CBCentralManager?
+    private var bridge: BLEDelegateBridge?
+
+    var current: CBCentralManager? {
+        lock.lock(); defer { lock.unlock() }
+        return central
+    }
+
+    func bridge(for transport: BLETransport, delivery: BLEDelegateDelivery) -> BLEDelegateBridge {
+        lock.lock(); defer { lock.unlock() }
+        return existingBridgeOrMake(for: transport, delivery: delivery)
+    }
+
+    /// `true` when THIS call constructed the manager — so the caller can
+    /// log "constructed" exactly once, and so a test can state "a second
+    /// call does not produce a second manager" as a fact rather than by
+    /// comparing object identity through a private field.
+    @discardableResult
+    func makeCentralIfNeeded(transport: BLETransport, delivery: BLEDelegateDelivery,
+                             options: [String: Any]) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard central == nil else { return false }
+        let delegate = existingBridgeOrMake(for: transport, delivery: delivery)
+        // Constructed under the lock on purpose: two launch paths call
+        // `prepareForRestoration()` (§3.1's AppDelegate and
+        // `FireflyApp.init()`), and "at most one `CBCentralManager`" is
+        // the guarantee this whole box exists for. CoreBluetooth
+        // delivers its first `centralManagerDidUpdateState` ASYNCHRONOUSLY
+        // on the delegate queue, never re-entrantly from this
+        // initializer, so holding the lock across it cannot deadlock
+        // against our own delegate callbacks.
+        central = CBCentralManager(delegate: delegate, queue: nil, options: options)
+        return true
+    }
+
+    /// Caller holds `lock`.
+    private func existingBridgeOrMake(for transport: BLETransport,
+                                      delivery: BLEDelegateDelivery) -> BLEDelegateBridge {
+        if let bridge { return bridge }
+        let made = BLEDelegateBridge(transport: transport, delivery: delivery)
+        bridge = made
+        return made
     }
 }
