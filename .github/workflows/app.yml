@@ -72,6 +72,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A pure static-source check on the committed project.pbxproj — no
+  # Xcode, no macOS runner, same reasoning as ci.yml's own
+  # subtick-sleep-check job (its own header comment): fast feedback on a
+  # regex-catchable regression without waiting on (or sharing a runner
+  # with) the much slower `package`/`xcode` jobs below. Guards against
+  # the mistake app/tools/check_project.sh's own header comment
+  # describes in full: a regenerated project.pbxproj carrying an
+  # unresolved `${...}` xcodegen template placeholder (e.g.
+  # CURRENT_PROJECT_VERSION) as a real build setting.
+  project-lint:
+    name: project-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: No unresolved template placeholders in project.pbxproj
+        run: app/tools/check_project.sh
+
   package:
     name: FireflyKit (swift build + test)
     # macos-26 (Tahoe): GitHub Actions' macOS-26 runner image reached

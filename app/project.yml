@@ -5,15 +5,14 @@
 # hand-edited into an unreviewable 3000-line pbxproj diff:
 #
 #     brew install xcodegen
-#     cd app && FIREFLY_BUILD_NUMBER=1 xcodegen generate
+#     cd app && xcodegen generate
 #
 # Regenerate and commit both whenever you change targets, settings or
-# Info.plist wiring. See app/README.md. FIREFLY_BUILD_NUMBER must be set
-# — see this file's own CURRENT_PROJECT_VERSION comment below — plain
-# `xcodegen generate` with it unset leaves that setting as a literal,
-# unresolved placeholder rather than a number. app/tools/testflight.sh
-# always sets it (to the real git commit count) before it regenerates
-# and archives a Release build.
+# Info.plist wiring. See app/README.md. No environment variable is
+# needed — `xcodegen generate` is plain and idempotent (run it twice,
+# `git diff` is empty). See CURRENT_PROJECT_VERSION's own comment below
+# for why: it used to be templated from an env var here and is not
+# anymore.
 name: Firefly
 options:
   bundleIdPrefix: com.jakeholland
@@ -37,20 +36,25 @@ settings:
     # `swiftLanguageModes: [.v6]`.
     SWIFT_VERSION: "6.0"
     # A01/TestFlight: MARKETING_VERSION is the human-facing version
-    # (bump by hand for real releases); CURRENT_PROJECT_VERSION is the
-    # build number TestFlight requires to be unique on every upload.
-    # xcodegen substitutes ${FIREFLY_BUILD_NUMBER} from the environment
-    # AT GENERATE TIME — app/tools/testflight.sh sets it to
-    # `git rev-list --count HEAD` and regenerates right before
-    # archiving, so a routine `cd app && xcodegen generate` with the
-    # var unset does NOT silently corrupt this: it leaves this literal
-    # placeholder in place (xcodegen's own behavior for an unset
-    # substitution) rather than writing a bad value, and the checked-in
-    # project below was itself generated the same way testflight.sh
-    # does it — see that script and app/README.md, "Shipping a
-    # TestFlight build" for the one call that regenerates it correctly.
+    # (bump by hand for real releases). CURRENT_PROJECT_VERSION — the
+    # build number TestFlight requires to be unique on every upload —
+    # is deliberately NOT set here. It used to be templated from an
+    # environment variable at `xcodegen generate` time
+    # (`${FIREFLY_BUILD_NUMBER}`), which meant any regeneration that
+    # forgot to set it baked the literal, unresolved placeholder string
+    # into the committed pbxproj as CFBundleVersion — and any build
+    # that didn't override it on the command line (Xcode GUI, CI, an
+    # agent running a plain `xcodebuild`) shipped that placeholder.
+    # Leaving CURRENT_PROJECT_VERSION out of both `settings:` here AND
+    # the target's own `settings:` below means it falls through to
+    # Config/Firefly.xcconfig's plain, always-valid `1` — a target-level
+    # build setting beats an xcconfig (see that file's own comment), so
+    # it must stay absent from both `settings:` blocks for the xcconfig
+    # default to actually apply. app/tools/testflight.sh overrides that
+    # default on the `xcodebuild archive` command line with the real
+    # `git rev-list --count HEAD` value — see that script's own header
+    # comment and app/README.md, "Shipping a TestFlight build".
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "${FIREFLY_BUILD_NUMBER}"
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     SWIFT_STRICT_CONCURRENCY: complete

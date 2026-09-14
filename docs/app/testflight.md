@@ -100,10 +100,14 @@ This:
 
 1. wires up `app/Config/Local.xcconfig` for team `SU4T96VBX6` if it
    does not already exist (git-ignored, one-time, per machine);
-2. sets the build number to `git rev-list --count HEAD` and
-   regenerates `Firefly.xcodeproj` from `project.yml`;
+2. regenerates `Firefly.xcodeproj` from `project.yml` (a sync step —
+   `xcodegen generate` is plain and idempotent, no build-number
+   templating involved any more);
 3. archives a Release build for iOS
-   (`xcodebuild archive ... -allowProvisioningUpdates`);
+   (`xcodebuild archive ... -allowProvisioningUpdates
+   CURRENT_PROJECT_VERSION=<git rev-list --count HEAD>` — the build
+   number is passed on the command line, overriding
+   `Config/Firefly.xcconfig`'s plain `1` default for this one archive);
 4. exports and, if `ASC_KEY_ID` / `ASC_ISSUER_ID` / `ASC_KEY_PATH` are
    all set and the key file exists, uploads it to App Store Connect.
 
@@ -124,8 +128,11 @@ entitlements, or Info.plist change, before trying a real upload.
 
 MARKETING_VERSION (currently 0.1.0) is bumped by hand in `project.yml`
 when it actually changes; `CURRENT_PROJECT_VERSION` (the build number)
-is never touched by hand — see `project.yml`'s own comment on that
-setting.
+is never touched by hand — it defaults to a plain `1` in
+`app/Config/Firefly.xcconfig` and `testflight.sh` overrides that on the
+`xcodebuild archive` command line with the real commit count. See
+`project.yml`'s own comment on that setting and
+`app/Config/Firefly.xcconfig`'s.
 
 Once uploaded, the build shows up under the app's **TestFlight** tab in
 App Store Connect after Apple finishes processing it (again, usually a
