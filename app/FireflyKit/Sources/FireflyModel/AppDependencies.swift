@@ -40,17 +40,24 @@ public struct AppDependencies: Sendable {
     /// `AppGraph.init` restores this into `core.crew` before anything
     /// can observe a client (`CrewPairingRestorer`'s own doc comment).
     public var crewPairingStore: any CrewPairingStoring
+    /// A02 slice C's per-crew-code local state: the hide list (§4.5) and
+    /// the join log (§2.3). Appended after `crewPairingStore` under the
+    /// same append-only convention, with the same in-memory default, so
+    /// every existing `AppDependencies(...)` call site keeps compiling.
+    public var crewLocalStateStore: any CrewLocalStateStoring
 
     public init(client: any MeshtasticClientProtocol, location: any LocationProviding,
                 heading: any HeadingProviding, store: any FireflyExtraSettingsStoring,
                 scanner: (any NodeScanning)? = nil,
-                crewPairingStore: any CrewPairingStoring = InMemoryCrewPairingStore()) {
+                crewPairingStore: any CrewPairingStoring = InMemoryCrewPairingStore(),
+                crewLocalStateStore: any CrewLocalStateStoring = InMemoryCrewLocalStateStore()) {
         self.client = client
         self.location = location
         self.heading = heading
         self.store = store
         self.scanner = scanner
         self.crewPairingStore = crewPairingStore
+        self.crewLocalStateStore = crewLocalStateStore
     }
 
     /// The stub stack: `StubMeshtasticClient` over `LoopbackTransport`,
@@ -122,7 +129,8 @@ public struct AppDependencies: Sendable {
             heading: HeadingProvider(),
             store: store,
             scanner: transport,
-            crewPairingStore: CrewPairingStore())
+            crewPairingStore: CrewPairingStore(),
+            crewLocalStateStore: CrewLocalStateStore())
     }
 
     /// `SettingsKey.bondedPeripheralIDs`'s on-disk shape: a comma-joined

@@ -46,6 +46,85 @@ public enum LinkState: Equatable, Sendable {
     case failed(String)
 }
 
+/// Per-PACKET metadata for one live `MeshPacket` — the facts A02 §4.1's
+/// admission rule is stated in terms of, which nothing on the phone side
+/// carried before (`docs/specs/A02-crew-join.md` §4.2.1 item 1). The
+/// Swift twin of the puck's `mc_rx_meta_t` channel-index/`via_mqtt`
+/// addition (`docs/specs/S02-core-crew.md`, 2026-09-13 amendment, §B).
+///
+/// PRESENCE IS THE OPTIONALITY OF THE WHOLE STRUCT, not a flag per
+/// field, and that is the honest shape here rather than a cosmetic
+/// simplification of the C struct's `has_channel_index`:
+///
+///  * A `MeshNodeSnapshot` whose `rxMeta` is `nil` did NOT come off a
+///    live packet at all — it is a want_config nodeDB REPLAY entry, a
+///    synthesized summary of what the radio remembers. "Absent" there
+///    can never read as channel 0, which is exactly the failure §4.2.1
+///    warns about, because there is no channel field to misread.
+///  * A `MeshNodeSnapshot` whose `rxMeta` is non-nil came off a real
+///    `MeshPacket`, and `channelIndex` is then whatever that packet
+///    said. `0` there is NOT "absent": index 0 is the primary, which is
+///    precisely where Firefly writes the crew channel (§1.5), so
+///    treating a wire 0 as unknown would refuse to admit the common
+///    case. The wire has no presence bit for `MeshPacket.channel`
+///    (proto3 implicit presence), and inventing one here would be a
+///    claim the wire cannot support.
+public struct MeshRxMeta: Sendable, Equatable {
+    /// `MeshPacket.from` — carried here so the admission rule can be
+    /// evaluated against the packet itself rather than against whichever
+    /// node record the snapshot happens to be attached to.
+    public let from: UInt32
+    /// `MeshPacket.channel` — "inherently a local concept" (mesh.proto):
+    /// the index this radio holds the channel at, never a mesh-wide
+    /// name. See this type's own doc comment for why this is not
+    /// optional.
+    public let channelIndex: UInt32
+    /// `MeshPacket.via_mqtt`. A crew is people who are here; an MQTT
+    /// path can replay (A02 §4.2).
+    public let viaMQTT: Bool
+    /// The decoded payload's portnum, as its RAW value — `nil` when the
+    /// packet did not reach us decrypted, and therefore has no portnum
+    /// at all. Raw rather than `PortNum` on purpose: Firefly's own 269
+    /// is not an enumerator in `portnums.proto` (it arrives as
+    /// `.UNRECOGNIZED(269)`), and matching it by `PortNum.privateApp`
+    /// (256) would silently admit nobody — A02 §4.1 clause 6.
+    public let portnum: Int32?
+    /// True iff the radio handed us a DECODED payload. A packet the
+    /// radio could not decrypt reaches a client as `.encrypted` bytes,
+    /// so this is a property of the delivery rather than a check we
+    /// perform — and it is the load-bearing clause of A02 §4.1:
+    /// possession of the PSK is what membership means.
+    public let decrypted: Bool
+    /// THIS packet's own hop path: `true` = it arrived direct, `false` =
+    /// it was relayed or came over MQTT, `nil` = the hop fields could
+    /// not establish either (never "assume direct").
+    ///
+    /// Carried per packet because that is the only honest basis for
+    /// attributing a reading to a node. `MeshNodeSnapshot.hopsAway` is
+    /// the nodeDB's LATCHED summary of some earlier hearing, and reusing
+    /// it for a packet that came over MQTT is how a bridged packet ends
+    /// up rendered as "standing next to you" — the puck has never had
+    /// this bug, because `ff_shell.c`'s `shell_ev_rx_meta` gates on
+    /// `m->rx_path == MC_RX_PATH_DIRECT`, this packet's own path.
+    public let direct: Bool?
+    /// The RSSI OUR radio measured for THIS packet, already
+    /// plausibility-gated, or `nil` when it reported none. Never the
+    /// node record's previous reading: re-feeding that would re-stamp an
+    /// old measurement's age to zero.
+    public let rssiDbm: Int16?
+
+    public init(from: UInt32, channelIndex: UInt32, viaMQTT: Bool, portnum: Int32?, decrypted: Bool,
+                direct: Bool? = nil, rssiDbm: Int16? = nil) {
+        self.from = from
+        self.channelIndex = channelIndex
+        self.viaMQTT = viaMQTT
+        self.portnum = portnum
+        self.decrypted = decrypted
+        self.direct = direct
+        self.rssiDbm = rssiDbm
+    }
+}
+
 /// A node the radio has told us about. Every field that can be unknown
 /// IS optional — no sentinels, no zero-means-absent (the rule
 /// docs/specs/S03-meshclient.md AC9/AC10/AC11 pin for the C client).
@@ -81,9 +160,23 @@ public struct MeshNodeSnapshot: Sendable, Equatable, Identifiable {
     /// is holding.
     public let observedAt: Date?
 
+    /// The metadata of the LIVE PACKET this snapshot was published for,
+    /// or `nil` when this snapshot is not about a packet at all — a
+    /// want_config nodeDB replay entry. See `MeshRxMeta`.
+    ///
+    /// A02 slice C `[api]`: this is the field the crew-admission rule
+    /// (`CrewMembershipEngine`, `FireflyModel`) is evaluated against,
+    /// and `nil` here is what makes the replay admit nobody without any
+    /// separate guard — `docs/specs/A02-crew-join.md` §4.2/§4.2.1.
+    /// Defaulted in the memberwise initialiser so every existing
+    /// construction site (tests, `DemoMeshtasticClient`) keeps compiling
+    /// and keeps meaning exactly what it meant before: "not from a
+    /// packet".
+    public let rxMeta: MeshRxMeta?
+
     public init(num: UInt32, shortName: String?, longName: String?, position: NodePosition?,
                 lastHeard: Date?, rssiDbm: Int16?, snrDb: Float?, hopsAway: UInt32?,
-                observedAt: Date? = nil) {
+                observedAt: Date? = nil, rxMeta: MeshRxMeta? = nil) {
         self.num = num
         self.shortName = shortName
         self.longName = longName
@@ -93,6 +186,29 @@ public struct MeshNodeSnapshot: Sendable, Equatable, Identifiable {
         self.snrDb = snrDb
         self.hopsAway = hopsAway
         self.observedAt = observedAt
+        self.rxMeta = rxMeta
+    }
+
+    /// The same node record, republished for a live packet whose
+    /// metadata is `meta`. Used by `MeshtasticClient` so the rx-meta
+    /// event carries BOTH whatever identity the nodeDB already holds
+    /// and the packet facts the admission rule needs — never an empty
+    /// snapshot that would clobber a good one downstream
+    /// (`NearbyNodesViewModel.apply(_:)` replaces by `num`).
+    public func carrying(_ meta: MeshRxMeta, observedAt: Date? = nil) -> MeshNodeSnapshot {
+        MeshNodeSnapshot(num: num, shortName: shortName, longName: longName, position: position,
+                         lastHeard: lastHeard, rssiDbm: rssiDbm, snrDb: snrDb, hopsAway: hopsAway,
+                         observedAt: observedAt ?? self.observedAt, rxMeta: meta)
+    }
+
+    /// A node we have heard a packet from and know NOTHING else about —
+    /// every identity field honestly absent. Not a placeholder: this is
+    /// what "a packet arrived from an id with no nodeDB record" actually
+    /// looks like, and the crew-admission rule only ever needs the id
+    /// and the packet meta.
+    public static func unidentified(num: UInt32, rxMeta: MeshRxMeta, observedAt: Date?) -> MeshNodeSnapshot {
+        MeshNodeSnapshot(num: num, shortName: nil, longName: nil, position: nil, lastHeard: nil,
+                         rssiDbm: nil, snrDb: nil, hopsAway: nil, observedAt: observedAt, rxMeta: rxMeta)
     }
 }
 

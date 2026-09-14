@@ -63,6 +63,11 @@ public final class AppGraph {
     /// section in More can never drift from each other or from what
     /// Radar/Inbox render. See `CrewPairingStore.swift`.
     public let crewPairing: CrewPairingController
+    /// A02 slice C — auto crew membership (`CrewMembershipEngine`).
+    /// Exposed here because slice B's Crew page and Start screen read it
+    /// through `CrewMembershipProviding` — `CoreStore.membership` sees
+    /// only the gate half of the same object.
+    public let crewMembership: CrewMembershipEngine
     /// "app: festpack from fest-almanac + Lineup" — the Lineup screen's
     /// data source. Demo mode (`dependencies.client is DemoMeshtasticClient`
     /// — the same downcast `FireflyApp.init` uses to recover its own
@@ -209,6 +214,9 @@ public final class AppGraph {
         self.packetSender = MeshFireflyPacketSender(client: dependencies.client)
         self.flareTakeover = FlareTakeoverViewModel(crew: self.core.crew)
         self.crewPairing = CrewPairingController(crew: core.crew, store: dependencies.crewPairingStore)
+        self.crewMembership = CrewMembershipEngine(pairing: self.crewPairing,
+                                                    store: dependencies.crewLocalStateStore,
+                                                    client: dependencies.client)
         let isDemo = dependencies.client is DemoMeshtasticClient
         self.festpack = isDemo
             ? DemoFestpackProvider()
@@ -249,6 +257,13 @@ public final class AppGraph {
         // from ever reading as lost for even one frame.
         // `CrewPairingRestorer`'s own doc comment.
         CrewPairingRestorer.restore(from: dependencies.crewPairingStore, into: core.crew)
+        // A02 AC13 — install the membership gate BEFORE `start()` can
+        // subscribe `core` to `nodeUpdates()`, and after the restore
+        // above, for the same ordering reason: the gate answers "is this
+        // node already crew?" off the live roster, so the roster has to
+        // be restored first or the first want_config replay would find
+        // every returning member unpaired.
+        core.membership = crewMembership
     }
 
     /// `FireflyApp`'s `ScenePhase` observation calls this — the one
@@ -289,6 +304,12 @@ public final class AppGraph {
         // feed's outbox id space here. See
         // `CoreStore.observe(client:routeDeliveriesToInbox:)`.
         core.observe(client: dependencies.client, routeDeliveriesToInbox: false)
+        // A02 AC14 — re-resolve the crew's channel index on every
+        // reconnect. Subscribed here, alongside every other stream this
+        // graph owns, rather than inside the engine's init: a
+        // subscription that outlives `stop()` is the leak `stopObserving`
+        // exists to prevent.
+        crewMembership.observe()
         // Paired with `stop()`'s `radar?.stopObserving()` — without this,
         // backgrounding with background-connect off would stop Radar's
         // recompute loop permanently and coming back to the foreground
@@ -557,6 +578,7 @@ public final class AppGraph {
     public func stop() async {
         started = false
         core.stopObserving()
+        crewMembership.stopObserving()
         privateObservation?.cancel(); privateObservation = nil
         stopObservingMyLocation()
         stopObservingIncomingTextsForNotifications()

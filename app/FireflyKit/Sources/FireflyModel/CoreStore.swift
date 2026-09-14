@@ -48,6 +48,29 @@ public final class CoreStore {
     /// `ff_find_t` would be a second session, and S29 allows exactly one.
     public let find = FindBridge()
 
+    /// A02 slice C (AC13): the MEMBERSHIP GATE in front of
+    /// `apply(nodeUpdate:)`. A node that is neither already crew nor
+    /// being admitted by A02 §4.1 is not fed into `ff_crew` at all —
+    /// which is what stops a replayed nodeDB of 200 strangers from
+    /// populating the roster (issue #266's remaining app-side live
+    /// exposure; the core half landed 2026-09-11).
+    ///
+    /// `nil` means NO GATE, and that is the honest default rather than
+    /// an oversight: a composition with no crew — `CoreStoreTests`, the
+    /// demo bundle, any headless consumer — has no membership policy to
+    /// enforce, and silently dropping every node for it would be a
+    /// behaviour change dressed up as a safety measure. The live graph
+    /// (`AppGraph`) always sets one.
+    ///
+    /// Held STRONGLY on purpose. A weak reference here would fail OPEN —
+    /// the gate silently disappearing and every stranger flowing back
+    /// into `ff_crew` — the moment a caller forgot to retain the engine,
+    /// which is exactly the kind of quiet policy loss this slice exists
+    /// to close. There is no cycle to avoid: the engine reaches
+    /// `CrewPairingController` -> `CrewStore`, and `CrewStore` holds no
+    /// reference back to this type.
+    public var membership: (any CrewMembershipGating)?
+
     private var linkObservation: Task<Void, Never>?
     private var nodeObservation: Task<Void, Never>?
     private var deliveryObservation: Task<Void, Never>?
@@ -141,6 +164,16 @@ public final class CoreStore {
     /// real friends" ceiling `ff_heard_t` exists on the firmware side to
     /// avoid — see #273 before building one.
     public func apply(nodeUpdate: MeshNodeSnapshot) {
+        // A02 AC13 — the gate, and it is in FRONT of everything below
+        // rather than folded into the four `crew.*` conditions further
+        // down. Those conditions are a FRESHNESS policy ("is this datum
+        // a measurement we can honestly date?") written out at length
+        // below, and they are deliberately left untouched by this slice:
+        // a membership decision and a freshness decision are different
+        // questions, and merging them would mean either could be
+        // "fixed" by loosening the other.
+        if let membership, !membership.admits(nodeUpdate) { return }
+
         let nowDate = Date()
 
         // Identity first: the roster slot has to exist and carry
@@ -185,11 +218,36 @@ public final class CoreStore {
         }
 
         // RSSI/SNR are per-packet and only attributable when the packet
-        // came directly (docs/specs/A01-companion-app.md, "NodeDB"): a
-        // bare `hopsAway == 0` is what the client layer (slice A) uses
-        // to mean DIRECT, never a default for "unknown".
-        let direct = nodeUpdate.hopsAway == 0
-        if direct, let rssiDbm = nodeUpdate.rssiDbm {
+        // came directly (docs/specs/A01-companion-app.md, "NodeDB").
+        //
+        // WHICH packet, though. When this snapshot came off a live
+        // `MeshPacket` (`rxMeta != nil`) the authority is THAT packet's
+        // own hop path and THAT packet's own reading — never
+        // `hopsAway`/`rssiDbm`, which are the nodeDB's latched summary
+        // of some earlier hearing. Measured (PR #306 review): without
+        // this, a crew member's MQTT-bridged or two-hop-relayed packet
+        // re-fed the RSSI their last DIRECT packet measured, with its
+        // age re-stamped to zero, and `heardDirect` stayed `true` — the
+        // radio reporting "standing next to you" for somebody on the
+        // other side of a bridge. This is the rule `ff_shell.c`'s
+        // `shell_ev_rx_meta` has always applied on the puck
+        // (`m->rx_path == MC_RX_PATH_DIRECT && m->has_rssi`).
+        //
+        // With no `rxMeta` this is a want_config nodeDB REPLAY entry and
+        // the pre-A02 rule stands unchanged: a bare `hopsAway == 0` is
+        // what the client layer uses to mean DIRECT, never a default for
+        // "unknown". Both branches only ever REFUSE to attribute — no
+        // path here attributes anything the old one would not have.
+        let direct: Bool
+        let attributableRSSI: Int16?
+        if let meta = nodeUpdate.rxMeta {
+            direct = meta.direct == true
+            attributableRSSI = meta.rssiDbm
+        } else {
+            direct = nodeUpdate.hopsAway == 0
+            attributableRSSI = nodeUpdate.rssiDbm
+        }
+        if direct, let rssiDbm = attributableRSSI {
             crew.onRSSI(nodeID: nodeUpdate.num, rssiDbm: rssiDbm)
         }
 
