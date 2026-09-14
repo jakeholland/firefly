@@ -169,7 +169,8 @@ not a re-layout.
 
 | element | before | after | mm after | |
 |---|---|---|---:|---|
-| feed / picker rows (hit) | 288×60 | **268×80** | 23.4 × 7.0 | ★ |
+| feed rows (hit) | 288×60 | **268×80** | 23.4 × 7.0 | ★ |
+| picker rows (hit) | 288×60 | **256×80** | 22.4 × 7.0 | ★ |
 | thread quick-reply chips | 66/96/74 × 44 | 66/96/74 × **52** | 4.6 tall | chip floor |
 | action popup rows | 280×66 | **280×80** | 24.5 × 7.0 | ★ |
 | action popup close | 54×54 | **64×64** | 5.6 | |
