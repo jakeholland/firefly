@@ -1463,8 +1463,21 @@ static void shell_ev_channel(void *u, mc_channel_t const *ch)
 /**
  * shell_try_admit — the roster-growth half of the admission rule.
  *
- * Called from `shell_ev_rx_meta` for a sender that is not already in the
- * roster. Everything it decides lives in core (`ff_admit`, pure and
+ * Called from `shell_ev_rx_meta` for any sender that is not currently a
+ * PAIRED roster member — which includes an existing but unpaired slot,
+ * not only a completely unknown id. That matters in both directions and
+ * is worth stating plainly:
+ *  - it is what lets an UNHIDDEN person come back: hiding unpairs them,
+ *    so their slot survives, and an admission gated on "no slot at all"
+ *    would leave them permanently invisible with nothing to explain why;
+ *  - the consequence, flagged rather than hidden: under auto-crew a
+ *    plain unpair (the CREW page's REMOVE) is NOT permanent — the next
+ *    qualifying packet re-admits them. That is the honest reading of
+ *    "possession of the crew key is membership", and it is exactly why
+ *    HIDE (unpair + remember) exists as the control that actually
+ *    sticks. The CREW page carries both.
+ *
+ * Everything it decides lives in core (`ff_admit`, pure and
  * exhaustively tested clause by clause); everything it DOES routes
  * through `shell_pair`, so there is still exactly one place in this file
  * where the roster grows.
@@ -2594,7 +2607,7 @@ static void shell_ev_rx_meta(void *u, uint32_t from, mc_rx_meta_t const *m)
      * churn under real festival RF volume). It still never grows the
      * roster. */
     ff_crew_member_t const *sender = ff_crew_find(&sh->crew, from);
-    if (sender == NULL) {
+    if (sender == NULL || !sender->paired) {
         /* A02 slice D (docs/specs/S02-core-crew.md's 2026-09-13
          * amendment) — THE POLICY CHANGE. The roster used to grow from
          * an explicit user action and nothing else; it now also grows
@@ -2613,7 +2626,11 @@ static void shell_ev_rx_meta(void *u, uint32_t from, mc_rx_meta_t const *m)
          * channel even if it did. No extra guard is needed for that; a
          * test pins it. */
         if (!shell_try_admit(sh, from, m)) {
-            ff_heard_note(&sh->heard, from, now);
+            /* Only a sender with no roster slot at all belongs in
+             * `heard` — an existing, unpaired slot is already tracked,
+             * and noting it here would double-count it (the pre-A02
+             * behaviour this branch replaced, preserved exactly). */
+            if (sender == NULL) ff_heard_note(&sh->heard, from, now);
             return;
         }
         sender = ff_crew_find(&sh->crew, from);
@@ -3363,7 +3380,15 @@ static void shell_project_crew_page(shell_t const *sh, uint32_t now_ms, ff_app_s
         if (id == 0u) continue;
         ff_app_crew_hidden_row_t *row = &cw->hidden[cw->hidden_count++];
         row->node_id = id;
-        char const *name = shell_heard_name_lookup(sh, id);
+        /* A hidden person usually WAS crew, so their name is most likely
+         * on their (now unpaired) roster slot rather than in the
+         * heard-name cache — hiding does not delete the slot, it only
+         * unpairs it. Check there first, then fall back to the cache,
+         * then to the honest node-id short form. Never blank, never
+         * invented. */
+        ff_crew_member_t const *hm = ff_crew_find(&sh->crew, id);
+        char const *name = (hm != NULL) ? ff_crew_display_name(hm) : "";
+        if (name[0] == '\0') name = shell_heard_name_lookup(sh, id);
         row->has_name = (name[0] != '\0');
         shell_copy_str(row->name, sizeof(row->name), name);
         shell_short_id(id, row->short_id, sizeof(row->short_id));
