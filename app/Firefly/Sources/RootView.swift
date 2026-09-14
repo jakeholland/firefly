@@ -123,7 +123,7 @@ struct RootView: View {
     /// "one instance per process" rule `radar`/`inbox`/`pairing` follow.
     let crew: CrewController
     /// The Joined/People list seam (`CrewMembershipProviding`) — the
-    /// stub (`PairingCrewMembershipProvider`) until slice C lands.
+    /// real `CrewMembershipEngine` from `AppGraph` (#306).
     let membership: any CrewMembershipProviding
     /// A02 §6.1: the SAME "no known radio or no crew" condition A01's
     /// `hasKnownRadio` alone used to gate, now ALSO gated on a crew code

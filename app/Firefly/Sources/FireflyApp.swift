@@ -49,7 +49,7 @@ struct FireflyApp: App {
     /// mid-way through, so the two must never contend for one shared
     /// `applyPlan`.
     @State private var crew: CrewController
-    /// The Joined/People list seam — the stub until slice C lands.
+    /// The Joined/People list seam — `AppGraph.crewMembership` (#306).
     @State private var membership: any CrewMembershipProviding
     /// A02 §1.8 — `onOpenURL`'s parsed `firefly://crew…` payload.
     @State private var incomingCrewLink: CrewScanPayload?
@@ -139,7 +139,15 @@ struct FireflyApp: App {
             snapshotStore: CrewSnapshotKeychainStore(),
             hiddenStore: CrewHiddenStore())
         _crew = State(initialValue: crewVM)
-        _membership = State(initialValue: PairingCrewMembershipProvider(pairing: graph.crewPairing))
+        // Slice C has landed (#306): the Crew page and Start's Joined
+        // list read the REAL `CrewMembershipEngine` — "admitted since
+        // `crewCreatedAt`, newest first" (§2.3) — through the same
+        // `CrewMembershipProviding` seam slice B defined. `CoreStore`
+        // sees only the gate half of this same object, so the list and
+        // the gate can never disagree about who is in the crew.
+        // `PairingCrewMembershipProvider` stays in the module as the
+        // stub for compositions with no graph.
+        _membership = State(initialValue: graph.crewMembership)
         // Slice C's INTEGRATION TASK, now done: this used to construct
         // its own `SettingsStore()` because `AppDependencies.store` was
         // still `InMemorySettingsStore` under both `.stub()` and

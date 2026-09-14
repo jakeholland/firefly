@@ -353,7 +353,15 @@ public final class CrewMembershipEngine: CrewMembershipGating, CrewMembershipPro
                 displayName: record.nickname ?? meshName,
                 colorIndex: record.colorIndex,
                 joinedAtMs: joinedAt.map { UInt64(($0.timeIntervalSince1970 * 1000).rounded()) },
-                heardPresence: member?.heardPresence ?? .never)
+                heardPresence: member?.heardPresence ?? .never,
+                // PR #308 review. The presence WORDS are age-carrying by
+                // rule ("6 min ago", "No signal \u{00B7} 40 min" —
+                // `PresenceTag.plainLabel(age:)`), so a row without an
+                // age falls back to the bare enum name. This is
+                // `ff_crew`'s own `last_heard_ms`, nil when the member
+                // has never been heard — never 0, which would render as
+                // "just now".
+                heardAgeMs: member?.heardAgeMs)
         }
         // Newest join first; members with no observed join time (§4.6's
         // "From before", and anything restored before a packet) sort
