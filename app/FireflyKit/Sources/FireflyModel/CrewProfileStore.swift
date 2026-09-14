@@ -104,47 +104,10 @@ public final class CrewProfileStore: CrewProfileStoring, @unchecked Sendable {
     }
 
     public func load() -> CrewProfile? {
-        lock.lock()
-        let data = defaults.data(forKey: Self.profileKey)
-        lock.unlock()
-        if let data, let saved = try? JSONDecoder().decode(CrewProfile.self, from: data) {
-            return saved
-        }
-        // `-FireflyDemoScreen crew`'s own gap (A02 slice E, task scope
-        // item 4): `FireflyApp.init` builds this exact store
-        // unconditionally, real or demo (`FireflyApp.swift`'s own
-        // comment on why — A02 landed after `AppDependencies` was
-        // frozen), so with nothing persisted the Crew page rendered its
-        // "You're not on a crew yet" empty state even in demo mode,
-        // which is not a useful screenshot of a screen whose whole
-        // point is a populated crew. Synthesized here, at READ time,
-        // rather than written back: this must never persist (a demo
-        // session is never allowed to leave real state behind on a real
-        // device/simulator — M3's own demo-isolation rule), and it must
-        // never shadow a REAL profile that happens to already be on
-        // this simulator (checked above, first).
-        //
-        // Gated on the SPECIFIC `-FireflyDemoScreen crew` request, not
-        // on demo mode generally (`DemoLaunch.isRequested()` alone):
-        // `hasCrew` is read exactly once, in `FireflyApp.init`, before
-        // ANY screen selection runs, and every other demo screenshot
-        // (`welcome`, `radar`, `connect`, `crew-start`, …) depends on it
-        // staying `false` — flipping it for every demo launch would
-        // have changed which screen a plain `-FireflyDemo` launch lands
-        // on and how the write-plan preview reads on `crew-start`/
-        // `crew-join`, none of which this slice's own scope touches.
-        guard DemoLaunch.requestedScreen() == "crew" else { return nil }
-        return CrewProfileStore.demoFallback
+        lock.lock(); defer { lock.unlock() }
+        guard let data = defaults.data(forKey: Self.profileKey) else { return nil }
+        return try? JSONDecoder().decode(CrewProfile.self, from: data)
     }
-
-    /// `docs/specs/A02-crew-join.md` §5's own mockup uses this exact
-    /// code/name pair as its worked example — reused here rather than
-    /// inventing a second one, and the same code
-    /// `CrewMembershipEngineTests`'s fixtures already use, so nothing
-    /// about it needs a NEW derivation to reason about. Never written
-    /// to `UserDefaults` — see `load()`'s own comment.
-    static let demoFallback = CrewProfile(code: "FIRE-4K9M7X", humanName: "Camp Firefly",
-                                           createdAtMs: 1_780_000_000_000)
 
     public func save(_ profile: CrewProfile) {
         lock.lock(); defer { lock.unlock() }

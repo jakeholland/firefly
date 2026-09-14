@@ -40,6 +40,21 @@ public enum DemoCrew {
     /// crew code after the roster was already full (§4.3). Never
     /// paired.
     public static let overflowFriend: UInt32 = 0x0000_1009
+
+    /// The crew `-FireflyDemoScreen crew` runs on. `docs/specs/
+    /// A02-crew-join.md` §5's own mockup uses this exact code/name pair
+    /// as its worked example, so nothing about it needs a NEW derivation
+    /// to reason about.
+    ///
+    /// It lives HERE, with the rest of the demo world, and never inside
+    /// `CrewProfileStore` — a demo profile is composed into an
+    /// `InMemoryCrewProfileStore` by `AppGraph` (that file's own
+    /// `makeCrewProfileStore` comment) when, and only when, this process
+    /// is genuinely running the demo world. The real, `UserDefaults`-
+    /// backed store therefore has no demo branch at all and cannot
+    /// synthesize a crew this phone was never on, nor persist one.
+    public static let profile = CrewProfile(code: "FIRE-4K9M7X", humanName: "Camp Firefly",
+                                             createdAtMs: 1_780_000_000_000)
 }
 
 public struct DemoWorld: Sendable {

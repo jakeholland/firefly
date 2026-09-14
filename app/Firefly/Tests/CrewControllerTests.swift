@@ -196,6 +196,97 @@ final class CrewControllerTests: XCTestCase {
         XCTAssertEqual(controller.profile?.humanName, "Night Shift", "the NEW crew is now active")
     }
 
+    /// PR #313 review, task scope item 2's OTHER half: a switch must not
+    /// overwrite the pre-crew snapshot. `testA02_AC6_snapshotIsTakenOnce
+    /// NeverOverwritten` above proves the `load() == nil` guard, but it
+    /// leaves the stub's channel table on the ORIGINAL primary the whole
+    /// time — so it would still pass against a build where the only
+    /// protection was "the second read happened to see LongFast again".
+    /// Here the radio really is moved onto the first crew's channel
+    /// before the second Start, which is what a real switch looks like:
+    /// both independent guards (§2.1 step 4's "once only" AND "never
+    /// capture a channel whose name parses as a crew code") have to hold
+    /// for the snapshot to survive as the ORIGINAL pre-crew channel.
+    func testAdvanced_startingANewCrewLeavesTheOriginalPreCrewSnapshotIntact() async {
+        let snapshotStore = InMemoryCrewSnapshotStore()
+        let (controller, client) = makeController(snapshotStore: snapshotStore)
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        var stockPrimary = ChannelSettings()
+        stockPrimary.name = "LongFast"
+        stockPrimary.psk = Data([0x01])
+        stockPrimary.moduleSettings.positionPrecision = 13
+        client.channelTable = [{
+            var channel = Channel()
+            channel.index = 0
+            channel.role = .primary
+            channel.settings = stockPrimary
+            return channel
+        }()]
+
+        _ = await controller.beginStart(humanName: "Camp Firefly")
+        _ = await controller.confirmApply()
+        XCTAssertEqual(snapshotStore.load()?.name, "LongFast")
+        let firstCode = controller.profile?.code
+        XCTAssertNotNil(firstCode)
+
+        // The radio is now genuinely on the first crew's channel — the
+        // state a real "Start a new crew" begins from.
+        var nowCrew = ChannelSettings()
+        nowCrew.name = firstCode ?? ""
+        nowCrew.psk = CrewKey.psk(for: try! CrewCode.parse(firstCode ?? ""))
+        nowCrew.moduleSettings.positionPrecision = 32
+        client.channelTable = [{
+            var channel = Channel()
+            channel.index = 0
+            channel.role = .primary
+            channel.settings = nowCrew
+            return channel
+        }()]
+
+        _ = await controller.beginStart(humanName: "Night Shift")
+        _ = await controller.confirmApply()
+
+        XCTAssertEqual(snapshotStore.load()?.name, "LongFast",
+                       "the snapshot is the ORIGINAL pre-crew channel, never the crew this phone was just on")
+        XCTAssertEqual(snapshotStore.load()?.positionPrecision, 13)
+
+        // …so Leave still restores the phone to where it actually
+        // started, not onto the first crew at precision 32.
+        let left = await controller.leaveCrew()
+        XCTAssertTrue(left)
+        XCTAssertEqual(client.sentChannelWriteLog.last?.channels.first?.settings.name, "LongFast")
+    }
+
+    // MARK: - PR #313 — the profile-change callback (`AppGraph.sync
+    // CrewMembershipWithProfile`, i.e. what points the membership engine
+    // at the crew this phone is actually on)
+
+    /// Every path that CHANGES which crew this phone is on must fire the
+    /// callback — a Start, a switch, and a Leave. Before PR #313 nothing
+    /// listened, and `CrewMembershipEngine` never learned there was a
+    /// crew at all.
+    func testProfileChangedFiresOnStartOnSwitchAndOnLeave() async {
+        let (controller, client) = makeController()
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        var codes: [String?] = []
+        controller.onProfileChanged = { [weak controller] in codes.append(controller?.profile?.code) }
+
+        _ = await controller.beginStart(humanName: "Camp Firefly")
+        _ = await controller.confirmApply()
+        XCTAssertEqual(codes.count, 1)
+        XCTAssertEqual(codes.last, controller.profile?.code)
+
+        _ = await controller.beginStart(humanName: "Night Shift")
+        _ = await controller.confirmApply()
+        XCTAssertEqual(codes.count, 2)
+        XCTAssertEqual(codes.last, controller.profile?.code)
+        XCTAssertNotEqual(codes[0], codes[1], "a switch is a different crew, not the same one twice")
+
+        _ = await controller.leaveCrew()
+        XCTAssertEqual(codes.count, 3)
+        XCTAssertNil(codes[2], "Leave clears the crew, so the engine is cleared too")
+    }
+
     /// A first-ever Start (no prior crew) must not gain the new
     /// sentence just because the switching machinery now exists.
     func testAdvanced_ordinaryFirstStartStillHasNoSwitchingSentence() async {

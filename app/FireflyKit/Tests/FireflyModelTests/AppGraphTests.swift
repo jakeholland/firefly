@@ -1876,6 +1876,153 @@ final class AppGraphTests: XCTestCase {
         XCTAssertEqual(Set(notifications.withdrawnThreads), ["dm-8193", "crew"],
                         "a thread withdraws its own banners and no others")
     }
+
+    // MARK: - A02 §4.1/§4.2 — the crew profile actually reaches the
+    // membership engine (PR #313 review: `configure(crew:)` had no
+    // production call site at all, so auto-membership was inert)
+
+    /// A02 code/name pair, and the PSK DERIVED from it — never a second
+    /// literal, so this test cannot pass against a graph that derived
+    /// the key some other way.
+    private static let crewCode = try! CrewCode.parse("FIRE-4K9M7X")
+    private static let crewPSK: Data = CrewKey.psk(for: AppGraphTests.crewCode)
+
+    private func crewChannel(at index: Int32, name: String = "FIRE-4K9M7X",
+                             psk: Data = AppGraphTests.crewPSK) -> Channel {
+        var settings = ChannelSettings()
+        settings.name = name
+        settings.psk = psk
+        var channel = Channel()
+        channel.index = index
+        channel.settings = settings
+        channel.role = index == 0 ? .primary : .secondary
+        return channel
+    }
+
+    /// THE regression this whole wiring exists for: a phone that has
+    /// already started or joined a crew comes back up, and the engine
+    /// resolves that crew's index off the radio's channel table — by
+    /// name AND derived PSK (§4.2), at whatever index the radio actually
+    /// holds it, never assumed to be 0.
+    ///
+    /// Before PR #313 this test failed at the FIRST assertion:
+    /// `crewChannel` was `nil` and `channelStatus` was `.noCrew` for the
+    /// whole life of the process, because nothing ever called
+    /// `configure(crew:)` outside demo mode.
+    func testStoredCrewProfileConfiguresTheMembershipEngineAndResolvesItsIndex() async {
+        let profiles = InMemoryCrewProfileStore()
+        profiles.save(CrewProfile(code: "FIRE-4K9M7X", humanName: "Camp Firefly",
+                                   createdAtMs: 1_780_000_000_000))
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 48_621_524
+        // Provisioned by CLI: the crew sits at index 2, stock primary
+        // at 0 — so a graph that fell back to index 0 fails here.
+        var stockPrimary = ChannelSettings()
+        stockPrimary.name = ""
+        var primary = Channel()
+        primary.index = 0
+        primary.settings = stockPrimary
+        primary.role = .primary
+        client.channelTable = [primary, crewChannel(at: 2)]
+
+        let graph = AppGraph(dependencies: AppDependencies(client: client, location: UnavailableLocationProvider(),
+                                                            heading: NoHeadingProvider(), store: InMemorySettingsStore()),
+                              crewProfileStore: profiles)
+
+        XCTAssertEqual(graph.crewMembership.crewChannel?.code, "FIRE-4K9M7X",
+                       "the stored profile must reach the engine — `configure(crew:)` has to have a call site")
+        XCTAssertEqual(graph.crewMembership.crewChannel?.psk, Self.crewPSK,
+                       "the PSK is derived from the code, never read off the radio")
+        await graph.crewMembership.refreshCrewChannelIndex()
+        XCTAssertEqual(graph.crewMembership.channelStatus, .resolved(index: 2))
+    }
+
+    /// A channel with the right NAME but a key this phone did not derive
+    /// is not this crew (§4.2/AC14) — the same rule one layer up, so the
+    /// wiring cannot quietly resolve against a look-alike channel.
+    func testAStoredProfileDoesNotResolveAgainstAChannelWithTheWrongKey() async {
+        let profiles = InMemoryCrewProfileStore()
+        profiles.save(CrewProfile(code: "FIRE-4K9M7X", humanName: "Camp Firefly", createdAtMs: 1))
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 48_621_524
+        client.channelTable = [crewChannel(at: 0, psk: Data(repeating: 0xAB, count: 32))]
+
+        let graph = AppGraph(dependencies: AppDependencies(client: client, location: UnavailableLocationProvider(),
+                                                            heading: NoHeadingProvider(), store: InMemorySettingsStore()),
+                              crewProfileStore: profiles)
+        await graph.crewMembership.refreshCrewChannelIndex()
+
+        XCTAssertEqual(graph.crewMembership.channelStatus, .notOnCrewChannel)
+    }
+
+    /// Leave clears the profile, and `syncCrewMembershipWithProfile()` —
+    /// the SAME entry point `CrewController.onProfileChanged` calls —
+    /// must put the engine back to `.noCrew` rather than leaving it
+    /// admitting people onto a crew this phone has left.
+    func testLeavingClearsTheEngineRatherThanLeavingAStaleCrewConfigured() async {
+        let profiles = InMemoryCrewProfileStore()
+        profiles.save(CrewProfile(code: "FIRE-4K9M7X", humanName: "Camp Firefly", createdAtMs: 1))
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 48_621_524
+        client.channelTable = [crewChannel(at: 0)]
+
+        let graph = AppGraph(dependencies: AppDependencies(client: client, location: UnavailableLocationProvider(),
+                                                            heading: NoHeadingProvider(), store: InMemorySettingsStore()),
+                              crewProfileStore: profiles)
+        await graph.crewMembership.refreshCrewChannelIndex()
+        XCTAssertEqual(graph.crewMembership.channelStatus, .resolved(index: 0))
+
+        // Exactly what `CrewController.leaveCrew()` does, then the
+        // callback `FireflyApp` wires to it.
+        profiles.clear()
+        graph.syncCrewMembershipWithProfile()
+
+        XCTAssertNil(graph.crewMembership.crewChannel)
+        XCTAssertEqual(graph.crewMembership.channelStatus, .noCrew)
+    }
+
+    /// A fresh install: nothing stored, so the engine is `.noCrew` and
+    /// admits nobody. The wiring must not invent a crew — and must not
+    /// reach `UserDefaults` for a disposable stack either.
+    func testFreshInstallWithNoStoredProfileLeavesTheEngineNoCrew() {
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 48_621_524
+        client.channelTable = [crewChannel(at: 0)]
+        let graph = AppGraph(dependencies: AppDependencies(client: client, location: UnavailableLocationProvider(),
+                                                            heading: NoHeadingProvider(), store: InMemorySettingsStore()))
+
+        XCTAssertNil(graph.crewMembership.crewChannel)
+        XCTAssertEqual(graph.crewMembership.channelStatus, .noCrew)
+    }
+
+    /// Switching crews re-points the engine AND drops the previous
+    /// crew's diagnostics: a brand-new crew that has admitted nobody
+    /// must not inherit the old crew's "last admission" stamp.
+    func testSwitchingCrewsRepointsTheEngineAndResetsItsDiagnostics() async {
+        let profiles = InMemoryCrewProfileStore()
+        profiles.save(CrewProfile(code: "FIRE-4K9M7X", humanName: "Camp Firefly", createdAtMs: 1))
+        let client = StubMeshtasticClient()
+        client.connectedNodeNum = 48_621_524
+        client.channelTable = [crewChannel(at: 0)]
+        let graph = AppGraph(dependencies: AppDependencies(client: client, location: UnavailableLocationProvider(),
+                                                            heading: NoHeadingProvider(), store: InMemorySettingsStore()),
+                              crewProfileStore: profiles)
+        await graph.crewMembership.refreshCrewChannelIndex()
+        XCTAssertEqual(graph.crewMembership.channelStatus, .resolved(index: 0))
+
+        let other = try! CrewCode.parse("FIRE-2H8N4P")
+        profiles.save(CrewProfile(code: other.canonical, humanName: "Night Shift", createdAtMs: 2))
+        graph.syncCrewMembershipWithProfile()
+
+        XCTAssertEqual(graph.crewMembership.crewChannel?.code, other.canonical)
+        XCTAssertEqual(graph.crewMembership.crewChannel?.psk, CrewKey.psk(for: other))
+        XCTAssertEqual(graph.crewMembership.admissionCounters, CrewAdmissionCounters())
+        XCTAssertNil(graph.crewMembership.lastAdmissionAtMs,
+                     "a crew nobody has joined yet reads Never, never the previous crew's stamp")
+        await graph.crewMembership.refreshCrewChannelIndex()
+        XCTAssertEqual(graph.crewMembership.channelStatus, .notOnCrewChannel,
+                       "the radio is still on the OLD crew's channel until the write lands")
+    }
 }
 
 // MARK: - Hardening QA pass: background/foreground task lifecycle

@@ -234,14 +234,12 @@ public final class DemoRunner {
     /// `-FireflyDemoScreen crew`'s own request (A02 slice E, task scope
     /// item 4): populate Advanced -> "Crew diagnostics"/"People my puck
     /// hears" with something real to show instead of "No crew set" and
-    /// an empty list. `CrewProfileStore.demoFallback` (that store's own
-    /// comment) already gives `CrewController.profile` a code for this
-    /// exact screen name; this is the matching seed on the OTHER half
-    /// of A02 slice C's split state — `CrewMembershipEngine` — which
-    /// nothing in production ever calls `configure(crew:)` on today
-    /// (see this PR's own body: `crewMembership.configure` has no
-    /// production call site yet, a pre-existing integration gap this
-    /// slice does not attempt to close for real crews).
+    /// an empty list. `DemoCrew.profile` already gives
+    /// `CrewController.profile` a code for this exact screen name (via
+    /// `AppGraph.makeCrewProfileStore`), and `AppGraph.init` has already
+    /// called `crewMembership.configure(crew:)` off that same profile —
+    /// so this method only has to give the demo radio a channel table to
+    /// resolve against and seed the two Advanced rows.
     ///
     /// Deliberately its own method, not folded into `start()`: every
     /// OTHER demo screenshot (`welcome`, `radar`, `connect`, `crew-
@@ -250,7 +248,7 @@ public final class DemoRunner {
     /// same convention `triggerInboundFlare()`/`triggerInboundRally()`
     /// already follow for their own single-screen-only seeds.
     public func seedCrewAdvancedDemo() {
-        let code = try! CrewCode.parse(CrewProfileStore.demoFallback.code)
+        let code = try! CrewCode.parse(DemoCrew.profile.code)
         client.channelTable = [{
             var channel = Channel()
             channel.index = 0

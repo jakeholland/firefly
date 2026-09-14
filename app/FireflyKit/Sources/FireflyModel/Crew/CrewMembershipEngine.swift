@@ -146,6 +146,21 @@ public final class CrewMembershipEngine: CrewMembershipGating, CrewMembershipPro
         guard crew != crewChannel else { return }
         crewChannel = crew
         loadLocalState()
+        // PR #313 review. The counters and `lastAdmissionAtMs` are
+        // scoped to ONE crew, and this is the moment that scope ends:
+        // carrying them across a Leave or a "Start a new crew" would put
+        // the OLD crew's refusals and — worse — its "last admission
+        // 2 min ago" on a brand-new crew nobody has joined yet, which is
+        // a fabricated freshness claim of exactly the kind §4.4/§6.5
+        // refuse everywhere else. Zero here is honest: this crew really
+        // has admitted nobody, and "Never" is what the row reads.
+        //
+        // Only on a genuine CHANGE (the `guard` above), so a redundant
+        // `configure` with the same identity — which `syncCrewMembership
+        // WithProfile` can legitimately make, e.g. on a rename — never
+        // silently resets a live session's counts.
+        admissionCounters = CrewAdmissionCounters()
+        lastAdmissionAtMs = nil
         channelStatus = crew == nil ? .noCrew : .resolving
         resolveCrewChannelIndex()
     }

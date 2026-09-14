@@ -27,6 +27,20 @@ final class CrewController {
     /// The crew this phone is currently on — `nil` before any Start/Join
     /// (or after Leave). Loaded from `profileStore` at init.
     private(set) var profile: CrewProfile?
+
+    /// Called whenever `profile` CHANGES — a Start, a Join, a "Start a
+    /// new crew" switch (§6.5), or a Leave. `FireflyApp` points this at
+    /// `AppGraph.syncCrewMembershipWithProfile()`, which is how
+    /// `CrewMembershipEngine` learns which crew to admit for; before PR
+    /// #313 nothing did, and auto-membership was inert in the shipped
+    /// app.
+    ///
+    /// A plain closure rather than a `CrewMembershipEngine` reference:
+    /// this controller has no business knowing the engine exists, and
+    /// every test in `CrewControllerTests` composes it without a graph.
+    /// Not called by `rename(humanName:)` — a rename changes the human
+    /// label, never the code, and the engine keys off the code.
+    var onProfileChanged: (@MainActor () -> Void)?
     var hasCrew: Bool { profile != nil }
 
     // MARK: - Region gate (§1.7)
@@ -306,6 +320,7 @@ final class CrewController {
         let new = CrewProfile(code: code.canonical, humanName: humanName, createdAtMs: clock())
         profileStore.save(new)
         profile = new
+        onProfileChanged?()
     }
 
     // MARK: - Leave (§3.4)
@@ -342,6 +357,7 @@ final class CrewController {
         profileStore.rememberRecentCrew(RecentCrew(code: profile.code, humanName: profile.humanName))
         profileStore.clear()
         self.profile = nil
+        onProfileChanged?()
         return true
     }
 
