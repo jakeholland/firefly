@@ -25,6 +25,7 @@ private final class CountingClient: MeshtasticClientProtocol, @unchecked Sendabl
     private let deliveryHub = EventHub<DeliveryEvent>()
     private let textHub = EventHub<IncomingText>()
     private let privateHub = EventHub<IncomingPrivate>()
+    private let inboundHub = EventHub<InboundPacketEvent>()
     private let lock = NSLock()
 
     private var counts: [String: Int] = [:]
@@ -95,6 +96,12 @@ private final class CountingClient: MeshtasticClientProtocol, @unchecked Sendabl
     func deliveryUpdates() -> AsyncStream<DeliveryEvent> { bump("delivery"); return deliveryHub.subscribe() }
     func incomingTexts() -> AsyncStream<IncomingText> { bump("text"); return textHub.subscribe() }
     func incomingPrivate() -> AsyncStream<IncomingPrivate> { bump("private"); return privateHub.subscribe() }
+    /// The ordered pipeline (`InboundPacketEvent`). Counted like every
+    /// other stream, and funnelled through the same `yield*` helpers
+    /// below so this double cannot publish on a per-kind hub WITHOUT
+    /// publishing here too — the property the real client's
+    /// `publishNode(_:)` funnel enforces, held by the double as well.
+    func inboundPackets() -> AsyncStream<InboundPacketEvent> { bump("inbound"); return inboundHub.subscribe() }
 
     var connectedNodeNum: UInt32? {
         get { lock.lock(); defer { lock.unlock() }; return _connectedNodeNum }
@@ -102,14 +109,14 @@ private final class CountingClient: MeshtasticClientProtocol, @unchecked Sendabl
     }
 
     func yieldLink(_ state: LinkState) { linkHub.yield(state) }
-    func yieldNode(_ snapshot: MeshNodeSnapshot) { nodeHub.yield(snapshot) }
-    func yieldPrivate(_ packet: IncomingPrivate) { privateHub.yield(packet) }
+    func yieldNode(_ snapshot: MeshNodeSnapshot) { nodeHub.yield(snapshot); inboundHub.yield(.node(snapshot)) }
+    func yieldPrivate(_ packet: IncomingPrivate) { privateHub.yield(packet); inboundHub.yield(.privateFrame(packet)) }
     /// `InboxViewModel.observe()`'s own `incomingTexts()` subscription —
     /// distinct from `yieldPrivate`/`yieldNode` above, and from the
     /// graph's own `observeIncomingTextsForNotifications()` subscription
     /// to the same stream (S1's multicast rule: every subscriber sees
     /// every yield here, exactly like a real client).
-    func yieldText(_ text: IncomingText) { textHub.yield(text) }
+    func yieldText(_ text: IncomingText) { textHub.yield(text); inboundHub.yield(.text(text)) }
 
     func connect() async throws {
         recordConnect()
@@ -335,9 +342,18 @@ final class AppGraphTests: XCTestCase {
         // notification permission is asked (never from a background
         // posting path — audit 2.3.11).
         XCTAssertEqual(client.subscriptionCount("link"), 4)
-        XCTAssertEqual(client.subscriptionCount("node"), 1)
         XCTAssertEqual(client.subscriptionCount("delivery"), 1)
-        XCTAssertEqual(client.subscriptionCount("private"), 1)
+        // The 2026-09-14 bench-race fix (`InboundPacketEvent`): the two
+        // subscriptions that used to race each other — `CoreStore`'s own
+        // `nodeUpdates()` loop, and the graph's `incomingPrivate()` loop
+        // — are now ONE subscription to the ordered pipeline, consumed
+        // by one `Task`. Both of those counts are 0 here, and that IS
+        // the assertion: any future change that quietly re-opens a
+        // second, independently-scheduled reader for either kind
+        // reintroduces the race, and this line fails when it does.
+        XCTAssertEqual(client.subscriptionCount("inbound"), 1)
+        XCTAssertEqual(client.subscriptionCount("node"), 0)
+        XCTAssertEqual(client.subscriptionCount("private"), 0)
         // M2: the graph now holds its OWN `incomingTexts()` subscription
         // too — a second, independent one (S1's multicast rule), purely
         // to notice a text arriving while the app is backgrounded and

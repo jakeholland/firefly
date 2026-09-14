@@ -92,7 +92,14 @@ public final class AppGraph {
     public let picks: any PicksStoring
     private let uplink: PhoneGPSUplink
 
-    private var privateObservation: Task<Void, Never>?
+    /// The ONE ordered inbound pipeline (`InboundPacketEvent`) — node
+    /// facts AND portnum-269 payloads AND texts, in production order,
+    /// consumed by a single `Task` so that a packet's admission is
+    /// applied before that same packet's payload gate runs. Replaced
+    /// `privateObservation` (a second, independent `incomingPrivate()`
+    /// subscription that raced `CoreStore`'s own `nodeUpdates()` loop —
+    /// the 2026-09-14 bench FLARE drop).
+    private var inboundObservation: Task<Void, Never>?
     private var tickLoop: Task<Void, Never>?
     /// M3 — flushes `historyStore`'s persisted WAITING items on the
     /// link's next not-ready -> ready edge. See
@@ -550,7 +557,12 @@ public final class AppGraph {
         // `routeDeliveriesToInbox: false` — the view-model path owns the
         // feed's outbox id space here. See
         // `CoreStore.observe(client:routeDeliveriesToInbox:)`.
-        core.observe(client: dependencies.client, routeDeliveriesToInbox: false)
+        // `routeNodeUpdates: false` — this graph drives
+        // `core.apply(nodeUpdate:)` itself, from the SAME loop that
+        // dispatches portnum-269 payloads (`observeInboundPackets()`),
+        // because it is this graph that owns the payload gate those
+        // node updates have to precede. See `InboundPacketEvent`.
+        core.observe(client: dependencies.client, routeDeliveriesToInbox: false, routeNodeUpdates: false)
         // A02 AC14 — re-resolve the crew's channel index on every
         // reconnect. Subscribed here, alongside every other stream this
         // graph owns, rather than inside the engine's init: a
@@ -586,7 +598,7 @@ public final class AppGraph {
         // `.active`: `start()` runs in its own `Task`, so a synchronous
         // `scenePhase` handler in a view would always lose that race.
         if radarWasObservingAtStop { radar?.observe() }
-        observePrivatePackets()
+        observeInboundPackets()
         observeMyLocation()
         observeIncomingTextsForNotifications()
         observeLinkForNotificationPermission()
@@ -943,7 +955,7 @@ public final class AppGraph {
         started = false
         core.stopObserving()
         crewMembership.stopObserving()
-        privateObservation?.cancel(); privateObservation = nil
+        inboundObservation?.cancel(); inboundObservation = nil
         stopObservingMyLocation()
         stopObservingIncomingTextsForNotifications()
         notificationPermissionObservation?.cancel(); notificationPermissionObservation = nil
@@ -978,8 +990,22 @@ public final class AppGraph {
         await dependencies.client.disconnect()
     }
 
-    /// Decode inbound portnum-269 frames and route each one to whatever
-    /// actually consumes it. The DECODE is `FireflyPacket`/`ff_proto`'s
+    /// The ONE ordered inbound loop (A02 §4.2.2, the 2026-09-14 bench
+    /// amendment): apply each packet's node facts — which is what ADMITS
+    /// its sender — and then dispatch that same packet's payload, from
+    /// the same `for await`, so the ordering is a property of the code
+    /// rather than of which `Task` the runtime happened to resume first.
+    ///
+    /// Before this, admission rode `CoreStore`'s own `nodeUpdates()`
+    /// subscription and the portnum-269 gate rode this graph's own
+    /// `incomingPrivate()` subscription. `MeshtasticClient
+    /// .handle(meshPacket:)` produced them in the right order; two
+    /// independent `AsyncStream`s then threw that order away, and on
+    /// the bench the gate won — a FLARE that should have admitted its
+    /// sender was dropped as "unpaired/unknown" while the text behind
+    /// it sailed through. See `FireflyMesh.InboundPacketEvent`.
+    ///
+    /// The DECODE of a 269 frame is still `FireflyPacket`/`ff_proto`'s
     /// (the client hands over opaque bytes on purpose); a frame
     /// `ff_proto_decode` rejects is dropped silently, the same way the
     /// client drops a malformed protobuf, rather than rendered as
@@ -989,18 +1015,59 @@ public final class AppGraph {
     // is `@MainActor` (this file's own class declaration above), and a
     // `Task { ... }` created from `@MainActor`-isolated code (this
     // method) inherits that isolation for its WHOLE lifetime — not just
-    // its first line. So every iteration of `for await packet in
-    // stream`, and `self.handle(private: packet)` in particular, already
-    // runs ON the main actor as a direct, synchronous call — there is no
-    // hop to add per packet on this radio-traffic hot path, and adding
-    // one would only add latency for nothing.
-    private func observePrivatePackets() {
-        guard privateObservation == nil else { return }
-        let stream = dependencies.client.incomingPrivate()
-        privateObservation = Task { [weak self] in
-            for await packet in stream {
+    // its first line. So every iteration of `for await event in
+    // stream`, and `self.core.apply(nodeUpdate:)`/`self.handle(private:)`
+    // in particular, already runs ON the main actor as a direct,
+    // synchronous call — there is no hop to add per packet on this
+    // radio-traffic hot path, and adding one would only add latency for
+    // nothing. It is also what makes the admission-before-gate ordering
+    // below a synchronous happens-before rather than a second race:
+    // both land on the same actor, from the same loop iteration, in
+    // written order.
+    private func observeInboundPackets() {
+        guard inboundObservation == nil else { return }
+        let stream = dependencies.client.inboundPackets()
+        inboundObservation = Task { [weak self] in
+            for await event in stream {
                 guard let self else { return }
-                self.handle(private: packet)
+                switch event {
+                case .node(let snapshot):
+                    // ADMISSION. `CoreStore.apply(nodeUpdate:)` runs the
+                    // A02 §4.1 gate (`CrewMembershipEngine.admits`) and,
+                    // when it admits, pairs the sender through
+                    // `CrewPairingController` — the one audited growth
+                    // path, unchanged. Doing it HERE rather than in
+                    // `CoreStore`'s own `nodeUpdates()` `Task` is the
+                    // whole fix: for a single packet the client
+                    // publishes `.node` before the payload
+                    // (`MeshtasticClient.handle(meshPacket:)` — rx-meta
+                    // first, mirroring `ff_shell.c`'s `shell_try_admit`
+                    // off `on_rx_meta`), and one `for await` over one
+                    // stream preserves that. There is no second
+                    // admission implementation anywhere: this is the
+                    // same call, on the same facts, just serialized
+                    // against the gate that reads its result.
+                    self.core.apply(nodeUpdate: snapshot)
+                case .privateFrame(let packet):
+                    // THE GATE. Reached only after every `.node` event
+                    // this client published before it — including this
+                    // packet's own rx-meta snapshot — has already been
+                    // applied above.
+                    self.handle(private: packet)
+                case .text:
+                    // Nothing to do here. An inbound text is persisted
+                    // by `InboxViewModel.ingest(_:)` off its own
+                    // `incomingTexts()` subscription and notified by
+                    // `observeIncomingTextsForNotifications()` off a
+                    // second one; neither is gated on membership, so
+                    // neither has an ordering question to answer. What
+                    // this case DOES still get, structurally, is the
+                    // `.node` event of the same packet having been
+                    // applied above — so a crew text from a brand-new
+                    // sender admits them before anything downstream
+                    // renders their name.
+                    break
+                }
             }
         }
     }

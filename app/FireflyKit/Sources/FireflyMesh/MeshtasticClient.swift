@@ -150,6 +150,12 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     private let deliveryHub = EventHub<DeliveryEvent>()
     private let incomingTextHub = EventHub<IncomingText>()
     private let incomingPrivateHub = EventHub<IncomingPrivate>()
+    /// The ORDERED pipeline (`InboundPacketEvent`) — the fix for the
+    /// 2026-09-14 bench race. Every `publishNode`/`publishText`/
+    /// `publishPrivate` call below yields to the per-kind hub AND to
+    /// this one, so a single consumer reading this stream sees a
+    /// packet's node facts before that packet's payload, always.
+    private let inboundHub = EventHub<InboundPacketEvent>()
     /// Finding 2 — the passive config-read seam. `CurrentValueEventHub`
     /// for the same reason `linkHub` is one: a Settings screen opened
     /// after want_config already finished must see the current values
@@ -378,6 +384,8 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     public nonisolated func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
     public nonisolated func incomingTexts() -> AsyncStream<IncomingText> { incomingTextHub.subscribe() }
     public nonisolated func incomingPrivate() -> AsyncStream<IncomingPrivate> { incomingPrivateHub.subscribe() }
+    /// See `MeshtasticClientProtocol.inboundPackets()`.
+    public nonisolated func inboundPackets() -> AsyncStream<InboundPacketEvent> { inboundHub.subscribe() }
     /// Finding 2 — see `MeshtasticClientProtocol.nodeConfigUpdates()`'s
     /// own doc comment.
     public nonisolated func nodeConfigUpdates() -> AsyncStream<NodeConfigSnapshot> { nodeConfigHub.subscribe() }
@@ -1773,7 +1781,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             // (`MeshNodeSnapshot.observedAt`); `NodeDB` never guesses.
             let snapshot = nodeDB.apply(nodeInfo: info,
                                         observedAt: pendingConfigPhase == nil ? Date() : nil)
-            nodeHub.yield(snapshot)
+            publishNode(snapshot)
             // Finding 2: OUR OWN NodeInfo entry (want_config replays
             // every node's, including the connected one's own) is where
             // the owner long/short name actually lives — `.myInfo` only
@@ -1868,6 +1876,35 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         if changed { nodeConfigHub.yield(nodeConfig) }
     }
 
+    // MARK: - The ONE publish funnel (2026-09-14 bench race)
+
+    /// Every inbound event this client produces goes out through one of
+    /// these three, and each publishes to BOTH its per-kind hub (the
+    /// unchanged `nodeUpdates()`/`incomingTexts()`/`incomingPrivate()`
+    /// API) and the single ordered `inboundHub`. Nothing in this file
+    /// yields to a hub directly any more — that is what makes "the
+    /// ordered stream carries everything, in production order" a
+    /// property of the code rather than of remembering to do it.
+    ///
+    /// The ordered hub is yielded SECOND on purpose: a per-kind
+    /// subscriber must never be able to observe an event that the
+    /// ordered pipeline has not already been handed, since the ordered
+    /// pipeline is the one the admission gate rides.
+    private func publishNode(_ snapshot: MeshNodeSnapshot) {
+        nodeHub.yield(snapshot)
+        inboundHub.yield(.node(snapshot))
+    }
+
+    private func publishText(_ text: IncomingText) {
+        incomingTextHub.yield(text)
+        inboundHub.yield(.text(text))
+    }
+
+    private func publishPrivate(_ packet: IncomingPrivate) {
+        incomingPrivateHub.yield(packet)
+        inboundHub.yield(.privateFrame(packet))
+    }
+
     private func handle(meshPacket pkt: MeshPacket) {
         // rx-meta first — mirrors mc_client.c's guarantee that
         // on_rx_meta fires before any payload event, for any packet
@@ -1916,7 +1953,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
                 info.lastHeard = UInt32(rx.timeIntervalSince1970)
             }
             // A live packet IS an observation: it arrived here, now.
-            nodeHub.yield(nodeDB.apply(nodeInfo: info, observedAt: Date())
+            publishNode(nodeDB.apply(nodeInfo: info, observedAt: Date())
                 .carrying(Self.rxMetaFacts(for: pkt)))
 
         case .positionApp:
@@ -1927,7 +1964,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
                 // position snapshot is never mistaken for a replay entry
                 // by a consumer reading `rxMeta` (`MeshRxMeta`'s own doc
                 // comment — nil means "not from a packet").
-                nodeHub.yield(snapshot.carrying(Self.rxMetaFacts(for: pkt)))
+                publishNode(snapshot.carrying(Self.rxMetaFacts(for: pkt)))
             }
 
         case .routingApp:
@@ -1956,7 +1993,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             guard let text = String(data: data.payload, encoding: .utf8) else { return }
             let rxTime: Date? = pkt.hasRxTime ? Date(timeIntervalSince1970: TimeInterval(pkt.rxTime)) : nil
             let meta = Self.rxMeta(for: pkt)
-            incomingTextHub.yield(IncomingText(
+            publishText(IncomingText(
                 from: pkt.from, to: pkt.to, channel: pkt.channel, packetID: pkt.id, text: text,
                 rxTime: rxTime, rssiDbm: meta.rssiDbm, snrDb: meta.snrDb, direct: meta.direct))
 
@@ -1974,7 +2011,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             }
             let rxTime: Date? = pkt.hasRxTime ? Date(timeIntervalSince1970: TimeInterval(pkt.rxTime)) : nil
             let meta = Self.rxMeta(for: pkt)
-            incomingPrivateHub.yield(IncomingPrivate(
+            publishPrivate(IncomingPrivate(
                 from: pkt.from, to: pkt.to, channel: pkt.channel, packetID: pkt.id, payload: data.payload,
                 rxTime: rxTime, rssiDbm: meta.rssiDbm, snrDb: meta.snrDb, direct: meta.direct))
         }
@@ -2080,14 +2117,14 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         // that replaces by `num` (`NearbyNodesViewModel.apply(_:)`)
         // must not lose a name to a packet that carried none.
         if let snapshot = nodeDB.applyRxMeta(from: pkt.from, rssiDbm: meta.rssiDbm, snrDb: meta.snrDb, path: meta.path) {
-            nodeHub.yield(snapshot.carrying(facts))
+            publishNode(snapshot.carrying(facts))
             return
         }
         let observedAt = Date()
         if let existing = nodeDB.node(pkt.from) {
-            nodeHub.yield(existing.carrying(facts, observedAt: observedAt))
+            publishNode(existing.carrying(facts, observedAt: observedAt))
         } else {
-            nodeHub.yield(.unidentified(num: pkt.from, rxMeta: facts, observedAt: observedAt))
+            publishNode(.unidentified(num: pkt.from, rxMeta: facts, observedAt: observedAt))
         }
     }
 

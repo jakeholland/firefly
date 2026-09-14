@@ -56,6 +56,12 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     private let deliveryHub = EventHub<DeliveryEvent>()
     private let incomingTextHub = EventHub<IncomingText>()
     private let incomingPrivateHub = EventHub<IncomingPrivate>()
+    /// The ordered pipeline (`InboundPacketEvent`) — the demo client
+    /// funnels through `publishNode`/`publishText`/`publishPrivate`
+    /// below for exactly the reason the real client does: `AppGraph`
+    /// drives `CoreStore.apply(nodeUpdate:)` off THIS stream, so a demo
+    /// world that only yielded on `nodeHub` would show an empty roster.
+    private let inboundHub = EventHub<InboundPacketEvent>()
     // PR #282 review, SHOULD-FIX: same `CurrentValueEventHub` pattern as
     // `linkHub` above, for the same reason — Settings can be opened
     // AFTER `connect()` already reached `.ready`, and needs the scripted
@@ -109,6 +115,7 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     public func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
     public func incomingTexts() -> AsyncStream<IncomingText> { incomingTextHub.subscribe() }
     public func incomingPrivate() -> AsyncStream<IncomingPrivate> { incomingPrivateHub.subscribe() }
+    public func inboundPackets() -> AsyncStream<InboundPacketEvent> { inboundHub.subscribe() }
 
     // PR #282 review, SHOULD-FIX: the passive read seam Settings needs
     // (`MeshtasticClientProtocol.nodeConfigUpdates()`'s own doc comment)
@@ -155,7 +162,7 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
         linkHub.yield(.handshaking)
         try? await Task.sleep(nanoseconds: 150_000_000)
         for node in scriptedNodes {
-            nodeHub.yield(node)
+            publishNode(node)
         }
         publishNodeConfig(Self.scriptedNodeConfig)
         connectedNodeNum = myNodeNum
@@ -218,9 +225,27 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     // used by anything downstream of the client, exactly like the
     // rest of this file: only THIS type is allowed to be fictional).
 
-    public func injectNodeUpdate(_ snapshot: MeshNodeSnapshot) { nodeHub.yield(snapshot) }
-    public func injectIncomingText(_ incoming: IncomingText) { incomingTextHub.yield(incoming) }
-    public func injectIncomingPrivate(_ incoming: IncomingPrivate) { incomingPrivateHub.yield(incoming) }
+    public func injectNodeUpdate(_ snapshot: MeshNodeSnapshot) { publishNode(snapshot) }
+    public func injectIncomingText(_ incoming: IncomingText) { publishText(incoming) }
+    public func injectIncomingPrivate(_ incoming: IncomingPrivate) { publishPrivate(incoming) }
+
+    /// See `MeshtasticClient.publishNode(_:)` — same two-hub funnel,
+    /// same ordering rule, same reason nothing in this file yields to a
+    /// per-kind hub directly.
+    private func publishNode(_ snapshot: MeshNodeSnapshot) {
+        nodeHub.yield(snapshot)
+        inboundHub.yield(.node(snapshot))
+    }
+
+    private func publishText(_ text: IncomingText) {
+        incomingTextHub.yield(text)
+        inboundHub.yield(.text(text))
+    }
+
+    private func publishPrivate(_ packet: IncomingPrivate) {
+        incomingPrivateHub.yield(packet)
+        inboundHub.yield(.privateFrame(packet))
+    }
 
     // MARK: - Test/inspection surface, same shape as StubMeshtasticClient
 

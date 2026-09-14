@@ -34,6 +34,11 @@ private final class ThrowingMockClient: MeshtasticClientProtocol, @unchecked Sen
     func deliveryUpdates() -> AsyncStream<DeliveryEvent> { EventHub<DeliveryEvent>().subscribe() }
     func incomingTexts() -> AsyncStream<IncomingText> { EventHub<IncomingText>().subscribe() }
     func incomingPrivate() -> AsyncStream<IncomingPrivate> { EventHub<IncomingPrivate>().subscribe() }
+    /// The ordered pipeline (`InboundPacketEvent`). This double drives
+    /// no inbound traffic of its own, so nothing is ever published on
+    /// it — the same honest-empty answer it already gives for the
+    /// streams above.
+    func inboundPackets() -> AsyncStream<InboundPacketEvent> { EventHub<InboundPacketEvent>().subscribe() }
     var connectedNodeNum: UInt32? { nil }
     func connect() async throws { linkHub.yield(.ready) }
     func disconnect() async { linkHub.yield(.disconnected) }

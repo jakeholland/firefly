@@ -981,6 +981,69 @@ channel"* with a **Fix it** button that re-runs the write — rather than
 falling back to 0 and silently admitting strangers from the public
 channel.
 
+### 4.2.2 Ordering — admission happens-before the payload gate
+
+> **Amendment, 2026-09-14 (bench).** Both halves of a packet are one
+> event. **A packet's admission, computed from that packet's own rx
+> facts (§4.1 clauses 1–6), happens-before any gate on that same
+> packet's payload.** This is a required ORDERING, not a required set of
+> checks, and it binds every implementation — puck and app alike.
+
+The consequence, stated so it cannot be read as advisory: a receiver
+that decides "is this sender crew?" for a FLARE, RALLY, STATUS,
+FLARE_END, TEXT or PING **must** already have applied the admission the
+very same packet earns. A sender who was not crew a moment ago and is
+admitted BY this packet is crew for the purposes of this packet. There
+is no second chance and no retry: the packet whose whole job is to
+announce someone is precisely the packet that must not be dropped for
+not knowing them yet.
+
+**Why this is an amendment and not a clarification.** The puck already
+had it structurally — `ff_shell.c`'s `shell_ev_rx_meta` runs
+`shell_try_admit` off `on_rx_meta` **before** the portnum payload is
+dispatched, in one synchronous call chain, so the ordering is not
+something that could be got wrong there. The app had the same two steps
+in the same order inside `MeshtasticClient.handle(meshPacket:)`
+(`applyRxMeta(for:)`, then the decode switch) but published them on two
+independent `EventHub`s, read by two independent `Task`s — `CoreStore`'s
+`nodeUpdates()` loop, which admits, and `AppGraph`'s `incomingPrivate()`
+loop, which gates. Two `AsyncStream`s have no happens-before between
+them, so the ordering was not a property of the code at all; it was a
+coin toss.
+
+**Measured, on the bench, 2026-09-14 14:24** (Mac app on `d8ee569d`,
+Heltec `TAY_06b0`, crew `FIRE-8MNTT2`). An unadmitted puck
+(`!8f48af24` = 2403905316) sent a FLARE and then a text on the crew
+channel:
+
+```
+[AppGraph] dropping inbound FLARE from unpaired/unknown sender=2403905316
+```
+
+…and the TEXT that followed was accepted and persisted as a crew
+message. The FLARE — decrypted, on the crew channel, portnum 269, i.e.
+admitting under §4.1 on every clause — was the ONE packet dropped, and
+the text only got through because by then the flare's own rx facts had
+finally landed on the other stream. `AdmissionBeforePayloadGateTests`
+(`FireflyKit/Tests/FireflyModelTests`) pins the fixed behaviour for
+FLARE, TEXT and RALLY.
+
+**What satisfies this clause.** One ordered delivery per packet, whose
+node facts and payload reach the deciding consumer in production order
+— `FireflyMesh.InboundPacketEvent` / `MeshtasticClientProtocol
+.inboundPackets()` in the app, the synchronous call chain on the puck.
+What does **not** satisfy it: sleeping, retrying, re-queuing a dropped
+payload, or a second admission check written into the gate. A second
+implementation of §4.1 beside `CrewMembershipEngine` is forbidden by
+this clause as surely as the wrong order is — the two halves must be
+the same decision, made once, in order.
+
+**This clause weakens nothing.** Applying a packet's facts first is not
+admitting from the packet: hidden senders, ourselves, `via_mqtt`
+packets, wrong-channel packets and non-admitting portnums are refused
+exactly as §4.1/§4.2 already say, and the gate that follows still asks
+the roster rather than the packet.
+
 ### 4.3 The cap, and what happens at nine
 
 `FF_CREW_MAX` is **8**, and it stays 8 — on the puck for DRAM

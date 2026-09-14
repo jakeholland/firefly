@@ -278,6 +278,11 @@ targets:
       # same shape and the same reason as
       # `FireflyDebugStartDestinationLaunch.swift` just above.
       - path: Firefly/Sources/Crew/FireflyDebugCrewLaunch.swift
+      # The bench-state seam (`-FireflyDebugForgetCrewMembers` /
+      # `-FireflyDebugSetCrewProfile`) A02 §4.2.2's hardware repro needs
+      # — SwiftUI-free by construction (Foundation + FireflyModel), same
+      # shape and same reason as `FireflyDebugCrewLaunch.swift` above.
+      - path: Firefly/Sources/Crew/FireflyDebugCrewStateLaunch.swift
       # `-FireflyDebugNotify`'s parser (DEBUG-only reproduction seam for
       # `NotificationTapUITests`), same shape and same reason as
       # `FireflyDebugStartDestinationLaunch.swift` above.

@@ -156,6 +156,14 @@ struct FireflyApp: App {
         // own comment): only inside `#if targetEnvironment(simulator)`,
         // so a stray launch argument can never turn a real device's
         // history into fictional festival data.
+        // Bench seam (`FireflyDebugCrewStateLaunch`, `#if DEBUG` only) —
+        // applied HERE, before `AppGraph.init` replays the paired list
+        // onto `ff_crew` and reads the crew profile, because both of
+        // those are what these flags exist to change. A launch with
+        // neither flag does nothing and logs nothing.
+        for line in FireflyDebugCrewStateLaunch.apply() {
+            FileHandle.standardError.write(Data((line + "\n").utf8))
+        }
         #if targetEnvironment(simulator)
         var historyOverride: HistoryStore?
         if DemoLaunch.isRestoredRequested() {

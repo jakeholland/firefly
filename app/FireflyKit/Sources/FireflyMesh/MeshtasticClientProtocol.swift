@@ -363,6 +363,56 @@ public struct IncomingText: Sendable, Equatable {
     }
 }
 
+/// ONE ordered event per thing a client observed on the air, published
+/// on a SINGLE stream so that, for any one packet, the node facts the
+/// A02 §4.1 admission rule runs on are delivered to a consumer BEFORE
+/// that packet's payload is.
+///
+/// Why this type exists (bench, 2026-09-14, main `d8ee569d`). A puck
+/// that was not yet crew sent a FLARE and then a text on the crew
+/// channel. `MeshtasticClient.handle(meshPacket:)` did — and still does
+/// — the right thing in the right order: `applyRxMeta(for:)` first
+/// (the snapshot A02 §4.1 admits from), the decoded payload second,
+/// exactly mirroring `ff_shell.c`'s `shell_try_admit` running off
+/// `on_rx_meta` before the portnum dispatch. But those two halves went
+/// out on two INDEPENDENT `EventHub`s, read by two INDEPENDENT `Task`s
+/// (`CoreStore`'s `nodeUpdates()` loop, and `AppGraph`'s
+/// `incomingPrivate()` loop), so nothing ordered them against each
+/// other. The payload task won, `AppGraph.handleInboundFlare`'s
+/// `guard isPairedSender(from)` asked a roster the admission had not
+/// reached yet, and the app logged
+/// `[AppGraph] dropping inbound FLARE from unpaired/unknown
+/// sender=2403905316`. The TEXT that followed was accepted — by then
+/// the FLARE's own rx-meta had finally landed and admitted the sender.
+/// The packet whose whole job was to admit them is the one packet that
+/// got dropped.
+///
+/// A happens-before relation cannot be built out of two `AsyncStream`s,
+/// and it must not be faked with a sleep or a retry. So the client
+/// publishes both halves on one stream, in the order it already
+/// produced them, and the consumer that owns the payload gate
+/// (`AppGraph`) is the consumer that applies the node update — one
+/// task, one queue, one order.
+///
+/// The three per-kind streams (`nodeUpdates()`, `incomingTexts()`,
+/// `incomingPrivate()`) are UNCHANGED and still carry every event:
+/// `ConnectViewModel`, `NearbyNodesViewModel`, `InboxViewModel` and the
+/// graph's notification subscription each read one kind and have no
+/// ordering question to answer. Only the two participants in the race
+/// moved onto this stream.
+public enum InboundPacketEvent: Sendable {
+    /// What `nodeUpdates()` carries — the admission input. Published
+    /// for the rx-meta of every packet naming a sender, for every
+    /// `NODEINFO_APP`/`POSITION_APP` decode, and for every want_config
+    /// nodeDB replay entry (which `MeshRxMeta == nil` keeps
+    /// structurally unable to admit anyone — A02 §4.2).
+    case node(MeshNodeSnapshot)
+    /// What `incomingTexts()` carries.
+    case text(IncomingText)
+    /// What `incomingPrivate()` carries — portnum 269, opaque bytes.
+    case privateFrame(IncomingPrivate)
+}
+
 public protocol MeshtasticClientProtocol: AnyObject, Sendable {
     /// A fresh, independent stream for the caller. Multicast via
     /// `EventHub` (docs/specs/A01-companion-app.md, S1): a view model
@@ -392,6 +442,20 @@ public protocol MeshtasticClientProtocol: AnyObject, Sendable {
     /// portnum 269, carried as OPAQUE BYTES — see `IncomingPrivate`'s
     /// own doc comment for why the client does not decode it.
     func incomingPrivate() -> AsyncStream<IncomingPrivate>
+    /// The ORDERED pipeline — see `InboundPacketEvent`. Every element
+    /// the three streams above publish appears here too, in the exact
+    /// order the client produced it, so that a consumer which needs
+    /// `\(.node)`-then-payload ordering for a single packet can have it
+    /// without a sleep, a retry or a second admission implementation.
+    ///
+    /// Deliberately NOT given a defaulted protocol extension the way
+    /// `beginListening()` is. An empty default would fail OPEN — a
+    /// conformance that forgot to implement it would silently deliver
+    /// no node updates at all to whoever drives `CoreStore` off this
+    /// stream, which is the same "the policy quietly disappears"
+    /// failure `CoreStore.membership`'s own doc comment refuses a weak
+    /// reference for. Every conformance implements it.
+    func inboundPackets() -> AsyncStream<InboundPacketEvent>
 
     /// The connected node's own `num` (`my_info.my_node_num`), or nil
     /// before the handshake has produced one.
@@ -695,6 +759,9 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     // Same rule: a stub has no mesh, so no FLARE, RALLY or PONG ever
     // arrives on it. Tests that need one inject exact bytes.
     private let incomingPrivateHub = EventHub<IncomingPrivate>()
+    // Same rule again: nothing is ever published on the ordered
+    // pipeline either, because nothing is ever published at all.
+    private let inboundHub = EventHub<InboundPacketEvent>()
 
     private let transport: MeshTransport
     private let lock = NSLock()
@@ -721,6 +788,10 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     public func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
     public func incomingTexts() -> AsyncStream<IncomingText> { incomingTextHub.subscribe() }
     public func incomingPrivate() -> AsyncStream<IncomingPrivate> { incomingPrivateHub.subscribe() }
+    /// A stub never yields on any of the three hubs above (this class's
+    /// own header comment), so it never yields here either — the honest
+    /// empty pipeline of a client with no mesh under it.
+    public func inboundPackets() -> AsyncStream<InboundPacketEvent> { inboundHub.subscribe() }
 
     /// nil until a test sets it (`connectedNodeNum = 48_621_524`). The
     /// stub has no `my_info` to learn one from, and inventing one would

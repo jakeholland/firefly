@@ -66,6 +66,11 @@ private final class OrderingMockClient: MeshtasticClientProtocol, @unchecked Sen
     func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
     func incomingTexts() -> AsyncStream<IncomingText> { EventHub<IncomingText>().subscribe() }
     func incomingPrivate() -> AsyncStream<IncomingPrivate> { EventHub<IncomingPrivate>().subscribe() }
+    /// The ordered pipeline (`InboundPacketEvent`). This double drives
+    /// no inbound traffic of its own, so nothing is ever published on
+    /// it — the same honest-empty answer it already gives for the
+    /// streams above.
+    func inboundPackets() -> AsyncStream<InboundPacketEvent> { EventHub<InboundPacketEvent>().subscribe() }
 
     /// This double exists to order `sendText` calls; it has no handshake
     /// and therefore no node num to report. nil is the honest answer.
