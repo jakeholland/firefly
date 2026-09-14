@@ -345,7 +345,7 @@ final class CrewControllerTests: XCTestCase {
 
         let began = await controller.beginStart(humanName: "Camp Firefly")
         XCTAssertTrue(began)
-        guard case .start(let code, _) = controller.pending else {
+        guard case .start(let code, _, _) = controller.pending else {
             return XCTFail("expected a staged .start")
         }
 
@@ -371,7 +371,7 @@ final class CrewControllerTests: XCTestCase {
 
         let began = await controller.beginStart(humanName: "Camp Firefly")
         XCTAssertTrue(began)
-        guard case .start(let code, _) = controller.pending else {
+        guard case .start(let code, _, _) = controller.pending else {
             return XCTFail("expected a staged .start")
         }
 
@@ -385,7 +385,7 @@ final class CrewControllerTests: XCTestCase {
 
         let began = await controller.beginStart(humanName: "Camp Firefly")
         XCTAssertTrue(began)
-        guard case .start(let code, _) = controller.pending else {
+        guard case .start(let code, _, _) = controller.pending else {
             return XCTFail("expected a staged .start")
         }
 
