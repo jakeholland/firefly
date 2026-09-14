@@ -75,7 +75,7 @@ struct LineupScreen: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text(headerSubtitle(festpack))
                     .font(.caption)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal)
@@ -86,26 +86,30 @@ struct LineupScreen: View {
                 ProgressView()
                 Text(model.isRefreshing ? "Loading festival data…" : "No festival pack loaded yet")
                     .font(.callout)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 24)
         }
     }
 
+    /// Owner decision, 2026-09-13 ("Lineup header"): drop the raw UTC
+    /// offset ("she thinks in 'festival time,' not UTC offsets") and the
+    /// data-provenance clause ("bundled copy" — she'd guess "some kind
+    /// of download," not the specific meaning) from this line entirely.
+    /// "Times in festival time" replaces the offset only when there is
+    /// a real day selected to be honest about (nothing to say that
+    /// about before a night is picked). Provenance is not lost — it
+    /// still lives in Settings -> Festival data
+    /// (`FestpackSourceState.statusText`, unchanged there).
     private func headerSubtitle(_ festpack: Festpack) -> String {
         var parts = ["\(festpack.name) \(festpack.year)"]
-        if let dayLabel = model.dayLabel { parts.append(dayLabel) }
-        if let tz = model.timeZoneLabel { parts.append(tz) }
-        parts.append(sourceStateText)
+        if let dayLabel = model.dayLabel {
+            parts.append(dayLabel)
+            parts.append("Times in festival time")
+        }
         return parts.joined(separator: " · ")
     }
-
-    /// `FestpackSourceState.statusText` — the wording lives in the
-    /// model so this header and Settings' "Festival data" row cannot
-    /// drift apart, and so the "cached (age unknown)" case is testable
-    /// (hardening QA pass).
-    private var sourceStateText: String { model.sourceState.statusText }
 
     // MARK: - Day pills
 
@@ -183,7 +187,7 @@ struct LineupScreen: View {
                     .foregroundStyle(Color.ffStaleAmber)
                 Text("This night's lineup is published, but set times have not been announced yet.")
                     .font(.footnote)
-                    .foregroundStyle(Color.ffMuted)
+                    .foregroundStyle(Color.ffCaption)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
                 untimedLineupList
@@ -210,7 +214,7 @@ struct LineupScreen: View {
                 StageSwatch(colorRGB: model.festpack?.stage(withID: set.stageID)?.colorRGB)
                 Text(set.artist).font(.system(.body, design: .rounded))
                 Spacer()
-                Text("TBD").font(.caption2).foregroundStyle(Color.ffMuted)
+                Text("TBD").font(.caption2).foregroundStyle(Color.ffCaption)
             }
             .listRowBackground(Color.ffBackground)
         }

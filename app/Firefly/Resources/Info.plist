@@ -31,11 +31,15 @@
 	<false/>
 
 	<!-- Bluetooth. The app is a Meshtastic CLIENT: it connects to a node
-	     the user owns and does not advertise anything. -->
+	     the user owns and does not advertise anything.
+	     Owner decision, 2026-09-13 ("Permission strings"): "your puck",
+	     never "Meshtastic node" — a permission dialog is the worst place
+	     to introduce a brand name someone installing this for a
+	     festival has never heard of. -->
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Firefly talks to your Meshtastic node over Bluetooth to see your crew and send messages.</string>
+	<string>Firefly connects to your puck over Bluetooth so you can see your crew and send messages.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
-	<string>Firefly talks to your Meshtastic node over Bluetooth to see your crew and send messages.</string>
+	<string>Firefly connects to your puck over Bluetooth so you can see your crew and send messages.</string>
 
 	<!-- Location. The phone's own GPS is pushed to the node as an
 	     external fix, because the Heltec V3 bench boards have no GNSS at
@@ -43,15 +47,15 @@
 	     because a festival's whole point is that the phone is in a
 	     pocket while the mesh keeps working. -->
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Firefly sends your phone's position to your Meshtastic node so your crew can find you.</string>
+	<string>Firefly shares your location with your puck so your crew can find you, even with no signal.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Firefly keeps sending your position to your node while the app is in your pocket, so your crew can still find you.</string>
+	<string>Firefly shares your location with your puck so your crew can find you, even with no signal. Keeping this on in the background means your crew can still find you while your phone is in your pocket.</string>
 
 	<!-- Camera. iOS only — the Connect screen's channel-QR scan sheet
 	     (Slice C, QRScannerSheet.swift). macOS never asks: the same
 	     screen's paste field is the whole story there. -->
 	<key>NSCameraUsageDescription</key>
-	<string>Firefly uses the camera to scan a crew's channel QR code.</string>
+	<string>Firefly uses the camera to scan your friend's crew code.</string>
 
 	<key>UIBackgroundModes</key>
 	<array>

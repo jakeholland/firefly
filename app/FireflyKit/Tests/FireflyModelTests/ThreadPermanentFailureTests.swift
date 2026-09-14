@@ -113,6 +113,36 @@ final class ThreadPermanentFailureTests: XCTestCase {
         vm.stopObserving()
     }
 
+    /// PR #304 review: the "Couldn't send \u{00B7} too long" row this PR
+    /// added had no test at all — `dropReasonText(for:)` is new public
+    /// API. `payloadTooLarge` is the one reason this app can honestly
+    /// name; everything else stays `nil`, so the tag falls back to a
+    /// plain "Couldn't send" rather than inventing a cause.
+    func testAPayloadTooLargeDropNamesItsReasonAndNothingElseDoes() async {
+        let (vm, client) = makeVM(error: MeshtasticClientError.payloadTooLarge(bytes: 400, max: 233))
+        vm.observe()
+        try? await client.connect()
+        await waitUntil { vm.isLinkReady }
+        vm.composeText = String(repeating: "x", count: 400)
+        await vm.sendCompose()
+        await waitUntil { vm.messages.last?.deliveryState == .dropped }
+        let dropped = try? XCTUnwrap(vm.messages.last)
+        XCTAssertEqual(dropped.map { vm.dropReasonText(for: $0) }, "too long")
+        vm.stopObserving()
+
+        let (other, otherClient) = makeVM(error: MeshtasticClientError.encodingFailed)
+        other.observe()
+        try? await otherClient.connect()
+        await waitUntil { other.isLinkReady }
+        other.composeText = "hi"
+        await other.sendCompose()
+        await waitUntil { other.messages.last?.deliveryState == .dropped }
+        let encodingDrop = try? XCTUnwrap(other.messages.last)
+        XCTAssertNil(encodingDrop.flatMap { other.dropReasonText(for: $0) },
+                     "encodingFailed has no honest plain-language reason — never invent one")
+        other.stopObserving()
+    }
+
     /// The other half — the behaviour that must NOT have regressed. A
     /// transient failure still queues for retry, which is the whole
     /// reason the outbox exists at a festival where the link comes and

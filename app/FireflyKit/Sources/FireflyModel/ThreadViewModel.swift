@@ -213,6 +213,18 @@ public final class ThreadViewModel {
     private var linkObservation: Task<Void, Never>?
     private var deliveryObservation: Task<Void, Never>?
     private var outbox: [PendingSend] = []
+    /// The permanent-failure reason for a `DROPPED` message, keyed by
+    /// its `FeedMessage.id` (outbox id) — owner decision, 2026-09-13:
+    /// "dropped-for-permanent-error reads 'Couldn't send · too long'
+    /// (from #294) or the specific reason." Deliberately view-model-
+    /// local, not threaded through `InboxProviding`/persisted: it is a
+    /// presentation-only refinement of an already-honest state
+    /// (`DeliveryState.dropped` alone is the fact this app commits to
+    /// remembering; WHY is a nicety for the session that just saw it
+    /// happen, not a claim this app promises to reconstruct after a
+    /// relaunch — a restored dropped message still reads "Couldn't
+    /// send", just without the specific reason).
+    private var dropReasons: [UInt64: String] = [:]
     /// The single send queue this thread's transport-touching work runs
     /// on — every unit is chained after whatever was chained before it,
     /// so `flushOutbox()` and a freshly tapped compose send can never
@@ -520,6 +532,7 @@ public final class ThreadViewModel {
             // messages behind it. DROPPED is both the honest state and
             // the only one the user can act on — it is visible in the
             // thread, so they can shorten the message and send again.
+            dropReasons[outboxID] = Self.dropReasonText(for: error)
             provider.setStatus(outboxID: outboxID, state: .dropped, at: Date())
             refresh()
         } catch {
@@ -541,6 +554,31 @@ public final class ThreadViewModel {
         case .payloadTooLarge, .encodingFailed: return true
         case .handshakeTimeout, .alreadyConnecting, .invalidPositionFix: return false
         }
+    }
+
+    /// The specific, plain-language reason for a permanent-error DROP —
+    /// owner decision, 2026-09-13: "'Couldn't send · too long' (from
+    /// #294) or the specific reason." `payloadTooLarge` is the common,
+    /// user-actionable case ("shorten the message"); `encodingFailed`
+    /// has no comparably specific honest word for a non-technical
+    /// reader (it means the text could not be turned into bytes at
+    /// all, not that it was too long), so it falls back to `nil` —
+    /// `DeliveryStatusTag` then reads a plain "Couldn't send" rather
+    /// than inventing a reason this app cannot actually back up.
+    private static func dropReasonText(for error: MeshtasticClientError) -> String? {
+        switch error {
+        case .payloadTooLarge: return "too long"
+        default: return nil
+        }
+    }
+
+    /// `DeliveryStatusTag`'s own `reasonText` — the specific,
+    /// permanent-failure reason for THIS message's `DROPPED` state, when
+    /// one is honestly known (`dropReasons`'s own doc comment). `nil`
+    /// for every message that never reached that state, and for one
+    /// restored from a previous session.
+    public func dropReasonText(for message: FeedMessage) -> String? {
+        dropReasons[message.id]
     }
 
     private func enqueue(_ item: PendingSend) {
