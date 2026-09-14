@@ -23,17 +23,28 @@ public struct CrewJoinedMember: Sendable, Equatable, Identifiable {
     public let displayName: String?
     public let colorIndex: UInt8
     /// nil = this phone never observed this member join (e.g. restored
-    /// from persistence at launch, before any packet — §4.4's "waiting
-    /// to hear from them"). Epoch milliseconds when known.
+    /// from persistence at launch, before any packet). Epoch
+    /// milliseconds when known — never a fabricated join time.
     public let joinedAtMs: UInt64?
     public let heardPresence: HeardPresence
+    /// Elapsed milliseconds since this member's last packet of any kind
+    /// (`CrewMember.heardAgeMs`). `nil` = never heard, or not known —
+    /// never 0 as a stand-in, which would render as "just now".
+    ///
+    /// Required, not decorative: the shipped presence vocabulary (PR
+    /// #304, `PresenceTag.plainLabel(age:)`) is age-carrying by rule —
+    /// "6 min ago", "No signal \u{00B7} 40 min". Defaulted to `nil` so
+    /// every existing call site keeps compiling.
+    public let heardAgeMs: UInt32?
 
-    public init(id: UInt32, displayName: String?, colorIndex: UInt8, joinedAtMs: UInt64?, heardPresence: HeardPresence) {
+    public init(id: UInt32, displayName: String?, colorIndex: UInt8, joinedAtMs: UInt64?,
+                heardPresence: HeardPresence, heardAgeMs: UInt32? = nil) {
         self.id = id
         self.displayName = displayName
         self.colorIndex = colorIndex
         self.joinedAtMs = joinedAtMs
         self.heardPresence = heardPresence
+        self.heardAgeMs = heardAgeMs
     }
 }
 
@@ -51,9 +62,10 @@ public protocol CrewMembershipProviding: AnyObject {
 /// The stub every Start/Crew screen composition uses until slice C
 /// lands: reports `CrewPairingController`'s own paired roster, with NO
 /// join-time (there is no "admitted since crewCreatedAt" watcher yet —
-/// `joinedAtMs` is honestly `nil` for every row, which renders as
-/// "waiting to hear from them" per §4.4, not a fabricated "joined just
-/// now").
+/// `joinedAtMs` is honestly `nil` for every row, so no row claims a
+/// join time at all, rather than a fabricated "joined just now"). The
+/// presence age IS real and is passed through: it comes from
+/// `ff_crew`'s own `last_heard_ms`, not from this stub.
 @MainActor
 public final class PairingCrewMembershipProvider: CrewMembershipProviding {
     private let pairing: CrewPairingController
@@ -73,7 +85,8 @@ public final class PairingCrewMembershipProvider: CrewMembershipProviding {
                 displayName: (member?.displayName.isEmpty ?? true) ? nil : member?.displayName,
                 colorIndex: record.colorIndex,
                 joinedAtMs: nil,
-                heardPresence: member?.heardPresence ?? .never)
+                heardPresence: member?.heardPresence ?? .never,
+                heardAgeMs: member?.heardAgeMs)
         }
     }
 }

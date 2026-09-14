@@ -43,6 +43,9 @@ struct CrewStartView: View {
                     if let error = controller.errorMessage {
                         Text(error).font(.footnote).foregroundStyle(Color.ffAlert)
                         Button("Try again") { Task { await begin() } }
+                            .buttonStyle(.bordered)
+                            .tint(Color.ffMuted)
+                            .foregroundStyle(Color.ffAmber)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -58,7 +61,9 @@ struct CrewStartView: View {
         .sheet(isPresented: $showConfirmation) {
             AdminWriteConfirmationSheet(
                 title: controller.confirmationTitle,
+                primaryText: controller.confirmationPrimaryText,
                 changes: controller.confirmationLines,
+                technicalDetails: controller.confirmationTechnicalDetails,
                 isBusy: controller.isApplying,
                 errorMessage: controller.errorMessage,
                 onConfirm: {
@@ -73,8 +78,7 @@ struct CrewStartView: View {
                     controller.cancelPending()
                     showConfirmation = false
                     onDone()
-                },
-                technicalDetails: controller.confirmationTechnicalDetails)
+                })
         }
         .sheet(isPresented: $showOnPuckSheet) {
             VStack(spacing: 16) {
@@ -87,8 +91,14 @@ struct CrewStartView: View {
                     .foregroundStyle(Color.ffMuted)
                     .multilineTextAlignment(.center)
                 Button("Done") { showOnPuckSheet = false }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.ffAmber)
+                    .foregroundStyle(Color.ffBackground)
+                    .frame(minHeight: 44)
             }
             .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.ffBackground)
             .presentationDetents([.fraction(0.35)])
         }
     }
@@ -105,7 +115,15 @@ struct CrewStartView: View {
         let link = (try? CrewCode.parse(profile.code)).map { CrewLink.encode(code: $0, name: profile.humanName) }
             ?? "firefly://crew?v=1&code=\(profile.code)"
 
-        return ScrollView {
+        // PR #308 review: the whole screen used to be ONE ScrollView
+        // with "Done \u{00B7} go to Find" as its last child, which put
+        // the primary action below the fold on an iPhone 17 Pro (it was
+        // clipped by the home indicator in this PR's own screenshots).
+        // Content scrolls; the button is pinned in a safe-area bar that
+        // is always on screen, which is also the only arrangement that
+        // survives a long crew name or a nine-row Joined list.
+        return VStack(spacing: 0) {
+            ScrollView {
             VStack(spacing: 20) {
                 VStack(spacing: 4) {
                     TextField("Crew name", text: Binding(
@@ -138,6 +156,8 @@ struct CrewStartView: View {
                             .frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .buttonStyle(.bordered)
+                    .tint(Color.ffMuted)
+                    .foregroundStyle(Color.ffAmber)
 
                     Button {
                         showOnPuckSheet = true
@@ -146,19 +166,40 @@ struct CrewStartView: View {
                             .frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .buttonStyle(.bordered)
+                    .tint(Color.ffMuted)
+                    .foregroundStyle(Color.ffAmber)
                 }
 
                 joinedSection
+            }
+            .padding(24)
+            }
+            .background(Color.ffBackground)
 
-                Button("Done · go to Find", action: onDone)
+            VStack(spacing: 0) {
+                Divider().overlay(Color.ffDim)
+                Button(action: onDone) {
+                    // The frame belongs on the LABEL: a `.frame` applied
+                    // after `.buttonStyle` widens the button's slot, not
+                    // the bordered-prominent capsule inside it, so the
+                    // control stays hug-width. Same shape every other
+                    // full-width primary in this app uses
+                    // (`CrewWelcomeView`).
+                    Text("Done · go to Find")
+                        .font(.system(.headline, design: .rounded).weight(.bold))
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                }
                     .buttonStyle(.borderedProminent)
                     .tint(Color.ffAmber)
                     .foregroundStyle(Color.ffBackground)
-                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 12)
             }
-            .padding(24)
+            .background(Color.ffBackground)
         }
         .background(Color.ffBackground)
+        // The bar sits ABOVE the home indicator, never under it.
+        .safeAreaPadding(.bottom, 12)
     }
 
     private var joinedSection: some View {
@@ -181,7 +222,12 @@ struct CrewStartView: View {
                     Text(CrewCopy.displayName(member.displayName))
                         .foregroundStyle(Color.ffInk)
                     Spacer()
-                    Text("IN").font(.caption.weight(.bold)).foregroundStyle(Color.ffLiveGreen)
+                    // The same pill the Crew page and the Inbox render
+                    // (PR #304's vocabulary). The old flat "IN" chip
+                    // said the same thing about a member heard 40
+                    // minutes ago as one heard just now.
+                    PresencePill(presence: CrewCopy.tag(for: member.heardPresence),
+                                 age: member.heardAgeMs.map { TimeInterval($0) / 1000 })
                 }
             }
         }

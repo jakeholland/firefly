@@ -119,6 +119,18 @@ public struct CrewMember: Sendable, Equatable, Identifiable {
 
     public let freshness: FreshnessCategory
     public let heardPresence: HeardPresence
+    /// Elapsed milliseconds since the most recent packet of ANY kind
+    /// from this node (`ff_crew_member_t.last_heard_ms`, the same value
+    /// `ff_crew_presence` buckets into `heardPresence` above). `nil`
+    /// when `has_heard` is false — never 0, which would read as "heard
+    /// right now" for a node that has never been heard at all.
+    ///
+    /// Added by PR #308's review so the app's presence ROWS can carry
+    /// the age the shipped vocabulary requires ("6 min ago", "No signal
+    /// \u{00B7} 40 min" — `PresenceTag.plainLabel(age:)`, PR #304)
+    /// instead of the bare enum word. `heardPresence` alone cannot
+    /// produce those strings.
+    public let heardAgeMs: UInt32?
     /// True iff the MOST RECENT sighting (not necessarily the latest
     /// direct RSSI) arrived direct rather than relayed.
     public let heardDirect: Bool
@@ -158,6 +170,7 @@ public struct CrewMember: Sendable, Equatable, Identifiable {
             directSignal: directSignal,
             freshness: freshness,
             heardPresence: presence,
+            heardAgeMs: m.has_heard ? now &- m.last_heard_ms : nil,
             heardDirect: m.heard_direct
         )
     }

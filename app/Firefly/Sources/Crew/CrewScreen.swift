@@ -7,6 +7,7 @@
 //
 import FireflyMesh
 import FireflyModel
+import MeshtasticProto
 import SwiftUI
 #if os(iOS)
 import UIKit
@@ -43,7 +44,7 @@ struct CrewScreen: View {
                 Section {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Your puck · \(connect.connectedRadio?.longName ?? connect.connectedRadio?.bleName ?? "unknown")")
+                            Text(puckTitle)
                                 .foregroundStyle(Color.ffInk)
                             Text(puckStatusLine)
                                 .font(.caption)
@@ -62,6 +63,9 @@ struct CrewScreen: View {
                         Spacer()
                         Button("Show code") { showCode = true }
                             .font(.footnote)
+                            .buttonStyle(.bordered)
+                            .tint(Color.ffMuted)
+                            .foregroundStyle(Color.ffAmber)
                     }
                     ForEach(members) { member in
                         memberRow(member)
@@ -83,6 +87,9 @@ struct CrewScreen: View {
                                 Text(String(format: "!%08x", nodeID)).foregroundStyle(Color.ffMuted)
                                 Spacer()
                                 Button("Unhide") { controller.unhide(nodeID: nodeID) }
+                                    .buttonStyle(.bordered)
+                                    .tint(Color.ffMuted)
+                                    .foregroundStyle(Color.ffAmber)
                             }
                         }
                     }
@@ -149,21 +156,40 @@ struct CrewScreen: View {
         connect.link == .ready ? "Connected" : connect.statusLabel.capitalized
     }
 
+    /// One name, one presence pill — the SAME pill an Inbox row renders
+    /// (`PresencePill`), so the two screens can only ever say the same
+    /// thing about the same member. The old second "NAME?" chip is
+    /// gone: a nameless row already says "New crew member" in its name
+    /// column, and stamping a question mark beside it said the same
+    /// unknown twice in two vocabularies (PR #308 review).
     private func memberRow(_ member: CrewJoinedMember) -> some View {
         HStack {
             Text(CrewCopy.displayName(member.displayName)).foregroundStyle(Color.ffInk)
             Spacer()
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(CrewCopy.presenceLine(member.heardPresence, ageMs: nil))
-                    .font(.caption)
-                    .foregroundStyle(Color.ffMuted)
-                if let chip = CrewCopy.presenceChip(member.heardPresence) {
-                    Text(chip).font(.caption2.weight(.bold)).foregroundStyle(Color.ffAmber)
-                } else {
-                    Text("NAME?").font(.caption2.weight(.bold)).foregroundStyle(Color.ffMuted)
-                }
-            }
+            PresencePill(presence: CrewCopy.tag(for: member.heardPresence),
+                         age: member.heardAgeMs.map { TimeInterval($0) / 1000 })
         }
+    }
+
+    /// §5's "Your puck" row names the ACTUAL radio: its long name, else
+    /// its BLE name, else that name's own `RadioListRow.shortID`-style
+    /// suffix (`Meshtastic_e3d4` -> `e3d4`). With nothing connected the
+    /// row is "Your puck" alone — never the word "unknown", which is
+    /// not a radio's name, reads as a fault, and was on screen in this
+    /// PR's own screenshots (PR #308 review).
+    private var puckTitle: String {
+        guard let radio = connect.connectedRadio else { return "Your puck" }
+        if let longName = radio.longName, !longName.isEmpty {
+            return "Your puck \u{00B7} \(longName)"
+        }
+        if let bleName = radio.bleName, !bleName.isEmpty {
+            if let underscore = bleName.lastIndex(of: "_") {
+                let suffix = String(bleName[bleName.index(after: underscore)...])
+                if !suffix.isEmpty { return "Your puck \u{00B7} \(suffix)" }
+            }
+            return "Your puck \u{00B7} \(bleName)"
+        }
+        return "Your puck"
     }
 }
 
@@ -184,8 +210,11 @@ struct CrewCodeCard: View {
                 .textSelection(.enabled)
             ShareLink(item: "Join my Firefly crew: \(profile.code)\n\(link)") {
                 Label("Share link", systemImage: "square.and.arrow.up")
+                    .frame(minHeight: 44)
             }
             .buttonStyle(.bordered)
+            .tint(Color.ffMuted)
+            .foregroundStyle(Color.ffAmber)
         }
         .padding(32)
         .background(Color.ffBackground)
@@ -232,6 +261,36 @@ struct CrewAdvancedScreen: View {
                         .font(.system(.caption, design: .monospaced)).foregroundStyle(Color.ffMuted)
                 }
             }
+            // §6.5's "Frequency band (region) -> the existing picker +
+            // `setRegion`". Added by PR #308's review: this screen's own
+            // navigation label promises "radio, frequency, invite link",
+            // and "frequency" had nowhere to go. Same
+            // `regionSelection`/`confirmRegion()` pair the §1.7 gate
+            // uses — a default in a CONTROL, applied only on the tap,
+            // and `confirmRegion()` itself refuses `.unset`.
+            Section("Frequency band") {
+                Picker("Region", selection: Bindable(controller).regionSelection) {
+                    ForEach(Config.LoRaConfig.RegionCode.allCases.filter { $0 != .unset }, id: \.self) { region in
+                        Text(String(describing: region).uppercased()).tag(region)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(Color.ffAmber)
+                if let error = controller.regionErrorMessage {
+                    Text(error).font(.caption).foregroundStyle(Color.ffAlert)
+                }
+                Button(controller.isSettingRegion ? "SAVING\u{2026}" : "Save frequency band") {
+                    Task { _ = await controller.confirmRegion() }
+                }
+                .buttonStyle(.bordered)
+                .tint(Color.ffMuted)
+                .foregroundStyle(Color.ffAmber)
+                .disabled(controller.isSettingRegion)
+                Text("Radios use different frequencies in different countries. Your puck already " +
+                     "has one set \u{2014} only change this if you're travelling.")
+                    .font(.caption)
+                    .foregroundStyle(Color.ffMuted)
+            }
             Section {
                 if let code = controller.profile?.code, let parsed = try? CrewCode.parse(code) {
                     Button("Copy Meshtastic link") {
@@ -242,6 +301,13 @@ struct CrewAdvancedScreen: View {
                         NSPasteboard.general.setString(CrewChannel.meshtasticURL(for: parsed), forType: .string)
                         #endif
                     }
+                    .buttonStyle(.bordered)
+                    .tint(Color.ffMuted)
+                    .foregroundStyle(Color.ffAmber)
+                    Text("For other apps and for setting up a puck by hand. Whatever imports this " +
+                         "link will use this crew as its main channel and turn its other channels off.")
+                        .font(.caption)
+                        .foregroundStyle(Color.ffMuted)
                 }
             }
             Section("About this crew's key") {

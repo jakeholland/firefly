@@ -153,7 +153,8 @@ final class CrewController {
         errorMessage = nil
         rejoinOwnCrewMessage = nil
         let code = CrewCode.generate()
-        let name = humanName.trimmingCharacters(in: .whitespaces).isEmpty ? "My crew" : humanName
+        let trimmed = humanName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = trimmed.isEmpty ? "My crew" : trimmed
         guard await preparePlan(for: code) else { return false }
         pending = .start(code: code, humanName: name)
         return true
@@ -206,37 +207,43 @@ final class CrewController {
 
     // MARK: - Plain-language confirmation copy (§2.2, §3.3, AC8)
 
-    /// One or two sentences — AC8: contains none of "node", "channel",
-    /// "index", "precision", "preset", "region", "PSK", "Meshtastic".
+    /// AC8: contains none of "node", "channel", "index", "precision",
+    /// "preset", "region", "PSK", "Meshtastic".
     var confirmationTitle: String {
         switch pending {
         case .start(_, let name): return "Start \(name)?"
-        case .join(_, _, .some(let previous)): return "Join a new crew?"
+        case .join(_, _, .some): return "Join a new crew?"
         case .join(_, let name, nil): return "Join \(name ?? "this crew")?"
         case nil: return ""
         }
     }
 
-    var confirmationLines: [String] {
+    /// The ONE sentence above the fold (`AdminWriteConfirmationSheet
+    /// .primaryText`) — what this write does to the person's crew, plus
+    /// the shared `AdminWriteCopy.radioBlinksOff` sentence every other
+    /// admin write on this sheet already ends with. §2.2's own layout:
+    /// plain sentence first, technical lines behind the disclosure.
+    var confirmationPrimaryText: String {
         switch pending {
         case .start:
-            return [
-                "This puts your puck on a private crew that only people with your code can see. " +
-                "Your crew will see exactly where you are.",
-            ]
-        case .join(_, let name, .some(let previous)):
-            let target = name ?? "the new crew"
-            return [
-                "You'll leave \(previous) and join \(target). You can come back with \(previous)'s code.",
-                "Only people with this code can see this crew. Your crew will see exactly where you are.",
-            ]
+            return "This puts your puck on a private crew that only people with your code can see. " +
+                "Your crew will see exactly where you are. \(AdminWriteCopy.radioBlinksOff)"
         case .join:
-            return [
-                "Only people with this code can see this crew. Your crew will see exactly where you are.",
-            ]
+            return "Only people with this code can see this crew. Your crew will see exactly " +
+                "where you are. \(AdminWriteCopy.radioBlinksOff)"
         case nil:
-            return []
+            return ""
         }
+    }
+
+    /// The extra plain line a CHANGE-of-crew adds (§3.4) — and nothing
+    /// else. Start and a first-ever Join say everything they need to in
+    /// `confirmationPrimaryText`; repeating it here would print it
+    /// twice on the sheet.
+    var confirmationLines: [String] {
+        guard case .join(_, let name, .some(let previous)) = pending else { return [] }
+        let target = name ?? "the new crew"
+        return ["You'll leave \(previous) and join \(target). You can come back with \(previous)'s code."]
     }
 
     /// The existing `ChannelApplySummary` lines, verbatim, behind
@@ -356,6 +363,20 @@ final class CrewController {
         guard let table = try? await client.currentChannelTable(),
               let primary = table.first(where: { $0.index == 0 }) else { return }
         let settings = primary.settings
+        // §2.1 step 4's "never overwritten by a Firefly crew channel" is
+        // a rule about what may be CAPTURED, not only about capturing
+        // once (PR #308 review). "Once only" alone is not enough: a
+        // reinstall onto a radio this app already moved onto a crew
+        // starts with an empty snapshot store and a primary named
+        // `FIRE-XXXXXX`, and would latch THAT as the pre-crew state —
+        // so Leave would then "restore" the user onto a crew channel,
+        // still transmitting precise positions, which is exactly the
+        // outcome §3.4 calls the worst possible one. A channel whose
+        // name parses as a crew code is never a pre-crew channel;
+        // skipping it leaves `Leave` on `.stockDefault` (precision 0),
+        // which is the honest answer for a phone that has no record of
+        // what came before.
+        guard (try? CrewCode.parse(settings.name)) == nil else { return }
         snapshotStore.saveIfAbsent(CrewPreCrewSnapshot(
             name: settings.name,
             psk: settings.psk,

@@ -42,7 +42,9 @@ struct CrewJoinView: View {
         .sheet(isPresented: $showConfirmation) {
             AdminWriteConfirmationSheet(
                 title: controller.confirmationTitle,
+                primaryText: controller.confirmationPrimaryText,
                 changes: controller.confirmationLines,
+                technicalDetails: controller.confirmationTechnicalDetails,
                 isBusy: controller.isApplying,
                 errorMessage: controller.errorMessage,
                 onConfirm: {
@@ -56,8 +58,7 @@ struct CrewJoinView: View {
                 onCancel: {
                     controller.cancelPending()
                     showConfirmation = false
-                },
-                technicalDetails: controller.confirmationTechnicalDetails)
+                })
         }
         .task {
             guard !handledInitialPayload, let initialPayload else { return }
@@ -67,6 +68,11 @@ struct CrewJoinView: View {
     }
 
     private var joinForm: some View {
+        // Scrolls for the same reason `CrewStartView`'s code screen does
+        // (PR #308 review): camera card + six-box field + up to three
+        // message lines + JOIN does not fit every device with a
+        // keyboard up.
+        ScrollView {
         VStack(spacing: 24) {
             VStack(spacing: 4) {
                 Text("Join a crew").font(.title2.weight(.bold)).foregroundStyle(Color.ffInk)
@@ -112,20 +118,26 @@ struct CrewJoinView: View {
                 Text(error).font(.footnote).foregroundStyle(Color.ffAlert)
             }
 
-            Button("JOIN") {
+            Button {
                 guard let code = try? CrewCode.parse(typedCode) else { return }
                 Task { await handle(payload: .bareCode(code)) }
+            } label: {
+                Text("JOIN")
+                    .font(.system(.headline, design: .rounded).weight(.bold))
+                    .frame(maxWidth: .infinity, minHeight: 48)
             }
             .buttonStyle(.borderedProminent)
             .tint(Color.ffAmber)
             .foregroundStyle(Color.ffBackground)
             .disabled(!canJoin || controller.isBusy)
-            .frame(maxWidth: .infinity, minHeight: 48)
 
-            Spacer()
+            Spacer(minLength: 0)
         }
         .padding(24)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.ffBackground)
+        .scrollDismissesKeyboard(.interactively)
     }
 
     private var joinedConfirmation: some View {
@@ -136,11 +148,14 @@ struct CrewJoinView: View {
             Text("You're in \(controller.profile?.humanName ?? "the crew")")
                 .font(.title3.weight(.bold))
                 .foregroundStyle(Color.ffInk)
-            Button("Done · go to Find", action: onDone)
-                .buttonStyle(.borderedProminent)
-                .tint(Color.ffAmber)
-                .foregroundStyle(Color.ffBackground)
-                .frame(maxWidth: .infinity, minHeight: 48)
+            Button(action: onDone) {
+                Text("Done · go to Find")
+                    .font(.system(.headline, design: .rounded).weight(.bold))
+                    .frame(maxWidth: .infinity, minHeight: 48)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color.ffAmber)
+            .foregroundStyle(Color.ffBackground)
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

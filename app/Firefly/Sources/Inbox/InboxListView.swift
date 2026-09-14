@@ -227,7 +227,11 @@ private struct InboxRow: View {
     }
 }
 
-private struct PresencePill: View {
+/// Not `private`: A02's Crew page and Start screen render the same pill
+/// from the same `PresenceTag.plainLabel(age:)` words (PR #308 review —
+/// the alternative was a second, drifting copy of the vocabulary in
+/// `CrewCopy`). Same file, same type, two call sites.
+struct PresencePill: View {
     let presence: PresenceTag
     let age: TimeInterval?
 

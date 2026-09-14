@@ -251,6 +251,12 @@ targets:
       # comment) — SwiftUI-free (Observation only), same reasoning as
       # every other file in this list.
       - path: Firefly/Sources/Crew/CrewController.swift
+      # The presence-vocabulary adapter (PR #308 review). SwiftUI-free
+      # by construction — it holds no strings of its own, only the
+      # `HeardPresence` -> `PresenceTag` mapping onto PR #304's shipped
+      # `plainLabel(age:)`/`CrewDisplayFallback` words — and that
+      # delegation is exactly what `CrewCopyTests` pins.
+      - path: Firefly/Sources/Crew/CrewCopy.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit

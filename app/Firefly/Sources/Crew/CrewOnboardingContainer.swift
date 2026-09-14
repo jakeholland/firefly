@@ -48,10 +48,11 @@ struct CrewOnboardingContainer: View {
             CrewWelcomeView(
                 onStart: { path.append(.start) },
                 onJoin: { path.append(.join) },
-                onConnectPuck: {
-                    onConnectPuck()
-                    onFinished()
-                })
+                // `onConnectPuck` dismisses this cover itself (RootView's
+                // own comment on why chaining `onFinished()` here was a
+                // bug: it overwrote the destination that closure had
+                // just chosen).
+                onConnectPuck: onConnectPuck)
             .navigationDestination(for: Step.self) { step in
                 switch step {
                 case .start:
@@ -65,9 +66,10 @@ struct CrewOnboardingContainer: View {
                             // scope (it hands off to the existing
                             // channel-import flow); the escape hatch
                             // here is the same "go to Connect" exit
-                            // every other path in this screen has.
+                            // every other path in this screen has, and
+                            // for the same reason as above it does NOT
+                            // chain `onFinished()`.
                             onConnectPuck()
-                            onFinished()
                         },
                         onDone: onFinished)
                 }

@@ -253,7 +253,18 @@ struct RootView: View {
                     incomingCrewLink = nil
                     selection = .find
                 },
+                // PR #308 review, BLOCKING. This closure used to set the
+                // tab only, with the container calling `onFinished()`
+                // straight afterwards to dismiss — and `onFinished`'s
+                // own `selection = .find` then overwrote the `.more`
+                // this line had just set, so §6.1's "Already set up?
+                // Connect your puck" escape hatch dismissed the welcome
+                // and landed on Find, never on the radio picker. It
+                // dismisses itself now, and the container no longer
+                // chains `onFinished()` after it.
                 onConnectPuck: {
+                    showCrewOnboarding = false
+                    incomingCrewLink = nil
                     selection = .more
                     moreAutoOpen = .connect
                 },
@@ -525,6 +536,22 @@ struct RootView: View {
         // before `start()`'s `location.setFix(world.phoneFix)` has run
         // would have the LATER call silently put the fix right back).
         await demoRunner.waitUntilStarted()
+        // PR #308 review, BLOCKING. `applyInitialSelection()` runs first
+        // and, on a simulator with no crew code stored, raises the
+        // welcome cover (`!hasCrew`). A `-FireflyDemoScreen` name that
+        // picks a TAB therefore used to pick a tab nobody could see:
+        // every demo screenshot except the three crew-onboarding ones
+        // came back as `CrewWelcome`, verified by capturing
+        // radar/inbox/diagnostics and finding all three byte-identical.
+        // That silently broke the milestone-screenshot mechanism this
+        // repo runs its UI review on (AGENTS.md step 5).
+        //
+        // A demo screen name is an explicit instruction about what to
+        // show, so it OVERRIDES the first-launch gate: lower the cover
+        // here, and let the two names that actually want it raise it
+        // again below. "welcome" returns before this line and is
+        // unaffected.
+        showCrewOnboarding = false
         switch initialDemoScreen {
         case "connect":
             selection = .more
