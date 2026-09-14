@@ -171,17 +171,59 @@ private final class ScriptedLocationProvider: LocationProviding, @unchecked Send
 /// `NSLock`-across-a-suspension-point convention `LoopbackTransport
 /// .record(_:)`/`MockFlareSender.record(to:durationSeconds:)` already
 /// use in this codebase for an identical reason.
-private final class RecordingNotificationSending: NotificationSending, @unchecked Sendable {
+/// A03 S1a: records `NotificationPlan`s now, not two bare strings — the
+/// plan IS what the app decided, so a test can assert the interruption
+/// level, thread identifier and derived identifier that would have gone
+/// out, none of which was reachable before (audit 2.3.12–2.3.16).
+/// `authorizationRequests` exists for A03_AC13: the posting path must
+/// NEVER ask for permission, and the only way to pin that is to count.
+final class RecordingNotificationSending: NotificationSending, @unchecked Sendable {
     private let lock = NSLock()
-    private var _flareCalls: [String] = []
-    private var _messageCalls: [(senderName: String, preview: String)] = []
+    private var _posted: [NotificationPlan] = []
+    private var _authorizationRequests = 0
+    private var _withdrawnThreads: [String] = []
+    private var _categoryRegistrations = 0
+    private var _authorization: NotificationAuthorization = .authorized
 
-    var flareCalls: [String] { lock.lock(); defer { lock.unlock() }; return _flareCalls }
-    var messageCalls: [(senderName: String, preview: String)] { lock.lock(); defer { lock.unlock() }; return _messageCalls }
+    var posted: [NotificationPlan] { lock.lock(); defer { lock.unlock() }; return _posted }
+    var authorizationRequests: Int { lock.lock(); defer { lock.unlock() }; return _authorizationRequests }
+    var withdrawnThreads: [String] { lock.lock(); defer { lock.unlock() }; return _withdrawnThreads }
+    var categoryRegistrations: Int { lock.lock(); defer { lock.unlock() }; return _categoryRegistrations }
 
-    func postFlare(senderName: String) async { record { self._flareCalls.append(senderName) } }
-    func postMessage(senderName: String, preview: String) async {
-        record { self._messageCalls.append((senderName, preview)) }
+    /// The FLARE plans, by title — the shape the pre-A03 tests asserted
+    /// on, kept so those tests still read as tests of the FLARE PATH
+    /// rather than being rewritten into tests of the plan builder (which
+    /// has its own file).
+    var flareCalls: [String] {
+        posted.filter { $0.categoryIdentifier == NotificationCategory.flare }.map(\.title)
+    }
+    var messageCalls: [(title: String, preview: String)] {
+        posted.filter { $0.categoryIdentifier == NotificationCategory.message }.map { ($0.title, $0.body) }
+    }
+
+    func setAuthorization(_ value: NotificationAuthorization) {
+        lock.lock(); defer { lock.unlock() }
+        _authorization = value
+    }
+
+    func post(_ plan: NotificationPlan) async { record { self._posted.append(plan) } }
+
+    @discardableResult
+    func requestAuthorization() async -> Bool {
+        record { self._authorizationRequests += 1 }
+        return true
+    }
+
+    func authorization() async -> NotificationAuthorization {
+        var value: NotificationAuthorization = .notDetermined
+        record { value = self._authorization }
+        return value
+    }
+
+    func registerCategories() async { record { self._categoryRegistrations += 1 } }
+
+    func withdrawDelivered(threadIdentifier: String) async {
+        record { self._withdrawnThreads.append(threadIdentifier) }
     }
 
     private func record(_ body: () -> Void) {
@@ -267,7 +309,13 @@ final class AppGraphTests: XCTestCase {
         // channel's index on every reconnect (AC14 — the index is
         // "inherently a local concept" and dies with the link). Same S1
         // multicast rule again: its own subscription, stealing nothing.
-        XCTAssertEqual(client.subscriptionCount("link"), 3)
+        //
+        // A03 §3.11.5 adds a FOURTH, for the same reason:
+        // `observeLinkForNotificationPermission()` watches for the first
+        // `.ready` seen while foregrounded, which is the moment
+        // notification permission is asked (never from a background
+        // posting path — audit 2.3.11).
+        XCTAssertEqual(client.subscriptionCount("link"), 4)
         XCTAssertEqual(client.subscriptionCount("node"), 1)
         XCTAssertEqual(client.subscriptionCount("delivery"), 1)
         XCTAssertEqual(client.subscriptionCount("private"), 1)
@@ -705,6 +753,10 @@ final class AppGraphTests: XCTestCase {
         graph.core.crew.setPaired(nodeID: 0x0000_1002, paired: true)
         graph.core.crew.setPaired(nodeID: 0x0000_1003, paired: true)
         await graph.start()
+        // A03 §3.2: `isForegrounded` starts FALSE now, so a test about
+        // the takeover has to say that someone is looking at the screen.
+        // This used to be implicit — which was the bug (audit 2.3.10).
+        graph.setForegrounded(true)
 
         client.yieldPrivate(IncomingPrivate(
             from: 0x0000_1002, to: meshBroadcastAddress, channel: 0, packetID: 90,
@@ -1008,12 +1060,14 @@ final class AppGraphTests: XCTestCase {
                         "off = disconnect when backgrounded, per the M2 task's own words")
         // The graph's own subscriptions stood down too — re-subscribing
         // would show up as more `link` subscriptions once restarted. "3"
-        // is all three of the graph's OWN `linkState()` readers from
+        // is all four of the graph's OWN `linkState()` readers from
         // this one `start()` — `core.observe(client:)`, M3's
-        // `observeHistoryOutboxFlush()` and A02 slice C's
-        // `crewMembership.observe()` (each its own independent S1
-        // subscription) — not a sign any of them resubscribed.
-        XCTAssertEqual(client.subscriptionCount("link"), 3)
+        // `observeHistoryOutboxFlush()`, A02 slice C's
+        // `crewMembership.observe()` and A03 §3.11.5's
+        // `observeLinkForNotificationPermission()` (each its own
+        // independent S1 subscription) — not a sign any of them
+        // resubscribed.
+        XCTAssertEqual(client.subscriptionCount("link"), 4)
     }
 
     func testBackgroundWithSettingOnDoesNothing() async {
@@ -1044,12 +1098,13 @@ final class AppGraphTests: XCTestCase {
 
         await graph.handleScenePhaseChange(.foreground)
 
-        // The graph's own subscriptions are back — "6" is three
+        // The graph's own subscriptions are back — "8" is four
         // independent `link` readers (`core.observe(client:)`, M3's
-        // `observeHistoryOutboxFlush()` and A02 slice C's
-        // `crewMembership.observe()`) per `start()`, times two
-        // `start()` calls (launch + this restart)...
-        XCTAssertEqual(client.subscriptionCount("link"), 6)
+        // `observeHistoryOutboxFlush()`, A02 slice C's
+        // `crewMembership.observe()` and A03 §3.11.5's
+        // `observeLinkForNotificationPermission()`) per `start()`, times
+        // two `start()` calls (launch + this restart)...
+        XCTAssertEqual(client.subscriptionCount("link"), 8)
         // ...but nothing auto-reconnected the CLIENT on its own — "off
         // means off, the user taps CONNECT again", same as M1.
         XCTAssertEqual(client.connectCallCount, connectCallsAtLaunch,
@@ -1067,11 +1122,13 @@ final class AppGraphTests: XCTestCase {
 
         await graph.handleScenePhaseChange(.foreground) // never backgrounded — start()'s own idempotency
 
-        // "3" is the graph's own three independent `link` readers from
+        // "4" is the graph's own four independent `link` readers from
         // the ONE `start()` call above (`core.observe(client:)`,
-        // `observeHistoryOutboxFlush()` and A02 slice C's
-        // `crewMembership.observe()`), not a resubscription.
-        XCTAssertEqual(client.subscriptionCount("link"), 3, "start() is idempotent; foreground must not resubscribe")
+        // `observeHistoryOutboxFlush()`, A02 slice C's
+        // `crewMembership.observe()` and A03 §3.11.5's
+        // `observeLinkForNotificationPermission()`), not a
+        // resubscription.
+        XCTAssertEqual(client.subscriptionCount("link"), 4, "start() is idempotent; foreground must not resubscribe")
 
         await graph.stop()
     }
@@ -1531,6 +1588,253 @@ final class AppGraphTests: XCTestCase {
         var fr = FromRadio()
         build(&fr)
         return (try? fr.serializedData()) ?? Data()
+    }
+
+    // MARK: - A03 §3.2 / §3.11 — the graph must not assume it is on
+    // screen, and must say something when it is not
+
+    /// **A03_AC8.** The one that matters most: a launch that begins in
+    /// the BACKGROUND — a CoreBluetooth relaunch above all — used to
+    /// leave the graph believing someone was looking at the screen,
+    /// because `isForegrounded` started `true` and `.onChange(of:
+    /// scenePhase)` does not fire for an initial value (audit 2.3.10).
+    /// An inbound FLARE then rendered a full-screen takeover to nobody
+    /// and posted NOTHING.
+    ///
+    /// Note what this test deliberately does NOT do: it never calls
+    /// `setForegrounded`. That is the whole point — the graph has had no
+    /// scene-phase signal at all, exactly as a background relaunch has
+    /// none.
+    func testA03_AC8_AFlareArrivingBeforeAnySceneSignalNotifiesAndNeverTakesOver() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client), notifications: notifications)
+        XCTAssertFalse(graph.isForegrounded, "A03 §3.2: false on construction, not true")
+        graph.core.crew.setPaired(nodeID: 0x0000_1002, paired: true)
+        await graph.start()
+
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1002, to: meshBroadcastAddress, channel: 0, packetID: 4_242,
+            payload: FireflyPacket.flare(durationS: 90).encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: true))
+
+        await waitUntil { !notifications.posted.isEmpty }
+        XCTAssertFalse(graph.flareTakeover.isActive, "a takeover rendered to an empty screen is the bug")
+        let plan = notifications.posted[0]
+        XCTAssertEqual(plan.categoryIdentifier, NotificationCategory.flare)
+        XCTAssertEqual(plan.interruptionLevel, .timeSensitive, "a FLARE has to break through Sleep Focus")
+        XCTAssertEqual(plan.identifier, "flare-4098-4242", "derived from the packet, never random")
+
+        await graph.stop()
+    }
+
+    /// The foreground half of the same branch, unchanged in behaviour
+    /// and re-pinned here because A03 §3.2 changed the DEFAULT: told
+    /// explicitly that it is on screen, the graph still takes over and
+    /// posts nothing.
+    func testA03_AC8_AFlareWhileForegroundedStillTakesOverAndPostsNothing() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client), notifications: notifications)
+        graph.core.crew.setPaired(nodeID: 0x0000_1002, paired: true)
+        await graph.start()
+        graph.setForegrounded(true)
+
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1002, to: meshBroadcastAddress, channel: 0, packetID: 4_243,
+            payload: FireflyPacket.flare(durationS: 90).encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: true))
+
+        await waitUntil { graph.flareTakeover.isActive }
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(notifications.posted.isEmpty, "nobody needs a banner for a screen they are looking at")
+
+        await graph.stop()
+    }
+
+    /// A03 §3.11.1 / audit 2.3.15 — "RALLY never notifies", the second
+    /// most time-critical packet in the product. Backgrounded, it does
+    /// now; the body is the SAME composed line the feed row shows, so
+    /// the two can never disagree about a distance.
+    func testA03_3_11_RallyNotifiesWhileBackgroundedAndCarriesTheFeedsOwnText() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client), notifications: notifications)
+        graph.core.crew.setPaired(nodeID: 0x0000_1004, paired: true)
+        await graph.start()
+
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1004, to: meshBroadcastAddress, channel: 0, packetID: 77,
+            payload: FireflyPacket.rally(latitude: 43.7, longitude: -121.5, name: "MY SPOT").encode()!,
+            rxTime: Date(), rssiDbm: -60, snrDb: nil, direct: false))
+
+        await waitUntil { !notifications.posted.isEmpty }
+        let plan = notifications.posted[0]
+        XCTAssertEqual(plan.categoryIdentifier, NotificationCategory.rally)
+        XCTAssertEqual(plan.identifier, "rally-4100-77")
+        XCTAssertEqual(plan.interruptionLevel, .active, "directional, not an emergency (§9 Q1 asks the owner)")
+        let feedText = graphInboxThread(graph, .crew).last?.text
+        XCTAssertEqual(plan.body, feedText, "the banner and the feed row say the same thing or one of them is lying")
+
+        await graph.stop()
+    }
+
+    /// Foregrounded, a RALLY is a feed row and nothing else — the row is
+    /// on screen, so a banner over it is noise.
+    func testA03_3_11_RallyWhileForegroundedPostsNothing() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client), notifications: notifications)
+        graph.core.crew.setPaired(nodeID: 0x0000_1004, paired: true)
+        await graph.start()
+        graph.setForegrounded(true)
+
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1004, to: meshBroadcastAddress, channel: 0, packetID: 78,
+            payload: FireflyPacket.rally(latitude: 43.7, longitude: -121.5, name: "MY SPOT").encode()!,
+            rxTime: Date(), rssiDbm: -60, snrDb: nil, direct: false))
+
+        await waitUntil { !self.graphInboxThread(graph, .crew).isEmpty }
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(notifications.posted.isEmpty)
+
+        await graph.stop()
+    }
+
+    /// A03 §3.11.1 / audit 2.3.16 — a DM and a crew broadcast used to
+    /// post the identical notification. "A crew channel with eight
+    /// people on it at 2 am is a phone that buzzes all night." They now
+    /// differ in title AND in `threadIdentifier`, which is what makes a
+    /// chatty channel one stack instead of forty banners.
+    func testA03_3_11_DirectMessagesAndCrewBroadcastsNotifyDifferently() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client), notifications: notifications)
+        await graph.start()
+
+        client.yieldText(IncomingText(from: 0x0000_2001, to: 0x0000_0999, channel: 0, packetID: 500,
+                                       text: "on my way", rxTime: Date(), rssiDbm: nil, snrDb: nil, direct: true))
+        client.yieldText(IncomingText(from: 0x0000_2002, to: meshBroadcastAddress, channel: 0, packetID: 501,
+                                       text: "we are at the rail", rxTime: Date(), rssiDbm: nil, snrDb: nil,
+                                       direct: false))
+
+        await waitUntil { notifications.posted.count >= 2 }
+        let dm = notifications.posted.first { $0.identifier == "msg-8193-500" }
+        let crew = notifications.posted.first { $0.identifier == "msg-8194-501" }
+        XCTAssertEqual(dm?.threadIdentifier, "dm-8193")
+        XCTAssertEqual(dm?.body, "on my way")
+        XCTAssertEqual(crew?.threadIdentifier, "crew")
+        XCTAssertEqual(crew?.title, "Someone \u{00B7} crew", "a crew broadcast says which room it came from")
+        XCTAssertNotEqual(dm?.threadIdentifier, crew?.threadIdentifier)
+
+        await graph.stop()
+    }
+
+    /// **A03_AC11** at the graph level: the same packet surfacing twice
+    /// — a mesh retransmit, or a foreground catch-up replaying it —
+    /// produces the same derived identifier, so iOS REPLACES rather than
+    /// stacking a second banner for something already seen.
+    func testA03_AC11_TheSamePacketTwiceDerivesOneIdentifier() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client), notifications: notifications)
+        await graph.start()
+
+        let text = IncomingText(from: 0x0000_2001, to: 0x0000_0999, channel: 0, packetID: 600,
+                                 text: "same packet", rxTime: Date(), rssiDbm: nil, snrDb: nil, direct: true)
+        client.yieldText(text)
+        client.yieldText(text)
+
+        await waitUntil { notifications.posted.count >= 2 }
+        XCTAssertEqual(Set(notifications.posted.map(\.identifier)).count, 1,
+                        "two deliveries of one packet must name ONE notification")
+
+        await graph.stop()
+    }
+
+    /// **A03_AC13.** The posting path never asks for permission — the
+    /// bug that dropped the first alert of the festival (audit 2.3.11).
+    /// Counted with a spy, in the background state that used to trigger
+    /// it, across several posts.
+    func testA03_AC13_PostingNeverRequestsAuthorization() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client), notifications: notifications)
+        graph.core.crew.setPaired(nodeID: 0x0000_1002, paired: true)
+        await graph.start()
+
+        for packetID in UInt32(700)...UInt32(703) {
+            client.yieldText(IncomingText(from: 0x0000_2001, to: 0x0000_0999, channel: 0, packetID: packetID,
+                                           text: "hello", rxTime: Date(), rssiDbm: nil, snrDb: nil, direct: true))
+        }
+        client.yieldPrivate(IncomingPrivate(
+            from: 0x0000_1002, to: meshBroadcastAddress, channel: 0, packetID: 704,
+            payload: FireflyPacket.flare(durationS: 60).encode()!, rxTime: Date(), rssiDbm: -60, snrDb: nil,
+            direct: true))
+
+        await waitUntil { notifications.posted.count >= 5 }
+        XCTAssertEqual(notifications.authorizationRequests, 0,
+                        "a background callback cannot present a prompt; asking there loses the alert")
+
+        await graph.stop()
+    }
+
+    /// A03 §3.11.5 — asked at a moment that can answer: the first
+    /// `.ready` seen while FOREGROUNDED, once per process, and never off
+    /// a `.ready` that arrives while backgrounded.
+    func testA03_3_11_5_AuthorizationIsAskedOnTheFirstForegroundReadyOnly() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client), notifications: notifications)
+        await graph.start()
+
+        // Backgrounded `.ready` — iOS could not present a prompt here.
+        client.yieldLink(.ready)
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(notifications.authorizationRequests, 0)
+
+        graph.setForegrounded(true)
+        client.yieldLink(.disconnected)
+        client.yieldLink(.ready)
+        await waitUntil { notifications.authorizationRequests == 1 }
+
+        // ...and never again, however many times the link cycles.
+        client.yieldLink(.disconnected)
+        client.yieldLink(.ready)
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(notifications.authorizationRequests, 1, "iOS shows the system prompt once; asking twice is rude")
+
+        await graph.stop()
+    }
+
+    /// A03 §1.10 — categories are registered on EVERY launch (a
+    /// background relaunch included), or a delivered notification's
+    /// category is unknown to the system and its action never appears.
+    func testA03_3_11_CategoriesAreRegisteredOnStart() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client), notifications: notifications)
+        await graph.start()
+        await waitUntil { notifications.categoryRegistrations >= 1 }
+        await graph.stop()
+    }
+
+    /// A03 §3.11.3 — reading a thread withdraws its already-DELIVERED
+    /// banners. Leaving them on the lock screen after the user has read
+    /// the messages is a stale alert for something already seen.
+    func testA03_3_11_3_OpeningAThreadWithdrawsItsDeliveredNotifications() async {
+        let client = CountingClient()
+        let notifications = RecordingNotificationSending()
+        let graph = AppGraph(dependencies: dependencies(client: client), notifications: notifications)
+        let inbox = graph.makeInboxViewModel()
+
+        _ = inbox.openThread(.member(0x0000_2001))
+        await waitUntil { notifications.withdrawnThreads.contains("dm-8193") }
+        XCTAssertTrue(notifications.withdrawnThreads.contains("flare"),
+                        "a FLARE banner from that person is stale once their thread is read")
+
+        _ = inbox.openThread(.crew)
+        await waitUntil { notifications.withdrawnThreads.contains("crew") }
     }
 }
 

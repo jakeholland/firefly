@@ -1389,32 +1389,60 @@ exists and none will be faked.
 5. **A03_AC5** — `BLETransport.reconnectLadderDelay(forAttempt:)` is
    monotonically non-decreasing, reaches the 15-minute cap, stays there
    for every later attempt, and applies jitter within ±20 %. **[unit]**
+   **DONE (S1a)** — as `ReconnectLadder.ladderDelaySeconds(forAttempt:)`
+   / `(forAttempt:jitterFraction:)`; the table, the cap, the ±20 % clamp
+   and the fact that the jitter actually varies are all pinned by
+   `BLEReconnectLadderTests`.
 6. **A03_AC6** — the ladder's "should I scan now" decision is a pure
    function of `(disconnectedAt, now, attempt, shouldAutoReconnect,
    pendingConnectPeripheralID)` and never of a sleeping task; given a
    `now` that jumps forward by an hour (the suspended-process case), it
    fires **once**, not once per skipped rung. **[unit]**
+   **DONE (S1a)** — `ReconnectLadder.evaluate(now:shouldAutoReconnect:
+   pendingConnectPeripheralID:)`. The hour-long jump is pinned, and so is
+   the "same instant, evaluated ten times in a row" burst a single wake
+   actually produces.
 7. **A03_AC7** — a scan window closes at or before 30 s of elapsed
    *evaluated* time even when the peripheral is never discovered.
    **[unit]** for the decision, **[app-host]** for `stopScan()` actually
    being called.
+   **DONE (S1a), unit half** — pinned, plus a measured duty cycle over an
+   8-hour simulated outage (< 5 %, against the 100 % audit 2.2.6
+   describes). The **[app-host]** half — that `stopScan()` is really
+   called on a live `CBCentralManager` — is NOT automated: it needs a
+   manager, and §6 P7 is where it is observed.
 8. **A03_AC8** — `AppGraph.isForegrounded` is `false` on construction;
    an inbound FLARE arriving before any scene-phase signal posts a
    notification and does **not** activate `flareTakeover`. **[unit]**
    (extends the existing
    `testInboundFlareWhileBackgroundedNeverShowsTheTakeover…`)
+   **DONE (S1a)** — `AppGraphTests
+   .testA03_AC8_AFlareArrivingBeforeAnySceneSignalNotifiesAndNeverTakesOver`,
+   which deliberately never calls `setForegrounded` at all.
 9. **A03_AC9** — `SettingsStore.backgroundConnectEnabled` reads `true`
    when nothing is persisted, and round-trips an explicit `false`.
    **[unit]** (replaces
    `testBackgroundConnectDefaultsFalseAndRoundTrips`)
+   **DONE (S1a)** — renamed and inverted in place, plus a migration test
+   (an explicit `false` survives the default flip) and one pinning
+   `InMemorySettingsStore` to the same default.
 10. **A03_AC10** — a pure `NotificationPlan` builder produces, for each
     event in §3.11.1, the exact interruption level, thread identifier,
     category identifier, derived request identifier, deep link and
     body string in §3.11.1–§3.11.3. No `UNUserNotificationCenter` is
     touched. **[unit]** — this is the seam that makes notification
     behaviour testable at all, and it is why S2 introduces it.
+    **DONE (S1a)**, brought forward from S2 per §7.0's cut —
+    `NotificationPlanTests`. One deviation, stated: the FLARE identifier
+    is `flare-<from>-<packetID>`, not `flare-<from>-<startedAtMs>`,
+    because a FLARE body carries a DURATION and no start time (see
+    `NotificationEvent.flare`'s own doc comment).
 11. **A03_AC11** — the same packet delivered twice produces **one**
     notification request with the same identifier, not two. **[unit]**
+    **DONE (S1a)** — at both levels: the builder is deterministic
+    (`NotificationPlanTests`), and the graph posting the same packet
+    twice yields one identifier (`AppGraphTests`). `UNNotificationSending`
+    additionally refuses to re-post an identifier it has already sent.
 12. **A03_AC12** — inside quiet hours, a FLARE is still
     `.timeSensitive` with sound, a DM is `.active`, and a crew message
     is `.passive` with no sound; the window is evaluated against an
@@ -1425,11 +1453,22 @@ exists and none will be faked.
     `requestAuthorization`; a spy authorization provider records zero
     requests across any number of posts, in any authorization state.
     **[unit]**
+    **DONE (S1a)** — `AppGraphTests.testA03_AC13_PostingNeverRequestsAuthorization`
+    (five posts, zero requests), with the ask moved to the first
+    foreground `.ready` and pinned separately.
 14. **A03_AC14** — `BackgroundConnectionStatus.line(for:)` returns
     exactly §3.10's table, and the substring "connected" (case
     insensitive) never appears for any input whose link state is not
     `.ready`. **[unit]** — a mechanical honesty check, the same shape
     `SignalTierTests` uses to forbid numbers in the signal view.
+    **PARTLY DONE (S1a)** — the honesty half is pinned exhaustively
+    (`BackgroundConnectionStatusTests`: every link state × setting ×
+    authorization × with/without a measured reconnect), and it already
+    changed wording — "last **reconnected** 6 min ago" contains
+    "connected", so the line says "last came back". The full nine-row
+    table needs `lastInboundAt` (§3.8) and the §3.5 power states, so it
+    stays S2 per §7.0. The function is `BackgroundConnectionStatus
+    .status(_:)`, taking an `Inputs` value rather than `line(for:)`.
 15. **A03_AC15** — a contiguous non-`.ready` span longer than 5 minutes
     inserts exactly one gap row into history, with both real timestamps,
     and none is inserted for a shorter span. **[unit]**
@@ -1539,6 +1578,20 @@ makes the festival build silently useless:
   DM-vs-crew, derived identifiers, thread ids, and permission asked in
   the foreground (2.3.11–2.3.16). The entitlement is a Jake action; the
   design degrades honestly to `.active` without it.
+
+> **S1a status (this PR).** All five bullets above are implemented,
+> with two honest reductions and one addition:
+> * §3.11.5 ships the TIMING fix (permission asked on the first `.ready`
+>   seen while foregrounded, never from a posting path). The
+>   Connect-screen pre-prompt copy and its button stay with S2 — that is
+>   Connect-screen UI, and the crew Start/Join work is in that file
+>   concurrently.
+> * §3.10 ships ONE honest line, per this section's own
+>   recommendation, not the nine-row table.
+> * Added because the ladder needed somewhere honest to be seen: the
+>   §3.6 counters (`scanStarts`, `reconnects`, `lastReconnectAt`) on
+>   Diagnostics, rendering UNKNOWN — never `0` — on a build with no
+>   Bluetooth transport to ask.
 
 **Before Sep 18 if the above lands early — S1b, "restoration".** §3.1
 (launch-time central, `beginListening()`, the `[api]` decision) and

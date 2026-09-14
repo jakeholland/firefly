@@ -80,6 +80,13 @@ struct FireflyApp: App {
     /// `@Environment`, not a `@State` this file otherwise constructs —
     /// SwiftUI owns this value.
     @Environment(\.scenePhase) private var scenePhase
+    /// A03 §3.11.3 — the notification-centre delegate. Held as `@State`
+    /// because `UNUserNotificationCenter` retains its delegate WEAKLY:
+    /// an object created in `init()` and not stored anywhere would be
+    /// deallocated immediately and every tap would route nowhere.
+    #if canImport(UserNotifications)
+    @State private var notificationTaps = NotificationTapRouter()
+    #endif
 
     init() {
         // `skipLaunchAutoConnectUnderXCTest: true` — this IS the live
@@ -226,6 +233,19 @@ struct FireflyApp: App {
         // has no UIKit dependency to pick `UIKitHapticSignaling` with).
         graph.flareTakeover.setHaptics(haptics)
 
+        // A03 §3.11.3 — install the notification delegate NOW. A tap
+        // that launched the app is delivered right after launch, so
+        // wiring this later is the same as not wiring it at all. It
+        // also has to be a delegate at all before `willPresent` can
+        // stop foreground notifications being swallowed
+        // (`NotificationTapRouter`'s own header).
+        #if canImport(UserNotifications)
+        let taps = NotificationTapRouter()
+        taps.onDeepLink = { url in graph.deepLinks.handle(url) }
+        taps.install()
+        _notificationTaps = State(initialValue: taps)
+        #endif
+
         if let demoClient = graph.dependencies.client as? DemoMeshtasticClient,
            let demoLocation = graph.dependencies.location as? DemoLocationProvider,
            let demoHeading = graph.dependencies.heading as? DemoHeadingProvider {
@@ -286,7 +306,12 @@ struct FireflyApp: App {
                 crew: crew,
                 membership: membership,
                 hasCrew: hasCrew,
-                incomingCrewLink: $incomingCrewLink
+                incomingCrewLink: $incomingCrewLink,
+                // A03 §3.11.3 — where a tapped notification wants to go.
+                deepLinks: graph.deepLinks,
+                // A03 §3.10 — the graph's ONE notification seam, read by
+                // Diagnostics for its authorization state.
+                notifications: graph.notifications
             )
             .preferredColorScheme(.dark)
             // A02 §1.8 — `firefly://crew?v=1&code=…&name=…`. Anything
@@ -295,7 +320,18 @@ struct FireflyApp: App {
             // not a Firefly crew code" for a payload a human actually
             // typed/scanned; a malformed system Open URL call has no
             // screen to show that message ON).
+            // ONE `.onOpenURL`, not two (REVIEW, PR #310 rebase): A02
+            // §1.8's crew links and A03 §3.11.3's notification routing
+            // tokens share the `firefly` scheme, and SwiftUI does not
+            // promise to run every `onOpenURL` in a hierarchy — a second
+            // one is a coin toss over which link type works. The two
+            // vocabularies are disjoint by construction
+            // (`FireflyDeepLink.route(for:)` returns nil for anything but
+            // `find`/`thread`, and `CrewScanPayload.classify` returns
+            // `.unrecognized` for those), so trying A03's router first
+            // and falling through is total and unambiguous.
             .onOpenURL { url in
+                guard !graph.deepLinks.handle(url) else { return }
                 switch CrewScanPayload.classify(url.absoluteString) {
                 case .crewLink(let link):
                     incomingCrewLink = .crewLink(link)
@@ -334,6 +370,22 @@ struct FireflyApp: App {
             // first guarantees the subscription is live before demo mode
             // ever calls `connect()`.
             .task {
+                // A03 §3.2 — SEED the foreground flag from the initial
+                // `scenePhase` before anything can deliver a packet.
+                // `.onChange(of: scenePhase)` below does not fire for an
+                // initial value, and `AppGraph.isForegrounded` now
+                // starts `false` (the honest default for a launch that
+                // may have begun in the background). Without this seed a
+                // NORMAL launch would sit at `false` until the user
+                // backgrounded and returned, and a FLARE arriving in
+                // between would notify instead of taking over.
+                //
+                // This `.task` is attached to the scene's own content,
+                // so reaching it means a scene exists — which is
+                // precisely the signal a CoreBluetooth background
+                // relaunch does NOT have, and why `false` has to be the
+                // default rather than something seeded here.
+                graph.setForegrounded(scenePhase == .active)
                 await graph.start()
                 await demoRunner?.start()
             }

@@ -153,8 +153,15 @@ public final class InMemorySettingsStore: FireflyExtraSettingsStoring, @unchecke
         set { setExtraBool(newValue, "colorblindPaletteEnabled") }
     }
 
+    /// A03 §3.3 — defaults ON, the SAME three-state read the real
+    /// `SettingsStore` does (nothing written -> `true`; anything
+    /// explicitly written -> that value). This stand-in exists so a test
+    /// or the Simulator gets one store with the whole surface on it; a
+    /// stand-in whose DEFAULT disagreed with the real store would make
+    /// every `.stub()`/demo composition exercise a lifecycle path no
+    /// real install takes.
     public var backgroundConnectEnabled: Bool {
-        get { extraBool("backgroundConnectEnabled") }
+        get { extraBool("backgroundConnectEnabled", default: true) }
         set { setExtraBool(newValue, "backgroundConnectEnabled") }
     }
 
@@ -168,9 +175,9 @@ public final class InMemorySettingsStore: FireflyExtraSettingsStoring, @unchecke
         set { setExtraString(newValue, "nodeShortNamePreference") }
     }
 
-    private func extraBool(_ key: String) -> Bool {
+    private func extraBool(_ key: String, default fallback: Bool = false) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        return extraBools[key] ?? false
+        return extraBools[key] ?? fallback
     }
 
     private func setExtraBool(_ value: Bool, _ key: String) {

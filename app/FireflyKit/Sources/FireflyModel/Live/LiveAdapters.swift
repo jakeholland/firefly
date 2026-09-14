@@ -155,6 +155,21 @@ public final class CoreRadarComputing: RadarComputing {
         crew.selected(now: FireflyClock.nowMillis())?.nodeID
     }
 
+    /// A03 §3.11.3 — `ff_crew_select_node` under the hood
+    /// (`CrewStore.selectNode(_:)`), which is a no-op for a node the
+    /// roster does not hold: a deep link naming somebody who is not in
+    /// the crew selects nobody rather than inventing a slot.
+    public func select(nodeID: UInt32) {
+        crew.selectNode(nodeID)
+        if crew.selected(now: FireflyClock.nowMillis())?.nodeID != lastSelectedNodeID {
+            // Same reason as `cycleSelection()` below: a new selection
+            // means the smoothing filter's history belongs to a
+            // different friend.
+            radar.resetSmoothing()
+        }
+        lastSelectedNodeID = crew.selected(now: FireflyClock.nowMillis())?.nodeID
+    }
+
     public func cycleSelection() {
         crew.selectNext()
         // A new selection means the smoothing filter's history belongs

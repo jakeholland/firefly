@@ -46,6 +46,9 @@ struct MoreScreen: View {
     let client: any MeshtasticClientProtocol
     let lineup: LineupViewModel
     let scanner: (any NodeScanning)?
+    /// A03 §3.10 — the ONE notification seam the graph posts through,
+    /// read here only for its authorization state.
+    var notifications: (any NotificationSending)?
     let pairing: CrewPairingController
     /// A02 §5's Crew page — appended after `pairing`, same
     /// append-only convention every field on this screen already
@@ -173,9 +176,17 @@ struct MoreScreen: View {
             // push mechanism.
             SettingsScreen(model: settings, client: client, pairing: pairing, lineup: lineup,
                             autoOpenDiagnostics: autoOpenDiagnosticsInSettings,
-                            onOpenConnect: { open(.connect) })
+                            onOpenConnect: { open(.connect) },
+                            // A03 §3.6/§3.10 — the same BLE transport
+                            // `scanner` already names, asked for its own
+                            // counters; `nil` wherever there is no radio.
+                            linkDiagnostics: scanner as? (any BLELinkDiagnosticsProviding),
+                            notifications: notifications)
         case .system:
-            DiagnosticsScreen(model: DiagnosticsViewModel(client: client))
+            DiagnosticsScreen(model: DiagnosticsViewModel(
+                client: client, linkDiagnostics: scanner as? (any BLELinkDiagnosticsProviding),
+                notifications: notifications,
+                backgroundConnectEnabled: { settings.stayConnectedInBackground }))
         }
     }
 }

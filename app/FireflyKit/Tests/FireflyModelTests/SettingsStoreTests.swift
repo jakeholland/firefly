@@ -94,11 +94,46 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(store.colorblindPaletteEnabled)
     }
 
-    func testBackgroundConnectDefaultsFalseAndRoundTrips() {
+    /// A03_AC9 — **this test's name is the product decision.** It used
+    /// to be `testBackgroundConnectDefaultsFalseAndRoundTrips`, and it
+    /// was pinning the single highest-cost default in the app: with
+    /// nothing persisted, `UserDefaults.bool` read `false`, so
+    /// `AppGraph.handleScenePhaseChange(.background)` disconnected the
+    /// radio and cancelled the notification subscription the moment the
+    /// screen locked. Out of the box, Firefly went deaf in a pocket —
+    /// which is the one place this product is for (A03 §3.3, audit
+    /// 2.4.18). Inverted rather than deleted, so the change is visible
+    /// in the diff of a test whose name states the decision.
+    func testA03_AC9_BackgroundConnectDefaultsTrueAndRoundTrips() {
         let store = SettingsStore(defaults: defaults)
-        XCTAssertFalse(store.backgroundConnectEnabled)
+        XCTAssertTrue(store.backgroundConnectEnabled, "nothing persisted means ON (A03 §3.3)")
         store.backgroundConnectEnabled = true
         XCTAssertTrue(store.backgroundConnectEnabled)
+    }
+
+    /// A03_AC9, the other half — and the migration rule. Someone who has
+    /// explicitly turned this OFF keeps it off across the upgrade that
+    /// flips the default: the setter always writes an explicit value, so
+    /// their `false` is on disk and the three-state read returns it. A
+    /// default change must not overrule a choice somebody made.
+    func testA03_AC9_AnExplicitFalseSurvivesTheDefaultFlip() {
+        let store = SettingsStore(defaults: defaults)
+        store.backgroundConnectEnabled = false
+        XCTAssertFalse(store.backgroundConnectEnabled)
+        // A second store over the same defaults IS the next launch.
+        let nextLaunch = SettingsStore(defaults: defaults)
+        XCTAssertFalse(nextLaunch.backgroundConnectEnabled,
+                        "an explicit OFF is a choice; the new default must not overrule it")
+    }
+
+    /// The stand-in store must agree with the real one about the
+    /// default, or every `.stub()`/demo composition exercises a
+    /// lifecycle path no real install takes.
+    func testA03_AC9_InMemoryStoreAgreesAboutTheDefault() {
+        let store = InMemorySettingsStore()
+        XCTAssertTrue(store.backgroundConnectEnabled)
+        store.backgroundConnectEnabled = false
+        XCTAssertFalse(store.backgroundConnectEnabled)
     }
 
     func testNodeNameDraftsRoundTripAndClear() {

@@ -45,15 +45,30 @@ struct SettingsScreen: View {
     @State private var isShowingClearHistoryConfirmation = false
 
     init(model: SettingsViewModel, client: any MeshtasticClientProtocol, pairing: CrewPairingController,
-         lineup: LineupViewModel, autoOpenDiagnostics: Bool = false, onOpenConnect: @escaping () -> Void = {}) {
+         lineup: LineupViewModel, autoOpenDiagnostics: Bool = false, onOpenConnect: @escaping () -> Void = {},
+         // A03 §3.6/§3.10 — appended, so a sibling slice's own hunk in
+         // this signature lands as a pure insertion rather than a
+         // collision.
+         linkDiagnostics: (any BLELinkDiagnosticsProviding)? = nil,
+         notifications: (any NotificationSending)? = nil) {
         self.model = model
         self.client = client
         self.lineup = lineup
         self.autoOpenDiagnostics = autoOpenDiagnostics
         self.onOpenConnect = onOpenConnect
+        self.linkDiagnostics = linkDiagnostics
+        self.notifications = notifications
         _crewSettings = State(initialValue: CrewSettingsViewModel(pairing: pairing))
         _festpackURLDraft = State(initialValue: model.festpackSourceURLOverride ?? "")
     }
+
+    /// A03 §3.6/§3.10 — the transport's reconnect counters and the
+    /// notification seam, handed down so Diagnostics can render what is
+    /// actually true about the background connection. Both optional and
+    /// defaulted: a stack with no radio (or a preview) renders UNKNOWN
+    /// rather than zeros.
+    var linkDiagnostics: (any BLELinkDiagnosticsProviding)?
+    var notifications: (any NotificationSending)?
 
     var body: some View {
         ScrollView {
@@ -83,7 +98,12 @@ struct SettingsScreen: View {
         // sets the same `@State` a tap would (see `InboxContainerView`
         // .task's own comment for the identical reasoning).
         .navigationDestination(isPresented: $showDiagnostics) {
-            DiagnosticsScreen(model: DiagnosticsViewModel(client: client))
+            DiagnosticsScreen(model: DiagnosticsViewModel(
+                client: client, linkDiagnostics: linkDiagnostics, notifications: notifications,
+                // Read through the SAME view model the toggle writes, so
+                // the status line can never disagree with the switch
+                // three rows above it.
+                backgroundConnectEnabled: { model.stayConnectedInBackground }))
         }
         .task {
             if autoOpenDiagnostics { showDiagnostics = true }
@@ -254,17 +274,26 @@ struct SettingsScreen: View {
             }
             ToggleRow(
                 label: "Stay connected in background",
-                // M2: built. ON keeps the Bluetooth link open — and
-                // reconnecting on its own after a pocket loss or a node
-                // power cycle — with the screen off
-                // (`AppGraph.handleScenePhaseChange`, `BLETransport`'s
-                // reconnect-on-loss and CoreBluetooth state
-                // restoration). OFF disconnects the moment Firefly
-                // leaves the foreground, honestly, rather than quietly
-                // keeping a radio open the setting says is off.
-                subtitle: "On: the link stays up and reconnects on its own while your phone is in your pocket. " +
-                    "Off: Firefly disconnects the moment it leaves the foreground.",
+                // A03 §3.3 — this is ON by default now
+                // (`SettingsStore.backgroundConnectEnabled`), so the
+                // subtitle has to say what each position DOES in plain
+                // words rather than assume the reader turned it on
+                // deliberately. Both halves are literally true of the
+                // code: ON keeps the Bluetooth link up with the screen
+                // off and lets the app alert you; OFF disconnects the
+                // moment Firefly leaves the foreground, which also means
+                // no messages and no flares reach you until you open it
+                // again — the consequence a reader most needs and the
+                // old copy did not mention.
+                subtitle: "On: Firefly keeps talking to your puck while your phone is in your pocket, " +
+                    "so messages and flares still reach you. " +
+                    "Off: Firefly disconnects when you leave the app, and nothing reaches you until you open it.",
                 isOn: Binding(get: { model.stayConnectedInBackground }, set: { model.setStayConnectedInBackground($0) }))
+            // A03 §3.10 — the same honest line Diagnostics shows,
+            // repeated under the toggle so somebody who just changed it
+            // can see what is actually true now.
+            BackgroundConnectionRow(model: model, client: client, linkDiagnostics: linkDiagnostics,
+                                     notifications: notifications)
         }
     }
 
@@ -627,5 +656,48 @@ private extension UnitsPreference {
         case .metric: return "Metric"
         case .imperial: return "Imperial"
         }
+    }
+}
+
+/// A03 §3.10 — the "Background connection" line, repeated under the
+/// CONNECTIVITY toggle (it also lives on Diagnostics). One row, in plain
+/// language, that states what is actually true right now.
+///
+/// It owns a `DiagnosticsViewModel` of its own rather than reaching for
+/// a shared one: that type IS the live-value reader for exactly these
+/// four inputs (link state, the transport's reconnect counters, the
+/// notification authorization, the toggle), and it already carries the
+/// observe/stopObserving lifecycle a row on a screen that comes and goes
+/// needs. Nothing here computes the SENTENCE — that is
+/// `BackgroundConnectionStatus`, in FireflyModel, with its own honesty
+/// test.
+private struct BackgroundConnectionRow: View {
+    let model: SettingsViewModel
+    let client: any MeshtasticClientProtocol
+    let linkDiagnostics: (any BLELinkDiagnosticsProviding)?
+    let notifications: (any NotificationSending)?
+    @State private var diagnostics: DiagnosticsViewModel?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Background connection")
+                .font(.caption)
+                .foregroundStyle(Color.ffCaption)
+            Text(diagnostics?.backgroundConnectionLabel ?? "\u{2014}")
+                .font(.footnote)
+                .foregroundStyle(Color.ffMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            if diagnostics == nil {
+                let vm = DiagnosticsViewModel(client: client, linkDiagnostics: linkDiagnostics,
+                                               notifications: notifications,
+                                               backgroundConnectEnabled: { model.stayConnectedInBackground })
+                vm.observe()
+                diagnostics = vm
+            }
+        }
+        .onDisappear { diagnostics?.stopObserving() }
     }
 }

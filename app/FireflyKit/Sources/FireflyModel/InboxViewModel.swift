@@ -840,16 +840,39 @@ public final class InboxViewModel {
     /// `ingest(_:)` is this view model's own only minting call site.
     private let inboundFeedIDGenerator: InboundFeedIDGenerator
 
+    /// A03 §3.11.3 — "Delivered notifications for a conversation are
+    /// withdrawn when that thread is opened." `nil` (the default) for
+    /// every test and preview that has no notification seam; the live
+    /// graph passes its own (`AppGraph.makeInboxViewModel()`).
+    private let notifications: (any NotificationSending)?
+
     public init(provider: any InboxProviding, client: any MeshtasticClientProtocol,
                 flareSender: (any FireflyPacketSending)? = nil, currentFix: (() -> LocationFix?)? = nil,
                 outboxIDGenerator: OutboxIDGenerator = .shared,
-                inboundFeedIDGenerator: InboundFeedIDGenerator = .shared) {
+                inboundFeedIDGenerator: InboundFeedIDGenerator = .shared,
+                notifications: (any NotificationSending)? = nil) {
         self.provider = provider
         self.client = client
         self.flareSender = flareSender
         self.currentFix = currentFix
         self.outboxIDGenerator = outboxIDGenerator
         self.inboundFeedIDGenerator = inboundFeedIDGenerator
+        self.notifications = notifications
+    }
+
+    /// The `threadIdentifier` a conversation's notifications were
+    /// grouped under — the SAME strings `NotificationPlan` writes, so
+    /// opening a thread withdraws exactly what it posted. A member's
+    /// thread also clears any FLARE/RALLY banner from that person: those
+    /// group separately (one "flare" stack, one "rally" stack) and both
+    /// deep-link into this same conversation, so leaving them on the
+    /// lock screen after the user has read the thread would be a stale
+    /// alert for something already seen.
+    static func notificationThreadIdentifiers(for conversation: ConversationKind) -> [String] {
+        switch conversation {
+        case .crew: return ["crew", "flare", "rally"]
+        case .member(let nodeID): return ["dm-\(nodeID)", "flare", "rally"]
+        }
     }
 
     /// Idempotent, like every other view model's `observe()`.
@@ -931,6 +954,12 @@ public final class InboxViewModel {
     /// is reflected here on the next `refresh()`.
     public func openThread(_ conversation: ConversationKind) -> ThreadViewModel {
         provider.markRead(conversation)
+        // A03 §3.11.3 — read means read: pull the already-DELIVERED
+        // banners for this conversation back off the lock screen.
+        if let notifications {
+            let threads = Self.notificationThreadIdentifiers(for: conversation)
+            Task { for thread in threads { await notifications.withdrawDelivered(threadIdentifier: thread) } }
+        }
         refresh()
         // M2: hand the Thread header the SAME name/colour the row it
         // was opened from just showed — read from `conversations` AFTER

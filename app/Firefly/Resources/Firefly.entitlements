@@ -7,6 +7,25 @@
 	     F) both the USB device (IOKit enumeration) AND the serial
 	     device (the entitlement that actually lets a sandboxed app open
 	     /dev/cu.* — device.usb alone does not grant that). -->
+	<!-- A03 §3.11.1 — Time Sensitive Notifications. A FLARE posts with
+	     `interruptionLevel = .timeSensitive` so it breaks through Sleep
+	     Focus and Do Not Disturb, which is the entire point of a flare;
+	     every other Firefly notification stays `.active` or quieter (the
+	     §3.11.1 table), deliberately unlike Meshtastic-Apple, which sets
+	     the level on everything and trains people to revoke the
+	     permission.
+
+	     This key must be in BOTH entitlements files or a local Debug
+	     device build silently degrades to `.active` while a TestFlight
+	     build does not — and §6's P9 would then be measuring the wrong
+	     binary (A03 2.3.12).
+
+	     The matching capability on the App ID is an OWNER action, not an
+	     agent one. Until it is enabled in the developer portal, iOS
+	     silently downgrades the level to `.active`: the app keeps
+	     working and never claims otherwise. -->
+	<key>com.apple.developer.usernotifications.time-sensitive</key>
+	<true/>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
 	<key>com.apple.security.device.bluetooth</key>

@@ -113,8 +113,29 @@ public final class SettingsStore: FireflyExtraSettingsStoring, @unchecked Sendab
         set { setRawBool(newValue, .colorblindPaletteEnabled) }
     }
 
+    /// A03 §3.3 — **defaults ON**, and this is the highest-value single
+    /// line in that spec. A three-state read, not `UserDefaults.bool`:
+    ///
+    /// * nothing persisted (a fresh install, or an upgrade from a build
+    ///   that never wrote this key) -> `true`;
+    /// * an explicitly written value -> exactly that value.
+    ///
+    /// That second clause IS the migration: the setter below always
+    /// writes explicitly, so anyone who has ever turned this OFF has
+    /// `false` on disk and keeps it. Nobody's choice is overridden; only
+    /// the absence of a choice changes meaning.
+    ///
+    /// Why the default flips: with `UserDefaults.bool`'s `false`,
+    /// `AppGraph.handleScenePhaseChange(.background)` disconnects the
+    /// radio and cancels the notification subscription the moment the
+    /// screen locks — so out of the box the app goes deaf in a pocket,
+    /// which is the one place this product is for. The battery half of
+    /// the justification is A03 §4.2: in the steady connected state this
+    /// costs a 0 % scan duty cycle, and the expensive case it used to
+    /// imply (the unbounded rediscovery scan, audit 2.2.6) is bounded to
+    /// 3.3 % by the §3.6 ladder that lands in this same slice.
     public var backgroundConnectEnabled: Bool {
-        get { rawBool(.backgroundConnectEnabled) }
+        get { rawBool(.backgroundConnectEnabled, default: true) }
         set { setRawBool(newValue, .backgroundConnectEnabled) }
     }
 
@@ -133,9 +154,15 @@ public final class SettingsStore: FireflyExtraSettingsStoring, @unchecked Sendab
         set { setRawString(newValue, .nodeShortNamePreference) }
     }
 
-    private func rawBool(_ key: FireflyExtraSettingsKey) -> Bool {
+    /// `default:` is what makes "never set" distinguishable from "set to
+    /// false" — the same `object(forKey:) != nil` probe `double(_:)`
+    /// above already uses for its own `nil`-when-unset contract, rather
+    /// than a second, different way of asking the same question.
+    private func rawBool(_ key: FireflyExtraSettingsKey, default fallback: Bool = false) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        return defaults.bool(forKey: namespaced(key.rawValue))
+        let k = namespaced(key.rawValue)
+        guard defaults.object(forKey: k) != nil else { return fallback }
+        return defaults.bool(forKey: k)
     }
 
     private func setRawBool(_ value: Bool, _ key: FireflyExtraSettingsKey) {

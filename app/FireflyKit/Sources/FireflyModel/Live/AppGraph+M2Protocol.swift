@@ -63,15 +63,18 @@ extension AppGraph {
     /// BEFORE any of that — an unpaired or unknown sender gets no
     /// takeover, no haptic, no notification, and no feed item, exactly
     /// the puck's own `wiring_push_if_paired` (`ff_wiring.c`).
-    func handleInboundFlare(from: UInt32, to: UInt32, durationS: UInt16) {
+    func handleInboundFlare(from: UInt32, to: UInt32, durationS: UInt16, packetID: UInt32) {
         guard isPairedSender(from) else { logDroppedUnpaired("FLARE", from: from); return }
         pushInboundFeedItem(kind: .flare, from: from, to: to, text: "FLARE")
         if isForegrounded {
             flareTakeover.show(senderNodeID: from, durationSeconds: durationS)
         } else {
-            let name = core.crew.member(nodeID: from, now: FireflyClock.nowMillis())?.displayName
-            let senderName = (name?.isEmpty == false) ? name! : "Someone"
-            Task { await notifications.postFlare(senderName: senderName) }
+            // A03 §3.11.1: `.timeSensitive`, so it breaks through Sleep
+            // Focus — the one message in this product whose entire
+            // purpose is to interrupt. The level, wording, thread,
+            // category and identifier all come from `NotificationPlan`
+            // (A03_AC10); nothing is decided here.
+            post(.flare(from: from, senderName: crewDisplayName(of: from), packetID: packetID))
         }
     }
 
@@ -105,10 +108,19 @@ extension AppGraph {
     /// Gated on `isPairedSender` (PR #271 review, BLOCKING finding 1) —
     /// S04's Addressing section: "RALLY/STATUS broadcast likewise" (as
     /// FLARE's own receiver-side crew filtering).
-    func handleInboundRally(from: UInt32, to: UInt32, latitude: Double, longitude: Double, name: String) {
+    func handleInboundRally(from: UInt32, to: UInt32, latitude: Double, longitude: Double,
+                            name: String, packetID: UInt32) {
         guard isPairedSender(from) else { logDroppedUnpaired("RALLY", from: from); return }
         let text = formatRallyText(name: name, latitude: latitude, longitude: longitude)
         pushInboundFeedItem(kind: .rally, from: from, to: to, text: text)
+        // A03 §3.11.1 / audit 2.3.15 — "RALLY never notifies. 'Meet
+        // here' is the second most time-critical packet the product
+        // has." Foregrounded, the feed row above IS the notification:
+        // the row is on screen. `text` is the row's own composed line,
+        // handed straight to the plan so the two can never disagree
+        // about a distance.
+        guard !isForegrounded else { return }
+        post(.rally(from: from, senderName: crewDisplayName(of: from), packetID: packetID, text: text))
     }
 
     /// RALLY_CLEAR carries no place of its own to clear from the feed
@@ -237,11 +249,50 @@ extension AppGraph {
         incomingTextNotificationObservation = Task { [weak self] in
             for await incoming in texts {
                 guard let self, !self.isForegrounded else { continue }
-                let name = self.core.crew.member(nodeID: incoming.from, now: FireflyClock.nowMillis())?.displayName
-                let senderName = (name?.isEmpty == false) ? name! : "Someone"
-                await self.notifications.postMessage(senderName: senderName, preview: incoming.text)
+                let senderName = self.crewDisplayName(of: incoming.from)
+                // A03 §3.11.1 / audit 2.3.16 — a DM and a crew broadcast
+                // used to post the identical notification. They are not
+                // the same thing: a DM is addressed to this person, a
+                // crew broadcast is a room. They now differ in title
+                // ("Taylor" vs "Taylor · crew") and, crucially, in
+                // `threadIdentifier`, so a chatty crew channel is ONE
+                // stack rather than forty banners. No client-seam change
+                // was needed for this: `IncomingText` already carries
+                // `to`, `channel` and `packetID` — 2.3.16 was a call site
+                // throwing the distinction away, not missing data.
+                //
+                // `isBroadcastDestination` is the SAME helper
+                // `InboxViewModel.ingest(_:)` and `pushInboundFeedItem`
+                // route with, so the notification can never disagree with
+                // which thread the message actually lands in.
+                let event: NotificationEvent = isBroadcastDestination(incoming.to)
+                    ? .crewMessage(from: incoming.from, senderName: senderName,
+                                   packetID: incoming.packetID, text: incoming.text)
+                    : .directMessage(from: incoming.from, senderName: senderName,
+                                     packetID: incoming.packetID, text: incoming.text)
+                self.post(event)
             }
         }
+    }
+
+    /// The crew roster's name for a node, or `nil` when we do not have
+    /// one — honest about a name we do not have, and the ONE place that
+    /// lookup happens for the notification path. `NotificationPlan`
+    /// turns `nil` into "Someone" (its own `unknownSender`), so the
+    /// fallback string is decided in exactly one file.
+    func crewDisplayName(of nodeID: UInt32) -> String? {
+        let name = core.crew.member(nodeID: nodeID, now: FireflyClock.nowMillis())?.displayName
+        return (name?.isEmpty == false) ? name : nil
+    }
+
+    /// Builds the plan and posts it. A `Task` because `NotificationSending`
+    /// is an actor seam and these call sites are synchronous delegate-ish
+    /// paths; the plan itself is built SYNCHRONOUSLY, before the hop, so
+    /// nothing about what the notification says can change underneath it
+    /// while the task is scheduled.
+    func post(_ event: NotificationEvent) {
+        let plan = NotificationPlan.plan(for: event)
+        Task { [notifications] in await notifications.post(plan) }
     }
 
     func stopObservingIncomingTextsForNotifications() {

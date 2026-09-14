@@ -21,6 +21,14 @@ struct InboxContainerView: View {
     /// "Thread with the delivery states" screenshot is the real Thread
     /// screen, not a stand-in. `nil` in every non-demo build.
     var demoInitialThread: ConversationKind?
+    /// A03 §3.11.3 — a conversation a tapped notification asked to open.
+    /// A `Binding` rather than a plain value so this view can clear it
+    /// once opened: leaving it set would re-push the thread on every
+    /// redraw, and would stop the user from ever navigating back.
+    /// Pushed through the SAME `navigationDestination(item:)` a real tap
+    /// uses — never a second, parallel presentation path — exactly like
+    /// `demoInitialThread` above.
+    var deepLinkThread: Binding<ConversationKind?> = .constant(nil)
     /// `SettingsViewModel.colorblindPalette` (M2) — threaded down to
     /// every avatar/swatch this screen and its Thread destination
     /// render, the SAME flag Radar's ring reads, so a member's colour
@@ -65,6 +73,13 @@ struct InboxContainerView: View {
         .task {
             guard let demoInitialThread, activeThread == nil else { return }
             activeThread = model.openThread(demoInitialThread)
+        }
+        // A03 §3.11.3. `initial: true`: a tap that launched the app sets
+        // the request before this view's first frame.
+        .onChange(of: deepLinkThread.wrappedValue, initial: true) { _, conversation in
+            guard let conversation else { return }
+            deepLinkThread.wrappedValue = nil
+            activeThread = model.openThread(conversation)
         }
     }
 }
