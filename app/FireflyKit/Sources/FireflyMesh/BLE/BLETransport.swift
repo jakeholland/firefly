@@ -1248,10 +1248,22 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
             // `.reconnecting(attempt: 1)`; `TransportEvent` has no
             // `.reconnecting` case and this slice does not add one
             // (§3.4's vocabulary note).
+            //
+            // `isReady = false` for the same reason `.poweredOff` clears
+            // it: this publishes `.disconnected`, and `isLinkReady`'s own
+            // contract is "cleared by EVERY path that takes the link
+            // down". A transport that answers "yes, the link is up" to
+            // the next `beginListening()` after publishing `.disconnected`
+            // is exactly the stale-true `isLinkReady` exists to avoid —
+            // and "honest data over pretty data" binds this accessor as
+            // much as it binds a screen.
+            isReady = false
             hub.yield(.disconnected(reason: Self.bluetoothResettingReason))
         case .unauthorized:
+            isReady = false
             hub.yield(.disconnected(reason: Self.bluetoothUnauthorizedReason))
         case .unsupported:
+            isReady = false
             hub.yield(.disconnected(reason: Self.bluetoothUnsupportedReason))
         }
     }

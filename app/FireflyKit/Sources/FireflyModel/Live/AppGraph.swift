@@ -516,8 +516,32 @@ public final class AppGraph {
     /// Awaiting it here makes "the graph has started" mean "every
     /// subscription is live", which is the only version of this that a
     /// test can assert on and a user can rely on.
-    public func start() async {
-        Self.log("start() called (started=\(started))")
+    ///
+    /// A03 §3.1 — `attemptLaunchAutoConnect` exists for the ONE caller
+    /// that must not connect: a CoreBluetooth background relaunch.
+    /// §3.1's rule is "neither path may call `connect()` — restoration
+    /// must be allowed to ADOPT the session rather than race a fresh
+    /// connect", and `autoConnectToLastKnownPeripheral()` below is a
+    /// `connect()`, one `start()` hop removed. Racing it against an
+    /// in-flight `willRestoreState` adoption is the §1.2 teardown this
+    /// whole slice exists to prevent: `BLETransport
+    /// .performConnectSequence()` assigns `peripheral = ` whatever
+    /// `retrievePeripherals(withIdentifiers:)` hands back, and releasing
+    /// the restored object implicitly calls
+    /// `cancelPeripheralConnection(_:)`.
+    ///
+    /// The attempt is NOT dropped, only deferred: it runs on whichever
+    /// `start()` first has a scene behind it (`FireflyApp`'s own
+    /// `.task`, or `handleScenePhaseChange(.foreground)`), which is
+    /// exactly where it ran before S1b added a launch hook at all.
+    /// Hence the `defer` — `hasAttemptedLaunchAutoConnect` still confines
+    /// it to one attempt per process, so the later call is a no-op
+    /// whenever an earlier one already ran.
+    public func start(attemptLaunchAutoConnect: Bool = true) async {
+        defer {
+            if attemptLaunchAutoConnect { attemptLaunchAutoConnectIfNeeded() }
+        }
+        Self.log("start() called (started=\(started), attemptLaunchAutoConnect=\(attemptLaunchAutoConnect))")
         guard !started else {
             Self.log("start(): already started — no-op")
             return
@@ -599,12 +623,6 @@ public final class AppGraph {
                 // at dur") — same tick-driven shape, same loop.
                 self.flareTakeover.tick()
             }
-        }
-        if !hasAttemptedLaunchAutoConnect {
-            hasAttemptedLaunchAutoConnect = true
-            let remembered = dependencies.store.string(.lastPeripheralID)
-            Self.log("start(): considering launch auto-connect — lastPeripheralID=\(remembered ?? "nil")")
-            autoConnectToLastKnownPeripheral()
         }
         // "app: automatic almanac refresh" (owner ask #1, 2026-09-13) —
         // covers genuine launch AND a restart after `stop()` (the
@@ -711,6 +729,19 @@ public final class AppGraph {
     /// unified into one.
     static var isRunningUnderXCTest: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+
+    /// One launch auto-connect attempt per process, wherever `start()`
+    /// is first called with a scene behind it. Split out of `start()`'s
+    /// body so the background-relaunch caller can opt out of it without
+    /// consuming the flag (`start(attemptLaunchAutoConnect:)`'s own doc
+    /// comment).
+    private func attemptLaunchAutoConnectIfNeeded() {
+        guard !hasAttemptedLaunchAutoConnect else { return }
+        hasAttemptedLaunchAutoConnect = true
+        let remembered = dependencies.store.string(.lastPeripheralID)
+        Self.log("start(): considering launch auto-connect — lastPeripheralID=\(remembered ?? "nil")")
+        autoConnectToLastKnownPeripheral()
     }
 
     /// M2 — "remembering the last connected peripheral identifier and
@@ -821,11 +852,18 @@ public final class AppGraph {
     ///    `start()`'s own `started` guard makes it idempotent against the
     ///    scene's `.task`, and `beginListening()` covers BOTH orderings
     ///    of itself against the restore (its own doc comment).
+    ///    `attemptLaunchAutoConnect: isForegrounded` is §3.1's "neither
+    ///    path may call `connect()`": a relaunch into the background must
+    ///    let `willRestoreState` ADOPT the session, not race it with a
+    ///    fresh connect that reassigns `BLETransport.peripheral` and
+    ///    implicitly cancels the very connection being adopted (§1.2).
+    ///    The attempt is deferred to the first `start()` with a scene
+    ///    behind it, never dropped.
     public func handleDidFinishLaunching(isForegrounded: Bool) {
         Self.log("handleDidFinishLaunching(isForegrounded: \(isForegrounded))")
         prepareForRestoration()
         setForegrounded(isForegrounded)
-        Task { await start() }
+        Task { await start(attemptLaunchAutoConnect: isForegrounded) }
     }
 
     /// The same gate `autoConnectToLastKnownPeripheral()` applies, for

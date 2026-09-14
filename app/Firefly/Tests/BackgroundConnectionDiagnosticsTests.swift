@@ -80,6 +80,64 @@ final class BackgroundConnectionDiagnosticsTests: XCTestCase {
         model.stopObserving()
     }
 
+    // MARK: - A03 §3.1 (S1b) — the two restoration rows
+
+    /// The rows §6's P3 is actually read from, under this file's own
+    /// rule: UNKNOWN, never "0" and never a fabricated date, where there
+    /// is no BLE transport to ask. "This process was not restored" and
+    /// "there is nothing here that could be restored" are different
+    /// facts, and P3a is uninterpretable if the screen conflates them.
+    ///
+    /// PR #317 review (Tier 3): the rows shipped without this.
+    func testRestorationRowsReadUnknownWhenThereIsNoTransportToAsk() {
+        let model = DiagnosticsViewModel(client: StubMeshtasticClient(), now: { self.t0 })
+        XCTAssertEqual(model.restoredSessionsLabel, DiagnosticsViewModel.unknown)
+        XCTAssertEqual(model.lastRestoreLabel, DiagnosticsViewModel.unknown)
+    }
+
+    /// With a transport, both rows are that transport's own
+    /// observations — and "Last restore" carries the state it restored
+    /// INTO, in the register this screen uses rather than an enum case
+    /// name.
+    func testRestorationRowsRenderTheTransportsOwnObservations() async {
+        let diagnostics = BLELinkDiagnostics(restores: 2,
+                                              lastRestoreAt: t0.addingTimeInterval(-360),
+                                              lastRestoreAction: .adoptConnected)
+        let model = DiagnosticsViewModel(client: StubMeshtasticClient(), now: { self.t0 },
+                                          linkDiagnostics: StubLinkDiagnostics(diagnostics),
+                                          notifications: StubNotifications(.authorized),
+                                          backgroundConnectEnabled: { true })
+        model.observe()
+        await eventually { model.restoredSessionsLabel == "2" }
+        XCTAssertEqual(model.lastRestoreLabel, "6 min ago \u{00B7} still connected")
+        model.stopObserving()
+    }
+
+    /// A transport that was never restored reports a genuine `0` for HOW
+    /// MANY — it was asked and that is the answer — but UNKNOWN for
+    /// WHEN, because there is no date to age and inventing one is the
+    /// exact failure `lastReconnectAt` already guards against.
+    func testAProcessThatWasNeverRestoredReportsZeroAndAnUnknownTime() async {
+        let model = DiagnosticsViewModel(client: StubMeshtasticClient(), now: { self.t0 },
+                                          linkDiagnostics: StubLinkDiagnostics(BLELinkDiagnostics()),
+                                          notifications: StubNotifications(.authorized),
+                                          backgroundConnectEnabled: { true })
+        model.observe()
+        await eventually { model.restoredSessionsLabel == "0" }
+        XCTAssertEqual(model.lastRestoreLabel, DiagnosticsViewModel.unknown)
+        model.stopObserving()
+    }
+
+    /// Every `BLERestoreAction` has its own words: "still connecting"
+    /// and "had dropped" are genuinely different outcomes from "still
+    /// connected", and P3c's result turns on which one it was.
+    func testEveryRestoreActionHasItsOwnWords() {
+        let words = [BLERestoreAction.adoptConnected, .keepPendingConnect, .reconnect]
+            .map(DiagnosticsViewModel.restoreWords)
+        XCTAssertEqual(words, ["still connected", "still connecting", "had dropped"])
+        XCTAssertEqual(Set(words).count, 3)
+    }
+
     /// The status line is the pure one from FireflyModel, rendered — not
     /// a second sentence assembled here that could drift from it.
     func testTheStatusLineIsTheSharedOneAndSaysOffWhenTheSettingIsOff() {

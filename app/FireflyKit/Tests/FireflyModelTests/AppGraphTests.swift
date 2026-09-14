@@ -2249,6 +2249,60 @@ final class AppGraphRestorationTests: XCTestCase {
         await graph.stop()
     }
 
+    /// **§3.1's "neither path may call `connect()`."** A relaunch into
+    /// the BACKGROUND must not fire the launch auto-connect: it is a
+    /// `connect()` one `start()` hop removed, and racing it against an
+    /// in-flight `willRestoreState` adoption is the §1.2 teardown this
+    /// whole slice exists to prevent —
+    /// `BLETransport.performConnectSequence()` assigns
+    /// `peripheral = ` whatever `retrievePeripherals(withIdentifiers:)`
+    /// hands back, and releasing the restored object implicitly calls
+    /// `cancelPeripheralConnection(_:)`.
+    ///
+    /// PR #317 review (Tier 3): `handleDidFinishLaunching` is what first
+    /// made `start()` — and therefore the launch auto-connect — run on a
+    /// background relaunch at all, so this is the criterion that has to
+    /// come with it.
+    func testABackgroundRelaunchAttachesButNeverConnects() async {
+        let client = CountingClient()
+        let store = InMemorySettingsStore()
+        store.setString(UUID().uuidString, .lastPeripheralID)
+        let graph = AppGraph(dependencies: dependencies(client: client, scanner: RecordingScanner(), store: store))
+
+        graph.handleDidFinishLaunching(isForegrounded: false)
+
+        await waitUntil { client.beginListeningCalls >= 1 }
+        // Long enough for an auto-connect `Task` to have run.
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(client.beginListeningCalls, 1, "the restored session still gets a listener")
+        XCTAssertEqual(client.connectCallCount, 0,
+                        "restoration must ADOPT the session, never race a fresh connect (§3.1)")
+        await graph.stop()
+    }
+
+    /// …and the attempt is DEFERRED, not dropped: the first `start()`
+    /// with a scene behind it still auto-connects, which is exactly
+    /// where it happened before S1b added a launch hook. A relaunch that
+    /// had nothing to restore would otherwise never connect at all.
+    func testTheDeferredLaunchAutoConnectStillFiresOnTheFirstForegroundStart() async {
+        let client = CountingClient()
+        let store = InMemorySettingsStore()
+        store.setString(UUID().uuidString, .lastPeripheralID)
+        let graph = AppGraph(dependencies: dependencies(client: client, scanner: RecordingScanner(), store: store))
+
+        graph.handleDidFinishLaunching(isForegrounded: false)
+        await waitUntil { client.beginListeningCalls >= 1 }
+        XCTAssertEqual(client.connectCallCount, 0)
+
+        // `FireflyApp`'s own scene `.task` — a scene exists now.
+        await graph.start()
+
+        await waitUntil { client.connectCallCount == 1 }
+        XCTAssertEqual(client.connectCallCount, 1)
+        XCTAssertEqual(client.beginListeningCalls, 1, "and it did not re-attach")
+        await graph.stop()
+    }
+
     /// Calling it repeatedly is safe — §3.1 has TWO launch paths on
     /// purpose (the AppDelegate and `FireflyApp.init()`), and the
     /// idempotence that makes that safe lives in the transport, so the

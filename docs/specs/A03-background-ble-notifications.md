@@ -754,6 +754,37 @@ the adoption is finished or abandoned. Because the decision is already
 being extracted as a pure function, this costs one more parameter and
 one more row in A03_AC4's table.
 
+**As built (S1b), with two deviations from the paragraphs above stated
+rather than left to be discovered** (PR #317, Tier-3 review):
+
+1. **The marker is CONSUMED by the `didUpdateState` it guards**, not
+   cleared by `handleWillRestoreState` "when the adoption is finished".
+   Clearing it at the end of the adoption would put the race straight
+   back — the adoption runs on the actor, the `didUpdateState` it is
+   racing arrives on the delegate queue, and the whole point of a
+   delegate-queue marker is that it does not depend on which of those
+   finishes first. `handleWillRestoreState` clears it only when there
+   was nothing to adopt, and `handleDisconnected` clears it as a
+   backstop for a `didUpdateState` that never arrives.
+2. **There is no separate `restoreInProgress` flag gating
+   `handleDiscovered`'s fallback-scan branch or the node-picker scan.**
+   Neither can be running while a restore is being adopted: a relaunch
+   constructs the manager and nothing else (`prepareForRestoration()`
+   issues no scan), the §3.6 ladder starts empty in a fresh process, and
+   a node-picker scan needs a user in front of the Connect screen. The
+   branch that would matter — `handleDiscovered` reassigning
+   `peripheral` — is unreachable on the relaunch path rather than
+   guarded on it. If a future slice can start a scan before
+   `willRestoreState` lands, the guard has to come back with it.
+
+And the rule "**neither path may call `connect()`**" reaches further
+than the two paths that construct the manager: `AppGraph.start()` fires
+the launch auto-connect, so the `didFinishLaunching` hook that kicks
+`start()` must suppress it while the launch is a background one
+(`start(attemptLaunchAutoConnect:)`). The attempt is deferred to the
+first `start()` with a scene behind it, never dropped — otherwise a
+relaunch with an empty restore dictionary would never connect at all.
+
 ### 3.2 The graph must not assume it is on screen
 
 *(closes 2.3.10)*
@@ -1423,6 +1454,15 @@ exists and none will be faked.
    returned used to start a duplicate handshake); the M1 connect path is
    pinned unchanged by
    `testAnOrdinaryConnectAfterBeginListeningStillRunsExactlyOneHandshake`.
+   The duplicate-handshake half is pinned separately by
+   `testAReadyProcessedAfterConnectReturnedDoesNotStartASecondHandshake`
+   (PR #317 review): `LoopbackTransport` publishes `.ready` from inside
+   `connect()`, where the listener always gets its turn during the
+   handshake, so the ordering the claim is about needed a transport that
+   HOLDS the `.ready` back until `connect()` has returned. Without it,
+   reverting the gate to `hasCompletedInitialConnect` left every test in
+   that file green except A03_AC3's own — the claim was asserted, not
+   measured.
 4. **A03_AC4** — `BLETransport.powerStateAction(for:shouldAutoReconnect:
    hasPreferred:restorePending:)` returns, for every `CBManagerState`,
    exactly the row in §3.5's table; `.poweredOff` never clears

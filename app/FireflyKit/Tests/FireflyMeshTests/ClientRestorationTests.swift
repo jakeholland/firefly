@@ -137,7 +137,7 @@ final class ClientRestorationTests: XCTestCase {
                                   nodeDB: [nodeInfoFrame(num: 42, shortName: "F1")])
 
         await waitForCollector(collector)
-        let nodeNum = await client.connectedNodeNum
+        let nodeNum = client.connectedNodeNum
         XCTAssertEqual(nodeNum, 0x1234, "the handshake ran: my_info arrived and was kept")
         let node = await client.nodeSnapshot(42)
         XCTAssertNotNil(node, "the nodeDB was rebuilt from the restored session's own want_config")
@@ -166,7 +166,7 @@ final class ClientRestorationTests: XCTestCase {
 
         try await answerHandshake(transport: transport, sentBefore: 0, myNodeNum: 0x4321)
         await waitForCollector(collector)
-        let nodeNum = await client.connectedNodeNum
+        let nodeNum = client.connectedNodeNum
         XCTAssertEqual(nodeNum, 0x4321)
     }
 
@@ -182,7 +182,7 @@ final class ClientRestorationTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(150))
 
         XCTAssertEqual(transport.sentMessages.count, 0)
-        let nodeNum = await client.connectedNodeNum
+        let nodeNum = client.connectedNodeNum
         XCTAssertNil(nodeNum)
     }
 
@@ -210,7 +210,7 @@ final class ClientRestorationTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertEqual(transport.sentMessages.count, 3,
                         "one handshake: heartbeat + two want_config phases")
-        let nodeNum = await client.connectedNodeNum
+        let nodeNum = client.connectedNodeNum
         XCTAssertEqual(nodeNum, 7)
     }
 
@@ -253,5 +253,157 @@ final class ClientRestorationTests: XCTestCase {
         await waitForCollector(reconnectingCollector)
         XCTAssertFalse(reconnectingCollector.isCancelled,
                         "a loss after a RESTORED session must publish .reconnecting, not silence")
+    }
+}
+
+/// A `LoopbackTransport` whose `.ready` is held back until the test
+/// releases it, so the ONE ordering neither `LoopbackTransport` nor a
+/// real `BLETransport` will produce on demand can be driven
+/// deterministically: the `.ready` an explicit `connect()` produced,
+/// processed by the event listener AFTER `connect()` has already
+/// returned.
+///
+/// That ordering is the "older race" A03_AC3's own notes claim the new
+/// `.ready` gate closes, and nothing else in this file reaches it —
+/// `LoopbackTransport` publishes `.ready` from inside `connect()`, where
+/// the listener always gets its turn during the handshake and the OLD
+/// `hasCompletedInitialConnect` gate therefore still reads `false`.
+/// Everything else is delegated to a real `LoopbackTransport`, so the
+/// handshake under test is the real one.
+///
+/// PR #317 review (Tier 3): added because reverting the gate to
+/// `hasCompletedInitialConnect` left every existing test in this file
+/// green except A03_AC3's own, which means the duplicate-handshake half
+/// of the claim was asserted and not pinned.
+private final class LateReadyTransport: MeshTransport, @unchecked Sendable {
+    private let inner = LoopbackTransport()
+    private let lock = NSLock()
+    private var continuations: [AsyncStream<TransportEvent>.Continuation] = []
+    private var readyHeld = false
+    private var readyReleased = false
+    private var forwarder: Task<Void, Never>?
+
+    var kind: TransportKind { inner.kind }
+    var sentMessages: [Data] { inner.sentMessages }
+    func inject(_ data: Data) { inner.inject(data) }
+    func waitForSentCount(_ n: Int) async throws { try await inner.waitForSentCount(n) }
+
+    func events() -> AsyncStream<TransportEvent> {
+        let (stream, continuation) = AsyncStream<TransportEvent>.makeStream(
+            bufferingPolicy: .bufferingNewest(4096))
+        addContinuation(continuation)
+        startForwardingIfNeeded()
+        return stream
+    }
+
+    func connect() async throws { try await inner.connect() }
+    func disconnect() async { await inner.disconnect() }
+    func send(_ data: Data) async throws { try await inner.send(data) }
+    var isLinkReady: Bool { get async { await inner.isLinkReady } }
+
+    /// Deliver the `.ready` that was held back. Called after
+    /// `client.connect()` has returned, which is the whole point.
+    func releaseReady() {
+        lock.lock()
+        let held = readyHeld
+        readyHeld = false
+        readyReleased = true
+        let targets = continuations
+        lock.unlock()
+        guard held else { return }
+        for continuation in targets { continuation.yield(.ready) }
+    }
+
+    // MARK: - Plumbing (synchronous, because `NSLock` may not be held
+    // across a suspension point — the same shape `LoopbackTransport
+    // .record(_:)` uses).
+
+    private func addContinuation(_ continuation: AsyncStream<TransportEvent>.Continuation) {
+        lock.lock(); continuations.append(continuation); lock.unlock()
+    }
+
+    private func startForwardingIfNeeded() {
+        lock.lock()
+        let alreadyRunning = forwarder != nil
+        lock.unlock()
+        guard !alreadyRunning else { return }
+        let stream = inner.events()
+        let task = Task { [weak self] in
+            for await event in stream {
+                guard let self else { return }
+                self.forward(event)
+            }
+        }
+        lock.lock(); forwarder = task; lock.unlock()
+    }
+
+    private func forward(_ event: TransportEvent) {
+        lock.lock()
+        if case .ready = event, !readyReleased {
+            readyHeld = true
+            lock.unlock()
+            return
+        }
+        let targets = continuations
+        lock.unlock()
+        for continuation in targets { continuation.yield(event) }
+    }
+}
+
+extension ClientRestorationTests {
+
+    /// The "older race" A03_AC3's notes name, driven rather than
+    /// asserted: the `.ready` an explicit `connect()` produced is
+    /// processed by the listener AFTER `connect()` has already returned.
+    ///
+    /// Under the OLD `hasCompletedInitialConnect` gate that `.ready`
+    /// reads as "this client has connected before, so this must be a
+    /// reconnect" and starts a SECOND want_config against a link that is
+    /// already up. Under the new "is a `connect()` awaiting this?" gate
+    /// the claim is still outstanding, the event is consumed, and
+    /// nothing extra goes out.
+    func testAReadyProcessedAfterConnectReturnedDoesNotStartASecondHandshake() async throws {
+        let transport = LateReadyTransport()
+        let client = MeshtasticClient(transport: transport, handshakeRetryClock: ImmediateHandshakeRetryClock())
+
+        await client.beginListening()
+        let connectTask = Task { try await client.connect() }
+        // The handshake runs with the transport's `.ready` still held
+        // back, exactly as it does today when the listener simply has
+        // not had its turn yet.
+        try await waitForSentCount(2, on: transport)
+        transport.inject(myInfoFrame(num: 0x2468))
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyConfig))
+        try await waitForSentCount(3, on: transport)
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyNodeDB))
+        try await connectTask.value
+
+        // `connect()` has returned — NOW the listener sees its `.ready`.
+        transport.releaseReady()
+        try await Task.sleep(for: .milliseconds(250))
+
+        XCTAssertEqual(transport.sentMessages.count, 3,
+                        "one handshake: heartbeat + two want_config phases — a `.ready` processed after " +
+                        "connect() returned must not start a second one")
+    }
+
+    /// Bounded wait against the wrapper, same shape as the
+    /// `LoopbackTransport` one above and for the same reasons.
+    private func waitForSentCount(_ n: Int, on transport: LateReadyTransport,
+                                   timeout: Duration = .seconds(10),
+                                   file: StaticString = #filePath, line: UInt = #line) async throws {
+        let waiter = Task { try await transport.waitForSentCount(n) }
+        let watchdog = Task {
+            try? await Task.sleep(for: timeout)
+            waiter.cancel()
+        }
+        defer { watchdog.cancel() }
+        do {
+            try await waiter.value
+        } catch {
+            XCTFail("timed out waiting for \(n) sent message(s); saw \(transport.sentMessages.count)",
+                     file: file, line: line)
+            throw error
+        }
     }
 }
