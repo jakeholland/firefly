@@ -1471,11 +1471,14 @@ static void shell_ev_channel(void *u, mc_channel_t const *ch)
  *    so their slot survives, and an admission gated on "no slot at all"
  *    would leave them permanently invisible with nothing to explain why;
  *  - the consequence, flagged rather than hidden: under auto-crew a
- *    plain unpair (the CREW page's REMOVE) is NOT permanent — the next
+ *    plain unpair (`FF_INTENT_CREW_UNPAIR`) is NOT permanent — the next
  *    qualifying packet re-admits them. That is the honest reading of
  *    "possession of the crew key is membership", and it is exactly why
  *    HIDE (unpair + remember) exists as the control that actually
- *    sticks. The CREW page carries both.
+ *    sticks, and why the CREW page's PAIRED row now offers HIDE and no
+ *    longer offers REMOVE: a button that silently undoes itself is
+ *    worse than no button. UNPAIR stays in the intent API for the bench
+ *    console and its tests; it is simply not on that row.
  *
  * Everything it decides lives in core (`ff_admit`, pure and
  * exhaustively tested clause by clause); everything it DOES routes

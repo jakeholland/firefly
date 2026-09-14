@@ -458,7 +458,12 @@ typedef struct {
     uint8_t  index;      /* the channel's slot in the table, 0 = primary */
     char     name[12];   /* Meshtastic's own limit: "Less than 12 bytes", NUL-terminated */
     uint8_t  psk[32];
-    uint8_t  psk_len;    /* 0, 1, 16 or 32 — 0 means the channel stated no key */
+    /* Length of `psk`, as the radio actually reported it — Meshtastic
+     * itself only ever writes 0, 1, 16 or 32, but this is a reading, not
+     * a promise: any length up to 32 is passed through as measured, and
+     * a longer one is reported as 0 (no key) rather than truncated into
+     * a plausible-looking wrong key. 0 means the channel stated no key. */
+    uint8_t  psk_len;
     bool     is_primary; /* Channel.role == PRIMARY */
 } mc_channel_t;
 

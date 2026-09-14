@@ -1445,11 +1445,19 @@ static void settings_crew_build_overflow_row(lv_obj_t *list, int32_t rel_y, int3
     char status[32];
     snprintf(status, sizeof(status), "heard %s", age_buf);
 
+    /* A02 §4.3/§4.4 — these people ARE crew (they proved possession of
+     * the key); they are only untracked because the roster is full. The
+     * spec is explicit for exactly this row: "with their name if
+     * NodeInfo arrived, `New crew member` otherwise", and §4.4's rule is
+     * absolute — "Never blank, never a hex id, on any screen". The hex
+     * fallback below it in HEARD is right for a stranger and wrong here:
+     * it reads as a fault, and it is the only thing on this page that
+     * makes a crew member look like a radio. */
     char top[FF_APP_NAME_LEN + 4];
     if (h->has_name && h->name[0] != '\0') {
         snprintf(top, sizeof(top), "%s", h->name);
     } else {
-        snprintf(top, sizeof(top), "#%s", h->short_id);
+        snprintf(top, sizeof(top), "NEW CREW MEMBER");
     }
 
     settings_crew_row_labels(row, row_w, top, status, FF_THEME_COLOR_STALE_AMBER);
@@ -1654,6 +1662,18 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
     lv_obj_update_layout(list);
 }
 
+/* A02 slice D — SHOW CODE needs LVGL's optional QR widget. Both targets
+ * ask for it (firmware/lv_conf.h; targets/esp32s3/sdkconfig.defaults),
+ * but on ESP-IDF `sdkconfig.defaults` only seeds a sdkconfig that does
+ * not exist yet: a board configured BEFORE this change still carries
+ * `# CONFIG_LV_USE_QRCODE is not set`, that file wins, and the build
+ * dies six lines deep in implicit-declaration errors that name LVGL
+ * rather than the config. Say it once, in words that name the fix.
+ * (Measured on the bring-up board's own sdkconfig, 2026-09-13.) */
+#if !defined(LV_USE_QRCODE) || LV_USE_QRCODE == 0
+#error "A02 slice D needs LV_USE_QRCODE. ESP-IDF: an EXISTING firmware/targets/esp32s3/sdkconfig overrides sdkconfig.defaults, so a board configured before this change still has it off - enable it in `idf.py menuconfig` (Component config -> LVGL configuration -> 3rd party libraries -> QR code), or delete that sdkconfig and rebuild. Sim: see firmware/lv_conf.h."
+#endif
+
 /* ---------------------------------------------------------------------
  * SHOW CODE face — A02 slice D (docs/specs/S02-core-crew.md's 2026-09-13
  * amendment §D; the copy and the link format are A02 §1.8's)
@@ -1674,18 +1694,35 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
  * code somebody will type into their phone and then stand around
  * wondering why nobody appeared.
  *
- * Geometry, against the round 412 glass. The QR is 220 px, centred: the
- * spec's ceiling, and it leaves the code line, the caption and a real
- * 44 px BACK target room below it inside the circle. `lv_qrcode` draws
- * into a canvas of exactly the size it is given, so the module size is
- * whatever 220 / (modules + 2*quiet-zone) works out to for this
- * payload's version — LVGL handles that; what matters here is that 220
- * is a multiple of neither more nor less than the layout needs, and the
- * dark-on-light polarity is NOT inverted (a scanner expects dark modules
- * on a light ground, and a clever dark-theme QR is a QR that does not
- * scan).
+ * Geometry, against the round 412 glass — MEASURED off the committed
+ * golden, not eyeballed. The `lv_qrcode` canvas is 190 px and carries a
+ * 6 px light border as its quiet zone, so the white ground the camera
+ * actually sees is 190 + 2*6 = 202 px square (confirmed: the near-white
+ * bounding box in `crew_show_code.png` is exactly 202x202 at y=34). That
+ * leaves the code line, the caption and a real 44 px BACK target room
+ * below it inside the circle. `lv_qrcode` draws into a canvas of exactly
+ * the size it is given, so the module size is whatever 190 / (modules +
+ * 2*quiet-zone) works out to for this payload's version — LVGL handles
+ * that; what matters here is that the dark-on-light polarity is NOT
+ * inverted (a scanner expects dark modules on a light ground, and a
+ * clever dark-theme QR is a QR that does not scan).
+ *
+ * The square is centred on the GLASS (FF_THEME_GLASS_CX = 208), not on
+ * the 412 pixel array (206). That 2 px is not cosmetic: the panel sits
+ * ~5 px left of the bezel's optical centre (ff_theme.h), and a 202 px
+ * square hung off the panel centre puts its top-LEFT corner at
+ * r = 200.5 from the glass centre — outside FF_THEME_GLASS_R, which is
+ * itself already pulled 3 px in from the measured 203. Centred on the
+ * glass both top corners land at r = 199.5 and the asymmetry is gone.
+ * Pinned by the assert below rather than by the golden, because a golden
+ * is a pixel-diff against itself and would happily keep a corner over
+ * the bezel lip forever.
  * ------------------------------------------------------------------- */
 #define FF_CREWCODE_QR_PX     190
+#define FF_CREWCODE_QR_BORDER 6 /* the QR's own quiet zone, in its light colour */
+#define FF_CREWCODE_QR_BOX    (FF_CREWCODE_QR_PX + 2 * FF_CREWCODE_QR_BORDER)
+/* TOP_MID aligns on the pixel array's centre; this nudges to the glass's. */
+#define FF_CREWCODE_QR_DX     (FF_THEME_GLASS_CX - FF_THEME_PUCK_PX / 2)
 #define FF_CREWCODE_QR_Y      34
 #define FF_CREWCODE_CODE_Y    (FF_CREWCODE_QR_Y + FF_CREWCODE_QR_PX + 14)
 #define FF_CREWCODE_CAPTION_Y (FF_CREWCODE_CODE_Y + 46)
@@ -1694,6 +1731,14 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
 #define FF_CREWCODE_BTN_Y     326
 
 _Static_assert(FF_CREWCODE_QR_PX <= 220, "A02 slice D: the QR must stay <= 220px to fit the round glass");
+/* The QR's light ground must stay INSIDE the glass, corners included —
+ * the quiet zone is part of the symbol, and a scanner that loses it
+ * loses the symbol. Its top corners are the worst case; stated as
+ * arithmetic, the same way the BACK pill's containment is below. */
+_Static_assert((FF_CREWCODE_QR_BOX / 2) * (FF_CREWCODE_QR_BOX / 2) +
+                       (FF_THEME_GLASS_CY - FF_CREWCODE_QR_Y) * (FF_THEME_GLASS_CY - FF_CREWCODE_QR_Y) <=
+                   FF_THEME_GLASS_R * FF_THEME_GLASS_R,
+               "SHOW CODE's QR (quiet zone included) must stay inside FF_THEME_GLASS_R");
 _Static_assert(FF_CREWCODE_BTN_H >= FF_THEME_MIN_HIT_PX, "SHOW CODE's BACK button must clear the 44px hit floor");
 /* The BACK pill's lowest corners have to stay inside the glass. At its
  * bottom edge the inscribed chord is
@@ -1737,12 +1782,12 @@ static void settings_build_crew_code_page(lv_obj_t *parent, ff_app_crew_page_t c
         lv_qrcode_set_dark_color(qr, lv_color_hex(0x000000));
         lv_qrcode_set_light_color(qr, lv_color_hex(0xFFFFFF));
         lv_qrcode_update(qr, cw->invite_url, strlen(cw->invite_url));
-        lv_obj_align(qr, LV_ALIGN_TOP_MID, 0, FF_CREWCODE_QR_Y);
+        lv_obj_align(qr, LV_ALIGN_TOP_MID, FF_CREWCODE_QR_DX, FF_CREWCODE_QR_Y);
         /* A quiet zone in the QR's own light colour: the module pattern
          * has to be surrounded by light, and the puck behind it is
          * near-black. */
         lv_obj_set_style_border_color(qr, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_border_width(qr, 6, 0);
+        lv_obj_set_style_border_width(qr, FF_CREWCODE_QR_BORDER, 0);
         lv_obj_clear_flag(qr, LV_OBJ_FLAG_CLICKABLE);
 
         lv_obj_t *code = lv_label_create(puck);

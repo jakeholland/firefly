@@ -4054,6 +4054,46 @@ static void A02_show_code_is_offered_even_with_no_code_resolved(void)
     TEST_ASSERT_NOT_NULL(find_button_with_label(lv_screen_active(), "SHOW CODE"));
 }
 
+static void A02_an_untracked_crew_member_is_never_shown_as_a_hex_id(void)
+{
+    /* A02 §4.3 spells this row out — "with their name if NodeInfo
+     * arrived, `New crew member` otherwise" — and §4.4's rule is
+     * absolute: "Never blank, never a hex id, on any screen". These
+     * people proved possession of the crew key; they are untracked only
+     * because the roster is full. A `#8f60` here reads as a fault, and
+     * it is the one thing on this page that makes a crew member look
+     * like a radio. (The HEARD list's hex fallback is unaffected: a node
+     * that never proved the key is a radio, and saying so is honest.) */
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+    s.crew.overflow_count = 1;
+    s.crew.overflow[0].node_id = 0x11118f60u;
+    s.crew.overflow[0].has_name = false;
+    s.crew.overflow[0].name[0] = '\0';
+    strncpy(s.crew.overflow[0].short_id, "8f60", sizeof(s.crew.overflow[0].short_id) - 1);
+    s.crew.overflow[0].age_ms = 60000u;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "NOT TRACKED (1)"));
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "NEW CREW MEMBER"));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "#8f60"));
+
+    /* And a name, when there IS one, still wins over the fallback.
+     * Fresh screen: ff_scr_settings_build appends to whatever is already
+     * on it, so a stale label from the build above would satisfy the
+     * negative assertion below for the wrong reason. */
+    lv_obj_clean(lv_screen_active());
+    s.crew.overflow[0].has_name = true;
+    strncpy(s.crew.overflow[0].name, "NEV", sizeof(s.crew.overflow[0].name) - 1);
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "NEV"));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "NEW CREW MEMBER"));
+}
+
 static void A02_crew_page_omits_empty_hidden_and_overflow_sections(void)
 {
     /* An empty NOT TRACKED section would imply a cap problem that does
@@ -4252,6 +4292,7 @@ int main(void)
     RUN_TEST(A02_crew_unhide_tap_emits_unhide_with_node_id);
     RUN_TEST(A02_show_code_tap_emits_open_crew_code);
     RUN_TEST(A02_show_code_is_offered_even_with_no_code_resolved);
+    RUN_TEST(A02_an_untracked_crew_member_is_never_shown_as_a_hex_id);
     RUN_TEST(A02_crew_page_omits_empty_hidden_and_overflow_sections);
     RUN_TEST(S02_AC14_show_code_face_renders_the_code_and_a_back_control);
     RUN_TEST(S02_AC14_show_code_face_says_no_code_rather_than_faking_one);

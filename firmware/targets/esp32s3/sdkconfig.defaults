@@ -107,6 +107,20 @@ CONFIG_LV_USE_ARC=y
 # derive from lv_canvas_class (lvgl/src/libs/qrcode/lv_qrcode.c) and
 # stating a hard dependency beats inheriting it from someone else's
 # `!LV_CONF_MINIMAL`. It is a pin, not a fix for a live defect.
+#
+# DRIFT WARNING, and this one bites today (measured on the bring-up
+# board's own sdkconfig, 2026-09-13): this file only seeds a sdkconfig
+# that does not exist yet. Every other LVGL key above is already `=y` in
+# an existing board sdkconfig, so nobody has felt the rule here before —
+# CONFIG_LV_USE_QRCODE is the first NEW one, and a board configured
+# before this change carries `# CONFIG_LV_USE_QRCODE is not set`, which
+# WINS. `idf.py reconfigure` does not change that (see this file's own
+# drift-rule header). The build then fails with implicit-declaration
+# errors naming `lv_qrcode_create` rather than the config, so
+# scr_settings.c carries an #error that says the fix out loud: enable it
+# in `idf.py menuconfig` (Component config -> LVGL configuration ->
+# 3rd party libraries -> QR code), or delete the key from the board's
+# sdkconfig and rebuild.
 CONFIG_LV_USE_QRCODE=y
 CONFIG_LV_USE_CANVAS=y
 # LVGL object heap — the radar face's static point pools are light, but
