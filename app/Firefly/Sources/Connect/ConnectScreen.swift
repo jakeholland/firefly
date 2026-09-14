@@ -368,7 +368,7 @@ struct ConnectScreen: View {
     private var nearbySection: some View {
         SectionBlock(title: "NEARBY") {
             if nearby.nodes.isEmpty {
-                Text("Nobody heard yet. This fills in once mesh traffic comes in.")
+                Text("Nobody heard yet. This fills in as other radios are heard.")
                     .font(.footnote)
                     .foregroundStyle(Color.ffMuted)
             } else {
