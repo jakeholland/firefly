@@ -464,6 +464,24 @@ struct FireflyApp: App {
                 graph.setForegrounded(scenePhase == .active)
                 await graph.start()
                 await demoRunner?.start()
+                #if DEBUG
+                // `-FireflyDebugNotify <kind>` — the notification-tap
+                // repro seam (`FireflyDebugNotifyLaunch`'s own header).
+                // DEBUG-only on BOTH sides: the parser returns nil in a
+                // Release build and these call sites do not exist there
+                // either.
+                //
+                // Only the PERMISSION is taken here, while the app is
+                // foregrounded and the system alert can be answered
+                // (§3.11.5's own rule, and the reason this cannot happen
+                // from the background hook below). The notification
+                // itself is scheduled when the app BACKGROUNDS.
+                if FireflyDebugNotifyLaunch.requestedKind() != nil,
+                   let sender = graph.notifications as? UNNotificationSending {
+                    _ = await sender.requestAuthorization()
+                    await sender.registerCategories()
+                }
+                #endif
             }
             // M2 — background BLE (docs/specs/A01-companion-app.md):
             // `.active` -> `.background` is the one transition that
@@ -479,6 +497,25 @@ struct FireflyApp: App {
                         await graph.handleScenePhaseChange(.foreground)
                     case .background:
                         await graph.handleScenePhaseChange(.background)
+                        #if DEBUG
+                        // The repro seam's actual schedule, fired from
+                        // the BACKGROUND transition rather than a fixed
+                        // delay after launch. Measured, not guessed: a
+                        // launch-relative delay races the test's own
+                        // Home press (a slow install/launch delivers the
+                        // notification while the app is still in front,
+                        // where the banner auto-dismisses with nothing
+                        // left to tap) and produced two different
+                        // flakes before this moved here. Scheduling off
+                        // the event that MUST have happened first
+                        // removes the race instead of widening a
+                        // timeout against it.
+                        if let kind = FireflyDebugNotifyLaunch.requestedKind(),
+                           let plan = FireflyDebugNotifyLaunch.plan(for: kind),
+                           let sender = graph.notifications as? UNNotificationSending {
+                            await sender.scheduleDebugNotification(plan, after: 3)
+                        }
+                        #endif
                     case .inactive:
                         break
                     @unknown default:
