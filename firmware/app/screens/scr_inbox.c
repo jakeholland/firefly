@@ -80,7 +80,29 @@
 
 /* Sub-screen (picker/thread) pinned back button — the spec's ">=44px
  * escape, off the rim". Its band's own chord margin is computed below. */
-#define FF_INBOX_BACK_Y 30
+/* Tap-target sizing pass (2026-09-14) — the one control on this face
+ * that could NOT grow, and the measurement that says so.
+ *
+ * BACK is a circle pinned to the LEFT of a row whose CENTRE carries the
+ * sub-screen's own title ("RALLY", the thread's name, "PICK A
+ * CONVERSATION"). Those titles are centred, so their left edge lands at
+ * x ~166 whatever BACK does; BACK's right edge therefore has to stay at
+ * or under 158 to keep the 8px adjacency floor. Working backwards
+ * through the (now bezel-accurate) chord at this band: right edge <= 158
+ * means a left margin <= 114, which needs a half-width >= 92, which caps
+ * the band's own top at y >= 36 — and at that y a 64px circle lands at
+ * x 113..177, right through the caption. 44px at y=36 lands at 113..156
+ * and clears it by 10px.
+ *
+ * So BACK stays at FF_THEME_MIN_HIT_PX and moves DOWN 6px (30 -> 36),
+ * which is what the bezel-accurate margin needs on its own: at the old
+ * y=30 even the 44px circle reached x=167, 1px into the caption. Growing
+ * it needs the title to stop being centred, which is a layout decision
+ * this pass is not the place to make. In the meantime this is the one
+ * control on the device with a large, non-visual alternative: S28's
+ * left-rim swipe is BACK on every sub-screen, and it is a rim gesture
+ * rather than a 3.8mm target. */
+#define FF_INBOX_BACK_Y 36
 #define FF_INBOX_BACK_PX FF_THEME_MIN_HIT_PX
 
 /* The inbox conversation list: full-bleed 68px rows, touching (design
@@ -89,13 +111,21 @@
 #define FF_INBOX_LIST_H     268
 #define FF_INBOX_LIST_BOT_Y (FF_INBOX_LIST_TOP_Y + FF_INBOX_LIST_H)
 
-#define FF_INBOX_ROW_H 68 /* the canvas's full-bleed pitch — rows touch */
+/* Tap-target sizing pass (owner decision 2026-09-14: "Inbox/Signals rows
+ * >= 80px"): the full-bleed pitch grows 68 -> 88, which puts each row's
+ * TAP TARGET (pitch minus 2 * FF_INBOX_ROW_HIT_INSET_Y) at exactly 80px
+ * / ~7.0mm. The cost is one visible row: the 268px viewport showed 3.9
+ * rows at 68px and shows 3.0 at 88px. That is the right trade for this
+ * face — the list scrolls, so a fourth row is one flick away, whereas a
+ * row you cannot reliably hit with a gloved thumb is not recoverable by
+ * any amount of scrolling. */
+#define FF_INBOX_ROW_H 88 /* the canvas's full-bleed pitch — rows touch (68 pre-sizing-pass) */
 /* Hit-rect vertical inset: rows touch visually; tap targets keep the 8px
  * adjacency floor between them (2 * inset) and still clear the 44px size
  * floor. See this file's header comment. */
 #define FF_INBOX_ROW_HIT_INSET_Y 4
-_Static_assert(FF_INBOX_ROW_H - 2 * FF_INBOX_ROW_HIT_INSET_Y >= FF_THEME_MIN_HIT_PX,
-               "signals row tap target must clear the 44px hit floor");
+_Static_assert(FF_INBOX_ROW_H - 2 * FF_INBOX_ROW_HIT_INSET_Y >= FF_THEME_HIT_PRIMARY_PX,
+               "signals row tap target must clear the outdoor list-row floor");
 _Static_assert(2 * FF_INBOX_ROW_HIT_INSET_Y >= FF_HIT_MIN_GAP_PX,
                "adjacent signals row tap targets must clear the 8px adjacency floor");
 
@@ -118,10 +148,34 @@ _Static_assert(2 * FF_INBOX_ROW_HIT_INSET_Y >= FF_HIT_MIN_GAP_PX,
 #define FF_INBOX_FAB_DECO_D  240
 #define FF_INBOX_FAB_DECO_X  278
 #define FF_INBOX_FAB_DECO_Y  280
-#define FF_INBOX_FAB_HIT_X   300
-#define FF_INBOX_FAB_HIT_Y   300
-#define FF_INBOX_FAB_HIT_PX  (FF_THEME_PUCK_PX - FF_INBOX_FAB_HIT_X) /* -> 112: reaches the window corner */
-_Static_assert(FF_INBOX_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target must clear the hit floor");
+/* Tap-target sizing pass (owner decision 2026-09-14: "Inbox compose
+ * button ... moves inward so its whole hit area is inside r=200 from
+ * (208,206)"). Both puck UX reviews flagged this control by name — Maya:
+ * "on the real device that is the single worst place to put a primary
+ * action, since it's closest to where the round glass actually curves
+ * away".
+ *
+ * The measurement behind the move. The hit rect is corner-anchored and
+ * deliberately bleeds into the masked letterbox corner (that is what lets
+ * it cover the whole visible amber lens, and it is why
+ * test_face_hit_targets.c carries an explicit corner-bleed exclusion) —
+ * so the number that matters is NOT the rect's size, it is the largest
+ * square at its NEAR corner that is actually ON GLASS. With the near
+ * corner at (300,300) that square was 63x63: the binding constraint is
+ * (300 + w - 208)^2 + (300 + w - 206)^2 <= 200^2. Solving the same
+ * inequality for w = 80 gives a near corner of (268,268) — so the anchor
+ * moves there, and the REAL, on-glass, un-bezelled tap target becomes
+ * 80x80 (~7.0mm), the pass's primary-action floor, instead of 5.5mm of
+ * reachable amber with the rest under the lip.
+ *
+ * Everything downstream follows automatically: the rows' and chips' own
+ * right-hand clearance is derived from this anchor
+ * (FF_INBOX_ROW_HIT_CLEAR_X / FF_INBOX_CHIP_MAX_RIGHT below), so they
+ * give up the 32px the FAB gained rather than colliding with it. */
+#define FF_INBOX_FAB_HIT_X   268
+#define FF_INBOX_FAB_HIT_Y   268
+#define FF_INBOX_FAB_HIT_PX  (FF_THEME_PUCK_PX - FF_INBOX_FAB_HIT_X) /* -> 144: reaches the window corner */
+_Static_assert(FF_INBOX_FAB_HIT_PX >= FF_THEME_HIT_PRIMARY_PX, "FAB tap target must clear the hit floor");
 
 /* Every inbox row's hit-rect stops this far left of the FAB's tap
  * target, so a row and the FAB can never violate the 8px adjacency floor
@@ -188,11 +242,17 @@ _Static_assert(FF_INBOX_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target must 
  * unlike 1:1 its band (FF_INBOX_THREAD_LIST_H_CREW) is NOT pre-shrunk to
  * reserve chip room, so a long CREW thread has none to give without
  * covering messages. */
-#define FF_INBOX_CHIP_Y         264
-#define FF_INBOX_CHIP_H         44
+#define FF_INBOX_CHIP_Y         256
+/* Tap-target sizing pass (2026-09-14): 44 -> 52. The quick-reply strip is
+ * bounded ABOVE by the thread's own message band (shrinking it costs
+ * messages, which is what the user opened the thread to read) and BELOW
+ * by the glass, so it does not get the 80px row floor — it gets
+ * FF_THEME_HIT_CHIP_PX, and the strip lifts 8px so the extra height comes
+ * out of neither neighbour. */
+#define FF_INBOX_CHIP_H         FF_THEME_HIT_CHIP_PX
 #define FF_INBOX_CHIP_GAP       8
 #define FF_INBOX_CHIP_MAX_RIGHT (FF_INBOX_FAB_HIT_X - FF_HIT_MIN_GAP_PX)
-_Static_assert(FF_INBOX_CHIP_H >= FF_THEME_MIN_HIT_PX, "quick chips must clear the 44px hit floor");
+_Static_assert(FF_INBOX_CHIP_H >= FF_THEME_HIT_CHIP_PX, "quick chips must clear the sizing pass chip floor");
 _Static_assert(FF_INBOX_CHIP_GAP >= FF_HIT_MIN_GAP_PX,
                "adjacent quick chips must clear the 8px adjacency floor");
 
@@ -215,16 +275,34 @@ _Static_assert(FF_INBOX_CHIP_GAP >= FF_HIT_MIN_GAP_PX,
  * ------------------------------------------------------------------- */
 #define FF_INBOX_POPUP_ROW_X   66
 #define FF_INBOX_POPUP_ROW_W   280
-#define FF_INBOX_POPUP_ROW_H   66
-#define FF_INBOX_POPUP_ROW1_Y  92
-#define FF_INBOX_POPUP_ROW2_Y  170
-#define FF_INBOX_POPUP_ROW3_Y  248
-#define FF_INBOX_POPUP_CLOSE_Y 330
-#define FF_INBOX_POPUP_CLOSE_PX 54
-_Static_assert(FF_INBOX_POPUP_ROW_H >= FF_THEME_MIN_HIT_PX, "popup rows must clear the 44px hit floor");
+/* Tap-target sizing pass (2026-09-14): rows 66 -> 80, close 54 -> 64, and
+ * the whole stack re-spaced to fit them. The popup is a modal whose ONLY
+ * content is three primary actions plus a close, so unlike the thread it
+ * has nothing to trade away — the rows simply take the room. Re-derived
+ * bottom-up against the glass: a 280px-wide row spans x 66..346, so its
+ * farthest corner is |dx| = 138 from the glass centre and
+ * FF_THEME_GLASS_R caps |dy| at sqrt(200^2 - 138^2) = 144.8, i.e. the
+ * stack must live inside y [61,351]. Three 80px rows at a 12px gap span
+ * 66..342; the 64px close then sits at y 350..414 — past that bound at
+ * 280px width, but the close is only 64px wide (|dx| = 32), which allows
+ * |dy| up to 197, so y 350..414 would still overrun the PANEL. Lifted to
+ * 348 and the rows tightened to an 8px gap (the adjacency floor) so the
+ * whole stack lands at 66..338 with the close at 346..410. */
+#define FF_INBOX_POPUP_ROW_H   80
+#define FF_INBOX_POPUP_ROW1_Y  74
+#define FF_INBOX_POPUP_ROW2_Y  162
+#define FF_INBOX_POPUP_ROW3_Y  250
+#define FF_INBOX_POPUP_CLOSE_Y 338
+#define FF_INBOX_POPUP_CLOSE_PX 64
+_Static_assert(FF_INBOX_POPUP_ROW_H >= FF_THEME_HIT_PRIMARY_PX,
+               "popup rows must clear the outdoor primary-action floor");
+_Static_assert(FF_INBOX_POPUP_ROW3_Y - (FF_INBOX_POPUP_ROW2_Y + FF_INBOX_POPUP_ROW_H) >= FF_HIT_MIN_GAP_PX,
+               "popup rows 2/3 must clear the 8px adjacency floor");
+_Static_assert(FF_INBOX_POPUP_CLOSE_Y - (FF_INBOX_POPUP_ROW3_Y + FF_INBOX_POPUP_ROW_H) >= FF_HIT_MIN_GAP_PX,
+               "the popup close must clear the last row by the adjacency floor");
 _Static_assert(FF_INBOX_POPUP_ROW2_Y - (FF_INBOX_POPUP_ROW1_Y + FF_INBOX_POPUP_ROW_H) >= FF_HIT_MIN_GAP_PX,
                "popup rows must clear the 8px adjacency floor");
-_Static_assert(FF_INBOX_POPUP_CLOSE_PX >= FF_THEME_MIN_HIT_PX, "popup close must clear the 44px hit floor");
+_Static_assert(FF_INBOX_POPUP_CLOSE_PX >= FF_THEME_HIT_DOT_PX, "popup close must clear the sizing pass floor");
 
 /* ---------------------------------------------------------------------
  * Rally screen (S24 slice d) — the design canvas Rally artboard. A
@@ -286,13 +364,33 @@ _Static_assert(FF_INBOX_POPUP_CLOSE_PX >= FF_THEME_MIN_HIT_PX, "popup close must
  * fixed height, no measured-content variance to account for) so a short
  * pack (today's 2-place demo/test fixture) adds nothing extra.
  * ------------------------------------------------------------------- */
-#define FF_INBOX_RALLY_LIST_TOP_Y   82 /* clears the pinned close/back (bottom y74) by the 8px floor */
-#define FF_INBOX_RALLY_LIST_H       206
-#define FF_INBOX_RALLY_ROW_H        52
+#define FF_INBOX_RALLY_LIST_TOP_Y   88 /* clears the pinned close/back (bottom y79) by the 8px floor */
+/* Tap-target sizing pass (2026-09-14). The WHERE rows are list rows and
+ * take the 80px floor like every other list row on this face: pitch 52
+ * -> 88, which is 80px of tap target after the 4px hit inset. The list
+ * shortens (206 -> 184) to make room for the taller footer below, so it
+ * shows two rows at rest instead of three and a half — the same trade
+ * FF_INBOX_ROW_H's own comment documents, and the same answer: the list
+ * scrolls, a mis-tap on "where are we meeting" does not undo itself. */
+#define FF_INBOX_RALLY_LIST_H       178
+#define FF_INBOX_RALLY_ROW_H        88
 #define FF_INBOX_RALLY_ROW_HIT_INSET_Y 4
+_Static_assert(FF_INBOX_RALLY_ROW_H - 2 * FF_INBOX_RALLY_ROW_HIT_INSET_Y >= FF_THEME_HIT_PRIMARY_PX,
+               "Rally WHERE rows must clear the outdoor list-row floor");
 #define FF_INBOX_RALLY_DIVIDER_H    22
-#define FF_INBOX_RALLY_FOOTER_Y     300
-#define FF_INBOX_RALLY_FOOTER_H     56
+/* Send Rally is the most consequential button on this face (it messages
+ * the whole crew), so the footer takes the 80px primary floor: 56 -> 80,
+ * lifted to y 274 so its bottom edge lands at 354. Bezel check at that
+ * band: the row's own chord margin (inbox_safe_margin_x, now glass-aware)
+ * puts its left edge at x 84, so the bottom-left corner sits
+ * sqrt(124^2 + 149^2) = 193.9px from the glass centre — inside
+ * FF_THEME_GLASS_R with 6px to spare. */
+#define FF_INBOX_RALLY_FOOTER_Y     274
+#define FF_INBOX_RALLY_FOOTER_H     80
+_Static_assert(FF_INBOX_RALLY_FOOTER_H >= FF_THEME_HIT_PRIMARY_PX,
+               "the Rally footer (WHEN / Send Rally) must clear the outdoor primary-action floor");
+_Static_assert(FF_INBOX_RALLY_FOOTER_Y >= FF_INBOX_RALLY_LIST_TOP_Y + FF_INBOX_RALLY_LIST_H + FF_HIT_MIN_GAP_PX,
+               "the Rally footer must clear the WHERE list's viewport by the adjacency floor");
 #define FF_INBOX_RALLY_WHEN_W       86
 #define FF_INBOX_RALLY_FOOTER_GAP   10
 _Static_assert(FF_INBOX_RALLY_ROW_H - 2 * FF_INBOX_RALLY_ROW_HIT_INSET_Y >= FF_THEME_MIN_HIT_PX,
@@ -331,8 +429,18 @@ _Static_assert(FF_INBOX_RALLY_FOOTER_Y - (FF_INBOX_RALLY_LIST_TOP_Y + FF_INBOX_R
  * scr_compose.c's compose_safe_margin_x). */
 static int32_t inbox_safe_margin_x(int32_t top_y, int32_t h)
 {
-    float margin = ff_layout_safe_margin_x((float)top_y, (float)h, (float)FF_THEME_PUCK_RADIUS_PX,
-                                            (float)FF_THEME_PUCK_RADIUS_PX, FF_INBOX_SAFETY_PX);
+    /* Tap-target sizing pass (2026-09-14): the circle this margin is
+     * computed against is now the BEZEL's visible glass
+     * (FF_THEME_GLASS_CX/CY/R = 208/206/200), not the framebuffer's own
+     * inscribed circle (206,206,206). The two differ by 6px of radius and
+     * a 2px centre offset, which is exactly the error that put this
+     * file's own back button at (109,30) — 201.9px from the glass centre,
+     * i.e. under the bezel lip — while passing every check the codebase
+     * had. Rows get ~8px narrower; nothing else moves. See
+     * ff_layout_bezel_margin_x's own doc comment. */
+    float margin = ff_layout_bezel_margin_x((float)top_y, (float)h, (float)FF_THEME_PUCK_RADIUS_PX,
+                                             (float)FF_THEME_GLASS_CX, (float)FF_THEME_GLASS_CY,
+                                             (float)FF_THEME_GLASS_R, FF_INBOX_SAFETY_PX);
     return (int32_t)ceilf(margin);
 }
 
@@ -1147,7 +1255,7 @@ static void inbox_build_inbox(lv_obj_t *parent, ff_app_inbox_t const *v, bool co
  * Sub-view: RECIPIENT PICKER (the FAB's scope step).
  * ------------------------------------------------------------------- */
 
-#define FF_INBOX_PICKER_LIST_TOP_Y 82
+#define FF_INBOX_PICKER_LIST_TOP_Y 88 /* clears the pinned back (bottom y79) by the 8px floor */
 #define FF_INBOX_PICKER_LIST_H     260
 
 static void inbox_build_picker(lv_obj_t *parent, ff_app_inbox_t const *v, bool colorblind)
@@ -1994,13 +2102,17 @@ static void inbox_build_popup(lv_obj_t *parent, ff_app_inbox_t const *v, bool co
     lv_obj_t *hint = inbox_mk_label(parent, scope, FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
     lv_obj_set_style_text_letter_space(hint, 1, 0);
     lv_obj_set_style_text_opa(hint, LV_OPA_40, 0); /* the dimmed thread-context cue */
-    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 34);
+    /* Lifted 34 -> 26 / 60 -> 46 by the tap-target sizing pass: the three
+     * action rows grew 66 -> 80 and the whole stack moved up to fit, so
+     * the scope hint and title move with it rather than being overlapped
+     * by the first row. */
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 26);
 
     char sendto[FF_APP_NAME_LEN + 12];
     snprintf(sendto, sizeof(sendto), "SEND TO %s", scope);
     lv_obj_t *title = inbox_mk_label(parent, sendto, FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
     lv_obj_set_style_text_letter_space(title, 2, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 60);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 46);
 
     /* Compose (green) / Rally (violet) / Flare (amber), color-coded. The
      * third row is a FLARE ("come find me"), not a pulse — the maintainer's

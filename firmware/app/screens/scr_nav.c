@@ -350,18 +350,30 @@ lv_area_t ff_scr_nav_rect_best_remainder(lv_area_t obj, lv_area_t cover)
 /**
  * ff_scr_nav_remainder_clears_floor — true iff `obj`'s largest remaining
  * slice after `cover` is subtracted (ff_scr_nav_rect_best_remainder)
- * still measures >= FF_THEME_MIN_HIT_PX in BOTH dimensions — the exact
- * bar test_face_hit_targets.c's own sweep already holds every other
- * control to. false means the remainder is too small to be its own
- * usable target, i.e. `obj` should be masked while `cover` sits over
- * it; true means it stays clickable (LVGL's own z-order hit-testing
- * routes a tap correctly between the two without any help from this
- * file).
+ * still measures >= FF_THEME_HIT_PRIMARY_PX in BOTH dimensions. false
+ * means the remainder is too small to be its own usable target, i.e.
+ * `obj` should be masked while `cover` sits over it; true means it stays
+ * clickable (LVGL's own z-order hit-testing routes a tap correctly
+ * between the two without any help from this file).
+ *
+ * Tap-target sizing pass (2026-09-14): the bar was FF_THEME_MIN_HIT_PX
+ * (44). It is now the outdoor primary-action floor (80), because this
+ * function answers a question about a USABLE remainder, not a legal one,
+ * and the pass moved what "usable" means. The launcher made that
+ * concrete and is the reason the change is here rather than deferred:
+ * with LAUNCHER_SAT_DIAM at 88 the top (Inbox) satellite's uncovered
+ * remainder under the banner measured 88x37 and was masked; at 100 the
+ * same remainder measures 100x44 — which squeaks past the OLD floor by a
+ * single pixel and would have left a 3.8mm sliver of satellite live
+ * under a notification, the precise mis-tap this masking exists to
+ * prevent. A control reduced to a sliver should be masked, and the
+ * threshold for "sliver" has to move with the pass or the rule silently
+ * loosens every time a control grows.
  */
 bool ff_scr_nav_remainder_clears_floor(lv_area_t obj, lv_area_t cover)
 {
     lv_area_t rem = ff_scr_nav_rect_best_remainder(obj, cover);
-    return nav_rect_w(&rem) >= FF_THEME_MIN_HIT_PX && nav_rect_h(&rem) >= FF_THEME_MIN_HIT_PX;
+    return nav_rect_w(&rem) >= FF_THEME_HIT_PRIMARY_PX && nav_rect_h(&rem) >= FF_THEME_HIT_PRIMARY_PX;
 }
 
 void ff_scr_nav_mask_clickables_under_banner(lv_obj_t *root, lv_obj_t *banner, lv_area_t const *banner_area)

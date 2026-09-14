@@ -218,7 +218,16 @@ _Static_assert(FF_SETTINGS_ROW_H >= FF_THEME_MIN_HIT_PX, "settings pill rows mus
  * the round glass edge — the sim's own scroll-aware hit-target sweep
  * (test_face_hit_targets.c) still verifies both pills clear the ≥44px
  * floor and the round-glass containment at this width. */
-#define FF_SETTINGS_SCREEN_PILL_W 84
+/* Tap-target sizing pass (2026-09-14): 84 -> 78. The settings rows'
+ * width now comes from the BEZEL's glass circle rather than the
+ * framebuffer's (settings_safe_margin_x), which narrowed every row by
+ * ~11px — and this row is the only one where that mattered: its pill
+ * group is the widest on the face, so its left edge moved back onto the
+ * "SCREEN" caption (measured: grp_x 66 against a ~70px caption, a 4px
+ * overlap, visible in the rendered golden). 78px still renders "FLIPPED"
+ * in full and keeps both pills well over the hit floor; it restores an
+ * 8px caption-to-pill gap. */
+#define FF_SETTINGS_SCREEN_PILL_W 78
 
 /* Value pill (WATER/QUIET): one pill wide enough for "120 MIN"/"4A-10A". */
 #define FF_SETTINGS_VALUE_PILL_W 96
@@ -301,8 +310,21 @@ _Static_assert(FF_SETTINGS_ROW_H >= FF_THEME_MIN_HIT_PX, "settings pill rows mus
  */
 static int32_t settings_safe_margin_x(int32_t top_y, int32_t h)
 {
-    float margin = ff_layout_safe_margin_x((float)top_y, (float)h, (float)FF_THEME_PUCK_RADIUS_PX,
-                                            (float)FF_THEME_PUCK_RADIUS_PX, FF_SETTINGS_SAFETY_PX);
+    /* Tap-target sizing pass (2026-09-14): measured against the BEZEL's
+     * visible glass (FF_THEME_GLASS_CX/CY/R = 208/206/200), not the
+     * framebuffer's own inscribed circle (206,206,206). This is the fix
+     * for the finding Maya's puck review named on this exact face — "the
+     * SETTINGS title card in settings_default.png has visible flat
+     * 'shoulders' near the top corners that would be sliced by the bezel
+     * edge": the header band sits at y=34, where the two circles differ
+     * by ~11px of half-width, so the card was framed to a circle 6px
+     * larger than the one the user can actually see. Every band this
+     * helper insets (the header card, the scroll viewport, CREW, the
+     * name editor, diagnostics, compass-cal) narrows by the same honest
+     * amount; nothing moves vertically. See ff_layout_bezel_margin_x. */
+    float margin = ff_layout_bezel_margin_x((float)top_y, (float)h, (float)FF_THEME_PUCK_RADIUS_PX,
+                                             (float)FF_THEME_GLASS_CX, (float)FF_THEME_GLASS_CY,
+                                             (float)FF_THEME_GLASS_R, FF_SETTINGS_SAFETY_PX);
     return (int32_t)ceilf(margin);
 }
 

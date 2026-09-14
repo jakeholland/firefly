@@ -151,27 +151,34 @@ static inline lv_obj_t *find_label_exact(lv_obj_t *root, char const *text)
     return NULL;
 }
 
-/* An lv_button whose (any-depth) label child matches exactly. */
+/* An lv_button whose (any-depth) label descendant matches exactly.
+ *
+ * This used to only look at the button's DIRECT children, despite that
+ * doc line — which was fine for as long as every control in this app put
+ * its label immediately inside the button. The tap-target sizing pass
+ * (2026-09-14) broke that assumption for the first time: `scr_banner.c`'s
+ * notification pill is now a non-clickable decoration nested inside a
+ * taller transparent hit wrapper, so its sender-name label is a
+ * GRANDchild of the button, and `test_ctl_flare_sequence.c`'s "find the
+ * banner by its DANA label" lookup started returning NULL. Fixed to match
+ * what the comment always claimed.
+ *
+ * DEEPEST match wins: children are searched before the node itself, so a
+ * nested button carrying the label is returned in preference to an
+ * enclosing one. That is the same "a touch resolves to the deepest
+ * clickable under it" rule LVGL's own hit-testing uses, so a test that
+ * clicks what this returns clicks what a finger would have hit. */
 static inline lv_obj_t *find_button_with_label(lv_obj_t *root, char const *label_text)
 {
     uint32_t n = lv_obj_get_child_count(root);
     for (uint32_t i = 0; i < n; i++) {
         lv_obj_t *child = lv_obj_get_child(root, i);
-        if (lv_obj_check_type(child, &lv_button_class)) {
-            uint32_t nc = lv_obj_get_child_count(child);
-            for (uint32_t j = 0; j < nc; j++) {
-                lv_obj_t *maybe_label = lv_obj_get_child(child, j);
-                if (lv_obj_check_type(maybe_label, &lv_label_class)) {
-                    char const *txt = lv_label_get_text(maybe_label);
-                    if (txt != NULL && strcmp(txt, label_text) == 0) {
-                        return child;
-                    }
-                }
-            }
+        lv_obj_t *deeper = find_button_with_label(child, label_text);
+        if (deeper != NULL) {
+            return deeper;
         }
-        lv_obj_t *found = find_button_with_label(child, label_text);
-        if (found != NULL) {
-            return found;
+        if (lv_obj_check_type(child, &lv_button_class) && find_label_exact(child, label_text) != NULL) {
+            return child;
         }
     }
     return NULL;

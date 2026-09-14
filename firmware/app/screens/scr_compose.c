@@ -346,8 +346,25 @@ _Static_assert(FF_COMPOSE_BUBBLE_H >= 40, "compose bubble shrank too far fitting
  * this comment's own arithmetic (PR #86's lesson, repeated for the Nth
  * time in this file because it keeps paying off). */
 #define FF_COMPOSE_BOTTOM_ROW_SAFETY_PX 8.0f
+/* Tap-target sizing pass (2026-09-14): MODE 56 -> 48, its documented
+ * floor. Nothing about MODE got worse on purpose — the BOTTOM ROW did,
+ * honestly. compose_bottom_row_margin_x now measures against the BEZEL's
+ * glass circle (r=200 at (208,206)) instead of the framebuffer's
+ * inscribed one (r=206 at (206,206)), and at this row's y the chord is
+ * genuinely 21px narrower: half-width sqrt(200^2 - 166^2) = 111.6 where
+ * the old math read sqrt(206^2 - 166^2) = 122.0. The row's usable width
+ * goes 226 -> 202. The 226 was never real — DEL's bottom-left corner
+ * measured 201.1px from the glass centre, i.e. that key's corner was
+ * under the bezel lip on the actual hardware.
+ *
+ * Spending the 24px loss: DEL keeps its full 64 (PR #193's review asked
+ * for it by name, and BACKSPACE is the key a drunk thumb hits most),
+ * MODE drops to the 48 that same review set as its floor, and SPACE
+ * takes the remainder — 74px, down from 90. Every one of the three still
+ * clears FF_THEME_MIN_HIT_PX with margin, and all three keep their full
+ * 56px height, which is the axis this pass cares about. */
 #define FF_COMPOSE_DEL_W 64
-#define FF_COMPOSE_MODE_W 56
+#define FF_COMPOSE_MODE_W 48
 _Static_assert(FF_COMPOSE_DEL_W >= FF_THEME_MIN_HIT_PX, "DEL must clear the 44px hit-target floor");
 _Static_assert(FF_COMPOSE_MODE_W >= 48, "MODE must clear the reviewer's explicit >=48px floor (PR #193)");
 
@@ -414,8 +431,19 @@ _Static_assert(FF_COMPOSE_PRED_STRIP_Y + FF_COMPOSE_PRED_CHIP_H + FF_HIT_MIN_GAP
  */
 static int32_t compose_safe_margin_x(int32_t top_y, int32_t h)
 {
-    float margin = ff_layout_safe_margin_x((float)top_y, (float)h, (float)FF_THEME_PUCK_RADIUS_PX,
-                                            (float)FF_THEME_PUCK_RADIUS_PX, FF_COMPOSE_SAFETY_PX);
+    /* Tap-target sizing pass (2026-09-14): computed against the BEZEL's
+     * visible glass (FF_THEME_GLASS_CX/CY/R) instead of the framebuffer's
+     * own inscribed circle. This face is where the difference was
+     * measurable rather than theoretical: the back button's top-left
+     * corner (120,24) sat 202.2px from the glass centre and the DEL key's
+     * bottom-left corner (93,371) sat 201.1px — both under the bezel lip,
+     * both passing every check this codebase had, because every check
+     * asked about the 206px framebuffer circle. See
+     * ff_layout_bezel_margin_x. Rows lose ~8px of width; no row moves
+     * vertically and no key gets shorter. */
+    float margin = ff_layout_bezel_margin_x((float)top_y, (float)h, (float)FF_THEME_PUCK_RADIUS_PX,
+                                             (float)FF_THEME_GLASS_CX, (float)FF_THEME_GLASS_CY,
+                                             (float)FF_THEME_GLASS_R, FF_COMPOSE_SAFETY_PX);
     return (int32_t)ceilf(margin);
 }
 
@@ -441,15 +469,20 @@ static int32_t compose_safe_margin_x(int32_t top_y, int32_t h)
  */
 static int32_t compose_send_x(void)
 {
-    float const cy = (float)FF_THEME_PUCK_RADIUS_PX;
+    /* Sizing pass (2026-09-14): the circle here is the GLASS's, matching
+     * compose_safe_margin_x above — same reasoning, same constants. SEND
+     * is on the RIGHT, the side the glass centre is offset TOWARD, so
+     * this corner actually gains ~2px of room where the back button on
+     * the left loses it. */
+    float const cy = (float)FF_THEME_GLASS_CY;
     float const y_top = (float)FF_COMPOSE_HEADER_Y;
     float const y_bot = (float)(FF_COMPOSE_HEADER_Y + FF_THEME_MIN_HIT_PX);
     float const dy_top = y_top - cy;
     float const dy_bot = y_bot - cy;
     float const far_dy = (fabsf(dy_top) > fabsf(dy_bot)) ? dy_top : dy_bot;
-    float const safe_radius = (float)FF_THEME_PUCK_RADIUS_PX - FF_COMPOSE_SAFETY_PX;
+    float const safe_radius = (float)FF_THEME_GLASS_R - FF_COMPOSE_SAFETY_PX;
     float const max_dx = ff_layout_chord_half_width(far_dy, safe_radius);
-    int32_t const x2 = (int32_t)floorf((float)FF_THEME_PUCK_RADIUS_PX + max_dx); /* inclusive right edge */
+    int32_t const x2 = (int32_t)floorf((float)FF_THEME_GLASS_CX + max_dx); /* inclusive right edge */
     return x2 - FF_COMPOSE_SEND_HEADER_W + 1;
 }
 
@@ -470,8 +503,13 @@ static int32_t compose_send_x(void)
  */
 static int32_t compose_bottom_row_margin_x(int32_t top_y, int32_t h)
 {
-    float margin = ff_layout_safe_margin_x((float)top_y, (float)h, (float)FF_THEME_PUCK_RADIUS_PX,
-                                            (float)FF_THEME_PUCK_RADIUS_PX, FF_COMPOSE_BOTTOM_ROW_SAFETY_PX);
+    /* Glass circle, not the framebuffer's — see compose_safe_margin_x.
+     * This row is where it mattered most: DEL's bottom-left corner
+     * measured 201.1px from the glass centre, i.e. the one key a thumb
+     * reaches for blind was partly under the bezel. */
+    float margin = ff_layout_bezel_margin_x((float)top_y, (float)h, (float)FF_THEME_PUCK_RADIUS_PX,
+                                             (float)FF_THEME_GLASS_CX, (float)FF_THEME_GLASS_CY,
+                                             (float)FF_THEME_GLASS_R, FF_COMPOSE_BOTTOM_ROW_SAFETY_PX);
     return (int32_t)ceilf(margin);
 }
 

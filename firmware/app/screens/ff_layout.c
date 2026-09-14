@@ -37,21 +37,31 @@ float ff_layout_chord_half_width(float dy, float radius)
     return sqrtf(radius * radius - ady * ady);
 }
 
-float ff_layout_safe_margin_x(float top_y, float h, float center, float radius, float safety_px)
+float ff_layout_bezel_margin_x(float top_y, float h, float band_cx, float cx, float cy, float radius,
+                               float safety_px)
 {
-    float dy_top = top_y - center;
-    float dy_bottom = (top_y + h) - center;
+    float dy_top = top_y - cy;
+    float dy_bottom = (top_y + h) - cy;
     float far_dy = (fabsf(dy_top) > fabsf(dy_bottom)) ? dy_top : dy_bottom;
 
-    float half_w = ff_layout_chord_half_width(far_dy, radius) - safety_px;
+    /* The band is symmetric about `band_cx`; the circle is centred at
+     * `cx`. Whichever side of the band is FARTHER from `cx` binds, and
+     * it is farther by exactly |cx - band_cx| — so charge that to the
+     * usable half-width once, alongside the safety slack. */
+    float half_w = ff_layout_chord_half_width(far_dy, radius) - safety_px - fabsf(cx - band_cx);
     if (half_w < 0.0f) {
         half_w = 0.0f;
     }
-    float margin = center - half_w;
+    float margin = band_cx - half_w;
     if (margin < 0.0f) {
         margin = 0.0f;
     }
     return margin;
+}
+
+float ff_layout_safe_margin_x(float top_y, float h, float center, float radius, float safety_px)
+{
+    return ff_layout_bezel_margin_x(top_y, h, center, center, center, radius, safety_px);
 }
 
 float ff_layout_centered_band_max_width(float cy, float h, float radius, float safety_px)

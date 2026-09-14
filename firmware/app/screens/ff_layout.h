@@ -108,6 +108,44 @@ float ff_layout_chord_half_width(float dy, float radius);
 float ff_layout_safe_margin_x(float top_y, float h, float center, float radius, float safety_px);
 
 /**
+ * ff_layout_bezel_margin_x — `ff_layout_safe_margin_x` for the case the
+ * tap-target sizing pass (owner decision 2026-09-14,
+ * docs/hardware/tap-targets.md) had to solve: a band that is CENTRED on
+ * the puck's own square (`band_cx`, i.e. x = FF_THEME_PUCK_RADIUS_PX)
+ * but must stay inside a circle whose centre is somewhere ELSE
+ * (`cx`,`cy`) — specifically the VISIBLE GLASS circle
+ * (FF_THEME_GLASS_CX/CY/R = 208/206/200), which the Waveshare panel's
+ * bezel puts 2px right of, and 6px smaller than, the framebuffer's own
+ * inscribed circle.
+ *
+ * `ff_layout_safe_margin_x` cannot express this: its single `center`
+ * parameter is used as the circle's cx, its cy, AND the band's own
+ * centre line, which is only correct when all three coincide. They do
+ * not on this hardware, and the difference is not cosmetic — the
+ * measured consequence was real controls whose corners sat 1-2px outside
+ * the bezel (`scr_compose.c`'s back button at (120,24), 202.2px from the
+ * glass centre; the same file's DEL key at (93,371), 201.1px; the inbox
+ * back button at (109,30), 201.9px), which the framebuffer-circle sweep
+ * in test_face_hit_targets.c passes by construction and only a
+ * glass-circle check can see.
+ *
+ * The band stays symmetric about `band_cx` (every face in this codebase
+ * lays rows out that way, and re-centring them on the glass instead
+ * would shift every face 2px right for no visible gain), so the corner
+ * on the FAR side of the circle's centre is the binding one: the usable
+ * half-width loses `|cx - band_cx|` on top of `safety_px`. Returns the
+ * LEFT margin from x=0; the band is then `[margin, 2*band_cx - margin)`,
+ * exactly as `ff_layout_safe_margin_x`'s callers already use it. Never
+ * negative.
+ *
+ * `ff_layout_safe_margin_x` is now this function with
+ * `band_cx == cx == cy == center`, so the two can never disagree about
+ * the chord arithmetic.
+ */
+float ff_layout_bezel_margin_x(float top_y, float h, float band_cx, float cx, float cy, float radius,
+                               float safety_px);
+
+/**
  * ff_layout_centered_band_max_width — the widest a rectangle of height
  * `h`, CENTERED on the circle's own vertical axis at center-relative
  * offset `cy`, can be while staying entirely inside a circle of

@@ -134,7 +134,18 @@
 
 #define LAUNCHER_HUB_DIAM      120   /* design: Radar hub disc */
 #define LAUNCHER_HUB_ICON_PX   46    /* design: radar-scope icon inside the hub */
-#define LAUNCHER_SAT_DIAM      88    /* design: satellite discs */
+/* Tap-target sizing pass (owner decision 2026-09-14,
+ * docs/hardware/tap-targets.md): 88 -> 100. The launcher is the one face
+ * whose controls already cleared the old 44px floor with room to spare,
+ * and it is also the face a user hits first, one-handed, while walking —
+ * so it gets the pass's "ideally >= 100px (~8.7mm)" target rather than
+ * the 80px floor. Room check, measured not argued: the satellites orbit
+ * at LAUNCHER_ORBIT_RADIUS_PX (128) from the puck centre, so at 100px
+ * across their farthest corner sits ~181px from the GLASS centre
+ * (208,206) — inside FF_THEME_GLASS_R (200) with 19px to spare — while
+ * their inner edge (128 - 50 = 78) still clears the hub's own edge (60)
+ * by 18px. */
+#define LAUNCHER_SAT_DIAM      100   /* design: satellite discs (88 pre-sizing-pass) */
 #define LAUNCHER_SAT_ICON_PX   30    /* design: satellite icon size */
 #define LAUNCHER_ORBIT_RADIUS_PX 128.0f /* design: satellite orbit radius from center */
 #define LAUNCHER_SAT_COUNT     5     /* S31 — Inbox, Lineup, Settings, Map, Music — see this file's top comment */

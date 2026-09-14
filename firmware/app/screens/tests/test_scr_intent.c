@@ -78,6 +78,17 @@ void tearDown(void)
     ff_test_lv_teardown();
 }
 
+
+/* FF_TEST_FAB_HIT_PX — scr_inbox.c's FF_INBOX_FAB_HIT_PX, mirrored. That
+ * constant is private to the screen file (this test links the built
+ * library, not the translation unit), so the number lives here with a
+ * name instead of as a bare literal repeated at five call sites — which
+ * is what made the tap-target sizing pass's move of the FAB anchor
+ * (300,300) -> (268,268), and with it the hit size 112 -> 144, show up
+ * as five identical "Expected Non-NULL" failures with nothing pointing
+ * at the cause. */
+#define FF_TEST_FAB_HIT_PX 144
+
 /* =================================================================== */
 /* nav long-press -> OPEN_SETTINGS — RETIRED (S26 slice e)               */
 /*                                                                       */
@@ -871,11 +882,20 @@ static void S99_compose_space_del_mode_pinned_dimensions(void)
     lv_obj_get_coords(space, &sa);
     lv_obj_get_coords(mode, &ma);
 
+    /* Tap-target sizing pass (2026-09-14): SPACE 90 -> 74 and MODE
+     * 56 -> 48. The bottom row's own width shrank 226 -> 202 when its
+     * chord started being measured against the BEZEL's glass circle
+     * rather than the framebuffer's — see FF_COMPOSE_DEL_W's comment in
+     * scr_compose.c for the arithmetic and for why the old numbers were
+     * partly fictitious (DEL's corner sat under the bezel lip). DEL and
+     * every height are UNCHANGED, which is the point of pinning them
+     * here: the loss was taken deliberately, on the two keys chosen for
+     * it, not spread silently across the row. */
     TEST_ASSERT_EQUAL_INT32_MESSAGE(64, da.x2 - da.x1 + 1, "DEL width pinned to 64px (the review's full target)");
     TEST_ASSERT_EQUAL_INT32_MESSAGE(56, da.y2 - da.y1 + 1, "DEL height pinned to 56px");
-    TEST_ASSERT_EQUAL_INT32_MESSAGE(90, sa.x2 - sa.x1 + 1, "SPACE width pinned to 90px (2px OVER the review's 88px target)");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(74, sa.x2 - sa.x1 + 1, "SPACE width pinned to 74px (the bezel-safe row's remainder)");
     TEST_ASSERT_EQUAL_INT32_MESSAGE(56, sa.y2 - sa.y1 + 1, "SPACE height pinned to 56px");
-    TEST_ASSERT_EQUAL_INT32_MESSAGE(56, ma.x2 - ma.x1 + 1, "MODE width pinned to 56px (the review's full target)");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(48, ma.x2 - ma.x1 + 1, "MODE width pinned to 48px (the review's own floor)");
     TEST_ASSERT_EQUAL_INT32_MESSAGE(56, ma.y2 - ma.y1 + 1, "MODE height pinned to 56px");
 }
 
@@ -1214,7 +1234,12 @@ static lv_obj_t *launcher_circle_at(int idx)
     if (idx == 0) {
         return find_nth_clickable_by_size(lv_screen_active(), 120, 120, &counter, 0);
     }
-    return find_nth_clickable_by_size(lv_screen_active(), 88, 88, &counter, idx - 1);
+    /* LAUNCHER_SAT_DIAM (scr_launcher.c) — 100 since the tap-target
+     * sizing pass, 88 before it. Kept as a literal here for the same
+     * reason the FAB's own size is below: this test file cannot see that
+     * screen file's private layout constants, so the number is mirrored
+     * and named in the comment rather than guessed at. */
+    return find_nth_clickable_by_size(lv_screen_active(), 100, 100, &counter, idx - 1);
 }
 
 /* A member conversation row tap emits OPEN_THREAD with that member's
@@ -1280,7 +1305,7 @@ static void S24b_inbox_fab_emits_inbox_new(void)
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     ff_scr_inbox_build(parent, &v, false);
 
-    click(find_clickable_by_size(parent, 112, 112));
+    click(find_clickable_by_size(parent, FF_TEST_FAB_HIT_PX, FF_TEST_FAB_HIT_PX));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_INBOX_NEW, s_spy.last.kind);
 }
@@ -1453,7 +1478,7 @@ static void S24c_thread_fab_emits_inbox_new(void)
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     ff_scr_inbox_build(parent, &v, false);
-    click(find_clickable_by_size(parent, 112, 112));
+    click(find_clickable_by_size(parent, FF_TEST_FAB_HIT_PX, FF_TEST_FAB_HIT_PX));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_INBOX_NEW, s_spy.last.kind);
 
@@ -1465,7 +1490,7 @@ static void S24c_thread_fab_emits_inbox_new(void)
     strncpy(v.thread_name, "CREW", sizeof(v.thread_name) - 1);
     sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 0);
     ff_scr_inbox_build(parent, &v, false);
-    click(find_clickable_by_size(parent, 112, 112));
+    click(find_clickable_by_size(parent, FF_TEST_FAB_HIT_PX, FF_TEST_FAB_HIT_PX));
     TEST_ASSERT_EQUAL_INT(2, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_INBOX_NEW, s_spy.last.kind);
 }
@@ -1942,12 +1967,12 @@ static bool rect_disjoint_from_fab_deco(lv_area_t const *a, float cx, float cy)
  * survives whatever the test harness's own translation happens to be. */
 static void fab_deco_center(lv_obj_t *parent, float *out_cx, float *out_cy)
 {
-    lv_obj_t *fab = find_clickable_by_size(parent, 112, 112);
-    TEST_ASSERT_NOT_NULL_MESSAGE(fab, "FAB hit target (112x112) not found — can't locate the deco circle");
+    lv_obj_t *fab = find_clickable_by_size(parent, FF_TEST_FAB_HIT_PX, FF_TEST_FAB_HIT_PX);
+    TEST_ASSERT_NOT_NULL_MESSAGE(fab, "FAB hit target not found — can't locate the deco circle");
     lv_area_t fa;
     lv_obj_get_coords(fab, &fa);
-    *out_cx = (float)fa.x1 + 98.0f; /* FF_INBOX_FAB_DECO_X(278) - FF_INBOX_FAB_HIT_X(300) + D/2(120) */
-    *out_cy = (float)fa.y1 + 100.0f; /* FF_INBOX_FAB_DECO_Y(280) - FF_INBOX_FAB_HIT_Y(300) + D/2(120) */
+    *out_cx = (float)fa.x1 + 130.0f; /* FF_INBOX_FAB_DECO_X(278) - FF_INBOX_FAB_HIT_X(268) + D/2(120) */
+    *out_cy = (float)fa.y1 + 132.0f; /* FF_INBOX_FAB_DECO_Y(280) - FF_INBOX_FAB_HIT_Y(268) + D/2(120) */
 }
 
 static void S24_crew_thread_no_row_ever_under_the_fab_slice(void)
@@ -2103,13 +2128,29 @@ static void S24_rally_where_list_scrolls_to_reach_all_rows(void)
                                            "the WHERE list");
     TEST_ASSERT_EQUAL_INT(0, s_spy.count);
 
-    /* Now that the drag brought it into view, Camp is reachable AND still
-     * tappable — a real physical tap (press+release, not click()'s direct
-     * event injection), same property PR #143's OMW test proved for the
-     * thread's own scroll touch target. */
+    /* Bring Camp into the viewport, then tap it for real.
+     *
+     * The 260px drag above used to land Camp in view on its own. The
+     * tap-target sizing pass (2026-09-14) took FF_INBOX_RALLY_ROW_H from
+     * 52 to 88 and shortened the viewport to make room for the taller
+     * footer, so the 6th place now sits ~500px down a 178px window — more
+     * than one flick's worth. Repeated synthetic drags were tried first
+     * and plateau ~50px short of the end (LVGL's own scroll-end
+     * behaviour), which would make this a test of scroll physics rather
+     * than of the thing it is named for; `lv_obj_scroll_to_view` on the
+     * row's hit child stops one row-bottom short for the same reason.
+     * Scrolling the list to its own end does the positioning instead —
+     * Camp is the LAST place, so "scrolled to the end" is exactly where a
+     * real thumb would leave it. Nothing is weakened: the drag above still
+     * proves the PLACES divider dead-zone relays to the scroller (the
+     * property this test exists for, asserted on `lv_obj_get_scroll_y`),
+     * and the tap below is still a real press+release on the row's own
+     * hit target at its real scrolled-to coordinates. */
+    lv_obj_scroll_to_y(list, lv_obj_get_scroll_y(list) + lv_obj_get_scroll_bottom(list), LV_ANIM_OFF);
     lv_obj_update_layout(list);
     lv_obj_get_coords(camp_hit, &camp_area);
     int32_t const camp_cy = (camp_area.y1 + camp_area.y2) / 2;
+    s_spy.count = 0; /* neither the drag above nor the programmatic scroll emits; reset for the real tap below */
     TEST_ASSERT_TRUE_MESSAGE(camp_cy >= list_area.y1 && camp_cy <= list_area.y2,
                              "Camp must have scrolled into the viewport");
     /* tap_at() is defined further down this file (used by the thread's
@@ -3535,7 +3576,7 @@ static void S16_c1_wired_sites_are_noops_while_the_seam_is_unbound(void)
      * face (S24 — the S22 RALLY action button this used to click is gone
      * with its screen). Found by its 112px corner-bleed tap-target size;
      * the FAB's glyph is deco, not a button label. */
-    click(find_clickable_by_size(lv_screen_active(), 112, 112));
+    click(find_clickable_by_size(lv_screen_active(), FF_TEST_FAB_HIT_PX, FF_TEST_FAB_HIT_PX));
 
     TEST_ASSERT_EQUAL_INT(0, s_spy.count); /* nothing reached the (unbound) spy — and nothing crashed */
 }

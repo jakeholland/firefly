@@ -963,7 +963,7 @@ static void radar_anim_set_opa_cb(void *obj, int32_t v)
  * tap-target floor). Named here (rather than the two literals the button
  * used to be built with inline) so its compile-time floor check has
  * something to assert against. */
-#define RADAR_FLARE_BTN_W_PX 200
+#define RADAR_FLARE_BTN_W_PX 176 /* 200 pre-sizing-pass; see FF_THEME_FLARE_BTN_H_PX's comment */
 _Static_assert(RADAR_FLARE_BTN_W_PX >= FF_THEME_MIN_HIT_PX, "FLARE button width must clear the 44px hit-target floor");
 _Static_assert(FF_THEME_FLARE_BTN_H_PX >= FF_THEME_MIN_HIT_PX,
                "FLARE button height must clear the 44px hit-target floor");
