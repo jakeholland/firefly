@@ -667,6 +667,36 @@ if(FF_BUILD_TESTS)
 endif()
 
 # ---------------------------------------------------------------------------
+# The outdoor/gloved tap-target floors (owner decision 2026-09-14 —
+# docs/hardware/tap-targets.md). Same in-process ff_build_face_screen +
+# headless display shape as test_face_hit_targets above, but a SECOND,
+# higher bar applied only to the four faces a raver operates one-handed
+# in the dark (launcher / radar / compose / inbox), plus containment
+# against the BEZEL's own glass circle (FF_THEME_GLASS_*) rather than
+# the framebuffer's. See that file's header comment for why the two
+# bars are separate files instead of one raised constant.
+# ---------------------------------------------------------------------------
+if(FF_BUILD_TESTS)
+    add_executable(test_tap_target_sizing
+        tests/test_tap_target_sizing.c
+    )
+    target_link_libraries(test_tap_target_sizing PRIVATE
+        ff-sim-fixture
+        ff-sim-face-dispatch
+        ff-app-ui
+        ff-layout
+        lvgl::lvgl
+        unity
+    )
+    target_compile_definitions(test_tap_target_sizing PRIVATE
+        FF_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/fixtures/"
+    )
+    ff_apply_warnings(test_tap_target_sizing)
+
+    add_test(NAME test_tap_target_sizing COMMAND test_tap_target_sizing)
+endif()
+
+# ---------------------------------------------------------------------------
 # Issue #75/#77 — the map face's circle-containment regression, targeted at
 # tests/fixtures/map_clip_stress.json. Same shape as test_face_hit_targets
 # above (in-process ff_build_face_screen + a headless display buffer, no

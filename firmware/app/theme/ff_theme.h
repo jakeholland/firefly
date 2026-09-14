@@ -375,12 +375,122 @@ static inline int32_t ff_theme_glass_cy(bool flip)
  * the resolver actually tests against.
  */
 
-#define FF_THEME_FLARE_BTN_H_PX 48 /* S06 spec: "FLARE button (48 px high, full hit area)" */
+/* S06 spec says "FLARE button (48 px high, full hit area)". The
+ * tap-target sizing pass (2026-09-14) raises it to 58 — a deliberate,
+ * documented deviation from the spec number, because 48px is 4.2mm on
+ * this glass and this is the Radar face's one primary action.
+ *
+ * 58 is the CEILING, measured not chosen. CLOSE mode stacks the pulse
+ * rings (outermost bottom edge at dy 35), the name, the trend chip and
+ * FLARE; after lifting the chip 4px (RADAR_LAYOUT_CLOSE_CHIP_DY) the
+ * button's top cannot rise above dy 120, and its bottom cannot pass the
+ * glass: at RADAR_FLARE_BTN_W_PX (176, narrowed from 200 for exactly
+ * this reason) the farthest corner sits |dx| = 90 from the glass centre,
+ * so FF_THEME_GLASS_R (200) caps |dy| at sqrt(200^2 - 90^2) = 178.6.
+ * 120..178 is 58px. Narrowing bought 6 of those px and cost nothing: at
+ * 176x58 the button's AREA is larger than the old 200x48, and the axis
+ * that grew is the one a thumb was missing on. */
+#define FF_THEME_FLARE_BTN_H_PX 58
 
 /* docs/review/ux-raver.md checklist item 2: "every tappable thing >= 44px
  * equivalent". Named here so every tap target in app/screens can be
  * checked against one constant instead of a repeated magic number. */
 #define FF_THEME_MIN_HIT_PX 44
+
+/**
+ * The outdoor / gloved tap floors (owner decision, Jake 2026-09-14 —
+ * docs/hardware/tap-targets.md has the full px<->mm derivation and the
+ * measured per-element table).
+ *
+ * ## Why FF_THEME_MIN_HIT_PX is not enough, and why it did not move
+ *
+ * 44px is the iOS/Material phone guideline, inherited here without being
+ * re-derived for THIS glass. Both puck UX reviews caught that
+ * independently: the 412px array spans a ~36mm round window, so this
+ * panel runs at ~11.4 px/mm — nearly 3x a phone's ~3.9 px/mm at 1x. 44px
+ * is therefore ~3.8mm here, "not a generous floor, it's under half the
+ * stated 9mm outdoor target" (ux-puck-maya REVIEW §(e)). A phone number
+ * carried onto a denser panel silently shrinks in the only unit that
+ * matters, which is millimetres of finger.
+ *
+ * FF_THEME_MIN_HIT_PX stays 44 regardless: it is the ABSOLUTE floor that
+ * every control on every face — including the faces this pass did not
+ * touch — must clear, and lowering the number of things that check it
+ * would weaken test_face_hit_targets.c's whole-device sweep. The
+ * constants below are a SECOND, higher bar, applied per face and per
+ * control category by targets/sim/tests/test_tap_target_sizing.c.
+ *
+ * ## The numbers
+ *
+ * FF_THEME_PX_PER_MM (412px / 36mm) is the one conversion every value
+ * below is derived from, named here so no call site re-derives it.
+ */
+#define FF_THEME_PX_PER_MM 11.44f
+
+/** ~7.0mm — primary actions and list rows. The owner's floor for
+ *  anything a user aims at while walking: FLARE, GO, DISMISS, CANCEL,
+ *  launcher tiles, Inbox/Signals feed rows, Settings rows. */
+#define FF_THEME_HIT_PRIMARY_PX 80
+
+/** ~8.7mm — the "ideally" target, used wherever the face has the room
+ *  (the launcher hub, the flare takeover's GO/DISMISS, the power menu). */
+#define FF_THEME_HIT_COMFORT_PX 100
+
+/** ~6.3mm — dense SECONDARY lists, where 80px would cost a whole row of
+ *  content the user came to read. Today: the Lineup face's set rows,
+ *  which are a reading surface first and a tap target second. */
+#define FF_THEME_HIT_LIST_PX 72
+
+/** ~5.6mm — the floor for a small round control that is bounded by the
+ *  things stacked around it rather than by the face's own room.
+ *
+ *  WHAT IT ACTUALLY FLOORS TODAY: exactly one control — scr_inbox.c's
+ *  action-popup close (FF_INBOX_POPUP_CLOSE_PX, 64), which sits under
+ *  three 80px rows in a modal whose stack is already flush against the
+ *  glass, so the close gets what is left rather than the 80px floor.
+ *
+ *  It was NAMED for the Radar crew-ring dots, and that hit area is NOT
+ *  BUILT: scr_radar.c still clears LV_OBJ_FLAG_CLICKABLE on every ring
+ *  dot, so there is no transparent hit sibling anywhere in this codebase
+ *  and nothing in scr_radar.c references this constant. Why that slice
+ *  did not land — the dots carry no node id to emit a selection with,
+ *  and 64px boxes on a 185px ring overlap each other — is written up in
+ *  docs/hardware/tap-targets.md ("Crew dots on Radar — not delivered")
+ *  with a matching ## Questions note in docs/specs/S06-radar-face.md.
+ *  The 64 stays derived from that future case (up to 8 dots share one
+ *  ring; at 80px a full crew's hit areas would overlap, trading one
+ *  mis-tap risk for a worse one), which is why the number is right for
+ *  the popup close too. */
+#define FF_THEME_HIT_DOT_PX 64
+
+/** ~4.4mm — the compose T9 keypad's own floor. This is the ONE place
+ *  the owner's 80x80 target is geometrically unreachable rather than
+ *  merely inconvenient, and the number is the measured CEILING rather
+ *  than an aspiration: a 3-column x 4-row keypad at 80px keys needs
+ *  3*80+2*8 = 256px of width, and a 256px-wide band fits inside the
+ *  r=196 safe circle only across y in [58,354] — 296px of vertical
+ *  band, against the 4*80+3*8 = 344px such a keypad needs. There is no
+ *  header, margin or gap to reclaim that closes an inherent 48px
+ *  deficit; the constraint is the circle. See
+ *  docs/hardware/tap-targets.md, "Compose: why 80x80 keys do not fit".
+ *
+ *  50, not 68. This constant was landed at 68 and enforced NOWHERE,
+ *  while the doc table and this file's own prose quoted 50 — a number
+ *  that describes a floor no build would ever fail is worse than no
+ *  number, because it reads like a guard rail. 50 is what the keypad
+ *  measurably is (FF_COMPOSE_GRID_ROW_H), and scr_compose.c now carries
+ *  the build-time assert that holds it there, so lowering a key silently
+ *  is a compile error rather than a doc that quietly goes stale. Raising
+ *  this constant is a deliberate act that must come WITH the geometry to
+ *  pay for it. */
+#define FF_THEME_HIT_KEY_PX 50
+
+/** ~4.6mm — quick-reply chips and other in-list secondary controls on
+ *  the Inbox thread, which sit in a horizontal strip whose height is
+ *  bounded by the thread content above it. Above the 44px absolute
+ *  floor, below the row floor, and deliberately named so the exception
+ *  is visible rather than hidden inside a per-screen constant. */
+#define FF_THEME_HIT_CHIP_PX 52
 
 /**
  * FF_HIT_MIN_GAP_PX — S17 slice b (docs/specs/S17-usability-hardening.md,

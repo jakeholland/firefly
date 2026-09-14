@@ -319,8 +319,16 @@ extern "C" {
 #define RADAR_LAYOUT_CLOSE_RING_CY (-55.0f)
 #define RADAR_LAYOUT_CLOSE_RING_MAX_R 90.0f
 #define RADAR_LAYOUT_CLOSE_NAME_DY 59.0f
-#define RADAR_LAYOUT_CLOSE_CHIP_DY 98.0f
-#define RADAR_LAYOUT_CLOSE_FLARE_DY 147.0f
+/* Tap-target sizing pass (2026-09-14, docs/hardware/tap-targets.md): the
+ * trend chip lifts 98 -> 94 and FLARE drops 147 -> 149, which is the
+ * whole 10px this face had to give the FLARE button's height. CLOSE mode
+ * is vertically saturated between the outermost pulse ring (bottom edge
+ * at dy 35) and the glass bound below, so FLARE's new height comes from
+ * this 4px lift plus narrowing the button itself — see
+ * RADAR_FLARE_BTN_W_PX / FF_THEME_FLARE_BTN_H_PX in scr_radar.c and
+ * ff_theme.h for the measured derivation. */
+#define RADAR_LAYOUT_CLOSE_CHIP_DY 94.0f
+#define RADAR_LAYOUT_CLOSE_FLARE_DY 149.0f
 /* Reserved rect half-width 110 -> 220 total, same margin convention as
  * RADAR_LAYOUT_STACK_NAME_W above. */
 #define RADAR_LAYOUT_CLOSE_NAME_W 200

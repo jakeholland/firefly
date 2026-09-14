@@ -151,27 +151,40 @@ static inline lv_obj_t *find_label_exact(lv_obj_t *root, char const *text)
     return NULL;
 }
 
-/* An lv_button whose (any-depth) label child matches exactly. */
+/* An lv_button whose (any-depth) label descendant matches exactly.
+ *
+ * This used to only look at the button's DIRECT children, despite that
+ * doc line promising any depth — a silent mismatch between contract and
+ * behaviour, where the failure mode is a NULL that reads as "no such
+ * button" rather than as "this helper cannot see that deep".
+ *
+ * Stated honestly, because the first version of this comment was not
+ * (PR #311 review, N-series): NO test in the tree needs the deeper
+ * search today. It claimed `scr_banner.c` had gained a transparent hit
+ * wrapper around its pill and that `test_ctl_flare_sequence.c` had
+ * started failing; neither is true — scr_banner.c is untouched by this
+ * PR and its labels are still direct children of the strip button.
+ * Verified by reverting this function to the direct-children version and
+ * running the full suite: 98/98 green. It is kept because the contract
+ * above is the right one and matching it costs nothing, not because
+ * something demanded it.
+ *
+ * DEEPEST match wins: children are searched before the node itself, so a
+ * nested button carrying the label is returned in preference to an
+ * enclosing one. That is the same "a touch resolves to the deepest
+ * clickable under it" rule LVGL's own hit-testing uses, so a test that
+ * clicks what this returns clicks what a finger would have hit. */
 static inline lv_obj_t *find_button_with_label(lv_obj_t *root, char const *label_text)
 {
     uint32_t n = lv_obj_get_child_count(root);
     for (uint32_t i = 0; i < n; i++) {
         lv_obj_t *child = lv_obj_get_child(root, i);
-        if (lv_obj_check_type(child, &lv_button_class)) {
-            uint32_t nc = lv_obj_get_child_count(child);
-            for (uint32_t j = 0; j < nc; j++) {
-                lv_obj_t *maybe_label = lv_obj_get_child(child, j);
-                if (lv_obj_check_type(maybe_label, &lv_label_class)) {
-                    char const *txt = lv_label_get_text(maybe_label);
-                    if (txt != NULL && strcmp(txt, label_text) == 0) {
-                        return child;
-                    }
-                }
-            }
+        lv_obj_t *deeper = find_button_with_label(child, label_text);
+        if (deeper != NULL) {
+            return deeper;
         }
-        lv_obj_t *found = find_button_with_label(child, label_text);
-        if (found != NULL) {
-            return found;
+        if (lv_obj_check_type(child, &lv_button_class) && find_label_exact(child, label_text) != NULL) {
+            return child;
         }
     }
     return NULL;

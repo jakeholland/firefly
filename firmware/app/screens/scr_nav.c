@@ -153,29 +153,35 @@ lv_obj_t *ff_scr_button_create(lv_obj_t *parent)
      * is now enforced explicitly and tolerantly instead — see this
      * function's own press/pressing handler below and scr_nav.h's doc
      * comment for the full mechanism and history. */
-    /* This CLICKED handler is added FIRST, deliberately, so it stays event
-     * descriptor INDEX 0 on every button in the app — order matters here
-     * for a reason that has nothing to do with sound: test_face_hit_
-     * targets.c's adjacency-floor sweep identifies "two pills are really
-     * ONE composite control" (its own `sweep_same_composite_control`,
-     * Exclusion 1 — e.g. a toggle row's two pills sharing one `cb`) by
-     * reading ONLY `lv_obj_get_event_dsc(obj, 0)`'s callback/user_data —
-     * index 0, not "whichever handler actually distinguishes this
-     * button". `ff_sound_emit(FF_SOUND_TAP)` below is shared and takes a
-     * constant NULL user_data, so it never accidentally aliases two
-     * DIFFERENT controls into looking like the same composite one. The
-     * press/pressing tracking wired further down carries a PER-BUTTON
-     * malloc'd `press_ctx` as its user_data specifically so a slide's
-     * down-point is never shared across buttons — added at a LATER
-     * index for exactly that reason: were it index 0 instead, the sweep
-     * above would (correctly, by its own rule, but wrongly in effect)
-     * conclude that no two buttons in the whole app are ever the same
-     * composite control, since no two buttons share a malloc'd pointer —
-     * silently disabling that exclusion for everything except this
-     * fix's own hand-crafted synthetic test objects. Confirmed empirically
-     * before landing this comment: swapping the two calls' order regresses
-     * `test_face_hit_targets` from 0 to 54 violations against the real,
-     * COMMITTED production fixtures. */
+    /* Ordering note — CORRECTED (PR #311 review, 2026-09-14). The comment
+     * that used to sit here had this exactly backwards, and the sweep it
+     * described was broken by the thing it claimed was safe.
+     *
+     * What is true: this CLICKED handler is registered FIRST, so it is
+     * event descriptor INDEX 0 on every button in the app, and it is
+     * SHARED — one function pointer, a constant NULL user_data, on all of
+     * them. What the old comment claimed: that being shared-and-constant
+     * meant it "never accidentally aliases two DIFFERENT controls". The
+     * opposite is the case. test_face_hit_targets.c's adjacency sweep
+     * used to read descriptor 0 as a control's identity, so every pair of
+     * real app buttons matched on (cb, user_data) and was skipped as "one
+     * composite control": 3214 of 3787 candidate pairs silently exempted,
+     * 573 actually checked. The old note's "swapping the two calls' order
+     * regresses the sweep from 0 to 54 violations" is the same fact read
+     * the wrong way round — with a per-button malloc'd user_data at index
+     * 0 NOTHING was exempted, so 54 genuine composite pairs surfaced as
+     * failures; the shared handler at index 0 did not fix that, it hid
+     * everything.
+     *
+     * The fix lives in the sweep, not here: it now identifies a control
+     * by the first descriptor that is NOT one of this function's shared
+     * infrastructure handlers (discovered at runtime by probing this
+     * factory — see `sweep_identify`/`sweep_learn_shared_cbs`). So the
+     * ORDER of the two calls below is no longer load-bearing for the
+     * sweep at all, and adding another shared handler here (at any index)
+     * is safe. The press/pressing tracking still carries a PER-BUTTON
+     * malloc'd `press_ctx` as its user_data for its own reason — a
+     * slide's down-point must never be shared across buttons. */
     lv_obj_add_event_cb(btn, ff_scr_button_tap_sound_cb, LV_EVENT_CLICKED, NULL);
     /* fix/tap-lost-midpress-rebuild — slide-off-cancels-a-tap tracking
      * (see this function's own PRESS_LOCK comment above and scr_nav.h's
@@ -350,18 +356,30 @@ lv_area_t ff_scr_nav_rect_best_remainder(lv_area_t obj, lv_area_t cover)
 /**
  * ff_scr_nav_remainder_clears_floor — true iff `obj`'s largest remaining
  * slice after `cover` is subtracted (ff_scr_nav_rect_best_remainder)
- * still measures >= FF_THEME_MIN_HIT_PX in BOTH dimensions — the exact
- * bar test_face_hit_targets.c's own sweep already holds every other
- * control to. false means the remainder is too small to be its own
- * usable target, i.e. `obj` should be masked while `cover` sits over
- * it; true means it stays clickable (LVGL's own z-order hit-testing
- * routes a tap correctly between the two without any help from this
- * file).
+ * still measures >= FF_THEME_HIT_PRIMARY_PX in BOTH dimensions. false
+ * means the remainder is too small to be its own usable target, i.e.
+ * `obj` should be masked while `cover` sits over it; true means it stays
+ * clickable (LVGL's own z-order hit-testing routes a tap correctly
+ * between the two without any help from this file).
+ *
+ * Tap-target sizing pass (2026-09-14): the bar was FF_THEME_MIN_HIT_PX
+ * (44). It is now the outdoor primary-action floor (80), because this
+ * function answers a question about a USABLE remainder, not a legal one,
+ * and the pass moved what "usable" means. The launcher made that
+ * concrete and is the reason the change is here rather than deferred:
+ * with LAUNCHER_SAT_DIAM at 88 the top (Inbox) satellite's uncovered
+ * remainder under the banner measured 88x37 and was masked; at 100 the
+ * same remainder measures 100x44 — which squeaks past the OLD floor by a
+ * single pixel and would have left a 3.8mm sliver of satellite live
+ * under a notification, the precise mis-tap this masking exists to
+ * prevent. A control reduced to a sliver should be masked, and the
+ * threshold for "sliver" has to move with the pass or the rule silently
+ * loosens every time a control grows.
  */
 bool ff_scr_nav_remainder_clears_floor(lv_area_t obj, lv_area_t cover)
 {
     lv_area_t rem = ff_scr_nav_rect_best_remainder(obj, cover);
-    return nav_rect_w(&rem) >= FF_THEME_MIN_HIT_PX && nav_rect_h(&rem) >= FF_THEME_MIN_HIT_PX;
+    return nav_rect_w(&rem) >= FF_THEME_HIT_PRIMARY_PX && nav_rect_h(&rem) >= FF_THEME_HIT_PRIMARY_PX;
 }
 
 void ff_scr_nav_mask_clickables_under_banner(lv_obj_t *root, lv_obj_t *banner, lv_area_t const *banner_area)

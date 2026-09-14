@@ -85,7 +85,7 @@ static lv_point_precise_t s_flare_mark_ray_pts[FLARE_MARK_N_RAYS][2];
  * than this arithmetic alone. */
 #define FLARE_TAKEOVER_LOCK_LINE_DY 10.0f
 #define FLARE_TAKEOVER_GO_DY       70.0f
-#define FLARE_TAKEOVER_DISMISS_DY  140.0f
+#define FLARE_TAKEOVER_DISMISS_DY  146.0f
 #define FLARE_TAKEOVER_BTN_W       190
 /* >= FF_THEME_MIN_HIT_PX (44) with real margin — docs/review/ux-raver.md
  * checklist item 2, "fat thumb test": this screen shows up at 2 AM with
@@ -96,10 +96,40 @@ static lv_point_precise_t s_flare_mark_ray_pts[FLARE_MARK_N_RAYS][2];
  * opposite, high-stakes outcomes; the review asked for >= 16px (~1.5mm),
  * so this clears it with a whole pixel of margin, not exactly at the
  * floor. */
-#define FLARE_TAKEOVER_GO_BTN_H       56
-#define FLARE_TAKEOVER_DISMISS_BTN_H  50
+/* Tap-target sizing pass (owner decision 2026-09-14,
+ * docs/hardware/tap-targets.md): 56 -> 64 and 50 -> 56, which is every
+ * pixel this face has and NOT the 80px primary-action floor the rest of
+ * this pass reaches. The binding constraint is the round glass, measured
+ * rather than argued:
+ *
+ *   - a 190px-wide button centred on the puck spans x 111..301, so its
+ *     farthest corner sits |dx| = 97 from the GLASS centre (208,206);
+ *     staying inside FF_THEME_GLASS_R (200) then caps |dy| at
+ *     sqrt(200^2 - 97^2) = 174.9 — the stack's bottom edge cannot go
+ *     below dy 174 (y = 380) no matter how the buttons are sized.
+ *   - the lock-disclosure chip (FLARE_TAKEOVER_LOCK_LINE_DY, 34px tall
+ *     centred at dy 10) bottoms out at dy 27, and GO needs ~10px of
+ *     clearance under it, so the stack's top edge cannot rise above
+ *     dy 37.
+ *
+ * That is a 137px band for TWO buttons plus the 16px safety gap PR #20's
+ * review required between two opposite, high-stakes outcomes — 121px of
+ * button, against the 176px two 80px buttons would need. The gap is not
+ * available to trade: this is the one screen where hitting the WRONG
+ * control has a real cost (GO drops a lock and re-points the whole
+ * radar), so expanding either hit area into the dead space between them
+ * would buy millimetres by making the expensive mis-tap easier. Sized to
+ * the band instead, bottom-anchored: DISMISS 56 tall centred at dy 146
+ * (118..174, its bottom edge exactly on the glass bound), GO 64 tall
+ * still centred at dy 70 (38..102), 16px apart. */
+#define FLARE_TAKEOVER_GO_BTN_H       64
+#define FLARE_TAKEOVER_DISMISS_BTN_H  56
 _Static_assert(FLARE_TAKEOVER_GO_BTN_H >= FF_THEME_MIN_HIT_PX, "GO must clear the 44px hit-target floor");
 _Static_assert(FLARE_TAKEOVER_DISMISS_BTN_H >= FF_THEME_MIN_HIT_PX, "DISMISS must clear the 44px hit-target floor");
+_Static_assert((int)FLARE_TAKEOVER_DISMISS_DY - FLARE_TAKEOVER_DISMISS_BTN_H / 2 -
+                       ((int)FLARE_TAKEOVER_GO_DY + FLARE_TAKEOVER_GO_BTN_H / 2) >=
+                   16,
+               "GO and DISMISS must keep PR #20's 16px safety gap — two opposite, high-stakes outcomes");
 
 /* Kept clear of both NOSEL's "Pair a friend in Settings" sub-line
  * (RADAR_LAYOUT_NOSEL_SUB_DY == 40) above and the puck's own bottom edge
@@ -114,11 +144,23 @@ _Static_assert(FLARE_TAKEOVER_DISMISS_BTN_H >= FF_THEME_MIN_HIT_PX, "DISMISS mus
  * inside the circle with margin) and the status/countdown lines lifted in
  * step so the sending stack still reads status -> countdown -> CANCEL without
  * overlap. */
-#define FLARE_SENDER_STATUS_DY    78.0f
-#define FLARE_SENDER_COUNTDOWN_DY 118.0f
-#define FLARE_SENDER_CANCEL_DY    158.0f
+/* Tap-target sizing pass (2026-09-14): CANCEL 48 -> 64. Unlike the
+ * takeover's GO/DISMISS above, this is a LONE button with no
+ * opposite-outcome neighbour to keep clear of, so the whole band below
+ * the countdown is available — the only bound is the glass. At 140px
+ * wide, centred, the farthest corner is |dx| = 72 from the glass centre,
+ * which allows |dy| up to sqrt(200^2 - 72^2) = 186.5. The status and
+ * countdown lines lift 6px (78 -> 72) and 12px (118 -> 106) respectively
+ * to open the room the taller button needs, and CANCEL's own centre lifts
+ * 6px (158 -> 152) so its bottom edge lands at dy 184, inside that bound
+ * with 2.5px to spare — keeping the same status -> countdown -> CANCEL
+ * reading order and no overlap (verified against the rendered
+ * flaring_self / flaring_self_nomesh goldens, not this arithmetic). */
+#define FLARE_SENDER_STATUS_DY    72.0f
+#define FLARE_SENDER_COUNTDOWN_DY 106.0f
+#define FLARE_SENDER_CANCEL_DY    152.0f
 #define FLARE_SENDER_CANCEL_W     140
-#define FLARE_SENDER_CANCEL_H     48
+#define FLARE_SENDER_CANCEL_H     64
 _Static_assert(FLARE_SENDER_CANCEL_H >= FF_THEME_MIN_HIT_PX, "CANCEL must clear the 44px hit-target floor");
 
 /* Chip padding, named because the round-glass clamp in flare_make_chip

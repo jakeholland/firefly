@@ -584,8 +584,22 @@ static void S26d_AC2_object_with_wide_remainder_stays_clickable_and_routes_tap(v
 
     lv_obj_t *wide = lv_button_create(parent);
     lv_obj_remove_style_all(wide);
-    lv_obj_set_size(wide, 300, 48);
-    lv_obj_set_pos(wide, 60, 36); /* same y-band the banner sits in, MUCH wider in x */
+    /* Sized so its LEFT remainder beside the banner clears the masking
+     * rule's floor in BOTH dimensions — 108x96 here. The floor moved from
+     * FF_THEME_MIN_HIT_PX (44) to FF_THEME_HIT_PRIMARY_PX (80) with the
+     * tap-target sizing pass (see ff_scr_nav_remainder_clears_floor), and
+     * the old 300x48 at (60,36) left a 68x48 remainder — which stopped
+     * being a "wide remainder" under the new rule and made this test
+     * vacuous rather than wrong. Grown, not re-floored: the point of the
+     * test is a control that genuinely SURVIVES masking.
+     *
+     * 200 wide, not 340: ff_scr_nav_rect_best_remainder picks the
+     * largest-AREA slice, and at 340 the full-width slice BELOW the
+     * banner (340x32) beat the left slice (108x96) on area while failing
+     * the floor on height. Narrowing makes the left slice the genuine
+     * best remainder, which is the shape this test is about. */
+    lv_obj_set_size(wide, 200, 96);
+    lv_obj_set_pos(wide, 20, 20); /* same y-band the banner sits in, MUCH wider in x */
     s_wide_clicks = 0;
     lv_obj_add_event_cb(wide, wide_click_cb, LV_EVENT_CLICKED, NULL);
 
@@ -601,16 +615,17 @@ static void S26d_AC2_object_with_wide_remainder_stays_clickable_and_routes_tap(v
 
     TEST_ASSERT_TRUE_MESSAGE(areas_overlap(&wide_a, &strip_a), "test is vacuous unless the control and banner overlap");
     TEST_ASSERT_TRUE_MESSAGE(ff_scr_nav_remainder_clears_floor(wide_a, strip_a),
-                             "this control's remainder must clear 44px both ways for this test to be meaningful");
+                             "this control's remainder must clear the masking floor both ways to be meaningful");
 
     ff_scr_nav_mask_clickables_under_banner(parent, strip, &strip_a);
 
     TEST_ASSERT_TRUE_MESSAGE(lv_obj_has_flag(wide, LV_OBJ_FLAG_CLICKABLE),
-                             "a control whose remainder clears the 44px floor must stay clickable");
+                             "a control whose remainder clears the masking floor must stay clickable");
 
-    /* Tap inside the LEFT slice (x=[60,strip_a.x1), y=[36,84)) — visible,
-     * uncovered, and per the assertion above >= 44px in both dimensions. */
-    tap_at(80, 60);
+    /* Tap inside the LEFT slice (x=[20,strip_a.x1), y=[20,116)) — visible,
+     * uncovered, and per the assertion above >= the floor in both
+     * dimensions. */
+    tap_at(60, 60);
     TEST_ASSERT_EQUAL_INT_MESSAGE(1, s_wide_clicks, "a real tap on the control's visible remainder must reach it");
 }
 

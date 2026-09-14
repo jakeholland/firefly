@@ -15,10 +15,10 @@
     ],
     "rally": {
       "on_me_ok": true,
-      "sel": 1,
+      "sel": 4,
       "when": "15",
       "places": ["Main Stage", "Bass Hollow", "Wompy Woods", "The Grove", "Sunrise Stage", "Camp"],
-      "echo_place": "Main Stage",
+      "echo_place": "The Grove",
       "echo_when": "+15m",
       "can_send": true,
       "confirm_armed": false
