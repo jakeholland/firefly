@@ -173,7 +173,7 @@ static void S02_AC16_start_mints_writes_verifies_and_lands_ready(void)
     /* 0x0A4D2E7 is an arbitrary 30-bit draw; the point is that the code
      * and the key come from IT and from nothing else. */
     uint32_t bits = 0x0A4D2E7u;
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 1000u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 1000u));
     TEST_ASSERT_EQUAL(FF_CREWSTART_GENERATING, ff_crewstart_state(&f));
     TEST_ASSERT_EQUAL(FF_CREWSTART_OP_START, ff_crewstart_op(&f));
 
@@ -201,7 +201,7 @@ static void S02_AC16_written_channel_is_the_spec_channel(void)
     mc_stub_t s = stub_ok();
     uint32_t bits = 0x12345u;
 
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 0u));
     (void)stub_run(&f, &s, 0u, 100u, 20u);
     TEST_ASSERT_EQUAL(FF_CREWSTART_READY, ff_crewstart_state(&f));
 
@@ -223,7 +223,7 @@ static void S02_AC16_written_psk_is_the_one_the_code_derives(void)
     mc_stub_t s = stub_ok();
     uint32_t bits = 0x3FFFFFFFu;
 
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 0u));
     (void)stub_run(&f, &s, 0u, 100u, 20u);
 
     uint8_t want[FF_CREWCODE_PSK_LEN];
@@ -239,12 +239,12 @@ static void S02_AC16_thirty_bits_are_taken_from_a_thirty_two_bit_draw(void)
     ff_crewstart_t f;
     uint32_t all_ones = 0xFFFFFFFFu;
     ff_crewstart_init(&f);
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &all_ones, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &all_ones, true, 0u));
     TEST_ASSERT_EQUAL_STRING("FIRE-ZZZZZZ", ff_crewstart_code(&f));
 
     uint32_t zero = 0u;
     ff_crewstart_init(&f);
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &zero, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &zero, true, 0u));
     TEST_ASSERT_EQUAL_STRING("FIRE-000000", ff_crewstart_code(&f));
 }
 
@@ -255,7 +255,7 @@ static void S02_AC18_no_entropy_source_mints_nothing(void)
 {
     ff_crewstart_t f;
     ff_crewstart_init(&f);
-    TEST_ASSERT_FALSE(ff_crewstart_begin_start(&f, NULL, NULL, 500u));
+    TEST_ASSERT_FALSE(ff_crewstart_begin_start(&f, NULL, NULL, true, 500u));
     TEST_ASSERT_EQUAL(FF_CREWSTART_FAILED, ff_crewstart_state(&f));
     TEST_ASSERT_EQUAL(FF_CREWSTART_FAIL_NO_ENTROPY, ff_crewstart_failure(&f));
     TEST_ASSERT_EQUAL_STRING("", ff_crewstart_code(&f));
@@ -272,7 +272,7 @@ static void S02_AC16_a_second_start_while_busy_is_ignored(void)
     s.writes[0] = STUB_ACCEPT_SILENT;
     uint32_t bits = 0x777u;
 
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 0u));
     ff_crewstart_tick(&f, 10u);
     ff_crewstart_channel_t ch;
     TEST_ASSERT_EQUAL(FF_CREWSTART_ACT_WRITE, ff_crewstart_take_action(&f, &ch));
@@ -283,7 +283,7 @@ static void S02_AC16_a_second_start_while_busy_is_ignored(void)
     snprintf(code_before, sizeof(code_before), "%s", ff_crewstart_code(&f));
 
     uint32_t other = 0x999u;
-    TEST_ASSERT_FALSE(ff_crewstart_begin_start(&f, rng_fixed, &other, 20u));
+    TEST_ASSERT_FALSE(ff_crewstart_begin_start(&f, rng_fixed, &other, true, 20u));
     TEST_ASSERT_EQUAL(FF_CREWSTART_WRITING, ff_crewstart_state(&f));
     TEST_ASSERT_EQUAL_STRING(code_before, ff_crewstart_code(&f));
     (void)s;
@@ -450,7 +450,7 @@ static void S02_AC18_readback_mismatch_is_a_failure_not_a_success(void)
     s.readback_row.is_primary = true;
 
     uint32_t bits = 0x2222u;
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 0u));
     (void)stub_run(&f, &s, 0u, 100u, 20u);
 
     TEST_ASSERT_EQUAL(FF_CREWSTART_FAILED, ff_crewstart_state(&f));
@@ -466,7 +466,7 @@ static void S02_AC18_readback_with_the_right_name_and_wrong_key_fails(void)
     ff_crewstart_init(&f);
     mc_stub_t s = stub_ok();
     uint32_t bits = 0x2223u;
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 0u));
 
     /* Drive one tick so the write lands, then hand back a row that
      * copies the written name but flips one key byte. */
@@ -481,6 +481,127 @@ static void S02_AC18_readback_with_the_right_name_and_wrong_key_fails(void)
     TEST_ASSERT_EQUAL(FF_CREWSTART_FAIL_MISMATCH, ff_crewstart_failure(&f));
 }
 
+/* ------------------------------------------------------------------ */
+/* #47 — the crew channel's OWN position_precision, not only its name */
+/* and key (S02-core-crew.md's 2026-09-14 amendment, PR #312's review). */
+/* ------------------------------------------------------------------ */
+
+/* The positive case, named explicitly rather than left implicit in every
+ * other test's use of stub_ok()'s echo: a read-back that states EXACTLY
+ * 32 is proof, and the machine remembers what it proved. */
+static void S02_AC18_precision_present_and_correct_is_ready(void)
+{
+    ff_crewstart_t f;
+    ff_crewstart_init(&f);
+    mc_stub_t s = stub_ok();
+    uint32_t bits = 0x2225u;
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, /*precision_strict=*/true, 0u));
+
+    stub_tick(&f, &s, 0u);
+    TEST_ASSERT_EQUAL(FF_CREWSTART_VERIFYING, ff_crewstart_state(&f));
+    ff_crewstart_channel_t row = s.last_written; /* right name, right key */
+    row.has_position_precision = true;
+    row.position_precision = 32u;
+    ff_crewstart_on_channel(&f, &row, 100u);
+
+    TEST_ASSERT_EQUAL(FF_CREWSTART_READY, ff_crewstart_state(&f));
+    TEST_ASSERT_TRUE(ff_crewstart_has_precision(&f));
+    TEST_ASSERT_EQUAL_UINT32(32u, ff_crewstart_precision(&f));
+}
+
+/* A read-back that proves the right channel but states a WRONG
+ * precision is a decisive MISMATCH, exactly like a wrong key —
+ * `FF_CREWSTART_PRECISION_REQUIRED` is NOT configurable, and this holds
+ * under BOTH values of `precision_strict`, exercised here explicitly so
+ * a future "strict only gates the absent case" refactor breaks a named
+ * test rather than silently changing what a stated-but-wrong value
+ * does. A radio that lands here accepted the channel write but kept
+ * positions coarse — the crew sees km-scale positions, and READY here
+ * would be exactly the confidently-wrong screen #47 is about. */
+static void S02_AC18_precision_present_and_wrong_is_mismatch(void)
+{
+    for (int i = 0; i < 2; i++) {
+        bool const strict = (i == 0);
+        ff_crewstart_t f;
+        ff_crewstart_init(&f);
+        mc_stub_t s = stub_ok();
+        uint32_t bits = 0x2226u + (uint32_t)i;
+        TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, strict, 0u));
+
+        stub_tick(&f, &s, 0u);
+        ff_crewstart_channel_t row = s.last_written;
+        row.has_position_precision = true;
+        row.position_precision = 0u; /* stated, but wrong — the import path's cautious 0 */
+        ff_crewstart_on_channel(&f, &row, 100u);
+
+        TEST_ASSERT_EQUAL(FF_CREWSTART_FAILED, ff_crewstart_state(&f));
+        TEST_ASSERT_EQUAL(FF_CREWSTART_FAIL_MISMATCH, ff_crewstart_failure(&f));
+    }
+}
+
+/* The bench-settled case (2026-09-14, a Heltec V3 on Meshtastic 2.7.x
+ * echoing module_settings.position_precision back after an import that
+ * set it): an ABSENT precision on an otherwise-matching read-back is a
+ * MISMATCH when `precision_strict` is on (the shipped default,
+ * `FF_CREW_PRECISION_STRICT=y`) and an honest READY-with-"unreported"
+ * when it is off. */
+static void S02_AC18_precision_absent_follows_the_strict_flag(void)
+{
+    {
+        ff_crewstart_t f;
+        ff_crewstart_init(&f);
+        mc_stub_t s = stub_ok();
+        uint32_t bits = 0x2228u;
+        TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, /*precision_strict=*/true, 0u));
+        stub_tick(&f, &s, 0u);
+        ff_crewstart_channel_t row = s.last_written;
+        row.has_position_precision = false;
+        row.position_precision = 0u;
+        ff_crewstart_on_channel(&f, &row, 100u);
+
+        TEST_ASSERT_EQUAL(FF_CREWSTART_FAILED, ff_crewstart_state(&f));
+        TEST_ASSERT_EQUAL(FF_CREWSTART_FAIL_MISMATCH, ff_crewstart_failure(&f));
+    }
+    {
+        ff_crewstart_t f;
+        ff_crewstart_init(&f);
+        mc_stub_t s = stub_ok();
+        uint32_t bits = 0x2229u;
+        TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, /*precision_strict=*/false, 0u));
+        stub_tick(&f, &s, 0u);
+        ff_crewstart_channel_t row = s.last_written;
+        row.has_position_precision = false;
+        row.position_precision = 0u;
+        ff_crewstart_on_channel(&f, &row, 100u);
+
+        TEST_ASSERT_EQUAL(FF_CREWSTART_READY, ff_crewstart_state(&f));
+        TEST_ASSERT_FALSE(ff_crewstart_has_precision(&f));
+        TEST_ASSERT_EQUAL_UINT32(0u, ff_crewstart_precision(&f));
+    }
+}
+
+/* LEAVE is under no obligation to restore precision 32 — the check is
+ * START-only (`ff_crewstart_begin_leave` does not even take a
+ * `precision_strict` argument), and this pins it: a read-back for a
+ * restored non-crew channel that states no precision at all still
+ * reaches READY. */
+static void S02_AC17_leave_ignores_precision_entirely(void)
+{
+    ff_crewstart_t f;
+    ff_crewstart_init(&f);
+    mc_stub_t s = stub_ok();
+    ff_crewstart_channel_t snap = a_snapshot();
+
+    TEST_ASSERT_TRUE(ff_crewstart_begin_leave(&f, &snap, 0u));
+    stub_tick(&f, &s, 0u);
+    TEST_ASSERT_EQUAL(FF_CREWSTART_VERIFYING, ff_crewstart_state(&f));
+    ff_crewstart_channel_t row = s.last_written;
+    row.has_position_precision = false; /* "LongFast" never states one */
+    ff_crewstart_on_channel(&f, &row, 100u);
+
+    TEST_ASSERT_EQUAL(FF_CREWSTART_READY, ff_crewstart_state(&f));
+}
+
 /* A NAK retries, bounded, and then reports the NAK — not a generic
  * "gave up", because which of the three things went wrong is the whole
  * content of the message. */
@@ -493,7 +614,7 @@ static void S02_AC18_nak_retries_then_fails_as_nak(void)
     s.n_writes = 1u; /* every attempt NAKs */
 
     uint32_t bits = 0x4444u;
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 0u));
     (void)stub_run(&f, &s, 0u, 100u, 30u);
 
     TEST_ASSERT_EQUAL(FF_CREWSTART_FAILED, ff_crewstart_state(&f));
@@ -514,7 +635,7 @@ static void S02_AC18_a_nak_then_an_ack_still_lands_ready(void)
     s.n_writes = 2u;
 
     uint32_t bits = 0x5555u;
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 0u));
     (void)stub_run(&f, &s, 0u, 100u, 30u);
 
     TEST_ASSERT_EQUAL(FF_CREWSTART_READY, ff_crewstart_state(&f));
@@ -532,7 +653,7 @@ static void S02_AC18_ack_timeout_retries_then_fails_as_timeout(void)
     s.n_writes = 1u;
 
     uint32_t bits = 0x6666u;
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 0u));
     /* Ticks of a full ack timeout each, so every retry is exercised. */
     (void)stub_run(&f, &s, 0u, FF_CREWSTART_ACK_TIMEOUT_MS, 30u);
 
@@ -551,7 +672,7 @@ static void S02_AC18_refused_send_fails_as_send(void)
     s.n_writes = 1u;
 
     uint32_t bits = 0x7777u;
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 0u));
     (void)stub_run(&f, &s, 0u, 100u, 30u);
 
     TEST_ASSERT_EQUAL(FF_CREWSTART_FAILED, ff_crewstart_state(&f));
@@ -570,7 +691,7 @@ static void S02_AC18_verify_timeout_fails_and_does_not_rewrite(void)
     s.readback = false;
 
     uint32_t bits = 0x8888u;
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 0u));
     (void)stub_run(&f, &s, 0u, FF_CREWSTART_VERIFY_TIMEOUT_MS, 10u);
 
     TEST_ASSERT_EQUAL(FF_CREWSTART_FAILED, ff_crewstart_state(&f));
@@ -588,7 +709,7 @@ static void S02_AC18_no_packet_id_still_verifies_by_readback(void)
     s.gives_packet_id = false;
 
     uint32_t bits = 0x9999u;
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 0u));
     (void)stub_run(&f, &s, 0u, 100u, 20u);
 
     TEST_ASSERT_EQUAL(FF_CREWSTART_READY, ff_crewstart_state(&f));
@@ -605,7 +726,7 @@ static void S02_AC18_a_foreign_routing_ack_is_ignored(void)
     s.writes[0] = STUB_ACCEPT_SILENT;
     uint32_t bits = 0xABCDu;
 
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 0u));
     ff_crewstart_tick(&f, 10u);
     ff_crewstart_channel_t ch;
     TEST_ASSERT_EQUAL(FF_CREWSTART_ACT_WRITE, ff_crewstart_take_action(&f, &ch));
@@ -650,7 +771,7 @@ static void S02_AC18_fail_now_never_overrides_a_write_in_flight(void)
     s.writes[0] = STUB_ACCEPT_SILENT;
     uint32_t bits = 0xDEADu;
 
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 0u));
     stub_tick(&f, &s, 0u);
     TEST_ASSERT_EQUAL(FF_CREWSTART_WRITING, ff_crewstart_state(&f));
 
@@ -668,7 +789,7 @@ static void S02_AC18_dismiss_only_clears_a_finished_run(void)
     mc_stub_t s = stub_ok();
     uint32_t bits = 0xBEEFu;
 
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 0u));
     stub_tick(&f, &s, 0u);
     TEST_ASSERT_EQUAL(FF_CREWSTART_VERIFYING, ff_crewstart_state(&f));
     ff_crewstart_dismiss(&f);
@@ -713,7 +834,7 @@ static void S02_AC18_null_is_never_a_crash_and_never_a_claim(void)
     ff_crewstart_on_write_result(NULL, true, true, 0u, 0u);
     ff_crewstart_default_primary(NULL);
     uint32_t bits = 1u;
-    TEST_ASSERT_FALSE(ff_crewstart_begin_start(NULL, rng_fixed, &bits, 0u));
+    TEST_ASSERT_FALSE(ff_crewstart_begin_start(NULL, rng_fixed, &bits, true, 0u));
     TEST_ASSERT_FALSE(ff_crewstart_begin_leave(NULL, NULL, 0u));
 }
 
@@ -808,7 +929,7 @@ static void S02_AC16_consider_names_the_op_without_starting_it(void)
     mc_stub_t s = stub_ok();
     s.writes[0] = STUB_ACCEPT_SILENT;
     uint32_t bits = 0x1234u;
-    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, 0u));
+    TEST_ASSERT_TRUE(ff_crewstart_begin_start(&f, rng_fixed, &bits, true, 0u));
     stub_tick(&f, &s, 0u);
     TEST_ASSERT_EQUAL(FF_CREWSTART_WRITING, ff_crewstart_state(&f));
     ff_crewstart_consider(&f, FF_CREWSTART_OP_LEAVE);
@@ -838,6 +959,10 @@ int main(void)
     RUN_TEST(S02_AC18_no_entropy_source_mints_nothing);
     RUN_TEST(S02_AC18_readback_mismatch_is_a_failure_not_a_success);
     RUN_TEST(S02_AC18_readback_with_the_right_name_and_wrong_key_fails);
+    RUN_TEST(S02_AC18_precision_present_and_correct_is_ready);
+    RUN_TEST(S02_AC18_precision_present_and_wrong_is_mismatch);
+    RUN_TEST(S02_AC18_precision_absent_follows_the_strict_flag);
+    RUN_TEST(S02_AC17_leave_ignores_precision_entirely);
     RUN_TEST(S02_AC18_nak_retries_then_fails_as_nak);
     RUN_TEST(S02_AC18_a_nak_then_an_ack_still_lands_ready);
     RUN_TEST(S02_AC18_ack_timeout_retries_then_fails_as_timeout);

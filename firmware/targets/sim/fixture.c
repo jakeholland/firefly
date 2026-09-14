@@ -1281,6 +1281,9 @@ static ff_fixture_result_t fx_parse_crew_page(fx_ctx_t const *c, int obj_i, ff_a
     if (fx_obj_get(c, obj_i, "can_leave", &t)) cw->can_leave = fx_bool(c, t, false);
     if (fx_obj_get(c, obj_i, "has_snapshot", &t)) cw->has_snapshot = fx_bool(c, t, false);
     if (fx_obj_get(c, obj_i, "region_unset", &t)) cw->region_unset = fx_bool(c, t, false);
+    /* A02 slice D2 amendment (#47) — the SHOW CODE face's honest
+     * PRECISION line. */
+    if (fx_obj_get(c, obj_i, "precision_exact", &t)) cw->precision_exact = fx_bool(c, t, false);
     if (fx_obj_get(c, obj_i, "op", &t)) {
         int v;
         ff_fixture_result_t const rc =
@@ -2791,6 +2794,7 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_raw(&w, s->settings.crew.can_leave ? ",\"can_leave\":true" : ",\"can_leave\":false");
     fw_raw(&w, s->settings.crew.has_snapshot ? ",\"has_snapshot\":true" : ",\"has_snapshot\":false");
     fw_raw(&w, s->settings.crew.region_unset ? ",\"region_unset\":true" : ",\"region_unset\":false");
+    fw_raw(&w, s->settings.crew.precision_exact ? ",\"precision_exact\":true" : ",\"precision_exact\":false");
     fw_raw(&w, ",\"op\":\"");
     fw_raw(&w, fx_enum_name(fx_crew_op_table, sizeof(fx_crew_op_table) / sizeof(fx_crew_op_table[0]),
                             (int)s->settings.crew.op, "none"));

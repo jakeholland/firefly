@@ -356,6 +356,43 @@ menu "Firefly bring-up (S15 slice b)"
             the self filter and latches the wall clock from the host),
             not a product behaviour.
 
+    config FF_CREW_PRECISION_STRICT
+        bool "A crew START requires a reported position_precision"
+        default y
+        help
+            docs/specs/S02-core-crew.md's 2026-09-14 amendment, issue
+            #47's own hazard: a radio that accepts a crew channel write
+            but silently keeps positions coarse (km-scale) reaches READY
+            while the crew sees the wrong data — a confidently-wrong
+            screen with a real code on it. The verifying read-back
+            already fails a channel that STATES a position_precision
+            other than 32 (that check is unconditional, not this
+            option); this option decides the one remaining case — a
+            read-back that proves the right name and key but states NO
+            position_precision at all.
+
+            Default y: an absent field fails the START the same way a
+            wrong one does. Turned on 2026-09-14 on bench evidence, not
+            guessed — a Heltec V3 on Meshtastic 2.7.x was measured
+            echoing module_settings.position_precision back in its
+            channel table after a URL import that set it, so a real
+            radio's silence here is a real signal, not an artifact of
+            the decoder. Before that bench round this was believed but
+            unproven, which is why PR #312 shipped the name/key check
+            alone rather than guessing which way an untested absence
+            should fail.
+
+            Turn it OFF (n) only for a target whose want_config replies
+            are known NOT to echo module_settings back (an older
+            Meshtastic build, say): an absent field then reports
+            honestly as "unreported" on the CREW page and the bench
+            console, and a crew START still reaches READY on name and
+            key alone.
+
+            Meaningless for LEAVE, which restores whatever the radio held
+            before Firefly ever wrote a channel — under no obligation to
+            be precision 32.
+
     config FF_AUDIO_SELFTEST
         bool "Play FLARE_SENT once at boot (S27 sounds device bring-up aid)"
         default n

@@ -860,6 +860,18 @@ typedef struct {
      * not a reading, and the two get different sentences. */
     bool region_unset;
 
+    /* [api] A02 slice D2 amendment (#47) — whether the crew channel's
+     * OWN `position_precision`, as the radio's channel table currently
+     * states it, is exactly 32 (A02 §1.5's "the crew exists so people
+     * can find each other"). False for every other case folded into one
+     * honest line — stated-but-wrong, unreported, and "no crew channel
+     * at all" all read the SAME to a wearer deciding whether to trust
+     * the puck's positions: not exact. A live fact about the radio, not
+     * a memory of the last `ff_crewstart` run — true the moment the
+     * crew's own channel row proves it, whether or not this session ever
+     * ran START. */
+    bool precision_exact;
+
     /* What the CONFIRM/STATUS faces are about, and how far along. */
     ff_app_crew_op_t    op;
     ff_app_crew_phase_t phase;

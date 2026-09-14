@@ -11330,9 +11330,12 @@ static void a02_harness_init(uint32_t t0_ms, bool keep)
     H.ev = ff_shell_events(&H.shell);
 }
 
-/** Deliver one channel-table row, as a want_config reply would. */
-static void a02_inject_channel(uint8_t index, char const *name, uint8_t const *psk, uint8_t psk_len,
-                                bool primary)
+/** Deliver one channel-table row, as a want_config reply would, WITH its
+ *  own `position_precision` — presence-flagged, exactly like
+ *  `mc_channel_t`'s own field (#47). `a02_inject_channel` below is the
+ *  "don't care" shorthand every pre-existing crew test keeps using. */
+static void a02_inject_channel_full(uint8_t index, char const *name, uint8_t const *psk, uint8_t psk_len,
+                                     bool primary, bool has_precision, uint32_t precision)
 {
     mc_channel_t ch;
     memset(&ch, 0, sizeof(ch));
@@ -11343,7 +11346,17 @@ static void a02_inject_channel(uint8_t index, char const *name, uint8_t const *p
         ch.psk_len = psk_len;
     }
     ch.is_primary = primary;
+    ch.has_position_precision = has_precision;
+    ch.position_precision = has_precision ? precision : 0u;
     H.ev.on_channel(H.ev.user, &ch);
+}
+
+/** Deliver one channel-table row with no stated position_precision —
+ *  every pre-existing crew test's shorthand, unaffected by #47. */
+static void a02_inject_channel(uint8_t index, char const *name, uint8_t const *psk, uint8_t psk_len,
+                                bool primary)
+{
+    a02_inject_channel_full(index, name, psk, psk_len, primary, false, 0u);
 }
 
 /** The real crew channel: the canonical code, keyed with the key that
@@ -11968,7 +11981,12 @@ static void d2_radio_confirms(void)
     d2_tick(10u);
     H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
     H.ev.on_lora_region(H.ev.user, 1u);
-    a02_inject_channel(D2S.last.index, D2S.last.name, D2S.last.psk, D2S.last.psk_len, D2S.last.is_primary);
+    /* The honest-radio echo (#47): whatever was written comes back,
+     * position_precision included — this is the bench-proven case
+     * (2026-09-14, a Heltec V3 on Meshtastic 2.7.x echoing
+     * module_settings.position_precision back after an import). */
+    a02_inject_channel_full(D2S.last.index, D2S.last.name, D2S.last.psk, D2S.last.psk_len, D2S.last.is_primary,
+                             D2S.last.has_position_precision, D2S.last.position_precision);
     H.ev.on_state(H.ev.user, MC_STATE_READY);
 }
 
@@ -12006,10 +12024,127 @@ static void S02_AC16_start_writes_the_crew_channel_and_verifies_it(void)
     TEST_ASSERT_EQUAL(FF_APP_CREW_PHASE_READY, st.phase);
     TEST_ASSERT_EQUAL(FF_APP_CREW_FAIL_NONE, st.fail);
 
+    /* #47 — the honest-radio echo carries all the way to the status
+     * line and the SHOW CODE face's own honest line. */
+    TEST_ASSERT_TRUE(st.precision_known);
+    TEST_ASSERT_EQUAL_UINT32(32u, st.precision);
+    ff_app_crew_page_t const *cw = a02_crew_page();
+    TEST_ASSERT_TRUE(cw->precision_exact);
+
     /* And the whole point: the SHOW CODE face now has a real code,
      * derived from the radio's own channel name. */
     TEST_ASSERT_EQUAL_STRING(D2S.last.name, ff_shell_crew_code(&H.shell));
     TEST_ASSERT_EQUAL_STRING(D2S.last.name, st.pending_code);
+}
+
+/* #47 — `crew_precision_strict` is on by default (FF_CREW_PRECISION_
+ * STRICT, Kconfig default y) and the setter/getter round-trip, the same
+ * shape `ff_shell_set_auto_crew`/`ff_shell_auto_crew` already have. */
+static void S02_AC18_precision_strict_is_on_by_default_and_settable(void)
+{
+    a02_harness_init(100000u, false);
+    TEST_ASSERT_TRUE(ff_shell_crew_precision_strict(&H.shell));
+
+    ff_shell_set_crew_precision_strict(&H.shell, false);
+    TEST_ASSERT_FALSE(ff_shell_crew_precision_strict(&H.shell));
+
+    ff_shell_set_crew_precision_strict(&H.shell, true);
+    TEST_ASSERT_TRUE(ff_shell_crew_precision_strict(&H.shell));
+}
+
+/* #47, the shipped default (`FF_CREW_PRECISION_STRICT` on): a radio
+ * that accepts the crew channel write but echoes back NO
+ * position_precision at all fails the START outright — the exact
+ * hazard the review that shipped PR #312 flagged but could not settle
+ * without a bench. */
+static void S02_AC18_start_fails_when_the_readback_never_states_a_precision(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+    TEST_ASSERT_TRUE(ff_shell_crew_precision_strict(&H.shell)); /* the shipped default */
+
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    H.ev.on_routing_ack(H.ev.user, D2S.packet_id, true);
+    d2_tick(10u);
+
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    H.ev.on_lora_region(H.ev.user, 1u);
+    /* The radio accepted the write (the name and key echo back exactly),
+     * but its want_config reply states no module_settings at all — a
+     * real, if unwelcome, possibility this bench-proven-echo case exists
+     * to catch when it happens. */
+    a02_inject_channel_full(D2S.last.index, D2S.last.name, D2S.last.psk, D2S.last.psk_len, D2S.last.is_primary,
+                             /*has_precision=*/false, 0u);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    ff_shell_crew_op_status_t const st = ff_shell_crew_op_status(&H.shell);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_PHASE_FAILED, st.phase);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_FAIL_MISMATCH, st.fail);
+    /* The radio genuinely IS on that channel (name and key really do
+     * match) — `crew_code` reports that fact honestly, independent of
+     * whether ff_crewstart's own, stricter proof requirement was met.
+     * It is `precision_exact` that carries the bad news: the CREW page
+     * shows the real code AND the honest "not exact" line, never a
+     * fabricated blank. */
+    TEST_ASSERT_EQUAL_STRING(D2S.last.name, ff_shell_crew_code(&H.shell));
+    TEST_ASSERT_FALSE(st.precision_known);
+    ff_app_crew_page_t const *cw = a02_crew_page();
+    TEST_ASSERT_FALSE(cw->precision_exact);
+}
+
+/* The other half: with `crew_precision_strict` off, that SAME
+ * unreported read-back still reaches READY, and reports itself honestly
+ * as "unreported" rather than as a fabricated 0 or a silent 32. */
+static void S02_AC18_start_accepts_unreported_precision_when_not_strict(void)
+{
+    a02_harness_init(100000u, false);
+    d2_connect_no_crew();
+    d2_bind();
+    ff_shell_set_crew_precision_strict(&H.shell, false);
+
+    TEST_ASSERT_TRUE(ff_shell_crew_start(&H.shell));
+    d2_tick(10u);
+    H.ev.on_routing_ack(H.ev.user, D2S.packet_id, true);
+    d2_tick(10u);
+
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    H.ev.on_lora_region(H.ev.user, 1u);
+    a02_inject_channel_full(D2S.last.index, D2S.last.name, D2S.last.psk, D2S.last.psk_len, D2S.last.is_primary,
+                             /*has_precision=*/false, 0u);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    ff_shell_crew_op_status_t const st = ff_shell_crew_op_status(&H.shell);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_PHASE_READY, st.phase);
+    TEST_ASSERT_FALSE(st.precision_known);
+    ff_app_crew_page_t const *cw = a02_crew_page();
+    TEST_ASSERT_FALSE(cw->precision_exact);
+}
+
+/* A crew channel's precision is a live fact about the radio's channel
+ * table, independent of any ff_crewstart run this session — a puck that
+ * booted straight onto an already-provisioned crew channel (CLI, say)
+ * reports it just as honestly, with no START/LEAVE ever having run. */
+static void S02_AC18_precision_is_read_off_the_live_channel_without_any_crewstart_run(void)
+{
+    a02_harness_init(100000u, false);
+    a02_connect_on_crew(); /* a02_inject_crew_channel's default: no stated precision */
+    ff_shell_crew_op_status_t st = ff_shell_crew_op_status(&H.shell);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_OP_NONE, st.op); /* never ran START or LEAVE */
+    TEST_ASSERT_FALSE(st.precision_known);
+
+    /* A fresh handshake whose crew row DOES state 32 flips it live. */
+    uint8_t psk[FF_CREWCODE_PSK_LEN];
+    TEST_ASSERT_TRUE(ff_crewcode_psk(A02_CODE, psk));
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    a02_inject_channel_full(0u, A02_CODE, psk, sizeof(psk), true, /*has_precision=*/true, 32u);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    st = ff_shell_crew_op_status(&H.shell);
+    TEST_ASSERT_TRUE(st.precision_known);
+    TEST_ASSERT_EQUAL_UINT32(32u, st.precision);
+    TEST_ASSERT_EQUAL(FF_APP_CREW_OP_NONE, st.op); /* still true — this was never a crewstart run */
 }
 
 /* THE PROXY TEST, at the shell level. The radio accepts and ACKs the
@@ -12857,6 +12992,10 @@ int main(void)
     RUN_TEST(S02_AC14_show_code_opens_from_the_crew_page);
     RUN_TEST(S02_AC14_hide_and_unhide_intents_route_to_the_shell);
     RUN_TEST(S02_AC16_start_writes_the_crew_channel_and_verifies_it);
+    RUN_TEST(S02_AC18_precision_strict_is_on_by_default_and_settable);
+    RUN_TEST(S02_AC18_start_fails_when_the_readback_never_states_a_precision);
+    RUN_TEST(S02_AC18_start_accepts_unreported_precision_when_not_strict);
+    RUN_TEST(S02_AC18_precision_is_read_off_the_live_channel_without_any_crewstart_run);
     RUN_TEST(S02_AC16_the_crew_page_offers_exactly_one_of_start_and_leave);
     RUN_TEST(S02_AC16_the_request_intent_opens_the_confirm_face_and_writes_nothing);
     RUN_TEST(S02_AC16_the_console_and_the_ui_share_one_path);
