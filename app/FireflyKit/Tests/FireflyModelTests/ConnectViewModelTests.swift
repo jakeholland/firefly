@@ -450,4 +450,127 @@ final class ConnectViewModelTests: XCTestCase {
         XCTAssertEqual(vm.rowAction(isActivePeripheral: true), .disconnect)
         XCTAssertTrue(vm.isDisconnectable, "a stuck retry loop must always be abortable")
     }
+
+    // MARK: - A02 §6.1 connect step — why a connect failed, in words
+
+    /// The three Bluetooth states a person can actually do something
+    /// about, classified from the typed error `BLETransport
+    /// .throwIfTerminal(_:)` throws. Before the connect-first
+    /// onboarding, "Bluetooth is off" arrived as
+    /// `TransportError.notConnected` and reached the screen as the word
+    /// `notConnected`.
+    func testTroubleClassifiesTheFixableBluetoothStates() {
+        XCTAssertEqual(ConnectViewModel.trouble(for: BluetoothUnavailable.poweredOff), .bluetoothOff)
+        XCTAssertEqual(ConnectViewModel.trouble(for: BluetoothUnavailable.notAllowed), .bluetoothNotAllowed)
+        XCTAssertEqual(ConnectViewModel.trouble(for: BluetoothUnavailable.unsupported), .bluetoothUnsupported)
+    }
+
+    /// Anything else keeps its own description rather than being
+    /// flattened into a guess about a cause this app does not know.
+    func testTroubleNeverInventsACauseForAnUnknownFailure() {
+        let trouble = ConnectViewModel.trouble(for: TransportError.writeFailed("boom"))
+        guard case .other(let detail) = trouble else { return XCTFail("expected .other, got \(trouble)") }
+        XCTAssertTrue(detail.contains("boom"))
+    }
+
+    func testEveryTroubleMessageIsPlainAndNamesTheNextStepWhereThereIsOne() {
+        for trouble: ConnectViewModel.RadioTrouble in [.bluetoothOff, .bluetoothNotAllowed, .bluetoothUnsupported] {
+            let message = trouble.plainMessage
+            XCTAssertFalse(message.contains("CBManagerState"), "\(trouble): raw CoreBluetooth vocabulary")
+            for jargon in ["node", "Meshtastic", "BLE", "unauthorized", "poweredOff"] {
+                XCTAssertFalse(message.contains(jargon), "\(trouble): \"\(jargon)\"")
+            }
+            XCTAssertTrue(message.hasSuffix("."), "\(trouble): not a sentence")
+        }
+        // Retrying cannot conjure Bluetooth hardware — the screen hides
+        // its TRY AGAIN there rather than offering dead chrome.
+        XCTAssertFalse(ConnectViewModel.RadioTrouble.bluetoothUnsupported.isRetryable)
+        XCTAssertTrue(ConnectViewModel.RadioTrouble.bluetoothOff.isRetryable)
+    }
+
+    /// The connect step's one status line, across the whole link
+    /// ladder — pucks and people, never nodes and radios (A02 §6).
+    func testPuckStatusTextNamesThePuckWhenItsNameIsKnown() {
+        let vm = ConnectViewModel(client: StubMeshtasticClient())
+        vm.apply(.disconnected)
+        XCTAssertEqual(vm.puckStatusText, "Not connected")
+
+        vm.noteSelectedPeripheral(name: "Meshtastic_e7d4", rssiDbm: -56)
+        vm.apply(.connecting)
+        XCTAssertEqual(vm.puckStatusText, "Connecting to Meshtastic_e7d4…")
+        vm.apply(.handshaking)
+        XCTAssertEqual(vm.puckStatusText, "Setting up Meshtastic_e7d4…")
+        vm.apply(.ready)
+        XCTAssertEqual(vm.puckStatusText, "Connected to Meshtastic_e7d4")
+
+        for text in [vm.puckStatusText] {
+            XCTAssertFalse(text.contains("dBm"))
+            XCTAssertFalse(text.contains("!"))
+        }
+    }
+
+    /// A `.ready` clears whatever went wrong last time — otherwise
+    /// "Bluetooth is off" would sit under a CONNECTED header.
+    ///
+    /// Review of PR #319: this drives a REAL failed `connect()` first.
+    /// Asserting `lastTrouble` is nil before and after `apply(.ready)`
+    /// without ever setting it would pass against an implementation
+    /// that never cleared anything.
+    func testReachingReadyClearsTheLastTrouble() async {
+        let vm = ConnectViewModel(client: StubMeshtasticClient(
+            transport: FailingConnectTransport(error: BluetoothUnavailable.poweredOff)))
+        await vm.connect()
+        XCTAssertEqual(vm.lastTrouble, .bluetoothOff)
+
+        vm.apply(.ready)
+        XCTAssertNil(vm.lastTrouble)
+    }
+
+    /// The bare enum case must not reach a screen from EITHER side of
+    /// the split this PR introduced. `lastError` keeps the raw
+    /// description (logs, `.failed(reason)` provenance); `lastErrorText`
+    /// is what `ConnectScreen` renders, and it has to be the sentence.
+    func testConnectScreenTextIsASentenceNotAnEnumCase() async {
+        for (thrown, expected) in [
+            (BluetoothUnavailable.poweredOff, ConnectViewModel.RadioTrouble.bluetoothOff),
+            (BluetoothUnavailable.notAllowed, .bluetoothNotAllowed),
+            (BluetoothUnavailable.unsupported, .bluetoothUnsupported),
+        ] {
+            let vm = ConnectViewModel(client: StubMeshtasticClient(
+                transport: FailingConnectTransport(error: thrown)))
+            await vm.connect()
+
+            XCTAssertEqual(vm.lastErrorText, expected.plainMessage)
+            for caseName in ["poweredOff", "notAllowed", "unsupported"] {
+                XCTAssertFalse(vm.lastErrorText?.contains(caseName) ?? false,
+                               "\(thrown): \"\(caseName)\" reached the screen")
+            }
+        }
+    }
+
+    /// With no classified trouble, `lastErrorText` is `lastError`
+    /// unchanged — this is a rendering preference, not a filter.
+    func testConnectScreenTextFallsBackToLastErrorUnchanged() {
+        let vm = ConnectViewModel(client: StubMeshtasticClient())
+        XCTAssertNil(vm.lastErrorText)
+        vm.apply(.failed("bluetooth is off"))
+        XCTAssertEqual(vm.lastErrorText, "bluetooth is off")
+    }
+}
+
+/// A transport whose `connect()` only ever throws — the one thing
+/// `LoopbackTransport` cannot do, and the only way to reach
+/// `ConnectViewModel.connect()`'s catch (and so `lastTrouble`) without
+/// CoreBluetooth.
+private final class FailingConnectTransport: MeshTransport, @unchecked Sendable {
+    let kind: TransportKind = .message
+    private let hub = EventHub<TransportEvent>()
+    private let error: Error
+
+    init(error: Error) { self.error = error }
+
+    func events() -> AsyncStream<TransportEvent> { hub.subscribe() }
+    func connect() async throws { throw error }
+    func disconnect() async { hub.finish() }
+    func send(_ data: Data) async throws { throw error }
 }

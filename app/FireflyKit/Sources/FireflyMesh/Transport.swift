@@ -74,6 +74,34 @@ public enum TransportError: Error, Equatable, Sendable {
     case unsupportedOnThisPlatform(String)
 }
 
+/// Why the phone's OWN Bluetooth radio cannot be used right now — a
+/// separate axis from `TransportError`, which is about the link to a
+/// puck.
+///
+/// Added for the connect-first onboarding (owner report, build 328:
+/// "better handling on that screen for connecting to a puck"). Before
+/// this, `BLETransport.throwIfTerminal(_:)` reported "Bluetooth is off"
+/// as `TransportError.notConnected` and "you said no to the Bluetooth
+/// prompt" as `.unsupportedOnThisPlatform(<a sentence>)` — two states a
+/// user can actually FIX, flattened into an error whose only rendering
+/// was `String(describing:)` ("notConnected") on the Connect screen.
+/// Nothing but that one function throws these, and nothing but
+/// `ConnectViewModel.trouble(for:)` matches on them.
+///
+/// `.unknown`/`.resetting` are deliberately absent: those are transient
+/// and `waitForPoweredOn()` keeps waiting through them rather than
+/// reporting a state the user would be asked to act on.
+public enum BluetoothUnavailable: Error, Equatable, Sendable {
+    /// `CBManagerState.poweredOff` — Bluetooth is switched off.
+    case poweredOff
+    /// `CBManagerState.unauthorized` — the permission prompt was
+    /// declined, or has not been answered.
+    case notAllowed
+    /// `CBManagerState.unsupported` — no BLE hardware at all (an iOS
+    /// Simulator, a Mac without Bluetooth). Not fixable by the user.
+    case unsupported
+}
+
 /// A transport that is wired to nothing — the milestone-1 stand-in, and
 /// permanently useful as the thing unit tests inject.
 ///

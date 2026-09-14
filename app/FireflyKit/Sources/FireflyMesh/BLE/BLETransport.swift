@@ -1117,16 +1117,21 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         cont.resume(throwing: CancellationError())
     }
 
+    /// Throws `BluetoothUnavailable` (that type's own doc comment) rather
+    /// than `TransportError`: all three of these are facts about the
+    /// PHONE's Bluetooth radio, two of which the user can fix in
+    /// Settings, and the connect-first onboarding has to tell them which
+    /// one it is. The sentences that used to be baked into the thrown
+    /// error here now live in `ConnectViewModel.RadioTrouble
+    /// .plainMessage`, in the layer that renders them.
     private func throwIfTerminal(_ state: CBManagerState) throws {
         switch state {
         case .unauthorized:
-            throw TransportError.unsupportedOnThisPlatform(
-                "Bluetooth permission not granted (CBManagerState.unauthorized) — grant it in " +
-                "System Settings > Privacy & Security > Bluetooth (macOS) or Settings > Firefly (iOS), then retry.")
+            throw BluetoothUnavailable.notAllowed
         case .unsupported:
-            throw TransportError.unsupportedOnThisPlatform("Bluetooth is not supported on this device.")
+            throw BluetoothUnavailable.unsupported
         case .poweredOff:
-            throw TransportError.notConnected
+            throw BluetoothUnavailable.poweredOff
         default:
             break
         }

@@ -488,4 +488,251 @@ final class CrewControllerTests: XCTestCase {
         controller.unhide(nodeID: 111)
         XCTAssertTrue(controller.hiddenIDs().isEmpty)
     }
+
+    // MARK: - Radio gate — the owner's build-328 report
+    //
+    // "Tried to join but nothing happened, still on the Join a crew
+    // screen." (Jake, 2026-09-14). These four pin the fix from both
+    // sides: nothing is attempted without a radio, and every way the
+    // attempt CAN fail says so in words.
+
+    /// The regression itself. `beginJoin` with no connected client must
+    /// land in `.needsRadio`, and — the load-bearing half — must not
+    /// have touched the radio at all on the way there. Asserting only
+    /// the state would pass for an implementation that tried the write
+    /// first and set the state afterwards.
+    func testJoinWithNoRadioIsRefusedBeforeAnythingIsAttempted() async {
+        let client = StubMeshtasticClient()   // connectedNodeNum stays nil
+        let controller = CrewController(client: client)
+        let code = try! CrewCode.parse("FIRE-4K9M7X")
+
+        let began = await controller.beginJoin(payload: .bareCode(code))
+
+        XCTAssertFalse(began)
+        XCTAssertEqual(controller.phase, .needsRadio)
+        XCTAssertFalse(controller.hasConnectedRadio)
+        XCTAssertNil(controller.pending, "nothing may be staged for a sheet that cannot be applied")
+        XCTAssertNil(controller.profile, "no crew was joined")
+        XCTAssertTrue(client.sentChannelWriteLog.isEmpty, "no write may be attempted without a radio")
+        XCTAssertNil(controller.importer.applyPlan, "not even a plan may be prepared")
+    }
+
+    /// The exact shipped symptom: what the Join screen PUT ON SCREEN.
+    /// Build 328 showed the bare Swift enum case `notConnected` in a
+    /// grey footnote — technically feedback, and unusable as any.
+    func testJoinWithNoRadioNeverShowsARawEnumCase() async {
+        let client = StubMeshtasticClient()
+        let controller = CrewController(client: client)
+        _ = await controller.beginJoin(payload: .bareCode(try! CrewCode.parse("FIRE-4K9M7X")))
+
+        let shown = controller.failureMessage
+        XCTAssertEqual(shown, CrewController.needRadioMessage)
+        XCTAssertNotEqual(shown, String(describing: AdminWriteError.notConnected))
+        for jargon in ["notConnected", "AdminWriteError", "node", "channel"] {
+            XCTAssertFalse(shown!.localizedCaseInsensitiveContains(jargon), "\"\(jargon)\" on screen")
+        }
+
+        // …and the message the plan path itself would produce, which is
+        // where the raw case actually leaked from
+        // (`ChannelImportViewModel.planMessage(for:)`'s
+        // `String(describing:)` default).
+        let planned = ChannelImportViewModel.planMessage(for: AdminWriteError.notConnected)
+        XCTAssertNotEqual(planned, String(describing: AdminWriteError.notConnected))
+        XCTAssertFalse(planned.contains("notConnected"))
+    }
+
+    /// The other side of the gate: with a client, the same JOIN stages a
+    /// plan and the CONFIRM writes index 0 with the crew's own code.
+    func testJoinWithAConnectedRadioStagesAPlanAndWrites() async {
+        let (controller, client) = makeController()
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        let code = try! CrewCode.parse("FIRE-4K9M7X")
+
+        XCTAssertTrue(controller.hasConnectedRadio)
+        let staged = await controller.beginJoin(payload: .bareCode(code))
+        XCTAssertTrue(staged)
+        XCTAssertEqual(controller.phase, .checkingPuck)
+        XCTAssertNotNil(controller.pending)
+
+        let confirmed = await controller.confirmApply()
+        XCTAssertTrue(confirmed)
+        XCTAssertEqual(controller.phase, .joined)
+        XCTAssertEqual(controller.progressLabel, "Joined")
+        XCTAssertNil(controller.failureMessage)
+        XCTAssertEqual(controller.profile?.code, code.canonical)
+        XCTAssertEqual(client.sentChannelWriteLog.count, 1)
+        XCTAssertEqual(client.sentChannelWriteLog[0].channels.first(where: { $0.index == 0 })?
+            .settings.name, code.canonical)
+    }
+
+    /// A puck that drops between the plan and the commit — the window
+    /// the pre-fix code had no words for at all. The write IS attempted
+    /// here (the radio was connected when CONFIRM was tapped); it fails,
+    /// and the failure has to be a sentence, not a case name, and the
+    /// app must not claim the crew was joined.
+    func testDisconnectMidWriteFailsHonestlyAndJoinsNothing() async {
+        let (controller, client) = makeController()
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        let staged = await controller.beginJoin(payload: .bareCode(try! CrewCode.parse("FIRE-4K9M7X")))
+        XCTAssertTrue(staged)
+
+        client.failNextChannelWrite(with: .notConnected)
+        let applied = await controller.confirmApply()
+
+        XCTAssertFalse(applied)
+        XCTAssertNil(controller.profile, "a failed write must never adopt a crew")
+        guard case .failed(let message) = controller.phase else {
+            return XCTFail("expected .failed, got \(controller.phase)")
+        }
+        XCTAssertEqual(message, "Your puck isn't connected. Connect it, then try again.")
+        XCTAssertEqual(controller.failureMessage, message)
+        XCTAssertNil(controller.progressLabel, "a failure is not progress")
+        // The staged plan survives, so CONFIRM is a genuine retry rather
+        // than something the user has to re-scan for.
+        XCTAssertNotNil(controller.pending)
+    }
+
+    /// Every other honest `AdminWriteError` reaches the screen as its
+    /// own sentence — a NAK/partial apply, a timeout, a read-back
+    /// mismatch. None of them is ever a Swift enum case.
+    ///
+    /// Review of PR #319: each expected sentence is spelled out here
+    /// rather than checked for length. "Longer than 20 characters and
+    /// not literally `String(describing:)`" is a proxy — a message of
+    /// `timeout (AdminWriteError.timeout)` satisfies it and violates
+    /// the property.
+    func testEveryApplyFailureIsASentenceNotACaseName() async {
+        let cases: [(AdminWriteError, String)] = [
+            (.timeout,
+             "Your puck didn't answer in time — it may still be restarting. Try again in a moment."),
+            (.readBackMismatch("channel 0 (FIRE-4K9M7X)"),
+             "Your puck didn't confirm the change (channel 0 (FIRE-4K9M7X)). Nothing is certain " +
+             "until it does — try again."),
+            (.partialApplyFailed(step: "channel 0", underlying: "writeFailed"),
+             "Couldn't send channel 0: writeFailed. Your puck may be only partly set up — " +
+             "reconnect and try again."),
+            (.encodingFailed, "Couldn't prepare that change to send."),
+        ]
+        for (scripted, expected) in cases {
+            let (controller, client) = makeController()
+            client.nodeConfig = NodeConfigSnapshot(region: .us)
+            _ = await controller.beginJoin(payload: .bareCode(try! CrewCode.parse("FIRE-4K9M7X")))
+            client.failNextChannelWrite(with: scripted)
+            let confirmed = await controller.confirmApply()
+            XCTAssertFalse(confirmed)
+
+            guard case .failed(let message) = controller.phase else {
+                return XCTFail("expected .failed for \(scripted), got \(controller.phase)")
+            }
+            XCTAssertEqual(message, expected, "\(scripted)")
+            XCTAssertEqual(controller.failureMessage, expected)
+            XCTAssertNil(controller.progressLabel, "a failure is not progress")
+            XCTAssertNil(controller.profile)
+            // The plan survives, so the screen's TRY AGAIN is a genuine
+            // retry of the same attempt.
+            XCTAssertNotNil(controller.pending)
+        }
+    }
+
+    /// Leave is a write too (§3.4) — refusing it without a radio is what
+    /// keeps a "leave" from becoming a local forget while the puck keeps
+    /// transmitting on the crew channel.
+    func testLeaveWithNoRadioIsRefusedAndWritesNothing() async {
+        let (controller, client) = makeController()
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        _ = await controller.beginStart(humanName: "Camp Firefly")
+        _ = await controller.confirmApply()
+        let writesBefore = client.sentChannelWriteLog.count
+
+        client.connectedNodeNum = nil
+        let left = await controller.leaveCrew()
+
+        XCTAssertFalse(left)
+        XCTAssertTrue(controller.hasCrew, "the app must not pretend it left")
+        XCTAssertEqual(client.sentChannelWriteLog.count, writesBefore)
+        XCTAssertNotNil(controller.leaveErrorMessage)
+    }
+
+    // MARK: - Progress states, and the read-back this app checks itself
+
+    func testProgressLabelsAreTheThreeStepsThatActuallyRun() async {
+        let (controller, client) = makeController()
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        XCTAssertNil(controller.progressLabel, ".idle says nothing")
+
+        _ = await controller.beginJoin(payload: .bareCode(try! CrewCode.parse("FIRE-4K9M7X")))
+        XCTAssertEqual(controller.progressLabel, "Checking your puck…")
+
+        _ = await controller.confirmApply()
+        XCTAssertEqual(controller.progressLabel, "Joined")
+    }
+
+    /// `confirmApply()`'s own verification of the radio's read-back,
+    /// pinned as the pure function it is: the written primary's NAME is
+    /// the crew code (§1.3), so a report that does not carry it is not a
+    /// crew this app may claim the user joined.
+    func testReadBackVerificationRequiresThePrimaryToCarryTheCode() {
+        let code = try! CrewCode.parse("FIRE-4K9M7X")
+        let other = try! CrewCode.parse("FIRE-9Z8Y7X")
+
+        XCTAssertFalse(CrewController.report(nil, carries: code))
+        XCTAssertFalse(CrewController.report(ChannelWriteReport(channels: [], loraConfig: nil), carries: code))
+
+        func channel(named name: String, role: Channel.Role) -> Channel {
+            var settings = ChannelSettings()
+            settings.name = name
+            var channel = Channel()
+            channel.index = 0
+            channel.role = role
+            channel.settings = settings
+            return channel
+        }
+        XCTAssertTrue(CrewController.report(
+            ChannelWriteReport(channels: [channel(named: code.canonical, role: .primary)], loraConfig: nil),
+            carries: code))
+        XCTAssertFalse(CrewController.report(
+            ChannelWriteReport(channels: [channel(named: other.canonical, role: .primary)], loraConfig: nil),
+            carries: code),
+            "somebody else's crew read back is not this crew")
+        XCTAssertFalse(CrewController.report(
+            ChannelWriteReport(channels: [channel(named: code.canonical, role: .secondary)], loraConfig: nil),
+            carries: code),
+            "the crew has to be the PRIMARY, not some spare slot")
+    }
+
+    /// Scanning your own code stays a friendly no-op even with no puck
+    /// connected — it is true, and actionable, regardless, and sending
+    /// someone off to connect a radio for a write that would never
+    /// happen would be the worse answer.
+    func testRejoiningYourOwnCrewIsStillANoOpWithNoRadio() async {
+        let profileStore = InMemoryCrewProfileStore()
+        profileStore.save(CrewProfile(code: "FIRE-4K9M7X", humanName: "Camp Firefly", createdAtMs: 1))
+        let client = StubMeshtasticClient()
+        let controller = CrewController(client: client, profileStore: profileStore)
+
+        let began = await controller.beginJoin(payload: .bareCode(try! CrewCode.parse("FIRE-4K9M7X")))
+
+        XCTAssertFalse(began)
+        XCTAssertEqual(controller.rejoinOwnCrewMessage, "You're already in Camp Firefly.")
+        XCTAssertNotEqual(controller.phase, .needsRadio)
+    }
+
+    func testClearFailureResetsARefusalButNeverAJoin() async {
+        let (controller, client) = makeController()
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        client.connectedNodeNum = nil
+        _ = await controller.beginJoin(payload: .bareCode(try! CrewCode.parse("FIRE-4K9M7X")))
+        XCTAssertEqual(controller.phase, .needsRadio)
+
+        controller.clearFailure()
+        XCTAssertEqual(controller.phase, .idle)
+        XCTAssertNil(controller.failureMessage)
+
+        client.connectedNodeNum = 48_621_524
+        _ = await controller.beginJoin(payload: .bareCode(try! CrewCode.parse("FIRE-4K9M7X")))
+        _ = await controller.confirmApply()
+        XCTAssertEqual(controller.phase, .joined)
+        controller.clearFailure()
+        XCTAssertEqual(controller.phase, .joined, "a finished join is not a failure to clear")
+    }
 }

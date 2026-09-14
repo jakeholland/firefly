@@ -6,12 +6,15 @@
 //  shows the code screen: QR, big mono code, Share link, Show on puck,
 //  and the Joined list fed by an injected `CrewMembershipProviding`.
 //
+import FireflyMesh
 import FireflyModel
 import SwiftUI
 
 struct CrewStartView: View {
     let controller: CrewController
     let membership: any CrewMembershipProviding
+    /// Opens A02 §6.1's connect step (owner report, build 328).
+    let onConnectPuck: () -> Void
     let onDone: () -> Void
 
     @State private var humanName = "My crew"
@@ -36,27 +39,28 @@ struct CrewStartView: View {
             } else if didConfirmStart, let profile = controller.profile {
                 codeScreen(profile: profile)
             } else {
-                VStack(spacing: 16) {
-                    ProgressView()
-                    Text(controller.isBusy ? "Setting up your crew…" : "Finding your puck…")
-                        .foregroundStyle(Color.ffMuted)
-                    if let error = controller.errorMessage {
-                        Text(error).font(.footnote).foregroundStyle(Color.ffAlert)
-                        Button("Try again") { Task { await begin() } }
-                            .buttonStyle(.bordered)
-                            .tint(Color.ffMuted)
-                            .foregroundStyle(Color.ffAmber)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.ffBackground)
+                preflight
             }
         }
         .accessibilityIdentifier("Screen.CrewStart")
         .task {
             guard !hasBegun else { return }
             hasBegun = true
-            if !controller.regionIsUnset { await begin() }
+            // No puck, no attempt — and no spinner pretending one is in
+            // flight. The banner below states why and offers the connect
+            // step; `hasBegun` stays set so this cannot re-fire on every
+            // redraw, and `.onChange(of:)` picks the flow back up the
+            // instant a puck actually connects.
+            if !controller.regionIsUnset, controller.hasConnectedRadio { await begin() }
+        }
+        // Coming back from the connect step (or a reconnect that happened
+        // on its own) starts the mint without a second tap — the person
+        // already asked for a crew.
+        .onChange(of: controller.hasConnectedRadio) { _, nowConnected in
+            guard nowConnected, !didConfirmStart, controller.pending == nil,
+                  !controller.isBusy, !controller.regionIsUnset else { return }
+            controller.clearFailure()
+            Task { await begin() }
         }
         .sheet(isPresented: $showConfirmation) {
             AdminWriteConfirmationSheet(
@@ -101,6 +105,30 @@ struct CrewStartView: View {
             .background(Color.ffBackground)
             .presentationDetents([.fraction(0.35)])
         }
+    }
+
+    /// What the screen shows before its own mint has been confirmed:
+    /// the radio banner when there is no puck, otherwise the live
+    /// progress line, plus any honest failure with TRY AGAIN.
+    private var preflight: some View {
+        VStack(spacing: 16) {
+            if !controller.hasConnectedRadio {
+                CrewNeedsRadioBanner(onConnect: onConnectPuck)
+            } else if controller.failureMessage == nil {
+                ProgressView()
+                Text(controller.progressLabel ?? "Setting up your crew…")
+                    .foregroundStyle(Color.ffMuted)
+            }
+            CrewApplyStatusView(
+                controller: controller,
+                // Same rule as Join: retrying cannot fix "no puck", so
+                // the banner's CONNECT is the only action offered there.
+                onRetry: controller.hasConnectedRadio ? { Task { controller.clearFailure(); await begin() } } : nil)
+            Spacer(minLength: 0)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color.ffBackground)
     }
 
     private func begin() async {
@@ -248,10 +276,42 @@ struct CrewStartView: View {
 struct CrewStartNewCrewView: View {
     let controller: CrewController
     let membership: any CrewMembershipProviding
+    /// The same two the first-launch flow uses — this entry point needs
+    /// the connect step too: Advanced is reachable with the puck
+    /// disconnected, and minting a new crew is the same write.
+    let connect: ConnectViewModel
+    let scanner: (any NodeScanning)?
 
     @Environment(\.dismiss) private var dismiss
+    @State private var showConnect = false
+    /// Constructed up front, exactly as `ConnectScreen` and
+    /// `CrewOnboardingContainer` do: `MeshPeripheralDiscovery.init` only
+    /// stores the scanner — nothing touches CoreBluetooth until
+    /// `startScanning()`, which only the connect step's own `.task`
+    /// calls.
+    @State private var discovery: any PeripheralDiscovering
+
+    init(controller: CrewController, membership: any CrewMembershipProviding,
+         connect: ConnectViewModel, scanner: (any NodeScanning)?) {
+        self.controller = controller
+        self.membership = membership
+        self.connect = connect
+        self.scanner = scanner
+        _discovery = State(initialValue: scanner.map { MeshPeripheralDiscovery(scanner: $0) }
+                            ?? StubPeripheralDiscovery())
+    }
 
     var body: some View {
-        CrewStartView(controller: controller, membership: membership, onDone: { dismiss() })
+        CrewStartView(controller: controller, membership: membership,
+                      onConnectPuck: { showConnect = true },
+                      onDone: { dismiss() })
+            .sheet(isPresented: $showConnect) {
+                CrewConnectPuckView(
+                    connect: connect,
+                    discovery: discovery,
+                    isRadioUsable: { controller.hasConnectedRadio },
+                    onConnected: { showConnect = false },
+                    onSkip: { showConnect = false })
+            }
     }
 }

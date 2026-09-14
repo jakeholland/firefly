@@ -244,6 +244,7 @@ struct RootView: View {
             }
             .task { applyInitialSelection() }
             .task { await runInitialDemoScreen() }
+            .task { await runDebugCrewRequestIfAny() }
             // The Find tab's start/stop rule is driven from HERE, off
             // this view's own `selection`/`findSegment` state, rather
             // than from `FindScreen`'s `onAppear`/`onDisappear` — see
@@ -268,6 +269,11 @@ struct RootView: View {
             CrewOnboardingContainer(
                 controller: crew,
                 membership: membership,
+                // A02 §6.1's connect step drives the SAME
+                // `ConnectViewModel`/scanner this view already holds for
+                // the Connect screen — one link, one scan, one truth.
+                connect: connect,
+                scanner: scanner,
                 onFinished: {
                     showCrewOnboarding = false
                     incomingCrewLink = nil
@@ -535,6 +541,62 @@ struct RootView: View {
         }
     }
 
+    /// `-FireflyDebugJoinCrew <code>` / `-FireflyDebugStartCrew [name]`
+    /// (`FireflyDebugCrewLaunch`, `#if DEBUG` only) — the bench seam the
+    /// Mac orchestrator drives A02's Join/Start with, without a human
+    /// tapping through the sheet.
+    ///
+    /// It goes through the ORDINARY `beginJoin`/`beginStart` ->
+    /// `confirmApply()` path, radio gate and all: the point is to
+    /// exercise what a tap does, not to route around it. The wait below
+    /// exists for exactly the reason the connect-first step does — a
+    /// crew write needs a connected puck, and on a cold launch the
+    /// auto-connect has not finished yet. Bounded, so a bench run with
+    /// no puck in reach ends with the app sitting on the honest "connect
+    /// your puck" state rather than hanging forever.
+    private func runDebugCrewRequestIfAny() async {
+        let joinCode = FireflyDebugCrewLaunch.requestedJoinCode()
+        let startName = FireflyDebugCrewLaunch.requestedStartName()
+        guard joinCode != nil || startName != nil else { return }
+        guard await waitForConnectedRadio() else { return }
+
+        let applied: Bool
+        if let joinCode {
+            let payload = CrewScanPayload.classify(joinCode)
+            applied = await crew.beginJoin(payload: payload) ? await crew.confirmApply() : false
+        } else if let startName {
+            let name = startName.isEmpty ? "My crew" : startName
+            applied = await crew.beginStart(humanName: name) ? await crew.confirmApply() : false
+        } else {
+            applied = false
+        }
+        // On failure this deliberately moves nothing: the screen keeps
+        // whatever honest failure `CrewController.failureMessage` is
+        // showing, which is the whole point of running this on a bench.
+        // A `-FireflyDemoScreen` name is an explicit instruction about
+        // WHAT TO SHOW and outranks this (the same precedence
+        // `runInitialDemoScreen()` already applies to the first-launch
+        // gate) — that combination is how the "joined" milestone
+        // screenshot is captured. With no such instruction, a bench run
+        // lands where a human's own "Done · go to Find" would put it
+        // (§3.3 step 5).
+        if applied, initialDemoScreen == nil {
+            showCrewOnboarding = false
+            selection = .find
+        }
+    }
+
+    /// Polls for a usable radio rather than sleeping a fixed budget —
+    /// the same "no fixed sleeps" rule `waitForLineupFestpack` follows,
+    /// and for the same reason.
+    private func waitForConnectedRadio(timeout: TimeInterval = 45) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !crew.hasConnectedRadio, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return crew.hasConnectedRadio
+    }
+
     /// Polls (rather than sleeping a fixed budget) until the Lineup
     /// view model has a pack to seed picks/a detail sheet from — the
     /// same "no fixed sleeps" rule the test suite's own `eventually`
@@ -574,6 +636,25 @@ struct RootView: View {
             showCrewOnboarding = true
             return
         }
+        // Without a `DemoRunner` — a PLAIN simulator launch, which runs
+        // `AppDependencies.stub()`: a client that is never connected and
+        // no scanner at all — the three crew-onboarding names still
+        // work, and are the only way to reach those screens headlessly.
+        // That launch is not a degraded demo; it IS the honest "just
+        // installed, puck still in my bag" state A02 §6.1's connect step
+        // exists for, and the one the milestone screenshots have to
+        // show. Like "welcome" above, none of these needs a seeded
+        // world — only the cover raised on the right step.
+        if demoRunner == nil {
+            switch initialDemoScreen {
+            case "crew-connect": crewOnboardingForceStep = .connect(next: .join)
+            case "crew-join": crewOnboardingForceStep = .join
+            case "crew-start": crewOnboardingForceStep = .start
+            default: return
+            }
+            showCrewOnboarding = true
+            return
+        }
         guard let demoRunner, let initialDemoScreen else { return }
         // `FireflyApp`'s `await graph.start(); await demoRunner?.start()`
         // runs in a SEPARATE `.task` from this one — no ordering
@@ -609,6 +690,14 @@ struct RootView: View {
             showCrewOnboarding = true
         case "crew-join":
             crewOnboardingForceStep = .join
+            showCrewOnboarding = true
+        case "crew-connect":
+            // A02 §6.1's connect step, for the milestone screenshot of
+            // what a first launch with no puck in reach actually looks
+            // like. Under `-FireflyDemo` the simulator has no scanner at
+            // all (`StubPeripheralDiscovery` discovers nothing), which
+            // IS the honest no-radio state this shot is meant to show.
+            crewOnboardingForceStep = .connect(next: .join)
             showCrewOnboarding = true
         case "crew":
             // A02 slice E, task scope item 4 — populate the Crew page

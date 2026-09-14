@@ -854,6 +854,28 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     private var sentOwnerWrites: [(String, String)] = []
     private var sentRegionWrites: [Config.LoRaConfig.RegionCode] = []
 
+    /// Test-injected only: the error the NEXT `applyChannelSet` throws
+    /// INSTEAD of recording the write, consumed by that one call.
+    ///
+    /// The seam exists for the failures a test cannot otherwise reach
+    /// through this type: a puck that drops between the plan and the
+    /// commit, a NAK, a timeout, a read-back that does not match. Those
+    /// are exactly the paths a crew Start/Join has to report honestly
+    /// (A02 §3.3 step 6), and before this there was no way to make a
+    /// stub produce one while still reporting itself connected — which
+    /// is what "disconnected mid-write" actually looks like. Same
+    /// scripted-one-failure shape as `LoopbackTransport
+    /// .failSend(atAttempt:with:)`.
+    public func failNextChannelWrite(with error: AdminWriteError) {
+        lock.lock(); nextChannelWriteError = error; lock.unlock()
+    }
+    private var nextChannelWriteError: AdminWriteError?
+    private func takeNextChannelWriteError() -> AdminWriteError? {
+        lock.lock(); defer { lock.unlock() }
+        defer { nextChannelWriteError = nil }
+        return nextChannelWriteError
+    }
+
     /// A stub has no firmware to diverge from what it was asked to
     /// write, so its own record IS the read-back — this stays honest
     /// with the rest of the type's "never invents" rule by reporting
@@ -864,6 +886,7 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     @discardableResult
     public func applyChannelSet(_ request: ChannelWriteRequest) async throws -> ChannelWriteReport {
         guard connectedNodeNum != nil else { throw AdminWriteError.notConnected }
+        if let scripted = takeNextChannelWriteError() { throw scripted }
         recordChannelWrite(request)
         return ChannelWriteReport(channels: request.channels, loraConfig: request.loraConfig)
     }

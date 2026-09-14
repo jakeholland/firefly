@@ -14,6 +14,9 @@ struct CrewJoinView: View {
     /// deep-linked code/link that should stage a confirmation
     /// immediately rather than waiting for a scan or a typed code.
     var initialPayload: CrewScanPayload?
+    /// Opens A02 §6.1's connect step (owner report, build 328). The
+    /// container owns the push; this screen only says when.
+    let onConnectPuck: () -> Void
     /// A `meshtastic.org/e/#…`/`meshtastic://e/#…` scan (§3.1 shape 3) is
     /// handed to the EXISTING channel-import flow, not this screen's own
     /// apply path — the caller (e.g. `RootView`) owns that sheet.
@@ -25,8 +28,50 @@ struct CrewJoinView: View {
     @State private var scanMessage: String?
     @State private var isJoined = false
     @State private var handledInitialPayload = false
+    /// The payload the last attempt used — scanned, deep-linked or
+    /// typed — so TRY AGAIN retries THAT, not a re-derivation of it
+    /// from the text field (which is empty on the scan path).
+    @State private var lastPayload: CrewScanPayload?
 
     private var canJoin: Bool { (try? CrewCode.parse(typedCode)) != nil }
+
+    /// `nil` means JOIN is live. Anything else is both the disable AND
+    /// the sentence shown next to it — one source, so the two can never
+    /// disagree.
+    private var joinDisabledReason: String? {
+        if !controller.hasConnectedRadio { return CrewController.needRadioMessage }
+        // While a join is in flight the reason is already on screen, in
+        // `CrewApplyStatusView`'s progress line — printing it twice
+        // under the button would just be the same sentence, twice.
+        if controller.isBusy { return nil }
+        if !canJoin { return "Type the six characters after FIRE-." }
+        return nil
+    }
+
+    /// Disabled and "has a reason to show" are deliberately separate:
+    /// the button is also dead while a write is in flight, which
+    /// `joinDisabledReason` above returns `nil` for on purpose.
+    private var isJoinDisabled: Bool {
+        !controller.hasConnectedRadio || controller.isBusy || !canJoin
+    }
+
+    /// TRY AGAIN after a failed attempt: re-run whichever payload got us
+    /// here. A failure never leaves the typed code behind, so this is
+    /// always the same attempt, not a new one the user has to retype.
+    private var retryAction: (() -> Void)? {
+        // Nothing to retry until an attempt has actually been made, and
+        // nothing retrying can fix while there is no puck — the banner's
+        // own CONNECT is the action in that case, and a TRY AGAIN next
+        // to it would just be a second button that fails.
+        guard lastPayload != nil, controller.hasConnectedRadio else { return nil }
+        return retryLastAttempt
+    }
+
+    private func retryLastAttempt() {
+        guard let payload = lastPayload else { return }
+        controller.clearFailure()
+        Task { await handle(payload: payload) }
+    }
 
     var body: some View {
         Group {
@@ -65,6 +110,15 @@ struct CrewJoinView: View {
             handledInitialPayload = true
             await handle(payload: initialPayload)
         }
+        // The controller is the source of truth for "did this actually
+        // join", not this view's own tap bookkeeping: a join can also be
+        // completed by the bench seam (`-FireflyDebugJoinCrew`) while
+        // this screen is up, and a screen showing a live JOIN form under
+        // a crew that is already joined would be lying about state it
+        // can see.
+        .onChange(of: controller.phase) { _, newPhase in
+            if newPhase == .joined { isJoined = true }
+        }
     }
 
     private var joinForm: some View {
@@ -79,6 +133,10 @@ struct CrewJoinView: View {
                 Text("Scan the code your friend is showing")
                     .font(.footnote)
                     .foregroundStyle(Color.ffMuted)
+            }
+
+            if !controller.hasConnectedRadio {
+                CrewNeedsRadioBanner(onConnect: onConnectPuck)
             }
 
             #if os(iOS)
@@ -114,9 +172,14 @@ struct CrewJoinView: View {
             if let rejoinMessage = controller.rejoinOwnCrewMessage {
                 Text(rejoinMessage).font(.footnote).foregroundStyle(Color.ffMuted)
             }
-            if let error = controller.errorMessage {
-                Text(error).font(.footnote).foregroundStyle(Color.ffAlert)
-            }
+
+            // Progress ("Writing to your puck… -> Checking… -> Joined")
+            // and every honest failure — a puck that disconnected
+            // mid-write, a NAK, a timeout, a read-back mismatch — with
+            // TRY AGAIN. `controller.errorMessage` is deliberately NOT
+            // printed a second time alongside this: it carries the same
+            // sentence `failureMessage` does.
+            CrewApplyStatusView(controller: controller, onRetry: retryAction)
 
             Button {
                 guard let code = try? CrewCode.parse(typedCode) else { return }
@@ -129,7 +192,21 @@ struct CrewJoinView: View {
             .buttonStyle(.borderedProminent)
             .tint(Color.ffAmber)
             .foregroundStyle(Color.ffBackground)
-            .disabled(!canJoin || controller.isBusy)
+            .disabled(isJoinDisabled)
+            .accessibilityIdentifier("CrewJoin.Join")
+
+            // The reason is on screen WITH the disabled button, always —
+            // never discovered by tapping it. Build 328 shipped a JOIN
+            // that stayed enabled with no radio and did nothing; a
+            // disabled button with no stated reason would be the same
+            // bug with a greyer button.
+            if let reason = joinDisabledReason {
+                Text(reason)
+                    .font(.footnote)
+                    .foregroundStyle(Color.ffMuted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("CrewJoin.DisabledReason")
+            }
 
             Spacer(minLength: 0)
         }
@@ -175,9 +252,31 @@ struct CrewJoinView: View {
         case .unrecognized:
             scanMessage = "That's not a Firefly crew code."
         case .crewLink, .bareCode:
+            lastPayload = payload
+            // Review of PR #319: put the code a SCAN produced into the
+            // field. Without this, a scan made with no puck connected
+            // is refused, the banner sends the user to the connect
+            // step, and coming back leaves JOIN disabled saying "Type
+            // the six characters after FIRE-." — the code they scanned
+            // silently gone, which is the same "my tap did nothing"
+            // this change exists to stop. With it, the code is on
+            // screen the whole time and JOIN goes live the moment a
+            // puck connects. A typed code sets `typedCode` already, so
+            // this only ever re-states what the user just supplied.
+            if let code = Self.code(of: payload) { typedCode = code.symbols }
             if await controller.beginJoin(payload: payload) {
                 showConfirmation = true
             }
+        }
+    }
+
+    /// The crew code inside a scan/deep-link payload, for the two cases
+    /// that carry one.
+    private static func code(of payload: CrewScanPayload) -> CrewCode? {
+        switch payload {
+        case .bareCode(let code): return code
+        case .crewLink(let link): return link.code
+        case .meshtasticChannelLink, .unrecognized: return nil
         }
     }
 
