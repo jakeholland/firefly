@@ -1,0 +1,9 @@
+{
+  "fixture": "crew_op_confirm_start",
+  "face": "settings",
+  "settings": {
+    "my_name": "DANA",
+    "subview": "crew_confirm",
+    "crew": { "op": "start", "can_start": true }
+  }
+}

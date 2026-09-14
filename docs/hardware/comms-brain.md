@@ -225,6 +225,9 @@ line replies `dbg: ? try help`):
 | `cal clear` | drop the STORED calibration back to identity/uncalibrated |
 | `name` | NAME in Settings: stored puck name, mesh-reported name (if any), confirmed/pending, and whether the name was silently adopted from the mesh at boot |
 | `name <text>` | commit `<text>` through the EXACT SAME path the Settings NAME row's DONE button uses — sanitize (letters/digits/space), persist, push the Meshtastic owner update — so the mesh push can be bench-tested against real nodes over USB |
+| `crew` | A02 slice D2: the crew code the radio reports, which channel index it resolved to, the radio's LoRa region (`?` = not reported yet, `unset` = the real UNSET reading), whether a pre-crew snapshot exists, which controls are offered, and the current/last START or LEAVE operation's phase, failure reason and attempt count |
+| `crew start` | A02 slice D2: mint a crew code from the puck's CSPRNG, write the derived channel to the comms brain (`AdminMessage.set_channel`), and verify it by re-reading the channel table — the EXACT SAME path Settings → CREW → START CREW's confirm button uses. Replies with the `crew` status line |
+| `crew leave` | A02 slice D2: restore the pre-crew channel snapshot through the same write-and-verify path. Fails honestly with `fail=no_snapshot` when nothing was ever recorded — it never resets to the factory default under the words "your old settings" |
 | `diag` | DIAGNOSTICS: the SAME facts the Settings DIAGNOSTICS page shows — link, my position, mesh link-quality, wall clock, compass, device — as eight `dbg: diag ...` lines (Link split identity/counters, Mesh split roster-RF/airtime) |
 | `mic` | S30: one-shot mic status + level (present/running/rate/frames/errors/age, RMS/peak/envelope dBFS) — honest `present=0` when absent |
 | `mic on` / `mic off` | S30: start/stop the onboard I2S1 mic reader (off by default) |

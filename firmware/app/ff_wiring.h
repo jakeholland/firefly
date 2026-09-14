@@ -199,6 +199,37 @@ typedef struct {
     int (*send_admin_set_owner)(void *ctx, uint32_t dest, char const *long_name, char const *short_name,
                                  uint32_t *out_packet_id);
     int (*send_get_owner_request)(void *ctx, uint32_t dest);
+
+    /* [api] A02 slice D2 — the admin CHANNEL write, mirroring
+     * `mc_client_set_channel`'s signature exactly (mc_client.h). Same
+     * reason every other entry in this vtable exists: `ff_shell.c`'s
+     * crew-start path needs a "mock mc" a unit test can record against,
+     * with no live transport or handshake.
+     *
+     * Appended at the END, like `send_get_owner_request` before it, so
+     * an existing 5-element positional initializer still compiles with
+     * this field implicitly zero-initialized. May be NULL: the shell
+     * checks before calling through it and reports the honest
+     * `FF_CREWSTART_FAIL_SEND` rather than pretending a write happened
+     * — a target with no radio bound here cannot start a crew, and says
+     * so.
+     *
+     * `out_packet_id` is optional/NULL-safe and, on success only,
+     * receives the outgoing packet id so a later `on_routing_ack` can be
+     * matched to THIS write. */
+    int (*send_admin_set_channel)(void *ctx, uint32_t dest, mc_channel_t const *ch, uint32_t *out_packet_id);
+
+    /* [api] A02 slice D2 — ask the radio to re-send its configuration,
+     * i.e. start a fresh `want_config` handshake (`mc_connect`).
+     *
+     * This is the VERIFYING half of a channel write: an ACK says the
+     * admin frame was delivered, and only a re-read of the channel table
+     * says the radio actually holds what was asked for. Behind the
+     * vtable for the same test reason as the rest; NULL means the
+     * verification can only happen if the radio reboots and
+     * re-handshakes on its own (which, after a channel write, it does —
+     * so this is an accelerator, not the only path). */
+    void (*request_config)(void *ctx);
 } ff_wiring_sender_t;
 
 typedef struct {

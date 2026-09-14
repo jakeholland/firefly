@@ -2076,6 +2076,128 @@ bool ff_shell_crew_hide(ff_shell_t *sh, uint32_t node_id, bool hidden);
 bool ff_shell_crew_hidden(ff_shell_t const *sh, uint32_t node_id);
 
 /* ---------------------------------------------------------------------
+ * [api] A02 slice D2 — the puck STARTS (and leaves) a crew
+ * (docs/specs/S02-core-crew.md's 2026-09-14 amendment)
+ * ------------------------------------------------------------------- */
+
+/**
+ * ff_shell_set_random — inject the CSPRNG the crew-code generator draws
+ * from. `ctx` is handed back to `fn` untouched; both must outlive the
+ * shell.
+ *
+ * There is no default, and that is the point: with nothing injected,
+ * START CREW fails honestly with `FF_APP_CREW_FAIL_NO_ENTROPY` rather
+ * than minting 30 bits out of a tick count. A02 §1.6's threat model —
+ * the code is a privacy fence — does not survive a guessable code, and
+ * the one place a fallback would have been added is here, so this is
+ * where it is refused. The esp32s3 target binds `esp_random`; the sim
+ * binds `/dev/urandom`; a test binds a scripted counter.
+ */
+void ff_shell_set_random(ff_shell_t *sh, uint32_t (*fn)(void *ctx), void *ctx);
+
+/**
+ * ff_shell_crew_start — mint a crew code, write the derived channel to
+ * the comms brain, and verify the write by re-reading the channel table.
+ *
+ * This is the whole reason slice D2 exists: the festival topology is
+ * asymmetric (the wearer has the puck, somebody else has the phone), so
+ * the puck has to be able to create the crew rather than only display
+ * one somebody else created.
+ *
+ * Preconditions are checked HERE, before anything reaches the radio, and
+ * each failure is reported as itself rather than as a generic refusal:
+ * the link must be connected (`FF_APP_CREW_FAIL_NO_LINK`), this puck
+ * must know its own node id (the local-admin path is addressed to it —
+ * reported as NO_LINK, since from the wearer's side it is the same "the
+ * radio isn't talking to me yet" fact), and the radio's region must not
+ * be UNSET (`FF_APP_CREW_FAIL_REGION_UNSET`, A02 §1.7 — Firefly never
+ * guesses a region, so the honest answer is "set the radio region on
+ * the phone first").
+ *
+ * Before the first write it also takes the PRE-CREW SNAPSHOT: whatever
+ * the radio currently holds on the crew index, persisted once and never
+ * overwritten by a Firefly crew channel, so LEAVE can put it back.
+ *
+ * Returns true if the machine started. False means it did not — check
+ * `ff_shell_crew_op_status` for which precondition said no, or because
+ * a run is already in flight (a second press is ignored, not queued).
+ *
+ * The SAME body is reached by the Settings CONFIRM face and by the
+ * bench console's `crew start` (ff_dbgcmd.h), so there is one path into
+ * the machine and the console cannot drift from the UI.
+ */
+bool ff_shell_crew_start(ff_shell_t *sh);
+
+/**
+ * ff_shell_crew_leave — put the comms brain back on the channel it held
+ * before Firefly ever wrote one, through the same write-and-verify path.
+ *
+ * Restores the persisted pre-crew snapshot. With no snapshot recorded
+ * (a puck that was handed a crew channel by somebody else's CLI, say)
+ * it fails with `FF_APP_CREW_FAIL_NO_SNAPSHOT` rather than resetting to
+ * the factory default — "your radio goes back to its old settings" and
+ * "your radio goes back to the factory default" are different promises,
+ * and only one of them is the one the button makes.
+ *
+ * Same return contract, same preconditions and same single body as
+ * `ff_shell_crew_start`.
+ */
+bool ff_shell_crew_leave(ff_shell_t *sh);
+
+/**
+ * ff_shell_crew_dismiss — acknowledge a finished run, clearing the
+ * READY/FAILED result. A no-op while a run is still in flight (the
+ * write would still land, and the machine would have stopped watching
+ * for it).
+ */
+void ff_shell_crew_dismiss(ff_shell_t *sh);
+
+/**
+ * ff_shell_crew_op_status_t — everything the CREW faces and the bench
+ * console's `crew` command report, computed ONCE by the shell so the two
+ * can never answer the same question differently (the same rule
+ * `ff_shell_mesh_name_status_t` already sets for the NAME row).
+ *
+ * `code` is what the RADIO currently reports (derived from its channel
+ * name); `pending_code` is what the CURRENT run minted. They are
+ * deliberately separate facts: showing a minted code before the radio
+ * has accepted it is exactly the confidently-wrong screen this whole
+ * verify step exists to prevent.
+ */
+typedef struct {
+    ff_app_crew_op_t    op;
+    ff_app_crew_phase_t phase;
+    ff_app_crew_fail_t  fail;
+    uint8_t             attempts; /* write attempts started this run, incl. the first */
+
+    bool can_start; /* no valid crew code on the radio, and the radio is reachable */
+    bool can_leave; /* a valid crew code IS on the radio */
+
+    /* Whether a pre-crew snapshot exists to restore. False is not a
+     * failure by itself — it is what makes LEAVE honest about what it
+     * can and cannot promise. */
+    bool has_snapshot;
+
+    /* The radio's LoRa region, honestly unknown until a handshake has
+     * reported one. 0 is UNSET, which is a real answer and not an
+     * absence — hence the separate flag. */
+    bool     region_known;
+    uint32_t region;
+
+    /* Which index the crew channel occupies, when resolved. Never
+     * guessed as 0 — see `ff_shell_crew_channel_index`. */
+    bool     crew_index_known;
+    uint32_t crew_index;
+
+    char code[FF_CREWCODE_LEN + 1u];
+    char pending_code[FF_CREWCODE_LEN + 1u];
+} ff_shell_crew_op_status_t;
+
+/** Snapshot the crew-operation status. A zeroed struct for a NULL shell
+ *  (IDLE, no op, nothing offered) — never a fabricated "ready". */
+ff_shell_crew_op_status_t ff_shell_crew_op_status(ff_shell_t const *sh);
+
+/* ---------------------------------------------------------------------
  * ff_shell_dev_trust_all — SIM ONLY
  * ---------------------------------------------------------------------
  * This used to have a second, device-side gate

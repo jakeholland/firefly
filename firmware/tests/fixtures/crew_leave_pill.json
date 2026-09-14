@@ -1,0 +1,26 @@
+{
+  "fixture": "crew_leave_pill",
+  "face": "settings",
+  "settings": {
+    "my_name": "DANA",
+    "subview": "crew",
+    "crew": {
+      "link_connected": true,
+      "crew_code": "FIRE-4K9M7X",
+      "can_leave": true,
+      "has_snapshot": true,
+      "paired": [
+        {
+          "node_id": 1,
+          "name": "Riley",
+          "short_name": "RILEY",
+          "initial": "R",
+          "color_idx": 0,
+          "presence": "seen",
+          "presence_age_ms": 8000
+        }
+      ],
+      "heard": []
+    }
+  }
+}

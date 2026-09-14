@@ -340,6 +340,12 @@ static bool mc_write_want_config(mc_client_t *c, uint32_t now_ms)
 static void mc_begin_handshake(mc_client_t *c, uint32_t now_ms)
 {
     mc_framer_init(&c->framer);
+    /* [api] A02 slice D2 — the cached channel table describes ONE
+     * handshake. A row from before a reboot (and an admin channel write
+     * causes one) would be a memory of a radio that no longer exists,
+     * which is exactly the pre-crew snapshot nobody should restore. */
+    memset(c->channels, 0, sizeof(c->channels));
+    memset(c->channel_seen, 0, sizeof(c->channel_seen));
     c->want_config_id = mc_rand_next(c);
     if (c->want_config_id == 0u) {
         c->want_config_id = 1u; /* avoid an all-zero nonce */
@@ -687,6 +693,14 @@ static bool mc_decode_channel_frame(uint8_t const *frame, size_t frame_len, mc_c
             memcpy(out->psk, psk_buf, psk_sink.len);
             out->psk_len = (uint8_t)psk_sink.len;
         }
+        /* [api] A02 slice D2 — presence-flagged, never "absent means 0":
+         * see mc_channel_t's own field comment for why the distinction
+         * is load-bearing in both directions. `ModuleSettings` is fully
+         * static (two scalars, channel.pb.h), so the ordinary decode
+         * already filled it in. */
+        out->has_position_precision = ch.settings.has_module_settings;
+        out->position_precision =
+            ch.settings.has_module_settings ? ch.settings.module_settings.position_precision : 0u;
         return true;
     }
 }
@@ -823,8 +837,46 @@ static void mc_process_from_radio(mc_client_t *c, meshtastic_FromRadio const *fr
          * silently dropping it would hide a real regression. */
         mc_channel_t out;
         if (frame != NULL && mc_decode_channel_frame(frame, frame_len, &out)) {
+            /* [api] A02 slice D2 — cache it for
+             * mc_client_get_channel_snapshot before dispatching, so a
+             * callback that asks for the table mid-handshake sees the
+             * row it was just handed. A row past MC_CHANNEL_MAX is
+             * dispatched like any other but not cached: there is no slot
+             * for it, and rewriting somebody else's slot would be worse
+             * than not remembering. */
+            if (out.index < MC_CHANNEL_MAX) {
+                c->channels[out.index] = out;
+                c->channel_seen[out.index] = true;
+            }
             if (c->events.on_channel != NULL) {
                 c->events.on_channel(c->events.user, &out);
+            }
+        } else {
+            c->stats.decode_skipped++;
+        }
+        break;
+    }
+
+    case meshtastic_FromRadio_config_tag: {
+        /* [api] A02 slice D2 — the LoRa REGION, and deliberately nothing
+         * else from `Config`. See mc_events_t.on_lora_region's own doc
+         * comment: A02 §1.7 forbids Firefly from writing lora_config or
+         * guessing a region, so the one thing a crew-start flow needs
+         * from this frame is whether the radio has one at all.
+         *
+         * Every other Config variant still counts as skipped — the
+         * existing "well-formed, not this library's concern yet"
+         * convention, unchanged.
+         *
+         * No second decode pass is needed here (unlike the channel
+         * table): `Config_LoRaConfig.region` is a plain enum scalar that
+         * the ordinary FromRadio decode already filled in. The one
+         * callback field in that message, `ignore_incoming`, is skipped
+         * silently by nanopb exactly as it always was. */
+        if (fr->payload_variant.config.which_payload_variant == meshtastic_Config_lora_tag) {
+            if (c->events.on_lora_region != NULL) {
+                c->events.on_lora_region(c->events.user,
+                                          (uint32_t)fr->payload_variant.config.payload_variant.lora.region);
             }
         } else {
             c->stats.decode_skipped++;
@@ -1199,6 +1251,103 @@ int mc_send_get_owner_request(mc_client_t *c, uint32_t dest)
      * function's own doc comment (mc_client.h) for why. */
     return mc_send_data_packet_ex(c, dest, (uint32_t)meshtastic_PortNum_ADMIN_APP, payload, os.bytes_written, false,
                                    /*want_response=*/true, NULL);
+}
+
+/* ------------------------------------------------------------------ */
+/* [api] A02 slice D2 — the admin channel write, and the table snapshot */
+/* ------------------------------------------------------------------ */
+
+/* Encode sink for one of `ChannelSettings`' two unbounded (callback)
+ * byte fields. Mirrors mc_cb_bytes on the decode side; see
+ * mc_decode_channel_frame's own comment for why these fields are
+ * callbacks at all. */
+typedef struct {
+    uint8_t const *data;
+    size_t         len;
+} mc_bytes_src_t;
+
+static bool mc_cb_encode_bytes(pb_ostream_t *stream, pb_field_t const *field, void *const *arg)
+{
+    mc_bytes_src_t const *src = (mc_bytes_src_t const *)(*arg);
+    if (src == NULL || src->len == 0u) {
+        /* Nothing to write, and NOT an error: an empty name is
+         * channel.proto's own "this is the default channel", and a
+         * zero-length psk is its "no crypto". Emitting a zero-length
+         * field would be a different claim from omitting it, and proto3
+         * makes them the same bytes anyway. */
+        return true;
+    }
+    if (!pb_encode_tag_for_field(stream, field)) return false;
+    return pb_encode_string(stream, src->data, src->len);
+}
+
+int mc_client_set_channel(mc_client_t *c, uint32_t dest, mc_channel_t const *ch, uint32_t *out_packet_id)
+{
+    if (c == NULL || ch == NULL) return -1;
+    if (c->state != MC_STATE_READY) return -1;
+
+    /* Bounds first, before a single byte is encoded — see this
+     * function's doc comment (mc_client.h) for why each is a refusal
+     * rather than a clamp. */
+    if (ch->index >= MC_CHANNEL_MAX) return -1;
+    if (ch->psk_len != 0u && ch->psk_len != 1u && ch->psk_len != 16u && ch->psk_len != 32u) return -1;
+    size_t name_len = 0u;
+    while (name_len < sizeof(ch->name) && ch->name[name_len] != '\0') name_len++;
+    if (name_len >= sizeof(ch->name)) return -1; /* no NUL inside the field */
+
+    mc_bytes_src_t name_src = {(uint8_t const *)ch->name, name_len};
+    mc_bytes_src_t psk_src = {ch->psk, ch->psk_len};
+
+    meshtastic_AdminMessage admin = meshtastic_AdminMessage_init_zero;
+    admin.which_payload_variant = meshtastic_AdminMessage_set_channel_tag;
+
+    meshtastic_Channel *out = &admin.payload_variant.set_channel;
+    out->index = (int32_t)ch->index;
+    out->role = ch->is_primary ? meshtastic_Channel_Role_PRIMARY : meshtastic_Channel_Role_SECONDARY;
+    out->has_settings = true;
+    out->settings.name.funcs.encode = mc_cb_encode_bytes;
+    out->settings.name.arg = &name_src;
+    out->settings.psk.funcs.encode = mc_cb_encode_bytes;
+    out->settings.psk.arg = &psk_src;
+    /* uplink_enabled / downlink_enabled stay false: a crew is never
+     * bridged to MQTT (A02 §1.5). */
+
+    /* ALWAYS present (A02 §1.5). Meshtastic reads an absent
+     * `module_settings` as the default precision, so leaving it out to
+     * mean "0" would silently ship full precision — the exact trap the
+     * app's own ChannelURL.withExplicitPositionPrecision exists to
+     * close. A row read back with no precision at all is written back
+     * as an explicit 0, which is the honest reading of "this channel
+     * stated no precision" on a write that has no way to say "absent". */
+    out->settings.has_module_settings = true;
+    out->settings.module_settings.position_precision = ch->has_position_precision ? ch->position_precision : 0u;
+
+    /* Only the active oneof member is encoded. The Channel submessage is
+     * at most: index (2) + role (2) + settings{ psk 2+32, name 2+11,
+     * module_settings 2+4 } + submessage framing — comfortably under
+     * 96; 160 leaves room for a future scalar without a resize, and
+     * mc_send_data_packet's own MC_TEXT_MAX (237) gate remains the real
+     * ceiling regardless. */
+    uint8_t payload[160];
+    pb_ostream_t os = pb_ostream_from_buffer(payload, sizeof(payload));
+    if (!pb_encode(&os, meshtastic_AdminMessage_fields, &admin)) {
+        return -1;
+    }
+
+    return mc_send_data_packet_ex(c, dest, (uint32_t)meshtastic_PortNum_ADMIN_APP, payload, os.bytes_written,
+                                   /*want_ack=*/true, /*want_response=*/false, out_packet_id);
+}
+
+bool mc_client_get_channel_snapshot(mc_client_t const *c, uint8_t index, mc_channel_t *out)
+{
+    if (c == NULL || out == NULL) return false;
+    if (index >= MC_CHANNEL_MAX) return false;
+    /* A snapshot nobody took is a snapshot that does not exist. There is
+     * deliberately no "probably the default" fallback here — the caller
+     * says so rather than restoring a guess onto somebody's radio. */
+    if (!c->channel_seen[index]) return false;
+    *out = c->channels[index];
+    return true;
 }
 
 mc_state_t mc_state(mc_client_t const *c)

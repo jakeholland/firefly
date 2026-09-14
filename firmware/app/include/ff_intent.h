@@ -593,6 +593,30 @@ typedef enum {
     FF_INTENT_CREW_HIDE,
     FF_INTENT_CREW_UNHIDE,
     FF_INTENT_SETTINGS_OPEN_CREW_CODE,
+
+    /* [api] A02 slice D2 (docs/specs/S02-core-crew.md's 2026-09-14
+     * amendment) — START CREW and LEAVE CREW, each in two beats.
+     *
+     * The REQUEST intents open the confirm face and change nothing:
+     * they are the CREW page's two pills. The CONFIRM intents are the
+     * one tap that actually writes to the radio — a channel write
+     * reboots the comms brain and replaces the crew, so it is not
+     * something a mis-tap on a scrolling list gets to do. Both CONFIRMs
+     * route through the SAME shell body the bench console's `crew
+     * start` / `crew leave` reach (`ff_shell_crew_start` /
+     * `ff_shell_crew_leave`), so there is one path into the machine and
+     * not two.
+     *
+     * DISMISS acknowledges a finished run (READY or FAILED) and returns
+     * the CREW page to rest. It is deliberately separate from BACK:
+     * BACK leaves the face, DISMISS clears the RESULT, and a wearer who
+     * backs out of a READY face and comes back should still see what
+     * happened. No payload on any of the five. */
+    FF_INTENT_CREW_START_REQUEST,
+    FF_INTENT_CREW_START_CONFIRM,
+    FF_INTENT_CREW_LEAVE_REQUEST,
+    FF_INTENT_CREW_LEAVE_CONFIRM,
+    FF_INTENT_CREW_DISMISS,
 } ff_intent_kind_t;
 
 /**

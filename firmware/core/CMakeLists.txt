@@ -616,3 +616,15 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_admit COMMAND test_admit)
 endif()
+
+# A02 slice D2 — core/crewstart: the puck-initiated crew state machine
+# (docs/specs/S02-core-crew.md's 2026-09-14 amendment, S02_AC16/AC17/AC18).
+if(FF_BUILD_TESTS)
+    add_executable(test_crewstart
+        tests/test_crewstart.c
+    )
+    target_link_libraries(test_crewstart PRIVATE ff-core unity)
+    ff_apply_warnings(test_crewstart)
+
+    add_test(NAME test_crewstart COMMAND test_crewstart)
+endif()

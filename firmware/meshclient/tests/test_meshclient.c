@@ -207,6 +207,12 @@ typedef struct {
     mc_channel_t channels[8];
     int channel_count;
 
+    /* [api] A02 slice D2 — the LoRa region, and whether it was reported
+     * at all (0 IS a region value — UNSET — so a count is the only way
+     * to tell "reported UNSET" from "never reported"). */
+    uint32_t lora_region;
+    int      lora_region_count;
+
     /* Monotonic counter stamped by every callback that participates in the
      * on_rx_meta ordering guarantee, so a test can assert "meta first". */
     int seq_next;
@@ -331,6 +337,13 @@ static void cap_on_channel(void *u, mc_channel_t const *ch)
     }
 }
 
+static void cap_on_lora_region(void *u, uint32_t region)
+{
+    events_capture_t *c = (events_capture_t *)u;
+    c->lora_region = region;
+    c->lora_region_count++;
+}
+
 static mc_events_t make_events(events_capture_t *cap)
 {
     mc_events_t ev;
@@ -345,6 +358,7 @@ static mc_events_t make_events(events_capture_t *cap)
     ev.on_owner = cap_on_owner;
     ev.on_routing_ack = cap_on_routing_ack;
     ev.on_channel = cap_on_channel;
+    ev.on_lora_region = cap_on_lora_region;
     ev.user = cap;
     return ev;
 }
@@ -4310,6 +4324,423 @@ static void A02_channel_event_is_optional(void)
     TEST_ASSERT_EQUAL_INT(0, cap.channel_count);
 }
 
+/* -------------------------------------------------------------------- */
+/* [api] A02 slice D2 — the admin channel write, the table snapshot,     */
+/* and the LoRa region (docs/specs/S02-core-crew.md's 2026-09-14         */
+/* amendment)                                                            */
+/* -------------------------------------------------------------------- */
+
+/* A `FromRadio.channel` frame that also states a position_precision.
+ * Separate from a02_build_channel_frame rather than a widened signature,
+ * for the same reason that helper gives: every existing caller means
+ * "defaults", and widening would quietly change what they assert. */
+static uint16_t d2_build_channel_frame_with_precision(uint8_t index, char const *name, uint8_t const *psk,
+                                                       size_t psk_len, bool primary, bool has_precision,
+                                                       uint32_t precision, uint8_t *out, size_t out_cap)
+{
+    a02_blob_t name_blob = {(uint8_t const *)name, (name != NULL) ? strlen(name) : 0u};
+    a02_blob_t psk_blob = {psk, psk_len};
+
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_channel_tag;
+    fr.payload_variant.channel.index = (int32_t)index;
+    fr.payload_variant.channel.role =
+        primary ? meshtastic_Channel_Role_PRIMARY : meshtastic_Channel_Role_SECONDARY;
+    fr.payload_variant.channel.has_settings = true;
+    fr.payload_variant.channel.settings.name.funcs.encode = a02_enc_bytes;
+    fr.payload_variant.channel.settings.name.arg = &name_blob;
+    fr.payload_variant.channel.settings.psk.funcs.encode = a02_enc_bytes;
+    fr.payload_variant.channel.settings.psk.arg = &psk_blob;
+    fr.payload_variant.channel.settings.has_module_settings = has_precision;
+    fr.payload_variant.channel.settings.module_settings.position_precision = precision;
+
+    uint8_t buf[200];
+    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+    if (!pb_encode(&os, meshtastic_FromRadio_fields, &fr)) return 0;
+    return mc_frame_encode(out, out_cap, buf, (uint16_t)os.bytes_written);
+}
+
+/* Decode the AdminMessage a set_channel write put on the wire, with the
+ * two callback fields hooked up so the name and the psk are actually
+ * readable — a test that only checked the index would pass for a write
+ * that shipped an empty channel. */
+typedef struct {
+    uint8_t buf[64];
+    size_t  len;
+    bool    ok;
+} d2_sink_t;
+
+static bool d2_dec_bytes(pb_istream_t *stream, pb_field_t const *field, void **arg)
+{
+    (void)field;
+    d2_sink_t *s = (d2_sink_t *)(*arg);
+    size_t const n = stream->bytes_left;
+    if (s == NULL || n > sizeof(s->buf)) return pb_read(stream, NULL, n);
+    if (!pb_read(stream, s->buf, n)) return false;
+    s->len = n;
+    s->ok = true;
+    return true;
+}
+
+static meshtastic_Channel d2_decode_tx_set_channel(mock_io_t const *io, d2_sink_t *name, d2_sink_t *psk)
+{
+    meshtastic_MeshPacket const pkt = decode_tx_packet(io);
+    TEST_ASSERT_EQUAL_INT(meshtastic_MeshPacket_decoded_tag, pkt.which_payload_variant);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)meshtastic_PortNum_ADMIN_APP, (uint32_t)pkt.payload_variant.decoded.portnum);
+
+    memset(name, 0, sizeof(*name));
+    memset(psk, 0, sizeof(*psk));
+
+    meshtastic_AdminMessage admin = meshtastic_AdminMessage_init_zero;
+    /* The oneof's union is memset when the variant is recognized, so the
+     * callbacks cannot be installed before the decode (mc_client.c's own
+     * comment). Decode the AdminMessage's set_channel submessage
+     * directly instead, by walking for tag 33. */
+    pb_istream_t top = pb_istream_from_buffer(pkt.payload_variant.decoded.payload.bytes,
+                                               pkt.payload_variant.decoded.payload.size);
+    meshtastic_Channel ch = meshtastic_Channel_init_zero;
+    bool found = false;
+    for (;;) {
+        pb_wire_type_t wire = PB_WT_VARINT;
+        uint32_t tag = 0u;
+        bool eof = false;
+        if (!pb_decode_tag(&top, &wire, &tag, &eof) || eof) break;
+        if (tag != (uint32_t)meshtastic_AdminMessage_set_channel_tag || wire != PB_WT_STRING) {
+            TEST_ASSERT_TRUE(pb_skip_field(&top, wire));
+            continue;
+        }
+        pb_istream_t sub;
+        TEST_ASSERT_TRUE(pb_make_string_substream(&top, &sub));
+        ch.settings.name.funcs.decode = d2_dec_bytes;
+        ch.settings.name.arg = name;
+        ch.settings.psk.funcs.decode = d2_dec_bytes;
+        ch.settings.psk.arg = psk;
+        TEST_ASSERT_TRUE(pb_decode(&sub, meshtastic_Channel_fields, &ch));
+        (void)pb_close_string_substream(&top, &sub);
+        found = true;
+        break;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(found, "no AdminMessage.set_channel on the wire");
+    (void)admin;
+    return ch;
+}
+
+/* A READY client over a capturing transport. */
+static void d2_ready_client(mc_client_t *c, mock_io_t *io, mock_clock_t *clk, ff_clock_t *clock,
+                             events_capture_t *cap)
+{
+    mock_io_reset(io);
+    clk->t = 0;
+    clock->now_ms = mock_now;
+    clock->user = clk;
+    memset(cap, 0, sizeof(*cap));
+    mc_init(c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = io}, make_events(cap), clock);
+    c->state = MC_STATE_READY;
+}
+
+static mc_channel_t d2_crew_channel(void)
+{
+    /* A02's own vector 1, so the bytes on the wire are the fixture's. */
+    static uint8_t const psk[32] = {0x74, 0x3c, 0xc9, 0x83, 0xba, 0x32, 0x68, 0x92, 0xfb, 0x91, 0xb6,
+                                     0x70, 0x0b, 0x9f, 0xf3, 0xd0, 0x8d, 0x7e, 0x00, 0x25, 0x68, 0xb3,
+                                     0xf2, 0x78, 0xdb, 0x43, 0x24, 0x4a, 0x24, 0x9e, 0x71, 0xda};
+    mc_channel_t ch;
+    memset(&ch, 0, sizeof(ch));
+    ch.index = 0u;
+    snprintf(ch.name, sizeof(ch.name), "FIRE-4K9M7X");
+    memcpy(ch.psk, psk, sizeof(psk));
+    ch.psk_len = 32u;
+    ch.is_primary = true;
+    ch.has_position_precision = true;
+    ch.position_precision = 32u;
+    return ch;
+}
+
+static void D2_set_channel_encodes_the_whole_channel(void)
+{
+    mock_io_t io;
+    mock_clock_t clk;
+    ff_clock_t clock;
+    events_capture_t cap;
+    mc_client_t c;
+    d2_ready_client(&c, &io, &clk, &clock, &cap);
+
+    mc_channel_t const want = d2_crew_channel();
+    uint32_t pid = 0u;
+    TEST_ASSERT_EQUAL_INT(0, mc_client_set_channel(&c, 0x1234u, &want, &pid));
+    TEST_ASSERT_NOT_EQUAL(0u, pid);
+
+    d2_sink_t name, psk;
+    meshtastic_Channel const got = d2_decode_tx_set_channel(&io, &name, &psk);
+
+    TEST_ASSERT_EQUAL_INT32(0, got.index);
+    TEST_ASSERT_EQUAL_INT(meshtastic_Channel_Role_PRIMARY, got.role);
+    TEST_ASSERT_TRUE(got.has_settings);
+    /* The NAME is on the wire, in full — this is the assertion that
+     * fails for a write that encoded an empty channel and looked fine. */
+    TEST_ASSERT_TRUE(name.ok);
+    TEST_ASSERT_EQUAL_size_t(11u, name.len);
+    TEST_ASSERT_EQUAL_MEMORY("FIRE-4K9M7X", name.buf, 11u);
+    /* ...and so is the KEY, byte for byte against A02's vector 1. */
+    TEST_ASSERT_TRUE(psk.ok);
+    TEST_ASSERT_EQUAL_size_t(32u, psk.len);
+    TEST_ASSERT_EQUAL_MEMORY(want.psk, psk.buf, 32u);
+    /* A02 §1.5: always explicitly present, and 32. */
+    TEST_ASSERT_TRUE(got.settings.has_module_settings);
+    TEST_ASSERT_EQUAL_UINT32(32u, got.settings.module_settings.position_precision);
+    /* A crew is never bridged to MQTT. */
+    TEST_ASSERT_FALSE(got.settings.uplink_enabled);
+    TEST_ASSERT_FALSE(got.settings.downlink_enabled);
+}
+
+static void D2_set_channel_requests_an_ack(void)
+{
+    /* An admin write is worth the mesh stack's retries and a routing
+     * reply, exactly like set_owner — that reply is what the crew-start
+     * machine correlates against `out_packet_id`. */
+    mock_io_t io;
+    mock_clock_t clk;
+    ff_clock_t clock;
+    events_capture_t cap;
+    mc_client_t c;
+    d2_ready_client(&c, &io, &clk, &clock, &cap);
+
+    mc_channel_t const want = d2_crew_channel();
+    TEST_ASSERT_EQUAL_INT(0, mc_client_set_channel(&c, 0x1234u, &want, NULL));
+    TEST_ASSERT_TRUE(decode_tx_want_ack(&io));
+}
+
+static void D2_set_channel_always_emits_module_settings_even_for_zero(void)
+{
+    /* THE TRAP. Meshtastic reads an ABSENT module_settings as the
+     * default precision (32), so a LEAVE restoring precision 0 that
+     * omitted the submessage would silently ship full precision — the
+     * exact inverse of what the wearer asked for, and invisible. */
+    mock_io_t io;
+    mock_clock_t clk;
+    ff_clock_t clock;
+    events_capture_t cap;
+    mc_client_t c;
+    d2_ready_client(&c, &io, &clk, &clock, &cap);
+
+    mc_channel_t restore;
+    memset(&restore, 0, sizeof(restore));
+    restore.index = 0u;
+    restore.psk[0] = 0x01u;
+    restore.psk_len = 1u;
+    restore.is_primary = true;
+    restore.has_position_precision = true;
+    restore.position_precision = 0u;
+
+    TEST_ASSERT_EQUAL_INT(0, mc_client_set_channel(&c, 0x1234u, &restore, NULL));
+    d2_sink_t name, psk;
+    meshtastic_Channel const got = d2_decode_tx_set_channel(&io, &name, &psk);
+    TEST_ASSERT_TRUE(got.settings.has_module_settings);
+    TEST_ASSERT_EQUAL_UINT32(0u, got.settings.module_settings.position_precision);
+    /* An empty name IS channel.proto's default channel; nothing is
+     * written for it, and that is not the same as a zero-length field. */
+    TEST_ASSERT_FALSE(name.ok);
+    TEST_ASSERT_TRUE(psk.ok);
+    TEST_ASSERT_EQUAL_size_t(1u, psk.len);
+    TEST_ASSERT_EQUAL_UINT8(0x01u, psk.buf[0]);
+}
+
+static void D2_set_channel_refuses_out_of_bounds_input(void)
+{
+    mock_io_t io;
+    mock_clock_t clk;
+    ff_clock_t clock;
+    events_capture_t cap;
+    mc_client_t c;
+    d2_ready_client(&c, &io, &clk, &clock, &cap);
+
+    mc_channel_t bad = d2_crew_channel();
+    bad.index = (uint8_t)MC_CHANNEL_MAX;
+    TEST_ASSERT_LESS_THAN_INT(0, mc_client_set_channel(&c, 1u, &bad, NULL));
+
+    /* A 7-byte key is not a shorter key, it is a corrupt one. */
+    bad = d2_crew_channel();
+    bad.psk_len = 7u;
+    TEST_ASSERT_LESS_THAN_INT(0, mc_client_set_channel(&c, 1u, &bad, NULL));
+
+    /* A name field with no terminator anywhere in it. */
+    bad = d2_crew_channel();
+    memset(bad.name, 'A', sizeof(bad.name));
+    TEST_ASSERT_LESS_THAN_INT(0, mc_client_set_channel(&c, 1u, &bad, NULL));
+
+    TEST_ASSERT_LESS_THAN_INT(0, mc_client_set_channel(&c, 1u, NULL, NULL));
+
+    /* Nothing was written for any of them. */
+    TEST_ASSERT_EQUAL_size_t(0u, io.tx_len);
+}
+
+static void D2_set_channel_refuses_before_ready(void)
+{
+    mock_io_t io;
+    mock_clock_t clk;
+    ff_clock_t clock;
+    events_capture_t cap;
+    mc_client_t c;
+    d2_ready_client(&c, &io, &clk, &clock, &cap);
+    c.state = MC_STATE_HANDSHAKE;
+
+    mc_channel_t const want = d2_crew_channel();
+    uint32_t pid = 0xAAAAu;
+    TEST_ASSERT_LESS_THAN_INT(0, mc_client_set_channel(&c, 1u, &want, &pid));
+    TEST_ASSERT_EQUAL_UINT32(0xAAAAu, pid); /* untouched on failure */
+    TEST_ASSERT_EQUAL_size_t(0u, io.tx_len);
+}
+
+static void D2_position_precision_is_presence_flagged_on_read(void)
+{
+    uint8_t frame[300];
+    uint16_t len = d2_build_channel_frame_with_precision(0u, "FIRE-4K9M7X", NULL, 0u, true, true, 32u,
+                                                          frame, sizeof(frame));
+    TEST_ASSERT_TRUE(len > 0);
+    events_capture_t cap;
+    a02_feed(frame, len, &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.channel_count);
+    TEST_ASSERT_TRUE(cap.channels[0].has_position_precision);
+    TEST_ASSERT_EQUAL_UINT32(32u, cap.channels[0].position_precision);
+
+    /* A channel that stated NO precision is not a channel that stated 0
+     * — the snapshot has to be able to restore the difference. */
+    len = d2_build_channel_frame_with_precision(0u, "FIRE-4K9M7X", NULL, 0u, true, false, 0u, frame,
+                                                 sizeof(frame));
+    TEST_ASSERT_TRUE(len > 0);
+    a02_feed(frame, len, &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.channel_count);
+    TEST_ASSERT_FALSE(cap.channels[0].has_position_precision);
+    TEST_ASSERT_EQUAL_UINT32(0u, cap.channels[0].position_precision);
+}
+
+static void D2_channel_snapshot_reports_only_what_this_handshake_said(void)
+{
+    uint8_t frame[300];
+    uint16_t const len = d2_build_channel_frame_with_precision(0u, "LongFast", NULL, 0u, true, true, 13u,
+                                                                frame, sizeof(frame));
+    TEST_ASSERT_TRUE(len > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = len;
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+
+    mc_channel_t snap;
+    /* Nothing reported yet is "there is no snapshot", NOT "it is
+     * probably the default". */
+    TEST_ASSERT_FALSE(mc_client_get_channel_snapshot(&c, 0u, &snap));
+
+    c.state = MC_STATE_READY;
+    mc_tick(&c, 10u);
+
+    TEST_ASSERT_TRUE(mc_client_get_channel_snapshot(&c, 0u, &snap));
+    TEST_ASSERT_EQUAL_STRING("LongFast", snap.name);
+    TEST_ASSERT_TRUE(snap.has_position_precision);
+    TEST_ASSERT_EQUAL_UINT32(13u, snap.position_precision);
+
+    /* An index nobody reported, and one past the table, both say no. */
+    TEST_ASSERT_FALSE(mc_client_get_channel_snapshot(&c, 1u, &snap));
+    TEST_ASSERT_FALSE(mc_client_get_channel_snapshot(&c, (uint8_t)MC_CHANNEL_MAX, &snap));
+    TEST_ASSERT_FALSE(mc_client_get_channel_snapshot(&c, 0u, NULL));
+    TEST_ASSERT_FALSE(mc_client_get_channel_snapshot(NULL, 0u, &snap));
+}
+
+static void D2_channel_snapshot_is_cleared_by_a_fresh_handshake(void)
+{
+    /* An admin channel write REBOOTS the comms brain, which starts a new
+     * handshake. A row that survived that would be a memory of a radio
+     * that no longer exists — and it is the pre-crew snapshot somebody
+     * would restore. */
+    uint8_t frame[300];
+    uint16_t const len = d2_build_channel_frame_with_precision(0u, "LongFast", NULL, 0u, true, true, 13u,
+                                                                frame, sizeof(frame));
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = len;
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+    mc_tick(&c, 10u);
+
+    mc_channel_t snap;
+    TEST_ASSERT_TRUE(mc_client_get_channel_snapshot(&c, 0u, &snap));
+
+    mc_connect(&c); /* a fresh want_config */
+    TEST_ASSERT_FALSE(mc_client_get_channel_snapshot(&c, 0u, &snap));
+}
+
+/* A `FromRadio.config` frame carrying a LoRaConfig. */
+static uint16_t d2_build_lora_config_frame(uint32_t region, uint8_t *out, size_t out_cap)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_config_tag;
+    fr.payload_variant.config.which_payload_variant = meshtastic_Config_lora_tag;
+    fr.payload_variant.config.payload_variant.lora.region = (meshtastic_Config_LoRaConfig_RegionCode)region;
+    fr.payload_variant.config.payload_variant.lora.use_preset = true;
+
+    uint8_t buf[200];
+    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+    if (!pb_encode(&os, meshtastic_FromRadio_fields, &fr)) return 0;
+    return mc_frame_encode(out, out_cap, buf, (uint16_t)os.bytes_written);
+}
+
+static void D2_lora_region_is_reported_including_unset(void)
+{
+    uint8_t frame[300];
+    uint16_t len = d2_build_lora_config_frame((uint32_t)meshtastic_Config_LoRaConfig_RegionCode_US, frame,
+                                                sizeof(frame));
+    TEST_ASSERT_TRUE(len > 0);
+    events_capture_t cap;
+    a02_feed(frame, len, &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.lora_region_count);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)meshtastic_Config_LoRaConfig_RegionCode_US, cap.lora_region);
+
+    /* UNSET is 0 and proto3 drops zero values, so the frame carries no
+     * `region` field at all — and it MUST still be reported, because
+     * "this radio has no region" is the whole question a crew start
+     * asks. A client that only fired on a present field would leave the
+     * start flow thinking the region was fine. */
+    len = d2_build_lora_config_frame((uint32_t)meshtastic_Config_LoRaConfig_RegionCode_UNSET, frame,
+                                      sizeof(frame));
+    TEST_ASSERT_TRUE(len > 0);
+    a02_feed(frame, len, &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.lora_region_count);
+    TEST_ASSERT_EQUAL_UINT32(0u, cap.lora_region);
+}
+
+static void D2_non_lora_config_is_skipped_not_reported(void)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_config_tag;
+    fr.payload_variant.config.which_payload_variant = meshtastic_Config_device_tag;
+    fr.payload_variant.config.payload_variant.device.node_info_broadcast_secs = 900u;
+
+    uint8_t buf[200];
+    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+    TEST_ASSERT_TRUE(pb_encode(&os, meshtastic_FromRadio_fields, &fr));
+    uint8_t frame[300];
+    uint16_t const len = mc_frame_encode(frame, sizeof(frame), buf, (uint16_t)os.bytes_written);
+    TEST_ASSERT_TRUE(len > 0);
+
+    events_capture_t cap;
+    a02_feed(frame, len, &cap);
+    TEST_ASSERT_EQUAL_INT(0, cap.lora_region_count);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -4451,6 +4882,16 @@ int main(void)
     RUN_TEST(A02_channel_with_no_psk_reports_none_not_zeros);
     RUN_TEST(A02_oversized_channel_name_reports_no_name_rather_than_truncating);
     RUN_TEST(A02_channel_event_is_optional);
+    RUN_TEST(D2_set_channel_encodes_the_whole_channel);
+    RUN_TEST(D2_set_channel_requests_an_ack);
+    RUN_TEST(D2_set_channel_always_emits_module_settings_even_for_zero);
+    RUN_TEST(D2_set_channel_refuses_out_of_bounds_input);
+    RUN_TEST(D2_set_channel_refuses_before_ready);
+    RUN_TEST(D2_position_precision_is_presence_flagged_on_read);
+    RUN_TEST(D2_channel_snapshot_reports_only_what_this_handshake_said);
+    RUN_TEST(D2_channel_snapshot_is_cleared_by_a_fresh_handshake);
+    RUN_TEST(D2_lora_region_is_reported_including_unset);
+    RUN_TEST(D2_non_lora_config_is_skipped_not_reported);
 
     return UNITY_END();
 }

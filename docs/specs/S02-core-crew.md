@@ -640,3 +640,182 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
   Bench requirement: S02_AC11's positive case, S02_AC12 and S02_AC14
   cannot be believed from the sim alone — two radios and a puck, per
   A02 slice D.
+
+- **2026-09-14, slice D2 — the puck STARTS a crew.** Slice D gave the
+  puck a crew code to *display*; it still could not *make* one. A02 §2
+  assumes the organiser holds a phone — it mints the code there, writes
+  the channel over BLE, and the puck is a passive display. **The
+  festival topology is asymmetric and that assumption does not hold**:
+  Jake carries the puck (no camera, no keyboard — a T9 compose keyboard
+  only), and the phone belongs to somebody else. A crew that can only be
+  created from a phone is a crew the person wearing the hardware cannot
+  start.
+
+  So the puck creates it: mint a code from its own CSPRNG, derive the
+  PSK with the SAME `ff_crewcode` HKDF the app uses (byte for byte
+  against `docs/specs/fixtures/A02-crew-codes.json`), write the derived
+  channel to its comms brain over the SAME Meshtastic admin path the
+  owner-name push already uses, **verify the write by re-reading the
+  radio**, and then show the code on slice D's SHOW CODE face so phones
+  can scan it. A02 §2 owns the phone's version of this flow; **this
+  amendment owns the puck's**, and the codec is shared, not duplicated.
+
+  ### A. START CREW, step by step
+
+  1. **Preconditions, before anything reaches the radio.** The link must
+     be connected; this puck must know its own node id (the admin write
+     is addressed to it — that is what puts it on Meshtastic's
+     no-passkey local-admin path); and the radio's LoRa region must not
+     be `UNSET`. Each refusal is reported as **itself**, never as a
+     generic "can't right now": an UNSET region says, in these words,
+     *"Set the radio region on the phone first."* A02 §1.7 is
+     unchanged and load-bearing — **Firefly never writes `lora_config`
+     and never guesses a region from a locale.**
+  2. **Snapshot.** Before the first write, record what the radio holds
+     on the crew index (name, PSK, precision) — once, and never
+     overwritten by a Firefly crew channel. This is what LEAVE restores.
+     A radio whose channel table this handshake has not reported yet
+     records nothing; an un-taken snapshot is honestly absent.
+  3. **Mint.** 30 CSPRNG bits (`esp_random` on the device,
+     `/dev/urandom` in the sim, a scripted counter in a test — the
+     source is INJECTED, `ff_shell_set_random`) → `ff_crewcode_from_bits`
+     → the canonical code → `ff_crewcode_psk`. **There is no fallback.**
+     A puck whose target never wired up a CSPRNG refuses to mint rather
+     than minting from a tick count: 30 bits is a privacy fence
+     (A02 §1.6) and a predictable 30 bits is no fence at all.
+  4. **Write.** The channel of A02 §1.5, unchanged: name = the code,
+     index 0, PRIMARY, `position_precision = 32` **always explicitly
+     present** (an absent `module_settings` reads as the default on
+     Meshtastic's side, so omitting it to mean 0 would silently ship
+     full precision), uplink/downlink off, no `lora_config`. Sent as
+     `AdminMessage.set_channel` with `want_ack`, to this node's own id.
+  5. **Verify.** An ACK means the admin frame was delivered. It does
+     **not** mean the radio holds what was asked for. The only proof is
+     a read-back: re-run `want_config` and confirm the channel table's
+     row at the crew index matches the written name AND key, byte for
+     byte. A row at that index that does not match is a decisive
+     failure, not a reason to keep waiting — the radio has answered the
+     question and the answer was no.
+  6. **Persist nothing extra.** The code lives only as the channel name;
+     the puck derives it back on boot, exactly as slice D §D specifies.
+     The pre-crew snapshot is the one new persisted record.
+
+  **LEAVE CREW** is the same machine with the snapshot as its target
+  channel, and the same write-and-verify path. With no snapshot recorded
+  it fails with its own reason rather than resetting to the factory
+  default: *"your radio goes back to its old settings"* and *"your radio
+  goes back to the factory default"* are different promises, and only
+  one of them is the one the button makes.
+
+  ### B. The face states what is actually happening
+
+  `WRITING` → `VERIFYING` → `READY` / `FAILED`, in plain words, with the
+  reason on every failure. The vocabulary is the radio's truth rather
+  than a reassuring summary: *"CHECKING IT SAVED"* is a real step that
+  can really fail, and hiding it behind *"saving…"* would hide the only
+  part of this that proves anything.
+
+  Both actions are gated behind a **one-tap confirm face** in plain
+  words, because a channel write reboots the comms brain and replaces
+  the crew, and that is not something a mis-tap on a scrolling list gets
+  to do:
+
+  > **Start a new crew?**
+  > Your radio saves it and restarts for a few seconds.
+  > `[ NOT NOW ]  [ START ]`
+
+  > **Leave the crew?**
+  > Your radio goes back to its old settings.
+  > `[ NOT NOW ]  [ LEAVE ]`
+
+  Settings → CREW offers **exactly one** of START CREW (no valid crew
+  code resolved) and LEAVE CREW (one resolved), and **neither** when the
+  puck cannot see its radio's channel table — in that case the row is a
+  muted sentence, not a greyed button. A control that cannot do what it
+  says is worse than a sentence explaining why.
+
+  One consequence, flagged rather than discovered: slice D deliberately
+  did NOT clear `crew_code` on a handshake (display-only, no flicker on
+  reconnect). D2 adds the other half — a **completed** handshake that
+  resolved no crew channel clears it, because before D2 nothing on the
+  puck could remove a crew channel and LEAVE makes that the expected
+  outcome. A SHOW CODE face still offering the code of a crew the radio
+  has just been taken off is exactly the fabricated code that face
+  exists to refuse.
+
+  ### C. `[api]` surface
+
+  `firmware/core/include/ff_crewcode.h` — the codec's ENCODE half, beside
+  its decode half so a generator cannot drift from the parser:
+  ```c
+  #define FF_CREWCODE_BITS 30u
+  bool ff_crewcode_from_bits(uint32_t bits, char out[FF_CREWCODE_LEN + 1u]);
+  ```
+
+  `firmware/core/include/ff_crewstart.h` — NEW. The pure state machine
+  (idle → generating → writing → verifying → ready/failed), its bounded
+  retry and timeouts, the pre-crew snapshot's serialization, and the
+  injected `ff_crewstart_rand_fn`. No radio, no clock, no RNG of its
+  own: `ff_shell.c` performs each requested action and reports the
+  result back, which is what makes the whole sequence testable against a
+  scripted event stub rather than only against a bench.
+
+  `firmware/meshclient/include/mc_client.h`:
+  ```c
+  /* mc_channel_t gains, presence-flagged: */
+  bool     has_position_precision;
+  uint32_t position_precision;
+
+  /* mc_events_t gains — the ONE thing a crew start needs from Config: */
+  void (*on_lora_region)(void *u, uint32_t region);
+
+  int  mc_client_set_channel(mc_client_t *c, uint32_t dest, mc_channel_t const *ch,
+                             uint32_t *out_packet_id);
+  bool mc_client_get_channel_snapshot(mc_client_t const *c, uint8_t index, mc_channel_t *out);
+  ```
+  All additive; every existing callback and caller is unaffected.
+
+  `firmware/app/ff_wiring.h` — `ff_wiring_sender_t` gains
+  `send_admin_set_channel` and `request_config`, appended so existing
+  positional initializers still compile.
+
+  `firmware/app/include/ff_shell.h` — `ff_shell_set_random`,
+  `ff_shell_crew_start`, `ff_shell_crew_leave`, `ff_shell_crew_dismiss`,
+  and `ff_shell_crew_op_status` (one projection, read by both the CREW
+  faces and the bench console, so the two can never disagree — the rule
+  `ff_shell_mesh_name_status` already sets for the NAME row).
+
+  `firmware/core/include/ff_dbgcmd.h` — `crew` / `crew start` /
+  `crew leave`, following `cal`'s exact shape. Both actions route
+  through `ff_shell_crew_start`/`ff_shell_crew_leave`, the SAME body the
+  Settings CONFIRM face reaches, exactly as `name <text>` shares
+  `shell_apply_name_commit` with the NAME row's DONE button.
+
+  ### New acceptance criteria
+
+  - **S02_AC16 — START.** A start on a connected, region-set radio mints
+    a valid code from the injected CSPRNG, writes A02 §1.5's channel
+    (index 0, PRIMARY, precision 32, name = the code, PSK = the key that
+    code derives), and reaches READY only after a read-back whose name
+    AND key match. Settings → CREW offers exactly one of START/LEAVE and
+    neither when the channel table is unresolved; the REQUEST intent
+    opens the confirm face and writes nothing; a second press while a
+    write is in the air is ignored, not queued.
+  - **S02_AC17 — LEAVE and the snapshot.** The pre-crew channel is
+    captured once before the first write, never overwritten by a Firefly
+    crew channel, survives a reboot, and is restored byte for byte by
+    LEAVE through the same write-and-verify path. With no snapshot,
+    LEAVE fails with `NO_SNAPSHOT` and writes nothing.
+  - **S02_AC18 — honest failure.** Each of these is reported as itself,
+    with its own test: an UNSET region (before any write); a region not
+    yet reported (which is NOT the same as UNSET); no entropy source; a
+    routing NAK (retried, bounded, then reported as a NAK); no ACK at
+    all (retried, bounded, then reported as a timeout); a refused send;
+    a read-back that never arrives; and — the one that matters most —
+    **a read-back that arrives and disagrees**, which must be FAILED and
+    never READY.
+
+  Bench requirement: S02_AC16's positive case and S02_AC17's restore
+  cannot be believed from the sim alone. The bench console's
+  `crew` / `crew start` / `crew leave` exist so the orchestrator can
+  drive exactly that over USB.

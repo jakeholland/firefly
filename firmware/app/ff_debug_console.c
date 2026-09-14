@@ -149,6 +149,9 @@ static void dbgconsole_help(ff_dbgconsole_reply_fn reply, void *user)
     reply_line(reply, user, "dbg: cal clear                drop the stored calibration back to identity");
     reply_line(reply, user, "dbg: name                     NAME in Settings: stored/mesh/confirmed status");
     reply_line(reply, user, "dbg: name <text>              set + push the Meshtastic owner update");
+    reply_line(reply, user, "dbg: crew                     crew code/index/region + START/LEAVE status");
+    reply_line(reply, user, "dbg: crew start               mint a code, write the crew channel, verify it");
+    reply_line(reply, user, "dbg: crew leave               restore the pre-crew channel, verify it");
     reply_line(reply, user, "dbg: diag                     DIAGNOSTICS: link/position/mesh/time/compass/device");
     reply_line(reply, user, "dbg: perf                     frame/LVGL/flush timing, heap, per-task stack high-water");
     reply_line(reply, user, "dbg: ping <node_hex>          S29: one immediate bench PING, outside FIND");
@@ -573,6 +576,117 @@ static void dbgconsole_name_set(ff_shell_t *sh, char const *text, ff_dbgconsole_
     dbgconsole_name_status(sh, reply, user);
 }
 
+/* A02 slice D2 — `crew`: the crew-code / crew-operation status, read
+ * through `ff_shell_crew_op_status` (ff_shell.h) — the SAME projection
+ * the Settings CREW faces render, so the console and the glass can never
+ * answer the same question differently, exactly as `diag` and `name`
+ * already do for theirs.
+ *
+ * Every field on this line is honest about absence rather than
+ * defaulting:
+ *  - `code` is what the RADIO reports (derived from its channel name),
+ *    `pending` is what the CURRENT run minted — separate, because
+ *    showing a minted code before the radio accepted it is the whole
+ *    thing the verify step exists to prevent;
+ *  - `index` prints `?` until the channel table resolves one. It is
+ *    NEVER 0-by-default (mesh.proto: the channel index is "inherently a
+ *    local concept");
+ *  - `region` prints `?` until a handshake has reported one, and `unset`
+ *    for the real reading 0 — those are different facts and a crew start
+ *    stops on the second one (A02 §1.7). */
+static char const *dbgconsole_crew_op_name(ff_app_crew_op_t op)
+{
+    switch (op) {
+    case FF_APP_CREW_OP_NONE: return "none";
+    case FF_APP_CREW_OP_START: return "start";
+    case FF_APP_CREW_OP_LEAVE: return "leave";
+    }
+    return "?";
+}
+
+static char const *dbgconsole_crew_phase_name(ff_app_crew_phase_t p)
+{
+    switch (p) {
+    case FF_APP_CREW_PHASE_IDLE: return "idle";
+    case FF_APP_CREW_PHASE_GENERATING: return "generating";
+    case FF_APP_CREW_PHASE_WRITING: return "writing";
+    case FF_APP_CREW_PHASE_VERIFYING: return "verifying";
+    case FF_APP_CREW_PHASE_READY: return "ready";
+    case FF_APP_CREW_PHASE_FAILED: return "failed";
+    }
+    return "?";
+}
+
+static char const *dbgconsole_crew_fail_name(ff_app_crew_fail_t f)
+{
+    switch (f) {
+    case FF_APP_CREW_FAIL_NONE: return "none";
+    case FF_APP_CREW_FAIL_NO_LINK: return "no_link";
+    case FF_APP_CREW_FAIL_REGION_UNSET: return "region_unset";
+    case FF_APP_CREW_FAIL_NO_ENTROPY: return "no_entropy";
+    case FF_APP_CREW_FAIL_NO_SNAPSHOT: return "no_snapshot";
+    case FF_APP_CREW_FAIL_SEND: return "send";
+    case FF_APP_CREW_FAIL_NAK: return "nak";
+    case FF_APP_CREW_FAIL_TIMEOUT_ACK: return "timeout_ack";
+    case FF_APP_CREW_FAIL_TIMEOUT_VERIFY: return "timeout_verify";
+    case FF_APP_CREW_FAIL_MISMATCH: return "mismatch";
+    }
+    return "?";
+}
+
+static void dbgconsole_crew_status(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+{
+    ff_shell_crew_op_status_t const st = ff_shell_crew_op_status(sh);
+
+    char index_buf[8];
+    if (st.crew_index_known) {
+        snprintf(index_buf, sizeof(index_buf), "%u", (unsigned)st.crew_index);
+    } else {
+        snprintf(index_buf, sizeof(index_buf), "?");
+    }
+
+    char region_buf[16];
+    if (!st.region_known) {
+        snprintf(region_buf, sizeof(region_buf), "?");
+    } else if (st.region == 0u) {
+        snprintf(region_buf, sizeof(region_buf), "unset");
+    } else {
+        snprintf(region_buf, sizeof(region_buf), "%u", (unsigned)st.region);
+    }
+
+    char line[224];
+    snprintf(line, sizeof(line),
+             "dbg: crew code=%s index=%s region=%s snapshot=%d can_start=%d can_leave=%d op=%s phase=%s "
+             "fail=%s attempts=%u pending=%s",
+             (st.code[0] != '\0') ? st.code : "(none)", index_buf, region_buf, st.has_snapshot ? 1 : 0,
+             st.can_start ? 1 : 0, st.can_leave ? 1 : 0, dbgconsole_crew_op_name(st.op),
+             dbgconsole_crew_phase_name(st.phase), dbgconsole_crew_fail_name(st.fail), (unsigned)st.attempts,
+             (st.pending_code[0] != '\0') ? st.pending_code : "(none)");
+    reply_line(reply, user, line);
+}
+
+/* `crew start` / `crew leave` — the SAME shell bodies the Settings
+ * CONFIRM face reaches (`ff_shell_crew_start`/`ff_shell_crew_leave`),
+ * never a second path into the machine; the exact discipline
+ * `dbgconsole_name_set` keeps for `name <text>`.
+ *
+ * The return value is deliberately NOT reported as "ok"/"failed": a
+ * refused precondition already lands in the status line's `phase=failed
+ * fail=<reason>`, which says more, and printing a second, coarser
+ * verdict beside it would be two answers to one question. The status
+ * dump IS the reply. */
+static void dbgconsole_crew_start(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+{
+    (void)ff_shell_crew_start(sh);
+    dbgconsole_crew_status(sh, reply, user);
+}
+
+static void dbgconsole_crew_leave(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+{
+    (void)ff_shell_crew_leave(sh);
+    dbgconsole_crew_status(sh, reply, user);
+}
+
 /* DIAGNOSTICS — `diag`: the SAME `ff_app_diag_t` the Settings DIAGNOSTICS
  * page renders (`ff_shell_diag_debug`, ff_shell.h — one projection, two
  * presentations, per that function's own doc comment), printed as one
@@ -921,6 +1035,9 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
     case FF_DBGCMD_CAL_CLEAR: dbgconsole_cal_clear(sh, reply, user); return;
     case FF_DBGCMD_NAME: dbgconsole_name_status(sh, reply, user); return;
     case FF_DBGCMD_NAME_SET: dbgconsole_name_set(sh, cmd.u.text, reply, user); return;
+    case FF_DBGCMD_CREW: dbgconsole_crew_status(sh, reply, user); return;
+    case FF_DBGCMD_CREW_START: dbgconsole_crew_start(sh, reply, user); return;
+    case FF_DBGCMD_CREW_LEAVE: dbgconsole_crew_leave(sh, reply, user); return;
     case FF_DBGCMD_DIAG: dbgconsole_diag(sh, reply, user); return;
     case FF_DBGCMD_PERF: dbgconsole_perf(perf, user, reply, user); return;
     case FF_DBGCMD_PING: dbgconsole_ping(sh, cmd.u.node, reply, user); return;

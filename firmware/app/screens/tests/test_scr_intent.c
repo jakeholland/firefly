@@ -3338,6 +3338,19 @@ static void S12_settings_crew_row_emits_open_crew_intent(void)
 #define S12_PAIRED_NODE 0x00004001u
 #define S12_HEARD_NODE  0x00004002u
 
+/* A02 slice D2 — the CREW page gained a START CREW / LEAVE CREW control
+ * above the lists, so a control that used to sit inside the visible
+ * circle can now be one row below the fold. Scrolling it into view
+ * before tapping keeps these tests testing what they were written to
+ * test (a REAL tap, through the real dispatch, reports the right intent
+ * with the right node id) instead of quietly becoming assertions about
+ * page height. */
+static void scroll_into_view(lv_obj_t *obj)
+{
+    lv_obj_scroll_to_view_recursive(obj, LV_ANIM_OFF);
+    lv_obj_update_layout(lv_screen_active());
+}
+
 static void s12_build_crew_page_with_one_of_each(ff_app_crew_page_t *cw)
 {
     memset(cw, 0, sizeof(*cw));
@@ -3431,6 +3444,7 @@ static void S12_crew_add_real_tap_emits_pair_with_node_id(void)
 
     lv_obj_t *add = find_button_with_label(lv_screen_active(), "ADD");
     TEST_ASSERT_NOT_NULL(add);
+    scroll_into_view(add);
     lv_area_t a;
     lv_obj_get_coords(add, &a);
 
@@ -4011,6 +4025,7 @@ static void A02_crew_unhide_tap_emits_unhide_with_node_id(void)
 
     lv_obj_t *unhide = find_button_with_label(lv_screen_active(), "UNHIDE");
     TEST_ASSERT_NOT_NULL(unhide);
+    scroll_into_view(unhide);
     lv_area_t a;
     lv_obj_get_coords(unhide, &a);
     tap_at((a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2);
@@ -4038,6 +4053,249 @@ static void A02_show_code_tap_emits_open_crew_code(void)
 
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_SETTINGS_OPEN_CREW_CODE, s_spy.last.kind);
+}
+
+
+/* --- A02 slice D2: START CREW / LEAVE CREW ------------------------- */
+
+/* A small helper: build the CREW page and tap a labelled pill on it. */
+static void d2_tap_crew_pill(ff_app_settings_t *s, char const *label)
+{
+    lv_obj_clean(lv_screen_active());
+    ff_scr_settings_build(lv_screen_active(), s);
+    lv_obj_update_layout(lv_screen_active());
+    lv_obj_t *btn = find_button_with_label(lv_screen_active(), label);
+    TEST_ASSERT_NOT_NULL_MESSAGE(btn, label);
+    scroll_into_view(btn);
+    lv_area_t a;
+    lv_obj_get_coords(btn, &a);
+    tap_at((a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2);
+}
+
+static void D2_start_crew_pill_emits_the_request_not_the_write(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+    s12_build_crew_page_with_one_of_each(&s.crew);
+    s.crew.link_connected = true;
+    s.crew.can_start = true;
+
+    d2_tap_crew_pill(&s, "START CREW");
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    /* The pill ASKS. A channel write reboots the comms brain and
+     * replaces the crew, so the pill must never be the thing that does
+     * it — the confirm face's own button is. */
+    TEST_ASSERT_EQUAL(FF_INTENT_CREW_START_REQUEST, s_spy.last.kind);
+}
+
+static void D2_leave_crew_pill_emits_the_request(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+    s12_build_crew_page_with_one_of_each(&s.crew);
+    s.crew.link_connected = true;
+    s.crew.can_leave = true;
+    s.crew.has_snapshot = true;
+
+    d2_tap_crew_pill(&s, "LEAVE CREW");
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_CREW_LEAVE_REQUEST, s_spy.last.kind);
+}
+
+/* Exactly one of the two is ever drawn, and neither when the shell says
+ * neither can work. The mutation this proves against: drawing both, or
+ * drawing a disabled one — a control that cannot do what it says is
+ * worse than a sentence explaining why. */
+static void D2_exactly_one_of_start_and_leave_is_ever_offered(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+    s12_build_crew_page_with_one_of_each(&s.crew);
+    s.crew.link_connected = true;
+
+    s.crew.can_start = true;
+    s.crew.can_leave = false;
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+    TEST_ASSERT_NOT_NULL(find_button_with_label(lv_screen_active(), "START CREW"));
+    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "LEAVE CREW"));
+
+    s.crew.can_start = false;
+    s.crew.can_leave = true;
+    lv_obj_clean(lv_screen_active()); /* each case is its own screen */
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "START CREW"));
+    TEST_ASSERT_NOT_NULL(find_button_with_label(lv_screen_active(), "LEAVE CREW"));
+
+    s.crew.can_start = false;
+    s.crew.can_leave = false;
+    lv_obj_clean(lv_screen_active());
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "START CREW"));
+    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "LEAVE CREW"));
+    /* ...and SHOW CODE is untouched in every case. */
+    TEST_ASSERT_NOT_NULL(find_button_with_label(lv_screen_active(), "SHOW CODE"));
+}
+
+static void D2_confirm_face_start_button_emits_the_confirm(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW_CONFIRM;
+    s.crew.op = FF_APP_CREW_OP_START;
+
+    d2_tap_crew_pill(&s, "START");
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_CREW_START_CONFIRM, s_spy.last.kind);
+}
+
+static void D2_confirm_face_not_now_dismisses_and_writes_nothing(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW_CONFIRM;
+    s.crew.op = FF_APP_CREW_OP_START;
+
+    d2_tap_crew_pill(&s, "NOT NOW");
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_CREW_DISMISS, s_spy.last.kind);
+}
+
+static void D2_confirm_face_leave_button_emits_the_leave_confirm(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW_CONFIRM;
+    s.crew.op = FF_APP_CREW_OP_LEAVE;
+    s.crew.has_snapshot = true;
+
+    d2_tap_crew_pill(&s, "LEAVE");
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_CREW_LEAVE_CONFIRM, s_spy.last.kind);
+}
+
+/* With no snapshot there is nothing to put back, so the confirm button
+ * is GONE, not disabled: "your radio goes back to its old settings" is a
+ * promise this puck cannot keep, and the face says so instead. */
+static void D2_leave_confirm_without_a_snapshot_offers_no_confirm_button(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW_CONFIRM;
+    s.crew.op = FF_APP_CREW_OP_LEAVE;
+    s.crew.has_snapshot = false;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "LEAVE"));
+    TEST_ASSERT_NOT_NULL(find_button_with_label(lv_screen_active(), "BACK"));
+}
+
+/* While the write is in the air there is nothing to confirm and nothing
+ * to dismiss — and crucially no button that could start a SECOND write
+ * racing the first one's reboot. */
+static void D2_status_face_offers_no_action_while_it_works(void)
+{
+    ff_app_crew_phase_t const busy[] = {FF_APP_CREW_PHASE_GENERATING, FF_APP_CREW_PHASE_WRITING,
+                                         FF_APP_CREW_PHASE_VERIFYING};
+    for (size_t i = 0; i < sizeof(busy) / sizeof(busy[0]); i++) {
+        ff_app_settings_t s;
+        memset(&s, 0, sizeof(s));
+        s.subview = FF_SETTINGS_SUB_CREW_STATUS;
+        s.crew.op = FF_APP_CREW_OP_START;
+        s.crew.phase = busy[i];
+
+        lv_obj_clean(lv_screen_active());
+        ff_scr_settings_build(lv_screen_active(), &s);
+        lv_obj_update_layout(lv_screen_active());
+        TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "DONE"));
+        TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "START"));
+        TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "SHOW CODE"));
+    }
+}
+
+static void D2_status_ready_offers_show_code_and_done(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW_STATUS;
+    s.crew.op = FF_APP_CREW_OP_START;
+    s.crew.phase = FF_APP_CREW_PHASE_READY;
+    snprintf(s.crew.pending_code, sizeof(s.crew.pending_code), "FIRE-4K9M7X");
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "FIRE-4K9M7X"));
+
+    d2_tap_crew_pill(&s, "SHOW CODE");
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTINGS_OPEN_CREW_CODE, s_spy.last.kind);
+
+    memset(&s_spy, 0, sizeof(s_spy));
+    d2_tap_crew_pill(&s, "DONE");
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_CREW_DISMISS, s_spy.last.kind);
+}
+
+/* READY after a LEAVE has no code, and must not render one. */
+static void D2_status_ready_after_leave_shows_no_code(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW_STATUS;
+    s.crew.op = FF_APP_CREW_OP_LEAVE;
+    s.crew.phase = FF_APP_CREW_PHASE_READY;
+    /* The radio's LAST known code is still on the page struct — the
+     * leave face must not reach for it. */
+    snprintf(s.crew.crew_code, sizeof(s.crew.crew_code), "FIRE-4K9M7X");
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "FIRE-4K9M7X"));
+    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "SHOW CODE"));
+    TEST_ASSERT_NOT_NULL(find_button_with_label(lv_screen_active(), "DONE"));
+}
+
+/* Every failure says WHY. The mutation this proves against: a face that
+ * reports "it didn't work" and leaves the wearer with nothing to do. */
+static void D2_every_failure_reason_renders_its_own_sentence(void)
+{
+    ff_app_crew_fail_t const fails[] = {
+        FF_APP_CREW_FAIL_NO_LINK,      FF_APP_CREW_FAIL_REGION_UNSET,   FF_APP_CREW_FAIL_NO_ENTROPY,
+        FF_APP_CREW_FAIL_NO_SNAPSHOT,  FF_APP_CREW_FAIL_SEND,            FF_APP_CREW_FAIL_NAK,
+        FF_APP_CREW_FAIL_TIMEOUT_ACK,  FF_APP_CREW_FAIL_TIMEOUT_VERIFY,  FF_APP_CREW_FAIL_MISMATCH,
+    };
+    /* The region case is pinned by its exact words, because it is the
+     * one the wearer can actually act on and the spec states it
+     * verbatim. */
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW_STATUS;
+    s.crew.op = FF_APP_CREW_OP_START;
+    s.crew.phase = FF_APP_CREW_PHASE_FAILED;
+    s.crew.fail = FF_APP_CREW_FAIL_REGION_UNSET;
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "Set the radio region on the phone first."));
+
+    for (size_t i = 0; i < sizeof(fails) / sizeof(fails[0]); i++) {
+        memset(&s, 0, sizeof(s));
+        s.subview = FF_SETTINGS_SUB_CREW_STATUS;
+        s.crew.op = FF_APP_CREW_OP_START;
+        s.crew.phase = FF_APP_CREW_PHASE_FAILED;
+        s.crew.fail = fails[i];
+        lv_obj_clean(lv_screen_active());
+        ff_scr_settings_build(lv_screen_active(), &s);
+        lv_obj_update_layout(lv_screen_active());
+        /* A BACK out is always offered, so a failure is never a face the
+         * wearer is stuck on. */
+        TEST_ASSERT_NOT_NULL(find_button_with_label(lv_screen_active(), "BACK"));
+    }
 }
 
 static void A02_show_code_is_offered_even_with_no_code_resolved(void)
@@ -4291,6 +4549,17 @@ int main(void)
 
     RUN_TEST(A02_crew_unhide_tap_emits_unhide_with_node_id);
     RUN_TEST(A02_show_code_tap_emits_open_crew_code);
+    RUN_TEST(D2_start_crew_pill_emits_the_request_not_the_write);
+    RUN_TEST(D2_leave_crew_pill_emits_the_request);
+    RUN_TEST(D2_exactly_one_of_start_and_leave_is_ever_offered);
+    RUN_TEST(D2_confirm_face_start_button_emits_the_confirm);
+    RUN_TEST(D2_confirm_face_not_now_dismisses_and_writes_nothing);
+    RUN_TEST(D2_confirm_face_leave_button_emits_the_leave_confirm);
+    RUN_TEST(D2_leave_confirm_without_a_snapshot_offers_no_confirm_button);
+    RUN_TEST(D2_status_face_offers_no_action_while_it_works);
+    RUN_TEST(D2_status_ready_offers_show_code_and_done);
+    RUN_TEST(D2_status_ready_after_leave_shows_no_code);
+    RUN_TEST(D2_every_failure_reason_renders_its_own_sentence);
     RUN_TEST(A02_show_code_is_offered_even_with_no_code_resolved);
     RUN_TEST(A02_an_untracked_crew_member_is_never_shown_as_a_hex_id);
     RUN_TEST(A02_crew_page_omits_empty_hidden_and_overflow_sections);

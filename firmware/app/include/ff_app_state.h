@@ -625,6 +625,18 @@ typedef enum {
      * sub-view above; BACK's existing generic "any non-LIST settings
      * subview returns to LIST" rule needs no new case. */
     FF_SETTINGS_SUB_CREW_CODE,
+    /* [api] A02 slice D2 (docs/specs/S02-core-crew.md's 2026-09-14
+     * amendment) — the one-tap CONFIRM face for START CREW / LEAVE
+     * CREW, and the WRITING/VERIFYING/READY/FAILED progress face that
+     * follows it. Which of the two questions CONFIRM asks is
+     * `ff_app_crew_page_t.op`; there is deliberately not a subview per
+     * operation, because the face is the same face with one sentence
+     * swapped and two faces would be two places to keep that sentence
+     * honest. Same shape as every sub-view above; BACK's generic "any
+     * non-LIST settings subview returns to LIST" rule needs no new
+     * case. */
+    FF_SETTINGS_SUB_CREW_CONFIRM,
+    FF_SETTINGS_SUB_CREW_STATUS,
 } ff_settings_subview_t;
 
 /**
@@ -700,6 +712,54 @@ typedef struct {
 } ff_app_crew_hidden_row_t;
 
 /**
+ * [api] A02 slice D2 — which crew operation the CONFIRM/STATUS faces are
+ * about. The app layer names its own boundary enums (this tree's
+ * existing convention — see `ff_app_link_t` beside `mc_link`), so this
+ * mirrors core's `ff_crewstart_op_t` value for value rather than
+ * exposing it; `ff_shell.c` translates in one place.
+ */
+typedef enum {
+    FF_APP_CREW_OP_NONE = 0,
+    FF_APP_CREW_OP_START,
+    FF_APP_CREW_OP_LEAVE,
+} ff_app_crew_op_t;
+
+/**
+ * [api] A02 slice D2 — how far along that operation is. This is exactly
+ * what the STATUS face says out loud, and the vocabulary is deliberately
+ * the radio's truth rather than a reassuring summary: WRITING means the
+ * frame is out, VERIFYING means we are re-reading the radio to see
+ * whether it took, and READY is only ever reached by a read-back that
+ * matched.
+ */
+typedef enum {
+    FF_APP_CREW_PHASE_IDLE = 0,
+    FF_APP_CREW_PHASE_GENERATING,
+    FF_APP_CREW_PHASE_WRITING,
+    FF_APP_CREW_PHASE_VERIFYING,
+    FF_APP_CREW_PHASE_READY,
+    FF_APP_CREW_PHASE_FAILED,
+} ff_app_crew_phase_t;
+
+/**
+ * [api] A02 slice D2 — why it failed, in enough detail for the face to
+ * say something a wearer can act on. "It didn't work" is not a report;
+ * each of these maps to one sentence in `scr_settings.c`.
+ */
+typedef enum {
+    FF_APP_CREW_FAIL_NONE = 0,
+    FF_APP_CREW_FAIL_NO_LINK,
+    FF_APP_CREW_FAIL_REGION_UNSET,
+    FF_APP_CREW_FAIL_NO_ENTROPY,
+    FF_APP_CREW_FAIL_NO_SNAPSHOT,
+    FF_APP_CREW_FAIL_SEND,
+    FF_APP_CREW_FAIL_NAK,
+    FF_APP_CREW_FAIL_TIMEOUT_ACK,
+    FF_APP_CREW_FAIL_TIMEOUT_VERIFY,
+    FF_APP_CREW_FAIL_MISMATCH,
+} ff_app_crew_fail_t;
+
+/**
  * The whole CREW page — built by the shell only while `subview ==
  * FF_SETTINGS_SUB_CREW` (zeroed otherwise, the `ff_app_rally_t`
  * precedent). `FF_APP_CREW_HEARD_MAX` is a literal #define ALIAS of
@@ -763,6 +823,39 @@ typedef struct {
      * frees a slot and the next packet admits them. */
     uint8_t                   overflow_count;
     ff_app_crew_heard_row_t   overflow[FF_APP_CREW_HEARD_MAX];
+
+    /* ---------------------------------------------------------------
+     * [api] A02 slice D2 — START CREW / LEAVE CREW
+     * (docs/specs/S02-core-crew.md's 2026-09-14 amendment).
+     * ------------------------------------------------------------- */
+
+    /* Which of the two controls the CREW page offers. Exactly one is
+     * ever true on a radio the puck can see: a puck with a valid crew
+     * code can leave, one without can start. BOTH are false when the
+     * puck cannot see the radio's channel table at all, because
+     * offering either would be offering a button that cannot do what it
+     * says — the page explains that instead. */
+    bool can_start;
+    bool can_leave;
+
+    /* Whether a pre-crew snapshot exists to restore. Not a failure by
+     * itself — it is what lets the LEAVE confirm face be honest about
+     * what it can promise, instead of offering "back to your old
+     * settings" over a record nobody ever took. */
+    bool has_snapshot;
+
+    /* What the CONFIRM/STATUS faces are about, and how far along. */
+    ff_app_crew_op_t    op;
+    ff_app_crew_phase_t phase;
+    ff_app_crew_fail_t  fail;
+
+    /* The code this run minted, for the READY face — "" for a LEAVE and
+     * for every run that has not minted one. Distinct from `crew_code`
+     * above, which is what the RADIO currently reports: this one is
+     * "what we just asked for" and that one is "what is actually
+     * there", and conflating them is how a face ends up showing a code
+     * the radio never accepted. */
+    char pending_code[FF_CREWCODE_LEN + 1u];
 } ff_app_crew_page_t;
 
 /* -------------------------------------------------------------------
