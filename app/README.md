@@ -181,6 +181,14 @@ That is not a bug to chase.
 - `-FireflyStartTab <name>` / `-FireflyFindSegment <name>` — land on a
   specific tab/segment against the REAL composition graph
   (`FireflyDebugStartDestinationLaunch`). **`#if DEBUG` only.**
+- `-FireflyDebugHideBadge` — suppress the DEMO badge strip
+  (`DemoBadge.swift`) for this one launch
+  (`FireflyDebugHideBadgeLaunch`). Built for
+  `app/tools/store_media.sh`'s App Store screenshots, which ship
+  without the strip by default (`marketing/README.md`, "The DEMO
+  badge") — every other demo-mode use keeps the badge on. **`#if
+  DEBUG` only**, so it is compiled out entirely in a Release/
+  TestFlight/App Store build.
 - `-FireflyDebugJoinCrew <code>` — once a puck is actually connected,
   perform A02's Join non-interactively with that code
   (`FireflyDebugCrewLaunch`). The argument is anything
