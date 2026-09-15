@@ -1062,10 +1062,10 @@ static void radar_disc_hit_cb(lv_event_t *e)
  * a no-op there because `ff_crew_select_next` already wraps a
  * single-member roster back to itself (core/src/ff_crew.c).
  *
- * Fully transparent — draws nothing. The existing name label already
+ * Transparent AT REST — draws nothing. The existing name label already
  * shows WHO is selected (`radar_build_name_label`, called from every
  * per-mode renderer above with `radar->name`), so this control needs no
- * visible chrome of its own, only a hit target; the ring's own
+ * visible resting chrome of its own, only a hit target; the ring's own
  * selection indicator is `radar_draw_selection_ring` above. Built
  * BEFORE any mode-specific content (see this function's call site in
  * `ff_scr_radar_build`) so a real widget occupying this same screen
@@ -1076,7 +1076,55 @@ static void radar_disc_hit_cb(lv_event_t *e)
  * already follows. `ff_scr_button_create` tags this LV_OBJ_FLAG_USER_1
  * automatically, which is what makes S28's G3 refuse to fire when a
  * long-press starts here once a member IS selected — see
- * app/ff_gesture_glue.c's `gesture_glue_press_is_interactive`. */
+ * app/ff_gesture_glue.c's `gesture_glue_press_is_interactive`.
+ *
+ * PRESSED-state feedback (rebase-time question raised by #330's own
+ * review, "Dependency note — #329"): rather than an exemption, this
+ * disc gets the same amber wash `ff_scr_pill_create`'s own
+ * `FF_SCR_PILL_PRESS_TINT` uses (scr_widgets.c) — `bg_color` =
+ * FF_THEME_COLOR_AMBER, `bg_opa` = LV_OPA_20 at LV_STATE_PRESSED, unset
+ * (TRANSP) at rest — same mechanism, kept deliberately fainter
+ * (LV_OPA_20, not TINT's LV_OPA_40) because this disc is 120px across
+ * versus a pill's much smaller footprint and reads as a big flat wash
+ * rather than a thin accent otherwise. Chosen over a border-only ring
+ * for two reasons: (1) `test_press_feedback_all_faces.c`'s
+ * `has_press_feedback` — the CI gate every clickable control in this
+ * codebase answers to — measures resolved `bg_opa`/`bg_color` deltas
+ * under LV_STATE_PRESSED, exactly as this codebase's OWN existing press
+ * mechanism already works (`ff_scr_pill_create`'s DIM/TINT above); a
+ * border-only treatment is invisible to that predicate and would need a
+ * new documented exemption for no functional gain — this codebase
+ * already has exactly one such exemption (scr_inbox.c's row/FAB press
+ * wash, see that test file's own top comment) and it exists because
+ * inbox's mechanism predates this predicate, not because a border ring
+ * is otherwise preferable. (2) No compass-needle conflict: this
+ * function is called BEFORE any mode-specific content, so the arrow —
+ * `radar_draw_arrow`, whose base segment starts at this disc's own
+ * center (0,0) — is always a LATER sibling and paints ON TOP of this
+ * wash; a low, flat opacity behind an opaque-or-dashed foreground line
+ * never dims or competes with it, at any arrow style (solid/dashed/
+ * ghost) or opacity this file uses. Verified by eye: `ffsim
+ * --fixture tests/fixtures/radar_live.json --headless --screenshot
+ * /tmp` with the disc's LV_STATE_PRESSED forced (same technique
+ * `ff_run_headless_once`'s `--press-label` uses) shows the amber wash
+ * sitting cleanly under the full-opacity LIVE arrow.
+ *
+ * `--press-label` ITSELF cannot target this specific disc for a
+ * one-off reference screenshot: `ff_find_button_with_label` (sim/
+ * main.c) is a label-text lookup, and this disc — like the rest of its
+ * own resting-state chrome — has no label child at all (see "draws
+ * nothing" above; adding one purely to make it findable would be
+ * exactly the "visible chrome this control needs none of" the doc
+ * comment above rules out). This is NOT a gap in coverage: CI's own
+ * `test_press_feedback_all_faces.c` sweep does not go through
+ * `--press-label` or any label lookup either — it walks every
+ * CLICKABLE object in the built tree directly
+ * (`press_walk`/`has_press_feedback`) and forces LV_STATE_PRESSED on
+ * each one in turn, so this disc is exercised by the same real
+ * mechanism as every other control regardless of having no label; only
+ * the separate, manual, docs/screens/-reference-shot convenience is
+ * unavailable for it. No test exemption needed or added — the CI
+ * predicate passes on this control directly. */
 static void radar_build_select_tap(lv_obj_t *parent)
 {
     lv_obj_t *btn = ff_scr_button_create(parent);
@@ -1084,6 +1132,8 @@ static void radar_build_select_tap(lv_obj_t *parent)
     lv_obj_set_size(btn, RADAR_SELECT_BTN_DIAM_PX, RADAR_SELECT_BTN_DIAM_PX);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_AMBER), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_20, LV_STATE_PRESSED);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_ADV_HITTEST);
     lv_obj_add_event_cb(btn, radar_disc_hit_cb, LV_EVENT_HIT_TEST, NULL);
     lv_obj_align(btn, LV_ALIGN_CENTER, 0, 0);
