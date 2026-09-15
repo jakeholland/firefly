@@ -301,6 +301,11 @@ targets:
       # default, cover included" without `RootView.swift`'s SwiftUI/
       # Theme dependency.
       - path: Firefly/Sources/RootLaunchPlan.swift
+      # `app/tools/store_media.sh`'s screenshot seam
+      # (`-FireflyDebugHideBadge`) — SwiftUI-free by construction, same
+      # shape and same reason as `FireflyDebugStartDestinationLaunch.swift`
+      # above.
+      - path: Firefly/Sources/FireflyDebugHideBadgeLaunch.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit
