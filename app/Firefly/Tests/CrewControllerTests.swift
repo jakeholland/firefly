@@ -866,6 +866,48 @@ final class CrewControllerTests: XCTestCase {
         }
     }
 
+    /// Review fix (2026-09-14) — `.awaitingPuck`'s own contract, A02
+    /// §3.3's table: "Retry: none — Firefly settles it itself." A screen
+    /// that offered a retry here would re-send the same write and
+    /// reboot the puck a SECOND time, which is the exact loop this
+    /// error exists to stop. `canRetry` is what both the confirmation
+    /// sheet's CONFIRM (`confirmDisabled:`) and `CrewApplyStatusView`'s
+    /// TRY AGAIN gate on.
+    func testCanRetryIsFalseOnlyWhileAwaitingPuckAndTrueForEveryOtherPhase() async {
+        let (controller, client) = makeController()
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        XCTAssertTrue(controller.canRetry, "idle")
+
+        let code = try! CrewCode.parse("FIRE-4K9M7X")
+        _ = await controller.beginJoin(payload: .bareCode(code))
+        client.failNextChannelWrite(with: .committedButNotVerified)
+        _ = await controller.confirmApply()
+        guard case .awaitingPuck = controller.phase else {
+            return XCTFail("expected .awaitingPuck, got \(controller.phase)")
+        }
+        XCTAssertFalse(controller.canRetry,
+                        "the puck may still be mid-reboot — retrying now means writing the same " +
+                        "channel and rebooting it a second time")
+
+        // An ordinary failure DOES allow a retry.
+        let (ordinaryController, ordinaryClient) = makeController()
+        ordinaryClient.nodeConfig = NodeConfigSnapshot(region: .us)
+        _ = await ordinaryController.beginJoin(payload: .bareCode(code))
+        ordinaryClient.failNextChannelWrite(with: .timeout)
+        _ = await ordinaryController.confirmApply()
+        guard case .failed = ordinaryController.phase else {
+            return XCTFail("expected .failed, got \(ordinaryController.phase)")
+        }
+        XCTAssertTrue(ordinaryController.canRetry, "an ordinary timeout is retriable")
+
+        // And the read-back settling `.awaitingPuck` (either way) turns
+        // retry back on: the attempt is over.
+        client.channelTable = [Self.crewChannel(for: code)]
+        try? await client.connect()
+        await eventually { controller.phase == .joined }
+        XCTAssertTrue(controller.canRetry, "joined")
+    }
+
     // MARK: - Helpers for the amendment tests
 
     /// The channel a puck is holding once a crew join has actually taken
@@ -886,5 +928,228 @@ final class CrewControllerTests: XCTestCase {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
         XCTFail("condition never became true", file: file, line: line)
+    }
+
+    // MARK: - Review fix (2026-09-14) — a stale read-back must not
+    // clobber a NEWER decision.
+    //
+    // `completePendingVerification()` nils `pendingVerification` before
+    // its `await client.currentChannelTable()`, which stops a SECOND
+    // `.ready` from starting a second read. It does nothing about a read
+    // already past that `await`: `CrewController` is `@MainActor`, not
+    // an actor of its own, so a `cancelPending()` (or a fresh
+    // `confirmApply()`) can run to completion in that gap and the stale
+    // read would then resume and overwrite whatever the newer action
+    // had just decided — including adopting a profile for a join the
+    // user already cancelled.
+
+    /// `cancelPending()` while the read-back is in flight must win: the
+    /// read-back that resumes afterwards — even one that finds the crew
+    /// channel sitting right there — must not resurrect the cancelled
+    /// join.
+    func testCancelPendingDuringAnInFlightReadBackIsNeverResurrectedByIt() async {
+        let profileStore = InMemoryCrewProfileStore()
+        let client = GatedReadBackClient()
+        client.connectedNodeNum = 48_621_524
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        let controller = CrewController(client: client, profileStore: profileStore)
+        let code = try! CrewCode.parse("FIRE-4K9M7X")
+
+        _ = await controller.beginJoin(payload: .bareCode(code))
+        client.failNextChannelWrite(with: .committedButNotVerified)
+        _ = await controller.confirmApply()
+        guard case .awaitingPuck = controller.phase else {
+            return XCTFail("expected .awaitingPuck, got \(controller.phase)")
+        }
+
+        // The puck comes back holding exactly this crew — a read-back
+        // that WOULD join, if it were allowed to finish uncontested.
+        client.channelTable = [Self.crewChannel(for: code)]
+        await client.gate.armBlockingNextCall()
+        let readBackStarted = Task { try? await client.connect() }
+
+        // Let `completePendingVerification()` actually reach (and block
+        // in) `currentChannelTable()` before acting.
+        await client.gate.waitUntilBlocked()
+
+        // The user cancels while that read is still in flight.
+        controller.cancelPending()
+        XCTAssertEqual(controller.phase, .idle)
+        XCTAssertNil(controller.pendingVerification)
+
+        // Now let the stale read-back finish.
+        await client.gate.open()
+        _ = await readBackStarted.value
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(controller.phase, .idle,
+                        "a cancelled join must not be resurrected by a read-back that started before the cancel")
+        XCTAssertNil(controller.profile, "the crew must not be adopted after the join was cancelled")
+        XCTAssertNil(profileStore.load())
+    }
+
+    /// A fresh `confirmApply()` must win the same way: the stale
+    /// read-back from the PREVIOUS attempt must not overwrite the phase
+    /// (or worse, the profile) the new attempt already produced.
+    func testFreshConfirmApplyDuringAnInFlightReadBackIsNeverOverwrittenByIt() async {
+        let profileStore = InMemoryCrewProfileStore()
+        let client = GatedReadBackClient()
+        client.connectedNodeNum = 48_621_524
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        let controller = CrewController(client: client, profileStore: profileStore)
+        let staleCode = try! CrewCode.parse("FIRE-4K9M7X")
+        let freshCode = try! CrewCode.parse("FIRE-8MNTT2")
+
+        _ = await controller.beginJoin(payload: .bareCode(staleCode))
+        client.failNextChannelWrite(with: .committedButNotVerified)
+        _ = await controller.confirmApply()
+        guard case .awaitingPuck = controller.phase else {
+            return XCTFail("expected .awaitingPuck, got \(controller.phase)")
+        }
+
+        // The puck comes back — still holding the STALE crew, which
+        // would complete the OLD attempt if the read-back were allowed
+        // to run uncontested. Arming targets exactly THIS call, not the
+        // occupancy read `beginJoin(freshCode)` is about to make below
+        // (the gate's own doc comment).
+        client.channelTable = [Self.crewChannel(for: staleCode)]
+        await client.gate.armBlockingNextCall()
+        let readBackStarted = Task { try? await client.connect() }
+        await client.gate.waitUntilBlocked()
+
+        // The user does not wait: they start a brand new join for a
+        // DIFFERENT crew while the old read-back is still in flight, and
+        // this one is left to succeed normally (no scripted failure) —
+        // its own occupancy read passes straight through, unarmed.
+        _ = await controller.beginJoin(payload: .bareCode(freshCode))
+        _ = await controller.confirmApply()
+        XCTAssertEqual(controller.profile?.code, freshCode.canonical,
+                        "the fresh attempt must be free to complete while the stale read-back waits")
+
+        // Only NOW does the stale read-back get to finish — after the
+        // fresh attempt already has its own, different outcome.
+        await client.gate.open()
+        _ = await readBackStarted.value
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(controller.profile?.code, freshCode.canonical,
+                        "the fresh attempt's own outcome must stand")
+        XCTAssertNotEqual(controller.profile?.code, staleCode.canonical,
+                           "a read-back that started before this attempt must never decide it")
+    }
+}
+
+// MARK: - Review fix (2026-09-14) test double
+
+/// A gate a test can hold shut, so `completePendingVerification()`'s
+/// `await client.currentChannelTable()` can be paused mid-flight and a
+/// competing `@MainActor` call (`cancelPending()`, a fresh
+/// `confirmApply()`) run in the gap it opens — the exact race the fix
+/// closes.
+///
+/// `currentChannelTable()` is also what `beginJoin()`'s own
+/// `preparePlan()` calls (to read occupied indexes), so the gate only
+/// blocks a call it was explicitly ARMED for — `armBlockingNextCall()` —
+/// rather than every call. Without that, arming unconditionally would
+/// also snag the fresh attempt's own occupancy read and deadlock the
+/// test, since nothing would ever be left to call `open()`.
+///
+/// `waitUntilBlocked()` lets the test know the armed read has actually
+/// reached the gate before it acts, so the test is deterministic rather
+/// than timing-dependent.
+private actor ReadBackGate {
+    private var isArmed = false
+    private var isBlocked = false
+    private var openContinuation: CheckedContinuation<Void, Never>?
+    private var blockedContinuation: CheckedContinuation<Void, Never>?
+
+    func armBlockingNextCall() { isArmed = true }
+
+    func wait() async {
+        guard isArmed else { return }
+        isArmed = false
+        isBlocked = true
+        blockedContinuation?.resume()
+        blockedContinuation = nil
+        await withCheckedContinuation { openContinuation = $0 }
+    }
+
+    func open() {
+        openContinuation?.resume()
+        openContinuation = nil
+    }
+
+    func waitUntilBlocked() async {
+        if isBlocked { return }
+        await withCheckedContinuation { blockedContinuation = $0 }
+    }
+}
+
+/// Wraps a `StubMeshtasticClient` for everything except
+/// `currentChannelTable()`, which blocks on `gate` — the one call
+/// `completePendingVerification()` awaits mid-verification.
+private final class GatedReadBackClient: MeshtasticClientProtocol, @unchecked Sendable {
+    let stub = StubMeshtasticClient()
+    let gate = ReadBackGate()
+
+    var connectedNodeNum: UInt32? {
+        get { stub.connectedNodeNum }
+        set { stub.connectedNodeNum = newValue }
+    }
+    var connectedNodeConfig: NodeConfigSnapshot? { stub.connectedNodeConfig }
+    var nodeConfig: NodeConfigSnapshot? {
+        get { stub.nodeConfig }
+        set { stub.nodeConfig = newValue }
+    }
+    var channelTable: [Channel] {
+        get { stub.channelTable }
+        set { stub.channelTable = newValue }
+    }
+
+    func linkState() -> AsyncStream<LinkState> { stub.linkState() }
+    func nodeUpdates() -> AsyncStream<MeshNodeSnapshot> { stub.nodeUpdates() }
+    func deliveryUpdates() -> AsyncStream<DeliveryEvent> { stub.deliveryUpdates() }
+    func incomingTexts() -> AsyncStream<IncomingText> { stub.incomingTexts() }
+    func incomingPrivate() -> AsyncStream<IncomingPrivate> { stub.incomingPrivate() }
+    func inboundPackets() -> AsyncStream<InboundPacketEvent> { stub.inboundPackets() }
+    func nodeConfigUpdates() -> AsyncStream<NodeConfigSnapshot> { stub.nodeConfigUpdates() }
+
+    func connect() async throws { try await stub.connect() }
+    func disconnect() async { await stub.disconnect() }
+    @discardableResult
+    func sendText(_ text: String, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
+        try await stub.sendText(text, to: destination, wantAck: wantAck)
+    }
+    @discardableResult
+    func sendPosition(_ fix: ExternalPositionFix, to destination: UInt32) async throws -> UInt32 {
+        try await stub.sendPosition(fix, to: destination)
+    }
+    @discardableResult
+    func sendPrivate(_ payload: Data, to destination: UInt32, wantAck: Bool) async throws -> UInt32 {
+        try await stub.sendPrivate(payload, to: destination, wantAck: wantAck)
+    }
+    @discardableResult
+    func requestNodeInfo(from nodeID: UInt32) async throws -> UInt32 {
+        try await stub.requestNodeInfo(from: nodeID)
+    }
+    @discardableResult
+    func applyChannelSet(_ request: ChannelWriteRequest) async throws -> ChannelWriteReport {
+        try await stub.applyChannelSet(request)
+    }
+    @discardableResult
+    func setOwner(longName: String, shortName: String) async throws -> OwnerWriteReport {
+        try await stub.setOwner(longName: longName, shortName: shortName)
+    }
+    @discardableResult
+    func setRegion(_ region: Config.LoRaConfig.RegionCode) async throws -> RegionWriteReport {
+        try await stub.setRegion(region)
+    }
+
+    func failNextChannelWrite(with error: AdminWriteError) { stub.failNextChannelWrite(with: error) }
+
+    /// The one override: gated on the test's own `gate.open()`.
+    func currentChannelTable() async throws -> [Channel] {
+        await gate.wait()
+        return try await stub.currentChannelTable()
     }
 }

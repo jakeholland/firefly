@@ -75,7 +75,14 @@ struct CrewApplyStatusView: View {
                     .foregroundStyle(Color.ffAlert)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("CrewApply.Failure")
-                if let onRetry {
+                // Review fix (2026-09-14) — `.awaitingPuck` has a
+                // `failureMessage` (so its sentence renders) but its own
+                // contract is "Retry: none — Firefly settles it itself"
+                // (`CrewController.canRetry`'s own doc comment). Offering
+                // TRY AGAIN here would re-send the same write and reboot
+                // the puck a second time — the exact loop this phase
+                // exists to stop.
+                if let onRetry, controller.canRetry {
                     Button("TRY AGAIN", action: onRetry)
                         .buttonStyle(.bordered)
                         .tint(Color.ffAmber)

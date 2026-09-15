@@ -340,6 +340,26 @@ final class CrewController {
         }
     }
 
+    /// Review fix (2026-09-14) — the A02 §3.3 amendment's own contract
+    /// for `.awaitingPuck`, made mechanical: its Retry column is
+    /// "none — Firefly settles it itself." Both the confirmation sheet's
+    /// CONFIRM and `CrewApplyStatusView`'s TRY AGAIN read `failureMessage`
+    /// to decide whether to show a retry control at all, and
+    /// `.awaitingPuck` also has a `failureMessage` (so its sentence
+    /// renders) — without this, a screen open across the puck's reboot
+    /// would offer a retry that RE-SENDS the same write and reboots the
+    /// puck a second time, which is the exact loop `committedButNotVerified`
+    /// exists to stop. Concretely reachable: `hasConnectedRadio` goes
+    /// true as soon as `my_info` lands, before the handshake reaches
+    /// `.ready` — the one event that actually settles the pending join
+    /// (`completePendingVerification()`) — so there is a real window
+    /// where the puck reads as "connected" while this is still
+    /// `.awaitingPuck`.
+    var canRetry: Bool {
+        if case .awaitingPuck = phase { return false }
+        return true
+    }
+
     private(set) var pending: PendingKind?
     /// A02 §3.3 amendment — the Start/Join that reached the puck but has
     /// not been read back yet (`ApplyPhase.awaitingPuck`). Held in
@@ -356,6 +376,22 @@ final class CrewController {
     /// `confirmApply()` — a new attempt supersedes the old one. NOT
     /// cleared by `clearFailure()`, which only resets what is on screen.
     private(set) var pendingVerification: PendingKind?
+    /// Review fix (2026-09-14) — `completePendingVerification()` awaits
+    /// `client.currentChannelTable()`, and this is `@MainActor`, not an
+    /// actor of its own: another `@MainActor` call (a fresh
+    /// `confirmApply()`, `cancelPending()`) can run to completion in
+    /// that gap. Nilling `pendingVerification` up front stops a SECOND
+    /// `.ready` from starting a second read, but it does nothing for a
+    /// read already past that line — without this token, a stale
+    /// read-back would resume after the gap and overwrite whatever the
+    /// newer attempt had already decided (`phase`, `pending`, even
+    /// `profile` via `adoptProfile`).
+    ///
+    /// Bumped by anything that supersedes an in-flight verification —
+    /// `cancelPending()`, and the start of `confirmApply()` — so a
+    /// verification can tell after its `await` whether it is still the
+    /// one that matters and bail out (touching nothing) if not.
+    private var verificationGeneration: UInt64 = 0
     private(set) var isPreparing = false
     private(set) var isApplying = false
     private(set) var errorMessage: String?
@@ -453,6 +489,9 @@ final class CrewController {
     func cancelPending() {
         pending = nil
         pendingVerification = nil
+        // Review fix (2026-09-14) — supersede any verification already
+        // in flight, not only the flag a NEW one would have checked.
+        verificationGeneration &+= 1
         importer.clear()
         errorMessage = nil
         phase = .idle
@@ -549,8 +588,11 @@ final class CrewController {
         phase = .writing
         // A fresh attempt supersedes any read-back the previous one left
         // owing: whatever the puck ends up holding, it is this write
-        // that decides it.
+        // that decides it. The generation bump is what makes that true
+        // even for a verification already past its `await` (review fix,
+        // 2026-09-14) — see `verificationGeneration`'s own doc comment.
         pendingVerification = nil
+        verificationGeneration &+= 1
         defer { isApplying = false }
         let ok = await importer.confirmApply()
         guard ok else {
@@ -622,11 +664,22 @@ final class CrewController {
     /// `pendingVerification` is consumed before the read, not after:
     /// "once" has to survive the `await` in the middle, and a second
     /// `.ready` arriving during the read must not start a second one.
+    ///
+    /// Review fix (2026-09-14) — that alone stops a SECOND `.ready` from
+    /// starting a second read, but it does nothing about a read already
+    /// past the `await` below: this is `@MainActor`, not an actor of its
+    /// own, so a fresh `confirmApply()` or a `cancelPending()` can run
+    /// to completion in that gap. `verificationGeneration` is captured
+    /// before the read and re-checked after it — anything that
+    /// supersedes this attempt bumps it, and a stale read that finds it
+    /// changed bails out without touching `phase`/`pending`/`profile`.
     private func completePendingVerification() async {
         guard let staged = pendingVerification else { return }
         pendingVerification = nil
+        let generation = verificationGeneration
         let code = staged.code
         guard let table = try? await client.currentChannelTable() else {
+            guard generation == verificationGeneration else { return }
             // The puck is back but would not tell us what it is holding.
             // Nothing is known, so nothing is claimed.
             let message = "Your puck came back, but Firefly couldn't read the crew off it — " +
@@ -635,6 +688,7 @@ final class CrewController {
             phase = .failed(message)
             return
         }
+        guard generation == verificationGeneration else { return }
         guard Self.table(table, carries: code) else {
             let message = "Your puck didn't come back with \(code.canonical). " +
                 "Nothing is certain until it does — try again."

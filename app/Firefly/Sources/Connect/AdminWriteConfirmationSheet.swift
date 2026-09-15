@@ -58,6 +58,14 @@ struct AdminWriteConfirmationSheet: View {
     var technicalDetails: [String] = []
     let isBusy: Bool
     let errorMessage: String?
+    /// Review fix (2026-09-14) — some outcomes' whole contract is "no
+    /// retry" (A02 §3.3's `committedButNotVerified` row: "Retry: none —
+    /// Firefly settles it itself"). Retrying there means re-sending the
+    /// same admin write and rebooting the radio a second time — the
+    /// exact loop that error exists to stop. Defaults to `false`, so
+    /// every OTHER caller (Connect, Settings) keeps CONFIRM exactly as
+    /// it was.
+    var confirmDisabled: Bool = false
     let onConfirm: () -> Void
     let onCancel: () -> Void
 
@@ -106,7 +114,7 @@ struct AdminWriteConfirmationSheet: View {
                         .buttonStyle(.borderedProminent)
                         .tint(.ffAmber)
                         .foregroundStyle(Color.ffBackground)
-                        .disabled(isBusy)
+                        .disabled(isBusy || confirmDisabled)
                 }
                 .frame(minHeight: 44)
             }
