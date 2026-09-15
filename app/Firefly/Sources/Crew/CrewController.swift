@@ -97,7 +97,12 @@ final class CrewController {
         // dependency (see that property's own doc comment). The value
         // returned is still, only, the live precondition.
         _ = radioLink
-        return client.connectedNodeNum != nil
+        // Bench 2026-09-15 (Heltec, fw 2.7.26): `connectedNodeNum` is set at
+        // `my_info`, but the nodeDB dump that follows took ~30 s, and the
+        // crew's channel-table read sent inside that window hit the 30 s
+        // admin timeout — "Your puck didn't answer in time" on a radio that
+        // was simply still handshaking. `.ready` is the real precondition.
+        return client.connectedNodeNum != nil && client.currentLinkState == .ready
     }
 
     /// Starts mirroring `client.linkState()`. Idempotent, and called
@@ -311,7 +316,15 @@ final class CrewController {
         case joined
         case failed(String)
     }
-    private(set) var phase: ApplyPhase = .idle
+    private(set) var phase: ApplyPhase = .idle {
+        didSet {
+            #if DEBUG
+            // Bench observability only (stderr, like `MeshtasticClient.log`):
+            // the crew flow's phases are otherwise invisible to a headless run.
+            FileHandle.standardError.write(Data("[CrewController] phase -> \(phase)\n".utf8))
+            #endif
+        }
+    }
 
     /// The one progress line the screens show, or `nil` when there is
     /// nothing in flight.

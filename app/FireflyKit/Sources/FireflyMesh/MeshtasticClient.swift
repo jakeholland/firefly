@@ -454,6 +454,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// closure) cannot `await`. Safe because `nodeNumBox` is an
     /// immutable `let` of a lock-protected class.
     public nonisolated var connectedNodeNum: UInt32? { nodeNumBox.value }
+    public nonisolated var currentLinkState: LinkState { linkHub.currentValue ?? .disconnected }
 
     /// The ONE place `linkHub.yield(_:)` is called from here on — every
     /// transition this client ever publishes is worth a log line, and
@@ -906,7 +907,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         var mismatches: [String] = []
         for channel in request.channels {
             let got = try await requestChannel(index: channel.index, from: me)
-            if got == channel {
+            if Self.readBackMatches(written: channel, got: got) {
                 readChannels.append(got)
             } else {
                 let name = channel.settings.name.isEmpty ? "(default)" : channel.settings.name
@@ -1029,6 +1030,22 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         nodeConfig.txEnabled = got.txEnabled
         nodeConfigHub.yield(nodeConfig)
         return RegionWriteReport(region: got.region)
+    }
+
+    /// Bench 2026-09-15 (Heltec, fw 2.7.26): a slot written as DISABLED
+    /// (`index: N, role: DISABLED`, no `settings` — `ChannelWritePlan`'s
+    /// replace path) reads back as `index: N, settings { }` — the same
+    /// role, but with an EMPTY, PRESENT settings message. Byte-for-byte
+    /// equality called every one of channels 1…7 a mismatch, so every
+    /// crew join (replace plan = crew at 0, slots 1…7 disabled) was
+    /// reported "didn't confirm the change" after a write the radio had
+    /// in fact taken. A disabled slot is matched by index + role: there is
+    /// nothing else in it to be right or wrong about. Every other slot
+    /// must still read back equal to what was written.
+    public static func readBackMatches(written: Channel, got: Channel) -> Bool {
+        guard got.index == written.index, got.role == written.role else { return false }
+        if written.role == .disabled { return true }
+        return got == written
     }
 
     // MARK: - M3: admin write/read plumbing

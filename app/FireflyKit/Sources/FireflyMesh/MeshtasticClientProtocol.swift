@@ -468,6 +468,17 @@ public protocol MeshtasticClientProtocol: AnyObject, Sendable {
     /// takes a lock, not an actor hop.
     var connectedNodeNum: UInt32? { get }
 
+    /// The link state RIGHT NOW, synchronously — the same value
+    /// `linkState()`'s current-value replay would deliver, without the
+    /// actor hop. Bench 2026-09-15: `connectedNodeNum` goes non-nil at
+    /// `my_info`, ~30 s before the nodeDB dump finishes on a Heltec with
+    /// a full node table, and an admin read sent in that window times
+    /// out — so "a node number exists" is NOT "the radio is ready for an
+    /// admin exchange". Crew Join/Start gate on this being `.ready`.
+    /// The protocol extension default is `.disconnected` (fails CLOSED):
+    /// a conformer that has not said its link is ready is not ready.
+    var currentLinkState: LinkState { get }
+
     func connect() async throws
     /// A03 §3.1 — **`[api]`, S1b.** Attach to the transport before any
     /// connect: subscribe to its events, and adopt a link that is
@@ -751,6 +762,10 @@ public func isBroadcastDestination(_ to: UInt32) -> Bool {
     to == meshBroadcastAddress
 }
 public extension MeshtasticClientProtocol {
+    /// Fails closed — see the requirement's doc comment. Real clients
+    /// (`MeshtasticClient`, `DemoMeshtasticClient`, `StubMeshtasticClient`)
+    /// override this with their live link hub's current value.
+    var currentLinkState: LinkState { .disconnected }
     /// See `beginListening()`'s own doc comment on the protocol: a
     /// client with nothing restorable under it has nothing to attach to.
     func beginListening() async {}
@@ -822,8 +837,25 @@ public final class StubMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     /// the class of fabrication this type exists to refuse.
     public var connectedNodeNum: UInt32? {
         get { lock.lock(); defer { lock.unlock() }; return _connectedNodeNum }
-        set { lock.lock(); defer { lock.unlock() }; _connectedNodeNum = newValue }
+        set {
+            lock.lock(); _connectedNodeNum = newValue; lock.unlock()
+            // A test that hands the stub a node number means "a radio is
+            // connected and ready" unless it says otherwise afterwards
+            // via `publishLinkState(_:)` (the handshake-window tests do).
+            if newValue == nil {
+                linkHub.yield(.disconnected)
+            } else if linkHub.currentValue != .ready {
+                linkHub.yield(.ready)
+            }
+        }
     }
+
+    public var currentLinkState: LinkState { linkHub.currentValue ?? .disconnected }
+
+    /// Test seam: put the stub's link in an explicit state (e.g.
+    /// `.handshaking` after `connectedNodeNum` was set, to model the
+    /// window between `my_info` and `config_complete`).
+    public func publishLinkState(_ state: LinkState) { linkHub.yield(state) }
 
     public func connect() async throws {
         linkHub.yield(.connecting)

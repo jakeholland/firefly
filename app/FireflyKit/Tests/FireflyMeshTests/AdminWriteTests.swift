@@ -718,6 +718,54 @@ final class AdminWriteTests: XCTestCase {
     /// mismatching one named as the problem — and note the node may be
     /// partially configured, rather than bailing at the first mismatch
     /// with no context.
+    /// Bench 2026-09-15: a slot written as disabled with NO settings reads
+    /// back from a real radio as `index: N, settings { }` — present but
+    /// empty. That is the slot exactly as written; the read-back must say so.
+    func testApplyChannelSetAcceptsADisabledSlotThatReadsBackWithEmptySettings() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(transport: transport, postCommitDisconnectGrace: Self.noRebootGrace, beginEditSettingsRetryDelay: .milliseconds(1))
+        try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
+
+        var chan0 = sampleChannel()
+        chan0.index = 0
+        var disabled1 = Channel()
+        disabled1.index = 1
+        disabled1.role = .disabled
+        XCTAssertFalse(disabled1.hasSettings, "the plan writes a disabled slot with no settings at all")
+        let request = ChannelWriteRequest(channels: [chan0, disabled1], loraConfig: nil)
+        let applyTask = Task { try await client.applyChannelSet(request) }
+
+        try await waitForSentCount(8, on: transport)
+
+        try await waitForSentCount(9, on: transport)
+        let (req0, _) = try decodeAdminSend(transport, at: 8)
+        transport.inject(adminResponseFrame(requestID: req0.id) { $0.getChannelResponse = chan0 })
+
+        try await waitForSentCount(10, on: transport)
+        let (req1, _) = try decodeAdminSend(transport, at: 9)
+        var echoed = disabled1
+        echoed.settings = ChannelSettings() // what fw 2.7.26 actually answers: present, empty
+        XCTAssertNotEqual(echoed, disabled1, "byte equality is exactly what failed on the bench")
+        transport.inject(adminResponseFrame(requestID: req1.id) { $0.getChannelResponse = echoed })
+
+        let report = try await applyTask.value
+        XCTAssertEqual(report.channels.map(\.index), [0, 1])
+    }
+
+    func testReadBackMatchesIsStrictForEverythingButADisabledSlot() {
+        var written = Channel(); written.index = 3; written.role = .disabled
+        var got = written; got.settings = ChannelSettings()
+        XCTAssertTrue(MeshtasticClient.readBackMatches(written: written, got: got))
+        var wrongRole = got; wrongRole.role = .secondary
+        XCTAssertFalse(MeshtasticClient.readBackMatches(written: written, got: wrongRole))
+        var wrongIndex = got; wrongIndex.index = 4
+        XCTAssertFalse(MeshtasticClient.readBackMatches(written: written, got: wrongIndex))
+        var primary = sampleChannel(); primary.index = 0
+        var renamed = primary; renamed.settings.name = "Other"
+        XCTAssertTrue(MeshtasticClient.readBackMatches(written: primary, got: primary))
+        XCTAssertFalse(MeshtasticClient.readBackMatches(written: primary, got: renamed))
+    }
+
     func testApplyChannelSetReadBackReportsPerItemMismatch() async throws {
         let transport = LoopbackTransport()
         let client = MeshtasticClient(transport: transport, postCommitDisconnectGrace: Self.noRebootGrace, beginEditSettingsRetryDelay: .milliseconds(1))

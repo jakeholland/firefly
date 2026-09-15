@@ -541,6 +541,30 @@ final class CrewControllerTests: XCTestCase {
         XCTAssertFalse(planned.contains("notConnected"))
     }
 
+    /// Bench 2026-09-15: the node number lands at `my_info`, ~30 s before
+    /// the nodeDB dump finishes, and a JOIN tapped in that window sent its
+    /// channel read into a radio that could not answer it yet. A radio is
+    /// "connected" for Join/Start only once the link is `.ready`.
+    func testJoinIsRefusedWhileTheRadioIsStillHandshaking() async {
+        let (controller, client) = makeController()
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        client.publishLinkState(.handshaking)
+
+        XCTAssertNotNil(client.connectedNodeNum)
+        XCTAssertFalse(controller.hasConnectedRadio)
+        let code = try! CrewCode.parse("FIRE-4K9M7X")
+        let staged = await controller.beginJoin(payload: .bareCode(code))
+        XCTAssertFalse(staged)
+        XCTAssertEqual(controller.phase, .needsRadio)
+        XCTAssertTrue(client.sentChannelWriteLog.isEmpty, "nothing may be written to a handshaking radio")
+        XCTAssertNil(controller.pending, "a refused join stages no plan")
+
+        client.publishLinkState(.ready)
+        XCTAssertTrue(controller.hasConnectedRadio)
+        let stagedNow = await controller.beginJoin(payload: .bareCode(code))
+        XCTAssertTrue(stagedNow)
+    }
+
     /// The other side of the gate: with a client, the same JOIN stages a
     /// plan and the CONFIRM writes index 0 with the crew's own code.
     func testJoinWithAConnectedRadioStagesAPlanAndWrites() async {
@@ -1107,6 +1131,7 @@ private final class GatedReadBackClient: MeshtasticClientProtocol, @unchecked Se
     }
 
     func linkState() -> AsyncStream<LinkState> { stub.linkState() }
+    var currentLinkState: LinkState { stub.currentLinkState }
     func nodeUpdates() -> AsyncStream<MeshNodeSnapshot> { stub.nodeUpdates() }
     func deliveryUpdates() -> AsyncStream<DeliveryEvent> { stub.deliveryUpdates() }
     func incomingTexts() -> AsyncStream<IncomingText> { stub.incomingTexts() }
