@@ -79,6 +79,44 @@ struct FireflyApp: App {
     /// which is exactly the bug `RadarView`'s old no-argument `init()`
     /// shipped with (see `AppGraph`'s own header comment).
     @State private var runtime: AppRuntimeBundle
+    /// REVIEW FIX (PR #331 independent review, BLOCKING): the ONE real,
+    /// non-demo `AppDependencies` this process ever builds — cached the
+    /// moment it is first known and reused by EVERY later "leave the
+    /// demo" switch, never rebuilt.
+    ///
+    /// This is a correctness requirement, not a micro-optimization.
+    /// `AppDependencies.live()` constructs a brand-new `BLETransport()`
+    /// on every call (`AppDependencies.swift`'s own doc comment: "stays
+    /// safe to call from anywhere... right up until something actually
+    /// calls connect()/scan() on it" — a promise about SAFETY to call,
+    /// never a promise that a second call is harmless to ACT on
+    /// alongside a first one still alive), and the FIRST thing this
+    /// process's `AppRuntimeBundle.build` does to that transport is
+    /// `graph.prepareForRestoration()`, which constructs its
+    /// `CBCentralManager` immediately. A03 §3.1's restore identifier
+    /// (`BLETransport.restoreIdentifier`) is a FIXED, process-wide
+    /// constant — Apple's whole state-restoration contract assumes
+    /// exactly one live `CBCentralManager` ever carries it. Before this
+    /// fix, "Leave the demo" called `DemoModeAction.leaveDemo
+    /// .dependencies` (`.nonDemo()` -> `.live()` on a device) fresh on
+    /// EVERY leave, registering a SECOND `CBCentralManager` under the
+    /// SAME restore identifier while the FIRST one (built at cold
+    /// launch, and — `graph.stop()`'s own doc comment — not guaranteed
+    /// to be deallocated by the moment the new one is constructed, since
+    /// the outgoing `RootView` hierarchy can still hold the old view
+    /// models/client/transport chain alive until SwiftUI actually
+    /// diffs away the old `.id(runtime.id)`) was still, or might still
+    /// be, alive. Reusing the SAME `AppDependencies` — and therefore the
+    /// SAME `BLETransport`/`CBCentralManager` — on every leave keeps
+    /// that "exactly one" invariant true regardless of how many times a
+    /// reviewer or user toggles the demo. Safe to reuse across a
+    /// disconnect/reconnect cycle by construction:
+    /// `MeshtasticClient.beginListening()`/`.connect()` are both
+    /// documented idempotent/self-resetting
+    /// (`MeshtasticClient.swift`'s own doc comments), which is exactly
+    /// what a normal "stay connected in background" OFF/ON cycle
+    /// already exercises on this same client.
+    @State private var nonDemoDependencies: AppDependencies
     /// A02 §1.8 — `onOpenURL`'s parsed `firefly://crew…` payload.
     @State private var incomingCrewLink: CrewScanPayload?
     /// M2 — read by two independent `.onChange(of: scenePhase)` handlers
@@ -151,10 +189,23 @@ struct FireflyApp: App {
         #else
         let historyOverride: HistoryStore? = nil
         #endif
-        let runtime = AppRuntimeBundle.build(dependencies: .current(), historyStore: historyOverride,
+        let coldLaunchDependencies = AppDependencies.current()
+        let runtime = AppRuntimeBundle.build(dependencies: coldLaunchDependencies, historyStore: historyOverride,
                                               requestedScreen: DemoLaunch.requestedScreen(),
                                               hapticsFactory: Self.makeHaptics)
         _runtime = State(initialValue: runtime)
+        // `nonDemoDependencies`'s own doc comment. On every ordinary,
+        // non-Simulator-demo launch, `coldLaunchDependencies` (`.current()`
+        // outside the Simulator's own `-FireflyDemo` gate is always
+        // `.nonDemo()` — `AppDependencies.current()`'s own doc comment) IS
+        // already that one real composition, so this reuses it rather
+        // than building a second, redundant `BLETransport`. Only a
+        // Simulator launch that cold-starts directly INTO the demo world
+        // (`-FireflyDemo`) has nothing to reuse yet and builds `.nonDemo()`
+        // fresh here — cheap and harmless there (`.stub()`, no
+        // `BLETransport` at all, since the Simulator has no Bluetooth).
+        _nonDemoDependencies = State(initialValue: coldLaunchDependencies.client is DemoMeshtasticClient
+            ? AppDependencies.nonDemo() : coldLaunchDependencies)
         // A03 §3.1 — both launch paths, in the order §3.1 specifies.
         //
         // `FireflyAppDelegate` is the PRIMARY: it is the only one of the
@@ -206,17 +257,19 @@ struct FireflyApp: App {
     func enterDemoMode() async { await switchRuntime(to: .requested(isDemoMode: runtime.isDemoMode)) }
 
     /// "Leave the demo" (Settings' demo row, once inside it) — tears the
-    /// demo world down and rebuilds the real stack
-    /// (`AppDependencies.nonDemo()`: `.live()` on a device, `.stub()` in
-    /// the Simulator with no `-FireflyDemo` launch argument of its own).
-    /// The user's REAL state is untouched by construction, not by care
-    /// taken here: demo mode's own dependencies (`.demoBundle()`) are
-    /// disposable, in-memory, and never shared with `.live()`'s
-    /// `SettingsStore`/`HistoryStore`/Keychain-backed stores in the first
-    /// place (`docs/specs/A01-companion-app.md`'s "Demo isolation"
-    /// section), so there is nothing demo-shaped to unwind on the way
-    /// out — this just builds the ordinary real composition fresh, the
-    /// same one a cold launch with no demo flag would.
+    /// demo world down and rebuilds the real stack from
+    /// `nonDemoDependencies` (that property's own doc comment: the SAME
+    /// `AppDependencies` — `.live()` on a device, `.stub()` in the
+    /// Simulator with no `-FireflyDemo` launch argument of its own — this
+    /// process built once, never a fresh `.nonDemo()` call). The user's
+    /// REAL state is untouched by construction, not by care taken here:
+    /// demo mode's own dependencies (`.demoBundle()`) are disposable,
+    /// in-memory, and never shared with the real `SettingsStore`/
+    /// `HistoryStore`/Keychain-backed stores in the first place
+    /// (`docs/specs/A01-companion-app.md`'s "Demo isolation" section), so
+    /// there is nothing demo-shaped to unwind on the way out — this just
+    /// re-installs the ordinary real composition, the same one a cold
+    /// launch with no demo flag would have built.
     func leaveDemoMode() async { await switchRuntime(to: .requested(isDemoMode: runtime.isDemoMode)) }
 
     /// Both entry points above funnel through here: stop the OUTGOING
@@ -230,7 +283,16 @@ struct FireflyApp: App {
     private func switchRuntime(to action: DemoModeAction) async {
         let outgoing = runtime
         await outgoing.stopObserving()
-        let incoming = AppRuntimeBundle.build(dependencies: action.dependencies,
+        // REVIEW FIX (PR #331 independent review, BLOCKING) —
+        // `nonDemoDependencies`'s own doc comment: `.leaveDemo` reuses the
+        // ONE real composition (and its ONE `BLETransport`/
+        // `CBCentralManager`) this process ever builds, rather than
+        // `action.dependencies` calling `.nonDemo()` fresh and
+        // constructing a second one. `.enterDemo` is unaffected —
+        // `action.dependencies` there is `AppDependencies.demoBundle()
+        // .dependencies`, which never touches Bluetooth at all.
+        let dependencies = action == .leaveDemo ? nonDemoDependencies : action.dependencies
+        let incoming = AppRuntimeBundle.build(dependencies: dependencies,
                                                requestedScreen: action.requestedScreen,
                                                hapticsFactory: Self.makeHaptics)
         #if os(iOS)

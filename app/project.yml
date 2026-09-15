@@ -302,6 +302,13 @@ targets:
       # (which pulls in enough of the app's other view models that it is
       # exercised by `FireflyUITests` instead, not duplicated here).
       - path: Firefly/Sources/DemoModeAction.swift
+      # REVIEW FIX (PR #331 independent review, BLOCKING) —
+      # `CrewStoreSelection.swift`'s own header comment: the demo-isolation
+      # rule for `CrewController`'s Keychain/UserDefaults-backed stores,
+      # split out the SAME way `DemoModeAction.swift` just above is, so
+      # `FireflyAppTests` can pin it without `AppRuntimeBundle.swift`'s
+      # own composition.
+      - path: Firefly/Sources/Crew/CrewStoreSelection.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit

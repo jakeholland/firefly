@@ -172,11 +172,16 @@ struct AppRuntimeBundle {
 
         let connectVM = graph.makeConnectViewModel()
         let importVM = ChannelImportViewModel(client: graph.dependencies.client)
+        // REVIEW FIX (PR #331 independent review, BLOCKING) —
+        // `CrewStoreSelection`'s own header comment: this used to wire the
+        // REAL, persistent `CrewSnapshotKeychainStore()`/`CrewHiddenStore()`
+        // unconditionally, for the demo composition too. Pinned by
+        // `CrewStoreSelectionTests`.
         let crewVM = CrewController(
             client: graph.dependencies.client,
             profileStore: graph.crewProfileStore,
-            snapshotStore: CrewSnapshotKeychainStore(),
-            hiddenStore: CrewHiddenStore())
+            snapshotStore: CrewStoreSelection.snapshotStore(for: dependencies),
+            hiddenStore: CrewStoreSelection.hiddenStore(for: dependencies))
         crewVM.onProfileChanged = { [graph] in graph.syncCrewMembershipWithProfile() }
 
         let lineupVM = graph.makeLineupViewModel()
