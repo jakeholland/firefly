@@ -1093,6 +1093,22 @@ static void compose_make_cand_chip(lv_obj_t *strip, char const *text, bool from_
     lv_obj_set_style_radius(chip, 12, 0);
     lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(chip, lv_color_hex(selected ? FF_THEME_COLOR_AMBER : FF_THEME_COLOR_SURFACE), 0);
+    /* REVIEW FIX (independent review of #329): this chip is filled at
+     * rest (bg_opa LV_OPA_COVER, either amber or surface) but had NO
+     * LV_STATE_PRESSED override at all — the same "solid fill dims"
+     * ink-wash every other filled control in this codebase uses on
+     * press (FF_SCR_PILL_PRESS_DIM, scr_widgets.c). Pre-existing gap,
+     * unrelated to #329 (scr_compose.c is untouched by that PR) but
+     * caught by the same corrected `has_press_feedback` predicate this
+     * review fixed in test_scr_intent.c/test_press_feedback_all_faces.c
+     * — the OLD proxy check made `S99_compose_pred_candidates_have_
+     * press_state_feedback` (already in this file's own test suite,
+     * pre-dating #329) pass despite this gap ever since it was written.
+     * Zero geometry change: a press style only ever paints at
+     * LV_STATE_PRESSED, so every committed compose golden is
+     * byte-identical. */
+    lv_obj_set_style_bg_color(chip, lv_color_hex(FF_THEME_COLOR_INK), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(chip, LV_OPA_20, LV_STATE_PRESSED);
     lv_obj_add_event_cb(chip, compose_cand_click_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)index);
     /* Device follow-up ("T9 autocomplete words should be horizontally
      * scrollable"): SNAPPABLE marks this chip as a valid scroll-snap
