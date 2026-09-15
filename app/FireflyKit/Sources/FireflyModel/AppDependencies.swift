@@ -160,7 +160,25 @@ public struct AppDependencies: Sendable {
     /// pins it.
     public static func current() -> AppDependencies {
         #if targetEnvironment(simulator)
-        return DemoLaunch.isRequested() ? .demo() : .stub()
+        return DemoLaunch.isRequested() ? .demo() : .nonDemo()
+        #else
+        return .nonDemo()
+        #endif
+    }
+
+    /// `.current()`'s non-demo half, on its own: the honest stack for
+    /// this environment when nothing is asking for the demo world — the
+    /// iOS Simulator's `.stub()`, `.live()` everywhere else. `.current()`
+    /// itself is `DemoLaunch.isRequested() ? .demo() : .nonDemo()` inside
+    /// its own simulator gate; this exists as a separate call so a
+    /// runtime "leave the demo" switch (`AppRuntimeBundle.build`, the
+    /// app target) can ask for the SAME answer without re-consulting
+    /// `DemoLaunch` — a launch argument describes how THIS PROCESS
+    /// started, not what a person just tapped mid-session, and a leave
+    /// action must win regardless of what the process was launched with.
+    public static func nonDemo() -> AppDependencies {
+        #if targetEnvironment(simulator)
+        return .stub()
         #else
         return .live()
         #endif

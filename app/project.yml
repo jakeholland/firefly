@@ -294,6 +294,14 @@ targets:
       # default, cover included" without `RootView.swift`'s SwiftUI/
       # Theme dependency.
       - path: Firefly/Sources/RootLaunchPlan.swift
+      # "app: Try the demo" — the mode-switch decision (which direction,
+      # which `AppDependencies`, which requested screen), split into its
+      # own `FireflyModel`-only file for the SAME reason `RootLaunchPlan
+      # .swift` just above is: so this target can exercise it without
+      # `AppRuntimeBundle.swift`'s own `AppGraph`/view-model composition
+      # (which pulls in enough of the app's other view models that it is
+      # exercised by `FireflyUITests` instead, not duplicated here).
+      - path: Firefly/Sources/DemoModeAction.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit

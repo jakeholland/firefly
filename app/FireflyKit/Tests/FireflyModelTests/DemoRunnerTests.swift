@@ -187,4 +187,20 @@ final class DemoRunnerTests: XCTestCase {
         let bundle = AppDependencies.demoBundle()
         XCTAssertTrue(bundle.dependencies.client is DemoMeshtasticClient)
     }
+
+    /// The in-app "Try the demo"/"Leave the demo" runtime switch
+    /// (`AppRuntimeBundle`, the app target) calls `.nonDemo()` — never
+    /// `.current()` — to rebuild the real stack on the way out of demo
+    /// mode, precisely so a leave action is not at the mercy of whatever
+    /// launch argument this process happened to start with (`.current()`
+    /// would re-enter demo mode on a process that started with
+    /// `-FireflyDemo`). Same architectural guarantee as `.live()` above,
+    /// for the function that switch actually calls.
+    func testNonDemoNeverConstructsTheDemoClient() {
+        let nonDemo = AppDependencies.nonDemo()
+        XCTAssertFalse(nonDemo.client is DemoMeshtasticClient,
+                        "leaving the demo must never construct the demo client")
+        XCTAssertFalse(nonDemo.location is DemoLocationProvider)
+        XCTAssertFalse(nonDemo.heading is DemoHeadingProvider)
+    }
 }

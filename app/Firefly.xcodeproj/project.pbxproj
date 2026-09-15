@@ -17,6 +17,7 @@
 		12E5A4D101C468750550181B /* CrewWelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B525655E834D0BF0D6DF19CF /* CrewWelcomeView.swift */; };
 		159595A99A88EA86CF1B6140 /* CrewSettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E1D66A6EFF83C09A11DB7FB /* CrewSettingsViewModel.swift */; };
 		17AE531969F0CDE913B44133 /* LineupPicksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EA34C071EFD0793A619E9A6 /* LineupPicksView.swift */; };
+		1BA3E0BD1D3262F0071666D7 /* DemoModeActionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C5E8EB67A8C51B8510F428 /* DemoModeActionTests.swift */; };
 		2AAC6CD53BBE7426EE632301 /* CrewJoinView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE6F9A5AF9F0435F34FF4D17 /* CrewJoinView.swift */; };
 		2B7DD47DF785EE9231009BF6 /* FireflyDebugCrewLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A420E1157BEDCF0AC2A6F67 /* FireflyDebugCrewLaunch.swift */; };
 		2C9CFE0AAFFCAA222D6479AB /* CrewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B18716DFC4744DFB2C85DB03 /* CrewController.swift */; };
@@ -43,11 +44,13 @@
 		53439BFC6EF57D36751870D4 /* CrewConnectPuckView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26D8DE88A6210595D4E680A /* CrewConnectPuckView.swift */; };
 		59A003F0821E61E9DE8E99F5 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */; };
 		5B1FDA589EBD527CF8A4440F /* NotificationTapRouterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02E84854CAB87134C455E8F2 /* NotificationTapRouterTests.swift */; };
+		5C6EF1954D351EBCAA7CDDC0 /* DemoModeAction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86C828B8FDA282E9AEEF73C2 /* DemoModeAction.swift */; };
 		5E3096E36BD8443760018393 /* FireflyDebugCrewStateLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03F95848DB762360605A3176 /* FireflyDebugCrewStateLaunch.swift */; };
 		6174B5CF13B05DAAAB1058D0 /* FieldMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1F42EB3578D2B85C360FF91 /* FieldMapView.swift */; };
 		622B099B334CB9A36B8D20E7 /* RootLaunchPlanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE75CBD37ACA507F0446DCF3 /* RootLaunchPlanTests.swift */; };
 		6307FAECAA2C09995B4D63DE /* MapBackgroundLifecycleGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FB3DC0128FD7652E2645386 /* MapBackgroundLifecycleGuardTests.swift */; };
 		63F4CB9CD8015973BF2A6A87 /* NearbyNodesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */; };
+		65EF3840D30D642B0F9BDFBF /* AppRuntimeBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC1FCAC4BC801A7048189B34 /* AppRuntimeBundle.swift */; };
 		6640FC7A5590E35700C97181 /* DiagnosticsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFD70AB72F73DA6AB941F6B5 /* DiagnosticsViewModel.swift */; };
 		66EDC012C80D95AA2646A1B1 /* MoreScreenNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = E455F1EFCD0EFD761A051AEF /* MoreScreenNavigation.swift */; };
 		6823EB4293F87FDF9992197B /* FireflyDebugNotifyLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 285775E4DDD7BDBD602191A8 /* FireflyDebugNotifyLaunch.swift */; };
@@ -92,6 +95,7 @@
 		C9D8C9C04BCA85BF8102ABD2 /* CrewCopyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76CCF10D45320A527D0D8FFD /* CrewCopyTests.swift */; };
 		CBF099743872A088B799BC0B /* CrewCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7CF15579506E65D391E2A50 /* CrewCopy.swift */; };
 		CFF3E1EBE59116C8A0544EA2 /* LineupGridDemoFestpackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B88FE658484B40308B28D13 /* LineupGridDemoFestpackTests.swift */; };
+		D182C5E2D9D423C271AE8946 /* DemoModeAction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86C828B8FDA282E9AEEF73C2 /* DemoModeAction.swift */; };
 		D3A1DB1182D74174005A4541 /* FindSegment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E80926151F96810841565F7 /* FindSegment.swift */; };
 		D4509A6BF45005057BE62C69 /* PeripheralDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 899B46141ED5400385D53007 /* PeripheralDiscovery.swift */; };
 		D5118B2DB6E068EEF814A41A /* CrewStartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43F5FF18C3C2F286FC110777 /* CrewStartView.swift */; };
@@ -174,6 +178,7 @@
 		4E1D66A6EFF83C09A11DB7FB /* CrewSettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewSettingsViewModel.swift; sourceTree = "<group>"; };
 		4F84F0BF7FA9F0A3B2EAC7B8 /* NotificationTapUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationTapUITests.swift; sourceTree = "<group>"; };
 		500341CFF93F2572F5EABA8C /* FireflyUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyUITests.swift; sourceTree = "<group>"; };
+		52C5E8EB67A8C51B8510F428 /* DemoModeActionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoModeActionTests.swift; sourceTree = "<group>"; };
 		543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Theme+SwiftUI.swift"; sourceTree = "<group>"; };
 		5E88E40B311FEE9B2F1B4382 /* ImportPicksSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportPicksSheet.swift; sourceTree = "<group>"; };
 		5F7A5628340F712EE61F598C /* fest-almanac-index.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = "fest-almanac-index.json"; path = "../../../firmware/assets/field/fest-almanac-index.json"; sourceTree = "<group>"; };
@@ -191,6 +196,7 @@
 		7CA0680B16ABBA1A558B1690 /* SettingsFestivalPickerWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsFestivalPickerWiringTests.swift; sourceTree = "<group>"; };
 		7E80926151F96810841565F7 /* FindSegment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindSegment.swift; sourceTree = "<group>"; };
 		829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyAutoConnectLaunch.swift; sourceTree = "<group>"; };
+		86C828B8FDA282E9AEEF73C2 /* DemoModeAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoModeAction.swift; sourceTree = "<group>"; };
 		899B46141ED5400385D53007 /* PeripheralDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeripheralDiscovery.swift; sourceTree = "<group>"; };
 		918AE027165FB4634094A385 /* InboxListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxListView.swift; sourceTree = "<group>"; };
 		9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEHardwareTests.swift; sourceTree = "<group>"; };
@@ -207,6 +213,7 @@
 		B5AE4486A9AE4EFDBC5455E6 /* ConnectSettingsViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectSettingsViewModelTests.swift; sourceTree = "<group>"; };
 		B67D0C47CDDCC54FEB1EBAD2 /* CrewHeardListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewHeardListViewModel.swift; sourceTree = "<group>"; };
 		B726C9DB8EA6DA10A760203D /* FireflyAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FireflyAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BC1FCAC4BC801A7048189B34 /* AppRuntimeBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRuntimeBundle.swift; sourceTree = "<group>"; };
 		C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Firefly.xcconfig; sourceTree = "<group>"; };
 		C195EF4E6C11A4F328A8A7A2 /* MoreScreenNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreScreenNavigationTests.swift; sourceTree = "<group>"; };
 		C1B310432CF46CE542A152E9 /* FlareTakeoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlareTakeoverView.swift; sourceTree = "<group>"; };
@@ -413,6 +420,7 @@
 				EBF9A931D87D4C1461A7EDF0 /* CrewDiagnosticsViewModelTests.swift */,
 				D23E949F68CC599D6A320111 /* CrewHeardListViewModelTests.swift */,
 				C69F2315E7F057CD81E80206 /* CrewSettingsViewModelRowTests.swift */,
+				52C5E8EB67A8C51B8510F428 /* DemoModeActionTests.swift */,
 				E6E87E756375F327962BDB91 /* FindLifecycleTests.swift */,
 				CD4FD3C330F61C78D0968513 /* FindLifecycleWiringGuardTests.swift */,
 				12B5A7320C985BF6762AADD9 /* FireflyDebugCrewLaunchTests.swift */,
@@ -473,7 +481,9 @@
 		D89F0E02F6B60E29752F8E37 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				BC1FCAC4BC801A7048189B34 /* AppRuntimeBundle.swift */,
 				657F1057B225B7D58F60D158 /* DemoBadge.swift */,
+				86C828B8FDA282E9AEEF73C2 /* DemoModeAction.swift */,
 				7C40E6DFE5C85637929993F5 /* FireflyApp.swift */,
 				285775E4DDD7BDBD602191A8 /* FireflyDebugNotifyLaunch.swift */,
 				F05346761183CE52D605D57C /* FireflyDebugStartDestinationLaunch.swift */,
@@ -673,6 +683,8 @@
 				5291B0D94E1C2D672D5C56D4 /* CrewHeardListViewModelTests.swift in Sources */,
 				159595A99A88EA86CF1B6140 /* CrewSettingsViewModel.swift in Sources */,
 				C5FFEAC1D2C0AAD3CFD6094C /* CrewSettingsViewModelRowTests.swift in Sources */,
+				D182C5E2D9D423C271AE8946 /* DemoModeAction.swift in Sources */,
+				1BA3E0BD1D3262F0071666D7 /* DemoModeActionTests.swift in Sources */,
 				6640FC7A5590E35700C97181 /* DiagnosticsViewModel.swift in Sources */,
 				4D205FDE4C92CBA13EF9A921 /* FindLifecycleTests.swift in Sources */,
 				D6F9051146581172F73C2725 /* FindLifecycleWiringGuardTests.swift in Sources */,
@@ -716,6 +728,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D7A2904C961D1D75584D0142 /* AdminWriteConfirmationSheet.swift in Sources */,
+				65EF3840D30D642B0F9BDFBF /* AppRuntimeBundle.swift in Sources */,
 				B11B507435D69A999AC9DD1E /* ChannelImportViewModel.swift in Sources */,
 				47E0809C008E900451404953 /* ConnectScreen.swift in Sources */,
 				53439BFC6EF57D36751870D4 /* CrewConnectPuckView.swift in Sources */,
@@ -733,6 +746,7 @@
 				D5118B2DB6E068EEF814A41A /* CrewStartView.swift in Sources */,
 				12E5A4D101C468750550181B /* CrewWelcomeView.swift in Sources */,
 				E6551196CD37E34092E3B5D8 /* DemoBadge.swift in Sources */,
+				5C6EF1954D351EBCAA7CDDC0 /* DemoModeAction.swift in Sources */,
 				C669919991622119FE5BA2FA /* DiagnosticsScreen.swift in Sources */,
 				7E079696E764A0A0F9E02426 /* DiagnosticsViewModel.swift in Sources */,
 				6174B5CF13B05DAAAB1058D0 /* FieldMapView.swift in Sources */,

@@ -45,6 +45,11 @@ struct CrewOnboardingContainer: View {
     /// Welcome for a milestone screenshot. `nil` on every ordinary
     /// launch.
     var forceStep: Step?
+    /// "app: Try the demo" — forwarded to the connect step
+    /// (`CrewConnectPuckView`'s own "Try the demo" button, next to
+    /// "Don't have a puck yet?"). `nil` hides that button entirely —
+    /// `RootView` passes `nil` once already in demo mode.
+    var onTryDemo: (() -> Void)?
 
     enum Step: Hashable {
         /// Where the connect step should go once a puck is connected
@@ -73,7 +78,8 @@ struct CrewOnboardingContainer: View {
          onFinished: @escaping () -> Void,
          onConnectPuck: @escaping () -> Void,
          initialJoinPayload: CrewScanPayload? = nil,
-         forceStep: Step? = nil) {
+         forceStep: Step? = nil,
+         onTryDemo: (() -> Void)? = nil) {
         self.controller = controller
         self.membership = membership
         self.connect = connect
@@ -82,6 +88,7 @@ struct CrewOnboardingContainer: View {
         self.onConnectPuck = onConnectPuck
         self.initialJoinPayload = initialJoinPayload
         self.forceStep = forceStep
+        self.onTryDemo = onTryDemo
         _discovery = State(initialValue: scanner.map { MeshPeripheralDiscovery(scanner: $0) }
                             ?? StubPeripheralDiscovery())
     }
@@ -110,7 +117,8 @@ struct CrewOnboardingContainer: View {
                         // explains, in place, exactly why its primary
                         // action is disabled. A dead end here would be a
                         // second way to make a tap do nothing.
-                        onSkip: { leaveConnectStep(next: next) })
+                        onSkip: { leaveConnectStep(next: next) },
+                        onTryDemo: onTryDemo)
                 case .start:
                     CrewStartView(controller: controller, membership: membership,
                                   onConnectPuck: { path.append(.connect(next: .start)) },

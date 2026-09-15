@@ -50,7 +50,12 @@ struct SettingsScreen: View {
          // this signature lands as a pure insertion rather than a
          // collision.
          linkDiagnostics: (any BLELinkDiagnosticsProviding)? = nil,
-         notifications: (any NotificationSending)? = nil) {
+         notifications: (any NotificationSending)? = nil,
+         // "app: Try the demo" — appended after `notifications`, same
+         // convention: every existing call site keeps compiling.
+         isDemoMode: Bool = false,
+         onTryDemo: @escaping () -> Void = {},
+         onLeaveDemo: @escaping () -> Void = {}) {
         self.model = model
         self.client = client
         self.lineup = lineup
@@ -58,6 +63,9 @@ struct SettingsScreen: View {
         self.onOpenConnect = onOpenConnect
         self.linkDiagnostics = linkDiagnostics
         self.notifications = notifications
+        self.isDemoMode = isDemoMode
+        self.onTryDemo = onTryDemo
+        self.onLeaveDemo = onLeaveDemo
         _crewSettings = State(initialValue: CrewSettingsViewModel(pairing: pairing))
         _festpackURLDraft = State(initialValue: model.festpackSourceURLOverride ?? "")
     }
@@ -69,6 +77,10 @@ struct SettingsScreen: View {
     /// rather than zeros.
     var linkDiagnostics: (any BLELinkDiagnosticsProviding)?
     var notifications: (any NotificationSending)?
+    /// "app: Try the demo" — `demoSection`'s own row, below.
+    var isDemoMode: Bool
+    var onTryDemo: () -> Void
+    var onLeaveDemo: () -> Void
 
     var body: some View {
         ScrollView {
@@ -81,6 +93,7 @@ struct SettingsScreen: View {
                 appearanceSection
                 festivalDataSection
                 historySection
+                demoSection
                 Button("DIAGNOSTICS") { showDiagnostics = true }
                     .buttonStyle(.bordered)
                     .tint(.ffAmber)
@@ -367,6 +380,28 @@ struct SettingsScreen: View {
                 .buttonStyle(.bordered)
                 .tint(.ffAlert)
                 .frame(minHeight: 44)
+        }
+    }
+
+    // MARK: - Demo ("app: Try the demo")
+
+    /// The demo entry point for TestFlight reviewers/App Review and
+    /// anyone without a puck in reach — the other way in besides the
+    /// connect-step button (`CrewConnectPuckView`'s own "Try the demo",
+    /// next to "Don't have a puck yet?"). One row, one label that
+    /// already says which direction it goes — no separate explanation
+    /// text next to it (Jake's copy rule: no "you're in the demo,
+    /// nothing here is real" meta-copy; the DEMO badge already says
+    /// that, on every screen, for as long as it is true).
+    private var demoSection: some View {
+        SettingsBlock(title: "DEMO") {
+            Button(isDemoMode ? "Leave the demo" : "Try the demo") {
+                isDemoMode ? onLeaveDemo() : onTryDemo()
+            }
+            .buttonStyle(.bordered)
+            .tint(.ffAmber)
+            .frame(minHeight: 44)
+            .accessibilityIdentifier("Settings.ToggleDemo")
         }
     }
 
