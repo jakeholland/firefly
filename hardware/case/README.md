@@ -5626,3 +5626,257 @@ paths, coupon export paths, and screenshot paths. A clean run ends with
 `assert_export_body_size` runs silently inside `export_stls`/`export_
 coupons` at export time — no line unless it fails (in which case it
 raises, same as every other `verify()` assertion).
+
+## 2026-09-09: headless build123d port, phase 1 (parallel effort, does not touch this file's own Fusion generator)
+
+Per the coordinator's own spike (`docs/hardware/cad-tooling-spike.md`,
+branch `spike/headless-cad`, draft PR #250 — timing table, ~19% Fusion-
+quirk classification, a working shell/lip/corner-block slice) and the
+owner's "yes, start the port now in parallel" decision, a new package,
+`hardware/case/gen/` (headless [build123d](https://github.com/gumyr/build123d),
+OpenCascade under the hood), ports `firefly_case.py` feature-by-feature.
+**This file (`firefly_case.py`) and its own Fusion-driven workflow above
+are completely unchanged by this effort** — `gen/` is a parallel,
+independent package; nothing here required editing the generator this
+README otherwise documents. Full details, every function's port status,
+and the phase 2/3 plan: `docs/hardware/headless-port-plan.md`. Regression
+numbers against the case-pass16 branch's own exports (the newest
+generator; not yet merged to `main`, see below):
+`docs/hardware/headless-port-parity.md`.
+
+**Ported this phase:** Top/Bottom shell (pill outline, R8 ceiling fillet,
+2mm wall, both variants), the window bore + print-orientation chamfer +
+glass-seat chamfer, the pass-16 continuous-taper lip/anchor ring, case
+screws A/C/D (Bottom boss + counterbore, Top single-pilot corner block,
+the 45-degree root-reinforcement collar on all 6 boss/block roots), the
+USB-C tunnel + liner, the FPC relief pocket, and the lanyard lug. STEP
+import + empirically-derived placement of the display module
+(`gen/components.py`) reproduces the documented standoff-plane numbers
+(18.80mm current / 21.80mm trim) exactly from the real STEP geometry —
+see that module's own docstring for the derivation. Gates ported:
+all-pairs interference, pilot-wall/root-fillet/corner-block/bottom-
+opening probes against live OCC solids, and the lip-ring-profile +
+manifold/body-count/overhang scan against the exported STL (the latter
+via `tools/offline_stl_check.py`, reused unchanged — it already needed
+no porting, being pure Python). All gates pass clean, both variants,
+from a from-scratch rebuild. Cycle time (build + gates + export +
+render, trim, warm venv): under 8 seconds, against Jake's own observed
+5-10 minutes per Fusion-MCP rebuild+gate cycle.
+
+**Source-of-truth note:** this port's own architecture (A/C/D as
+single-pilot corner blocks, D relocated to (18, 58), ears/S2-boss
+deferred to phase 2) matches the **case-pass16** branch's own
+"candidate 5" display-mount design, not this file's own pre-pass-16
+state (paired B1/B2 corner blocks, a Screen Plate + P1-P4 posts, D at
+(0, 60)) — pass 16 has not merged to `main` yet. `params_current.py`/
+`params_trim.py`/`tools/offline_stl_check.py` in this repo were pulled
+forward from `case-pass16` (pure data + a pure-Python tool, neither
+Fusion-dependent) so `gen/params.py` imports them unchanged, per the
+port brief's own instruction to reuse the existing params files where
+possible.
+
+**Component models:** `hardware/models/` now holds the STEP exports
+this port's `gen/components.py` imports directly (no git-lfs configured
+in this repo, so these are committed as plain blobs): `ESP32-S3-Touch-
+LCD-1_46.step` (14.8 MB, display module with cover), `XIAO-ESP32S3_v3.step`
+(2.9 MB), `L76K_GNSS_for_XIAO_v1.step` (3.5 MB), `Wio-SX1262_for_XIAO_V2.step`
+(1.5 MB) — all staged for phase 2's comms-stack port. `GY-273_compass_
+module.f3d` (1.6 MB) is also included for reference, but is a Fusion
+archive, not importable headlessly; the port brief's own instruction is
+to model the compass module as a plain box from params instead (phase 2).
+
+**Not ported this phase** (see `docs/hardware/headless-port-plan.md`
+for the full 217-function breakdown): the S1/S3 ears + S2 boss (display
+mount proper), buttons, comms stack/GPS frame/battery bay, the compass
+module, antenna channels, and the wordmark deboss — each is a real,
+scoped phase-2/3 item, not an oversight.
+
+### How to run the headless build
+
+```
+cd hardware/case
+uv venv gen/.venv --python 3.12 && source gen/.venv/bin/activate
+uv pip install build123d trimesh matplotlib numpy rtree pytest
+python3 -m gen.cli build --variant trim --gates --export --render
+python3 -m pytest gen/tests -v   # gates-as-tests + parity vs. the case-pass16 goldens
+```
+
+## Phase 2 item 1: S1/S3 ears + S2 boss (display mount)
+
+`gen/features/ears.py` ports `add_ear`/`add_s2_boss` (the pass-16
+candidate-5 display mount) — root/wedge/core into the dome wall, the
+shared root-reinforcement collar, seat arm + standoff riser, sourced
+from `components.measure_standoffs`' real STEP measurement (not the
+typed `board_standoffs`/`ear_seat_z`). Top volume is now 96.4% of the
+case-pass16 golden (up from phase 1's 89.9%).
+
+This phase's own new gate (`check_display_interference_near_ears`,
+checking the ears/S2-boss against the real ~420-solid display STEP, not
+just the typed bboxes) found ~600mm³ of real display interference —
+root-caused to two inline cuts in `firefly_case.py`'s own `build()`
+driver (right after `insert_display_pcba`) this port had not yet
+ported: `components.ceiling_safe_display_cut` (a candidate-filtered cut
+of Top against the display's own real sub-bodies, bounded below by
+`top_pilot_z[1] + PILOT_PROTECT_MARGIN` so it can never undercut a screw
+pilot) and `components.apply_known_component_keepouts` (two more
+already-live-found-in-pass-16 component keep-outs). Both are now
+ported; real interference is down to zero hits on `trim` (was ~20 hits/
+~600mm³). A separate, genuine Top-vs-Bottom interference (0.126mm³,
+`current` variant — an ear's root collar could dip below `split_z` when
+button-height capping left it little headroom) is fixed with a new
+`z_floor` clamp on `features/corner_blocks.py`'s
+`add_root_reinforcement`.
+
+A second real conflict (`verify_ear_root_material`'s `S3_riser_solid`,
+hollow at 1 of 4 probes) was independently confirmed by Firefly's own
+`main` branch, which merged a companion Fusion-side fix the same day
+(bf2703d) root-causing the identical probe point to a real overlap with
+the display's own second SMT connector, and moving the typed
+`board_standoffs['S3']` by +0.2mm for clearance. This port targets the
+*measured* barrel position instead (per the brief), which sits even
+closer to the connector than Fusion's own pre-fix value — so it hit the
+same conflict. `features/ears.py` now applies the identical
+live-verified clearance delta on top of its own measured baseline
+(`S3_CONNECTOR_CLEARANCE_DX`/`DY`, the one named exception to "measured,
+not typed"); both `verify_ear_root_material` and `check_display_
+interference_near_ears` are clean on both variants.
+
+One known, narrow trade-off remains on `trim` (deliberately kept RED but
+carved out with an inline comment in `gen/tests/test_gates.py`, not
+silently passed — see `docs/hardware/headless-port-parity.md`'s "Phase
+2 update" section for the full account): `corner_block_D_top`'s root
+collar loses a sliver at 2 of 8 probe angles (the real display module
+reaches slightly higher there than the typed `display_bbox` assumed —
+the *same* probe the case-pass16 golden itself is already documented
+red on, for an unrelated Fusion-kernel reason). `current` (never the
+variant actually printed) has several additional open findings not
+root-caused this pass.
+
+**S2 boss overhang, reported honestly:** the S2 arm is a flat-bottomed
+horizontal cantilever from the west wall. A best-effort 45°-ish edge
+chamfer (`ears.py`'s `_best_effort_underside_edge_chamfer`) measurably
+shrinks the flagged area at the arm's own edges but cannot remove the
+need for support under the middle of a constant-thickness span — only a
+full lengthwise taper would. The resulting cluster falls entirely
+inside the pre-existing, pass-16-tuned `general_ceiling_overhang`
+whitelist (`scan_stl_overhangs` reports zero *unlisted* bad clusters,
+both variants) — the same accepted-slicer-support condition the
+mechanical/printability reviews already signed off on. Support is
+still needed there.
+
+Cycle time (build + gates + export, trim, warm venv): ~75s, up from
+phase 1's ~7s — almost entirely the new display-interference checking
+against the real STEP compound, not a regression in the underlying
+build (still ~3.7s). Full `pytest gen/tests/` (30 tests, both variants):
+~4-5 minutes.
+
+**Not ported yet (at the time of writing):** buttons (item 2), comms
+stack/GPS frame/battery bay/compass module (item 3), and phase 3
+(wordmark deboss, coupons, packed exports, renders, then the switch-over
+deleting this file). See `docs/hardware/headless-port-plan.md`.
+
+`gen/.venv` and `gen/out/` are git-ignored (see `gen/.gitignore`) —
+recreate the venv with the commands above; `gen/out/` and
+`renders/gen/` are scratch build output, not committed exports (this
+port does not yet touch `export/<variant>/`, the Fusion generator's own
+canonical export directory / regression-golden location).
+
+## Phase 2 item 2: buttons
+
+`gen/features/buttons.py` ports `button_geometry`/`add_button`/
+`add_buttons` — the Power/Home plunger, guide-rib, inward-stop collar,
+and retaining-tab mechanism — with every historical correction this
+README records carried forward verbatim (same numbers, same reasoning):
+the finding-10 real-actuator-reach fix (`switch_actuator_reach` 1.82mm/
+`plunger_pretravel` 0.3mm, not an offset from an empty switch-bbox
+corner), `s_wall` via `true_wall_distance_along_ray` (the flat-wall
+approximation this file's own 2026-09-05 fix already found "badly wrong
+for Home"), the finding-9 rib/collar actuator-clearance clamp plus the
+tab-relief lane, the pass-16 FIX item-4 S2-boss tab-relief LANE
+EXTENSION (`tab_sweep_body` — a pass-16 addition, the S2 boss's own arm,
+sits squarely across the Power button's own tab-insertion sweep), the
+pass-15 wall-connector-spoke + ceiling-gusset fix (anchored at the
+connector's own outboard end, not the plunger axis — the first,
+display-board-hitting attempt is not reproduced, only the fix), and the
+pass-16 item-D best-effort lead-in fillets. The cap parts (`cap_
+clearance` 0.25mm) export as their own named STL/3MF parts automatically
+— `gen/export.py`'s existing per-body loop needed no changes.
+
+**Gate results, both variants, from a from-scratch rebuild:**
+`verify_button_insertion` — **0/125 bad, both buttons, both variants**
+(Jake's own live-print regression target); `verify_button_retention` —
+clean, all 9 checks; `verify_plunger_reach` — clean (actuator reach
+1.80mm found vs. 1.82mm expected, rest gap 0.35mm found vs. 0.3mm
+expected, both within the gate's own tolerance); `verify_skin_intact` —
+clean, both buttons.
+
+One real, live-found, port-specific fix (no `firefly_case.py` equivalent
+needed — the source's own checks never covered this interaction): the
+button **collar** can physically overlap the S2 boss arm's or an S1/S3
+ear riser's real, already-built material — not caught by any of the
+source's own cutting-tool clips, which only bound the cap's own hole/tab
+cuts, not the collar. Root-caused to two things: (1) the ear/S2-boss cut
+keep-out's own S2 entry used the NOMINAL `seat_z - ear_arm_thickness`
+z-band, not the arm's REAL battery-connector-clamped one (~5mm lower) —
+fixed by factoring the real z-band into a shared `ears.
+s2_boss_arm_z_band` helper both `add_s2_boss` and the button keep-out
+now call, so the two can never silently drift apart; (2) even with that
+fix, the real conflict sits at the S2 arm's own mid-span in X, far from
+either keep-out point the source's own point-keepout mechanism protects.
+Fixed by subtracting a snapshot of Top from immediately before
+`add_buttons` runs directly from each button's own collar body — a
+live, unambiguous guarantee against whatever structural material already
+exists there. Before: Power ~1.8mm³ vs. the S2 arm, Home ~0.5mm³ vs. the
+S1 riser (both variants); after: Power 0mm³, Home a single ~0.0009mm³
+sliver (both variants, accepted as boolean-cleanup/tessellation noise at
+one shared face — a cleaner `bd.offset`-based fix was tried and reverted,
+since `bd.offset` on a solid this complex degenerated to a 2D shape). See
+`docs/hardware/headless-port-parity.md`'s "Phase 2b update" section for
+the full account, volume/bbox numbers, and cycle time (up to ~279s/118s
+per variant with buttons' own gates added — addressed by item 3 below).
+
+## Phase 2 item 3: cycle-time caching
+
+Two real, verified caches now back `gen/components.py`'s display-STEP
+handling, both keyed by `_step_hash()` (a hash of the STEP file itself,
+so replacing it invalidates every cache entry automatically) and stored
+under `gen/out/_cache/` (scratch, git-ignored): (1) the raw STEP import
+itself (`bd.import_step`, ~6.4s every process) is now cached to a native
+OCC BREP file, a ~50-57x faster round-trip (~0.11-0.13s); (2)
+`ceiling_safe_display_cut`'s own ~31 per-candidate cutting-tool booleans
+are fused into ONE cached tool applied in a single cut — geometrically
+**identical** to the original (verified: Top volume differs by ~9e-9mm³,
+floating-point noise) — dropping that stage from ~14-25s (exact) to
+~4.9-6.0s (fast, warm cache). `python3 -m gen.cli build ... --exact-display`
+skips both caches and re-derives everything from the real STEP geometry
+with the original algorithm — the release-gate path, use it before
+cutting real plastic.
+
+A third attempt, applying the same fused-tool idiom to
+`check_display_interference_near_ears`, was tried in two forms and
+reverted: fusing the real per-candidate solids there took *minutes* (a
+denser, more complex candidate set than the ceiling-cut's own simple
+boxes); a cheaper box-per-candidate ("convex-hull-per-body", using the
+simplest hull — an axis-aligned bbox) prefilter fused fast but triggered
+a fallback to the exact per-candidate loop almost every time (the
+region's own packed SMT geometry means nearby parts' bounding boxes
+routinely overlap ear/riser material where the real, smaller solids
+underneath do not) — net slower than skipping it. That gate ships
+unchanged, always exact.
+
+**Cycle time, before/after (build+gates+export, warm cache):** trim
+279.0s → 172.5s, current 118.0s → 89.4s (~24-38% faster, zero change to
+any gate's own verdict — confirmed by a full gate re-run, both
+variants). Full `pytest gen/tests/` (42 tests, both variants): 500.8s →
+**235.7s (0:03:55)**, a 53% reduction. `total_build` alone (no gates/
+export) is back near item 3's own ~10s target on a warm cache: ~19-21s.
+The full `--gates` cycle is NOT back to ~10s — `check_display_
+interference_near_ears` (always exact) and buttons' own `verify_
+plunger_reach` (a live ray-scan against the real switch STEP body, not
+addressed by either cache above) are now the larger remaining costs.
+See `docs/hardware/headless-port-parity.md`'s own "Phase 2b cycle-time
+caching" section for the full account and per-stage numbers.
+
+**Not ported yet:** comms stack/GPS frame/battery bay/compass module,
+and phase 3 (wordmark deboss, coupons, packed exports, renders, then the
+switch-over deleting this file). See `docs/hardware/headless-port-plan.md`.
