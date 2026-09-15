@@ -97,7 +97,12 @@ final class CrewController {
         // dependency (see that property's own doc comment). The value
         // returned is still, only, the live precondition.
         _ = radioLink
-        return client.connectedNodeNum != nil
+        // Bench 2026-09-15 (Heltec, fw 2.7.26): `connectedNodeNum` is set at
+        // `my_info`, but the nodeDB dump that follows took ~30 s, and the
+        // crew's channel-table read sent inside that window hit the 30 s
+        // admin timeout — "Your puck didn't answer in time" on a radio that
+        // was simply still handshaking. `.ready` is the real precondition.
+        return client.connectedNodeNum != nil && client.currentLinkState == .ready
     }
 
     /// Starts mirroring `client.linkState()`. Idempotent, and called
@@ -111,6 +116,10 @@ final class CrewController {
             for await state in stream {
                 guard let self else { return }
                 self.radioLink = state
+                // A02 §3.3 amendment — the ONE thing that settles an
+                // `.awaitingPuck` join: the puck came back, so read it
+                // back and find out what actually took.
+                if state == .ready { await self.completePendingVerification() }
             }
         }
     }
@@ -288,10 +297,34 @@ final class CrewController {
         case checkingPuck
         case writing
         case verifying
+        /// A02 §3.3 amendment / A03 §3.6 amendment, 2026-09-14. The
+        /// write AND the commit both reached the puck, the puck did what
+        /// a commit makes it do — dropped the link and restarted — and
+        /// it has not come back yet
+        /// (`AdminWriteError.committedButNotVerified`).
+        ///
+        /// Deliberately NOT `.failed`: the bench measured this exact
+        /// state being reported as "your puck didn't answer in time"
+        /// while the channel was, in fact, already written and verified
+        /// on the radio (2026-09-14). And deliberately NOT `.joined`
+        /// either — nothing has been read back yet, and this app does
+        /// not claim a crew it has not seen on the puck. It is the one
+        /// honest third answer, and it is settled the moment the link
+        /// returns: `completePendingVerification()` reads the puck back
+        /// once and moves to `.joined` or `.failed` on what it finds.
+        case awaitingPuck(String)
         case joined
         case failed(String)
     }
-    private(set) var phase: ApplyPhase = .idle
+    private(set) var phase: ApplyPhase = .idle {
+        didSet {
+            #if DEBUG
+            // Bench observability only (stderr, like `MeshtasticClient.log`):
+            // the crew flow's phases are otherwise invisible to a headless run.
+            FileHandle.standardError.write(Data("[CrewController] phase -> \(phase)\n".utf8))
+            #endif
+        }
+    }
 
     /// The one progress line the screens show, or `nil` when there is
     /// nothing in flight.
@@ -301,7 +334,10 @@ final class CrewController {
         case .writing: return "Writing to your puck…"
         case .verifying: return "Checking…"
         case .joined: return "Joined"
-        case .idle, .needsRadio, .failed: return nil
+        // `.awaitingPuck` is not progress: nothing is running. It is a
+        // standing fact with its own sentence, rendered through
+        // `failureMessage` below.
+        case .idle, .needsRadio, .failed, .awaitingPuck: return nil
         }
     }
 
@@ -311,13 +347,64 @@ final class CrewController {
     /// do next. `nil` when nothing has failed.
     var failureMessage: String? {
         switch phase {
-        case .failed(let message): return message
+        case .failed(let message), .awaitingPuck(let message): return message
         case .needsRadio: return Self.needRadioMessage
         default: return nil
         }
     }
 
+    /// Review fix (2026-09-14) — the A02 §3.3 amendment's own contract
+    /// for `.awaitingPuck`, made mechanical: its Retry column is
+    /// "none — Firefly settles it itself." Both the confirmation sheet's
+    /// CONFIRM and `CrewApplyStatusView`'s TRY AGAIN read `failureMessage`
+    /// to decide whether to show a retry control at all, and
+    /// `.awaitingPuck` also has a `failureMessage` (so its sentence
+    /// renders) — without this, a screen open across the puck's reboot
+    /// would offer a retry that RE-SENDS the same write and reboots the
+    /// puck a second time, which is the exact loop `committedButNotVerified`
+    /// exists to stop. Concretely reachable: `hasConnectedRadio` goes
+    /// true as soon as `my_info` lands, before the handshake reaches
+    /// `.ready` — the one event that actually settles the pending join
+    /// (`completePendingVerification()`) — so there is a real window
+    /// where the puck reads as "connected" while this is still
+    /// `.awaitingPuck`.
+    var canRetry: Bool {
+        if case .awaitingPuck = phase { return false }
+        return true
+    }
+
     private(set) var pending: PendingKind?
+    /// A02 §3.3 amendment — the Start/Join that reached the puck but has
+    /// not been read back yet (`ApplyPhase.awaitingPuck`). Held in
+    /// memory rather than persisted on purpose: it is only meaningful
+    /// while this app is running and connected to the puck it wrote, and
+    /// a persisted one would come back after a relaunch as a claim about
+    /// a radio that may since have been factory-reset, re-joined
+    /// elsewhere, or handed to someone else. A relaunch starts from what
+    /// the puck actually says, which is the same rule every other part
+    /// of this flow follows.
+    ///
+    /// Cleared by exactly three things: the read-back itself (once,
+    /// whatever it finds), `cancelPending()`, and a fresh
+    /// `confirmApply()` — a new attempt supersedes the old one. NOT
+    /// cleared by `clearFailure()`, which only resets what is on screen.
+    private(set) var pendingVerification: PendingKind?
+    /// Review fix (2026-09-14) — `completePendingVerification()` awaits
+    /// `client.currentChannelTable()`, and this is `@MainActor`, not an
+    /// actor of its own: another `@MainActor` call (a fresh
+    /// `confirmApply()`, `cancelPending()`) can run to completion in
+    /// that gap. Nilling `pendingVerification` up front stops a SECOND
+    /// `.ready` from starting a second read, but it does nothing for a
+    /// read already past that line — without this token, a stale
+    /// read-back would resume after the gap and overwrite whatever the
+    /// newer attempt had already decided (`phase`, `pending`, even
+    /// `profile` via `adoptProfile`).
+    ///
+    /// Bumped by anything that supersedes an in-flight verification —
+    /// `cancelPending()`, and the start of `confirmApply()` — so a
+    /// verification can tell after its `await` whether it is still the
+    /// one that matters and bail out (touching nothing) if not.
+    private var verificationGeneration: UInt64 = 0
     private(set) var isPreparing = false
     private(set) var isApplying = false
     private(set) var errorMessage: String?
@@ -414,6 +501,10 @@ final class CrewController {
 
     func cancelPending() {
         pending = nil
+        pendingVerification = nil
+        // Review fix (2026-09-14) — supersede any verification already
+        // in flight, not only the flag a NEW one would have checked.
+        verificationGeneration &+= 1
         importer.clear()
         errorMessage = nil
         phase = .idle
@@ -423,7 +514,15 @@ final class CrewController {
     /// step (or a plain TRY AGAIN) starts from a clean state rather than
     /// showing the previous attempt's words next to a fresh one.
     func clearFailure() {
-        if case .joined = phase { return }
+        switch phase {
+        // `.awaitingPuck` is not a stale error from a previous attempt,
+        // it is a live fact about the puck this app is still waiting on
+        // — resetting it would hide the one sentence that explains why
+        // the screen is neither joined nor failed, while the read-back
+        // it is waiting for is still armed underneath.
+        case .joined, .awaitingPuck: return
+        default: break
+        }
         phase = .idle
         errorMessage = nil
         rejoinOwnCrewMessage = nil
@@ -500,6 +599,13 @@ final class CrewController {
         errorMessage = nil
         isApplying = true
         phase = .writing
+        // A fresh attempt supersedes any read-back the previous one left
+        // owing: whatever the puck ends up holding, it is this write
+        // that decides it. The generation bump is what makes that true
+        // even for a verification already past its `await` (review fix,
+        // 2026-09-14) — see `verificationGeneration`'s own doc comment.
+        pendingVerification = nil
+        verificationGeneration &+= 1
         defer { isApplying = false }
         let ok = await importer.confirmApply()
         guard ok else {
@@ -510,7 +616,16 @@ final class CrewController {
             // screens can see it.
             let message = importer.applyErrorMessage ?? "Couldn't apply that crew."
             errorMessage = message
-            phase = .failed(message)
+            // A02 §3.3 amendment — the one failure that is not the end
+            // of the attempt. The commit reached the puck and the puck
+            // restarted; the join stays PENDING a read-back rather than
+            // being thrown away, and rather than being claimed.
+            if importer.applyError == .committedButNotVerified {
+                pendingVerification = pending
+                phase = .awaitingPuck(message)
+            } else {
+                phase = .failed(message)
+            }
             return false
         }
         // The app's own check of what the radio reported back, as
@@ -545,6 +660,80 @@ final class CrewController {
         guard let report else { return false }
         guard let primary = report.channels.first(where: { $0.role == .primary }) else { return false }
         return primary.settings.name == code.canonical
+    }
+
+    /// A02 §3.3 amendment — the read-back that settles an
+    /// `.awaitingPuck` join, run ONCE, on the first `.ready` after the
+    /// puck's post-commit restart.
+    ///
+    /// This is the whole reason `committedButNotVerified` is allowed to
+    /// leave a join pending instead of failing it: the app never claims
+    /// the crew took, it goes and looks. What it looks for is the crew
+    /// channel by **name and key** (`channelCarries(_:code:)`) — the
+    /// name alone is public, printed on a screen and read out loud
+    /// across tents, so a puck sitting on a channel that merely shares
+    /// the name is not this crew.
+    ///
+    /// `pendingVerification` is consumed before the read, not after:
+    /// "once" has to survive the `await` in the middle, and a second
+    /// `.ready` arriving during the read must not start a second one.
+    ///
+    /// Review fix (2026-09-14) — that alone stops a SECOND `.ready` from
+    /// starting a second read, but it does nothing about a read already
+    /// past the `await` below: this is `@MainActor`, not an actor of its
+    /// own, so a fresh `confirmApply()` or a `cancelPending()` can run
+    /// to completion in that gap. `verificationGeneration` is captured
+    /// before the read and re-checked after it — anything that
+    /// supersedes this attempt bumps it, and a stale read that finds it
+    /// changed bails out without touching `phase`/`pending`/`profile`.
+    private func completePendingVerification() async {
+        guard let staged = pendingVerification else { return }
+        pendingVerification = nil
+        let generation = verificationGeneration
+        let code = staged.code
+        guard let table = try? await client.currentChannelTable() else {
+            guard generation == verificationGeneration else { return }
+            // The puck is back but would not tell us what it is holding.
+            // Nothing is known, so nothing is claimed.
+            let message = "Your puck came back, but Firefly couldn't read the crew off it — " +
+                "try again."
+            errorMessage = message
+            phase = .failed(message)
+            return
+        }
+        guard generation == verificationGeneration else { return }
+        guard Self.table(table, carries: code) else {
+            let message = "Your puck didn't come back with \(code.canonical). " +
+                "Nothing is certain until it does — try again."
+            errorMessage = message
+            phase = .failed(message)
+            return
+        }
+        switch staged {
+        case .start(let code, let name, _):
+            adoptProfile(code: code, humanName: name)
+        case .join(let code, let name, _):
+            adoptProfile(code: code, humanName: name ?? code.canonical)
+        }
+        pending = nil
+        errorMessage = nil
+        phase = .joined
+    }
+
+    /// Pure, so it is testable without a client: does this channel table
+    /// actually carry the crew — primary slot, the code as the name, and
+    /// the key that code derives (§1.4/§1.5)?
+    ///
+    /// Stricter than `report(_:carries:)` above on purpose. That one
+    /// checks a report this app just got back from a write it just sent,
+    /// inside one `applyChannelSet` call. This one checks a puck that
+    /// has been away, rebooted, and come back — possibly a puck somebody
+    /// else re-provisioned in the meantime — so the key has to match
+    /// too, not just the label.
+    static func table(_ channels: [Channel], carries code: CrewCode) -> Bool {
+        guard let primary = channels.first(where: { $0.role == .primary }) else { return false }
+        let expected = CrewChannel.channelSettings(for: code)
+        return primary.settings.name == expected.name && primary.settings.psk == expected.psk
     }
 
     private func adoptProfile(code: CrewCode, humanName: String) {

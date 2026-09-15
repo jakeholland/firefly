@@ -158,6 +158,14 @@ public final class CurrentValueEventHub<Element: Sendable>: @unchecked Sendable 
 
     public init() {}
 
+    /// The most recent value, read synchronously (a lock, not an actor
+    /// hop) — for gates that must answer NOW, like "is the link `.ready`
+    /// right this instant". `nil` until the first `yield`.
+    public var currentValue: Element? {
+        lock.lock(); defer { lock.unlock() }
+        return current
+    }
+
     /// A fresh, independent stream for one subscriber — immediately
     /// replayed the last `yield`ed value, if any, then every value
     /// published from this point on. Same `.bufferingNewest(4096)`

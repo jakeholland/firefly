@@ -111,6 +111,7 @@ public final class DemoMeshtasticClient: MeshtasticClientProtocol, @unchecked Se
     }
 
     public func linkState() -> AsyncStream<LinkState> { linkHub.subscribe() }
+    public var currentLinkState: LinkState { linkHub.currentValue ?? .disconnected }
     public func nodeUpdates() -> AsyncStream<MeshNodeSnapshot> { nodeHub.subscribe() }
     public func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
     public func incomingTexts() -> AsyncStream<IncomingText> { incomingTextHub.subscribe() }

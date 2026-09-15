@@ -70,6 +70,10 @@ struct CrewStartView: View {
                 technicalDetails: controller.confirmationTechnicalDetails,
                 isBusy: controller.isApplying,
                 errorMessage: controller.errorMessage,
+                // Review fix (2026-09-14) — `.awaitingPuck`'s own
+                // contract is "Retry: none"; see `canRetry`'s own doc
+                // comment on `CrewController`.
+                confirmDisabled: !controller.canRetry,
                 onConfirm: {
                     Task {
                         if await controller.confirmApply() {

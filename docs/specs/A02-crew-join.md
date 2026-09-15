@@ -789,6 +789,7 @@ somewhere a person can read:
 | NAK / partial apply (`.partialApplyFailed`) | "Couldn't send `<step>`: `<why>`. Your puck may be only partly set up — reconnect and try again." | CONFIRM / TRY AGAIN |
 | Timeout (`.timeout`) | "Your puck didn't answer in time — it may still be restarting. Try again in a moment." | CONFIRM / TRY AGAIN |
 | Read-back mismatch (`.readBackMismatch`) | "Your puck didn't confirm the change (`<detail>`). Nothing is certain until it does — try again." | CONFIRM / TRY AGAIN |
+| Committed, not yet verified (`.committedButNotVerified`, 2026-09-14) | "Your puck restarted but hasn't come back yet — reconnect and Firefly will check the crew took." | none — Firefly settles it itself (below) |
 | The app's own read-back check fails | "Your puck didn't come back with `FIRE-XXXXXX`. Nothing is certain until it does — try again." | CONFIRM / TRY AGAIN |
 | Region `UNSET` (§1.7) | the existing `RegionGateView` | SAVE AND CARRY ON |
 
@@ -805,6 +806,53 @@ button that stayed enabled. Pinned by `CrewControllerTests
 without a radio is what stops a "leave" from silently becoming a local
 forget while the puck keeps transmitting precise positions on the crew
 channel — §3.4's own worst possible outcome.
+
+**Amendment (2026-09-14, bench) — a join that reached the puck is not
+thrown away because the puck was slow to come back.** The row added to
+the table above is the one state this flow had no answer for, and the
+bench produced it on the first real run: the crew channel WAS written
+(`meshtastic --info` afterwards: channel 0 = `FIRE-8MNTT2`, precision
+32), `commit_edit_settings` rebooted the radio as it always does, the
+link came back — and the app had already given up, said "Your puck
+didn't answer in time", saved no profile, and left the phone claiming
+no crew while the puck sat on one. A03 §3.6's amendment owns why the
+waiting was wrong; this owns what the app does about it.
+
+- **A third phase, not a failure.** `CrewController.ApplyPhase` gains
+  `.awaitingPuck`, entered on and only on
+  `AdminWriteError.committedButNotVerified`. It is not `.failed` — the
+  write reached the puck and the puck did what a commit makes it do —
+  and it is emphatically not `.joined`, because nothing has been read
+  back. It shows the sentence in the table and no spinner: nothing is
+  running.
+- **Settled by a read-back, never by an assumption.** On the next
+  `.ready` the app reads the puck's channel table **once**
+  (`completePendingVerification()`) and moves to `.joined` only if the
+  primary channel carries the crew by **name and key**
+  (`CrewController.table(_:carries:)`). The name alone is public — it is
+  printed on a screen and read out loud across a tent — so a puck
+  sitting on a channel that merely shares the name is not this crew.
+  Anything else is `.failed` with the existing "didn't come back with
+  `FIRE-XXXXXX`" sentence.
+- **A read, never a second write.** The recovery must not re-send the
+  channel and reboot the puck again; that is the loop the bench's
+  `.timeout` copy ("try again in a moment") would have invited, and it
+  is why this row's Retry column is empty.
+- **Held in memory, not persisted.** The pending read-back is
+  meaningful only while this app is running and connected to the puck it
+  wrote. A persisted one would come back after a relaunch as a claim
+  about a radio that may since have been factory-reset or handed to
+  someone else; a relaunch starts from what the puck actually says.
+- **One attempt at a time.** A fresh `confirmApply()` supersedes a
+  pending read-back, `cancelPending()` drops it, and `clearFailure()`
+  deliberately does NOT — it only resets what is on screen, and
+  `.awaitingPuck` is a live fact rather than a stale error.
+
+Tests: `CrewControllerTests
+.testAPuckThatRestartsAndComesBackLateStillJoinsAfterAReadBack`,
+`.testAPuckThatComesBackOnADifferentCrewIsNeverClaimedAsAJoin`,
+`.testAReadBackWithTheRightNameButTheWrongKeyIsNotThisCrew`,
+`.testEveryOtherFailureEndsTheAttemptAndIsNeverResurrectedByAReconnect`.
 
 ### 3.4 Rejoin, change crew, leave
 
@@ -1366,6 +1414,26 @@ table in §6.3. What remains here:
 | "Taylor's radio: strong signal, direct, heard just now" | "Taylor: strong signal, heard just now" — `relayed through Dana` appended **only when true**, never a bare "direct" (§6.3's `RELAYED` / `via relay` row) |
 | `−61 dBm`, `SNR 4.2 dB` on any main-path screen | removed; Advanced only |
 | `!02e5e3d4` | removed from the main path; Advanced only |
+
+**Amendment (2026-09-14, bench) — the words for a puck that restarted
+and hasn't come back.** `AdminWriteError.committedButNotVerified`
+(§3.3's amendment) ships as:
+
+> "Your puck restarted but hasn't come back yet — reconnect and Firefly
+> will check the crew took."
+
+Three deliberate choices. It does **not** reuse the `.timeout` sentence
+("didn't answer in time"), because the puck did answer — it committed
+and restarted. It does **not** end in "try again", because trying again
+means writing the same channel and rebooting the puck a second time. And
+it names what happens next, because something does: Firefly settles it
+with a read-back on its own.
+
+Callers outside a crew join pass their own subject, so the sentence
+stays true for them — Settings' name write says "check your name took",
+its region write "check the band took"
+(`ChannelImportViewModel.writeMessage(for:subject:)`). A name write must
+never tell a user Firefly is about to check a crew.
 
 **Amendment (2026-09-14) — `±6 m` stays.** The row this replaced also
 deleted GPS accuracy (`±6 m`) from main-path screens. Reversed by owner

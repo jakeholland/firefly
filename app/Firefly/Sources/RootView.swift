@@ -658,6 +658,10 @@ struct RootView: View {
         // screenshot is captured. With no such instruction, a bench run
         // lands where a human's own "Done · go to Find" would put it
         // (§3.3 step 5).
+        #if DEBUG
+        FileHandle.standardError.write(Data(
+            "[FireflyDebug] crew request applied=\(applied) phase=\(crew.phase) error=\(crew.errorMessage ?? "nil")\n".utf8))
+        #endif
         if applied, initialDemoScreen == nil {
             showCrewOnboarding = false
             selection = .find

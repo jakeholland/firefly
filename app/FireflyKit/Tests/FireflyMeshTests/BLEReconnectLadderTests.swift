@@ -415,6 +415,131 @@ final class BLEReconnectLadderTests: XCTestCase {
         XCTAssertEqual(ladder.attempt, 1)
     }
 
+    // MARK: - A03 §3.6 amendment (2026-09-14) — an EXPECTED post-commit
+    // reboot reconnects promptly; everything else still climbs the
+    // ladder.
+    //
+    // The bench run this comes from (2026-09-14, Mac bench app against
+    // Heltec `TAY_06b0`, fw 2.7.26): `applyChannelSet` wrote the crew
+    // channel, `commit_edit_settings` rebooted the radio, and the app
+    // then sat through the ladder's first rung — "first window in 20.0s
+    // (±20%)" — before opening the scan that found the puck again. The
+    // puck had finished booting long before that.
+
+    /// (a) A disconnect the client SAW COMING opens its rediscovery
+    /// window immediately — no 20 s rung, no jitter on zero.
+    func testExpectedPostCommitRebootOpensItsWindowWithNoLadderDelay() {
+        var ladder = ReconnectLadder()
+        ladder.armExpectingReboot(target: target, disconnectedAt: t0)
+
+        XCTAssertTrue(ladder.isExpectedReboot)
+        XCTAssertEqual(evaluate(&ladder, at: t0), .startScan(attempt: 1),
+                       "a commit-driven reboot must not wait out a rung sized for an unexplained loss")
+        XCTAssertTrue(ladder.isScanning)
+        // And the window is the SAME bounded 30 s window — the prompt
+        // path buys an earlier start, never an unbounded scan.
+        XCTAssertEqual(evaluate(&ladder, at: at(29)), .doNothing)
+        XCTAssertEqual(evaluate(&ladder, at: at(30)), .endScan(.windowElapsed))
+    }
+
+    /// (d) The mirror image, and the reason the marker is one-shot: an
+    /// ordinary, unexplained drop still waits out §3.6's first rung.
+    /// Same ladder type, same evaluation, only the arming differs.
+    func testAnUnexpectedDisconnectStillWaitsOutTheLaddersFirstRung() {
+        var ladder = ReconnectLadder()
+        ladder.arm(target: target, disconnectedAt: t0, jitterFraction: 0)
+
+        XCTAssertFalse(ladder.isExpectedReboot)
+        XCTAssertEqual(evaluate(&ladder, at: t0), .doNothing)
+        XCTAssertEqual(evaluate(&ladder, at: at(19)), .doNothing)
+        XCTAssertEqual(evaluate(&ladder, at: at(20)), .startScan(attempt: 1))
+    }
+
+    /// The duty-cycle bound A03 §4.2 budgets for is untouched: only the
+    /// FIRST rung is skipped. If the immediate window finds nothing, the
+    /// ladder climbs the ordinary table from attempt 2 and caps exactly
+    /// where it always did.
+    func testAfterTheImmediateWindowTheOrdinaryTableResumes() {
+        var ladder = ReconnectLadder()
+        ladder.armExpectingReboot(target: target, disconnectedAt: t0)
+        XCTAssertEqual(evaluate(&ladder, at: t0), .startScan(attempt: 1))
+        XCTAssertEqual(evaluate(&ladder, at: at(30)), .endScan(.windowElapsed))
+        XCTAssertEqual(ladder.attempt, 2)
+        // Attempt 2 is 60 s (jitter 0 here), exactly as for any other
+        // ladder — not another immediate window.
+        XCTAssertEqual(evaluate(&ladder, at: at(59)), .doNothing)
+        XCTAssertEqual(evaluate(&ladder, at: at(90)), .startScan(attempt: 2))
+    }
+
+    /// Re-arming ordinarily over an expected-reboot ladder takes effect
+    /// — the idempotence guard must not swallow a mode change, which is
+    /// the same bug `testReArmingWithADifferentModeTakesEffect` pins for
+    /// `requiresPendingConnect`.
+    func testAnOrdinaryReArmOverAnExpectedRebootLadderTakesEffect() {
+        var ladder = ReconnectLadder()
+        ladder.armExpectingReboot(target: target, disconnectedAt: t0)
+        XCTAssertTrue(ladder.isExpectedReboot)
+
+        ladder.arm(target: target, disconnectedAt: t0, jitterFraction: 0)
+        XCTAssertFalse(ladder.isExpectedReboot)
+        XCTAssertEqual(evaluate(&ladder, at: t0), .doNothing, "back to the ordinary first rung")
+        XCTAssertEqual(evaluate(&ladder, at: at(20)), .startScan(attempt: 1))
+    }
+
+    /// A cancelled ladder forgets it was ever an expected reboot.
+    func testCancellingClearsTheExpectedRebootMode() {
+        var ladder = ReconnectLadder()
+        ladder.armExpectingReboot(target: target, disconnectedAt: t0)
+        ladder.cancel()
+        XCTAssertFalse(ladder.isExpectedReboot)
+        XCTAssertFalse(ladder.isArmed)
+    }
+
+    // MARK: - ExpectedRebootWindow — one commit explains one disconnect
+
+    /// One-shot: a second disconnect after the same commit is an
+    /// ordinary loss and gets the ordinary ladder.
+    func testAnExpectedRebootNoticeIsConsumedExactlyOnce() {
+        var window = ExpectedRebootWindow()
+        window.arm(at: t0)
+        XCTAssertTrue(window.isArmed)
+        XCTAssertTrue(window.consume(now: at(1)))
+        XCTAssertFalse(window.consume(now: at(2)), "one commit, one expected disconnect")
+        XCTAssertFalse(window.isArmed)
+    }
+
+    /// Time-bounded: a commit whose reboot never came must not silently
+    /// re-label some unrelated drop minutes later as expected.
+    func testAStaleExpectedRebootNoticeIsNotHonoured() {
+        var window = ExpectedRebootWindow()
+        window.arm(at: t0)
+        XCTAssertFalse(window.consume(now: at(ExpectedRebootWindow.defaultLifetime + 0.5)))
+        XCTAssertFalse(window.isArmed, "a stale notice is spent, not left standing for the next drop")
+
+        window.arm(at: t0)
+        XCTAssertTrue(window.consume(now: at(ExpectedRebootWindow.defaultLifetime)),
+                      "the boundary itself is inside the window")
+    }
+
+    /// Never armed, or explicitly stood down (a user disconnect,
+    /// Bluetooth off): nothing is expected.
+    func testAnUnarmedOrCancelledWindowNeverReportsAnExpectedReboot() {
+        var window = ExpectedRebootWindow()
+        XCTAssertFalse(window.consume(now: t0))
+        window.arm(at: t0)
+        window.cancel()
+        XCTAssertFalse(window.consume(now: at(1)))
+    }
+
+    /// A clock that ran backwards (an NTP correction between the commit
+    /// and CoreBluetooth's own measured disconnect timestamp) is not
+    /// evidence of anything — it is not treated as an expected reboot.
+    func testANoticeFromTheFutureIsNotHonoured() {
+        var window = ExpectedRebootWindow()
+        window.arm(at: at(10))
+        XCTAssertFalse(window.consume(now: t0))
+    }
+
     // MARK: - Helpers
 
     /// `t0` plus a number of seconds. A helper rather than a `+`

@@ -396,7 +396,11 @@ final class SettingsViewModel {
             nodeShortName = report.shortName
             return true
         } catch {
-            nameApplyError = ChannelImportViewModel.writeMessage(for: error)
+            // `subject:` — this is a NAME write, so a
+            // `committedButNotVerified` here must not tell the user
+            // Firefly is about to check a crew took (that sentence's own
+            // doc comment).
+            nameApplyError = ChannelImportViewModel.writeMessage(for: error, subject: "your name")
             return false
         }
     }
@@ -420,7 +424,7 @@ final class SettingsViewModel {
             regionSelection = report.region
             return true
         } catch {
-            regionApplyError = ChannelImportViewModel.writeMessage(for: error)
+            regionApplyError = ChannelImportViewModel.writeMessage(for: error, subject: "the band")
             return false
         }
     }
