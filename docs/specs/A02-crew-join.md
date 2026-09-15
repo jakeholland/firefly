@@ -330,6 +330,19 @@ firefly://crew?v=1&code=FIRE-4K9M7X&name=Camp%20Firefly
   are out of scope (no server, and the whole product premise is that
   there is no signal).
 
+> **This section is the APP's own QR** (`CrewStartView`, Crew → Show
+> code) — it keeps the full deep link, unchanged. **The puck's SHOW
+> CODE face's QR does not**: `docs/specs/S02-core-crew.md`'s 2026-09-15
+> amendment moved it to the bare canonical code alone (`FIRE-4K9M7X`,
+> 11 bytes), because that QR is read by a phone camera off a 1.46"
+> round display at close range, and the deep link's extra 24 bytes
+> pushed LVGL's `lv_qrcode` from QR version 1 (21x21 modules) to version
+> 3 (29x29) in the same fixed canvas — under 6px a module, reported as
+> hard to scan up close. A02 §1.2's `CrewCode.parse` already accepts the
+> bare code — scanned, typed, or read aloud — so nothing on the app side
+> changes; see S02's amendment for the puck-side reasoning and numbers
+> in full.
+
 **Why not a `meshtastic.org/e/#…` URL as the QR?** Because the QR is the
 one thing Maya points a camera at, and it has to land her in Firefly's
 own Join flow with the crew's *name* and one JOIN button — not in a
