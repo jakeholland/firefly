@@ -54,7 +54,19 @@ final class FireflyAppDelegate: NSObject, UIApplicationDelegate {
 
 @main
 struct FireflyApp: App {
-    /// THE composition root, constructed exactly once for the process.
+    /// THE composition root, constructed exactly once for the process —
+    /// and, since "app: Try the demo" (docs/specs/A01-companion-app.md
+    /// demo stack, owner ask 2026-09-15), rebuildable AT RUNTIME by
+    /// `enterDemoMode()`/`leaveDemoMode()` below without leaving the
+    /// process. See `AppRuntimeBundle.swift`'s own header comment for
+    /// why a wholesale rebuild — not a second, parallel "demo view" — is
+    /// the only honest way to do that, and why this single `@State`
+    /// replaces what used to be a dozen separate ones (`graph`,
+    /// `connect`, `inbox`, `radar`, `lineup`, `map`, `channelImport`,
+    /// `settings`, `crew`, `membership`, `demoRunner`, `hasKnownRadio`,
+    /// `hasCrew` all now live inside it, reassigned together in one
+    /// step, which is what keeps a mode switch from ever showing a
+    /// `RootView` built from half the OLD graph and half the NEW one).
     ///
     /// `AppGraph` owns the one `AppDependencies` (`.current()`:
     /// `.stub()` in the iOS Simulator, which has no Bluetooth at all;
@@ -66,51 +78,47 @@ struct FireflyApp: App {
     /// itself: doing so builds a SECOND client over a SECOND transport,
     /// which is exactly the bug `RadarView`'s old no-argument `init()`
     /// shipped with (see `AppGraph`'s own header comment).
-    @State private var graph: AppGraph
-    @State private var connect: ConnectViewModel
-    @State private var inbox: InboxViewModel
-    @State private var radar: RadarViewModel
-    /// "app: festpack from fest-almanac + Lineup".
-    @State private var lineup: LineupViewModel
-    /// Map tab slice: `AppGraph.makeMapViewModel()`'s one view model —
-    /// built once here, same "one view model per destination, built by
-    /// the graph, never re-created on redraw" rule `radar`/`inbox`
-    /// above already follow.
-    @State private var map: MapViewModel
-    /// Shared between the Connect and Settings destinations (see
-    /// `SettingsViewModel`'s own comment) so both read the same imported
-    /// channel rather than two disconnected copies.
-    @State private var channelImport: ChannelImportViewModel
-    @State private var settings: SettingsViewModel
-    /// A02's one view model (`docs/specs/A02-crew-join.md`) — built with
-    /// its OWN `ChannelImportViewModel` instance (deliberately NOT
-    /// `channelImport` above, which Connect/Settings share): a crew
-    /// Start/Join/Leave prepares and confirms a plan independently of
-    /// whatever the Connect screen's own channel-import section is
-    /// mid-way through, so the two must never contend for one shared
-    /// `applyPlan`.
-    @State private var crew: CrewController
-    /// The Joined/People list seam — `AppGraph.crewMembership` (#306).
-    @State private var membership: any CrewMembershipProviding
+    @State private var runtime: AppRuntimeBundle
+    /// REVIEW FIX (PR #331 independent review, BLOCKING): the ONE real,
+    /// non-demo `AppDependencies` this process ever builds — cached the
+    /// moment it is first known and reused by EVERY later "leave the
+    /// demo" switch, never rebuilt.
+    ///
+    /// This is a correctness requirement, not a micro-optimization.
+    /// `AppDependencies.live()` constructs a brand-new `BLETransport()`
+    /// on every call (`AppDependencies.swift`'s own doc comment: "stays
+    /// safe to call from anywhere... right up until something actually
+    /// calls connect()/scan() on it" — a promise about SAFETY to call,
+    /// never a promise that a second call is harmless to ACT on
+    /// alongside a first one still alive), and the FIRST thing this
+    /// process's `AppRuntimeBundle.build` does to that transport is
+    /// `graph.prepareForRestoration()`, which constructs its
+    /// `CBCentralManager` immediately. A03 §3.1's restore identifier
+    /// (`BLETransport.restoreIdentifier`) is a FIXED, process-wide
+    /// constant — Apple's whole state-restoration contract assumes
+    /// exactly one live `CBCentralManager` ever carries it. Before this
+    /// fix, "Leave the demo" called `DemoModeAction.leaveDemo
+    /// .dependencies` (`.nonDemo()` -> `.live()` on a device) fresh on
+    /// EVERY leave, registering a SECOND `CBCentralManager` under the
+    /// SAME restore identifier while the FIRST one (built at cold
+    /// launch, and — `graph.stop()`'s own doc comment — not guaranteed
+    /// to be deallocated by the moment the new one is constructed, since
+    /// the outgoing `RootView` hierarchy can still hold the old view
+    /// models/client/transport chain alive until SwiftUI actually
+    /// diffs away the old `.id(runtime.id)`) was still, or might still
+    /// be, alive. Reusing the SAME `AppDependencies` — and therefore the
+    /// SAME `BLETransport`/`CBCentralManager` — on every leave keeps
+    /// that "exactly one" invariant true regardless of how many times a
+    /// reviewer or user toggles the demo. Safe to reuse across a
+    /// disconnect/reconnect cycle by construction:
+    /// `MeshtasticClient.beginListening()`/`.connect()` are both
+    /// documented idempotent/self-resetting
+    /// (`MeshtasticClient.swift`'s own doc comments), which is exactly
+    /// what a normal "stay connected in background" OFF/ON cycle
+    /// already exercises on this same client.
+    @State private var nonDemoDependencies: AppDependencies
     /// A02 §1.8 — `onOpenURL`'s parsed `firefly://crew…` payload.
     @State private var incomingCrewLink: CrewScanPayload?
-    /// Non-nil in exactly one case: `graph.dependencies.client` came
-    /// back a `DemoMeshtasticClient` — i.e. the iOS Simulator AND
-    /// `-FireflyDemo`/`FIREFLY_DEMO=1` (`AppDependencies.current()`'s
-    /// own `#if targetEnvironment(simulator)` gate). Recovered by
-    /// downcasting `graph.dependencies` rather than branching `init()`
-    /// on `DemoLaunch` a second time, so there is exactly ONE place
-    /// (`AppDependencies.current()`) that decides whether this process
-    /// is running the demo world at all — this is only ever the
-    /// SECOND thing to notice that decision, never the first.
-    @State private var demoRunner: DemoRunner?
-    /// "app: five-tab bar per design" — read once at construction; see
-    /// this property's own assignment in `init` for what it means and
-    /// `RootView.hasKnownRadio`'s doc comment for how it is used.
-    let hasKnownRadio: Bool
-    /// A02 §6.1 — whether a crew code is already set, read once at
-    /// construction like `hasKnownRadio` above.
-    let hasCrew: Bool
     /// M2 — read by two independent `.onChange(of: scenePhase)` handlers
     /// below, each owning its own concern: tracks foreground/background
     /// so an inbound FLARE takes over the screen only while the app is
@@ -155,12 +163,19 @@ struct FireflyApp: App {
         // gates every other `DemoLaunch` check (`AppDependencies.swift`'s
         // own comment): only inside `#if targetEnvironment(simulator)`,
         // so a stray launch argument can never turn a real device's
-        // history into fictional festival data.
+        // history into fictional festival data. Cold-launch only — a
+        // runtime mode switch (`enterDemoMode()`/`leaveDemoMode()` below)
+        // never passes a `historyStore` override, on purpose (see
+        // `AppRuntimeBundle.build`'s own doc comment on that parameter).
+        //
         // Bench seam (`FireflyDebugCrewStateLaunch`, `#if DEBUG` only) —
         // applied HERE, before `AppGraph.init` replays the paired list
         // onto `ff_crew` and reads the crew profile, because both of
         // those are what these flags exist to change. A launch with
-        // neither flag does nothing and logs nothing.
+        // neither flag does nothing and logs nothing. Also cold-launch
+        // only, for the same reason: these are bench overrides describing
+        // how THIS PROCESS started, not something a runtime switch should
+        // ever replay.
         for line in FireflyDebugCrewStateLaunch.apply() {
             FileHandle.standardError.write(Data((line + "\n").utf8))
         }
@@ -171,174 +186,122 @@ struct FireflyApp: App {
             DemoHistorySeed.seed(into: seeded)
             historyOverride = seeded
         }
-        let graph = AppGraph(skipLaunchAutoConnectUnderXCTest: true, historyStore: historyOverride)
         #else
-        let graph = AppGraph(skipLaunchAutoConnectUnderXCTest: true)
+        let historyOverride: HistoryStore? = nil
         #endif
-        _graph = State(initialValue: graph)
+        let coldLaunchDependencies = AppDependencies.current()
+        let runtime = AppRuntimeBundle.build(dependencies: coldLaunchDependencies, historyStore: historyOverride,
+                                              requestedScreen: DemoLaunch.requestedScreen(),
+                                              hapticsFactory: Self.makeHaptics)
+        _runtime = State(initialValue: runtime)
+        // `nonDemoDependencies`'s own doc comment. On every ordinary,
+        // non-Simulator-demo launch, `coldLaunchDependencies` (`.current()`
+        // outside the Simulator's own `-FireflyDemo` gate is always
+        // `.nonDemo()` — `AppDependencies.current()`'s own doc comment) IS
+        // already that one real composition, so this reuses it rather
+        // than building a second, redundant `BLETransport`. Only a
+        // Simulator launch that cold-starts directly INTO the demo world
+        // (`-FireflyDemo`) has nothing to reuse yet and builds `.nonDemo()`
+        // fresh here — cheap and harmless there (`.stub()`, no
+        // `BLETransport` at all, since the Simulator has no Bluetooth).
+        _nonDemoDependencies = State(initialValue: coldLaunchDependencies.client is DemoMeshtasticClient
+            ? AppDependencies.nonDemo() : coldLaunchDependencies)
         // A03 §3.1 — both launch paths, in the order §3.1 specifies.
         //
         // `FireflyAppDelegate` is the PRIMARY: it is the only one of the
         // two Apple documents as running on a background relaunch. This
         // handover has to happen here, in `init()`, because SwiftUI runs
-        // it before `didFinishLaunchingWithOptions`.
-        //
-        // The `prepareForRestoration()` call right after is the BACKSTOP,
-        // not the design — it exists for the ordering question SwiftUI
-        // does not document, and it is idempotent with the delegate's own
-        // call (at most one `CBCentralManager` is ever constructed;
-        // `BLECentralStore`'s own doc comment). It is a no-op on macOS's
-        // and the Simulator's stacks alike.
+        // it before `didFinishLaunchingWithOptions`. `AppRuntimeBundle
+        // .build` already called `graph.prepareForRestoration()` — the
+        // BACKSTOP half of §3.1 — for us; it is idempotent with the
+        // delegate's own call (at most one `CBCentralManager` is ever
+        // constructed per graph; `BLECentralStore`'s own doc comment) and
+        // a no-op on macOS's and the Simulator's stacks alike.
         #if os(iOS)
-        FireflyAppDelegate.graph = graph
+        FireflyAppDelegate.graph = runtime.graph
         #endif
-        graph.prepareForRestoration()
-        let connectVM = graph.makeConnectViewModel()
-        _connect = State(initialValue: connectVM)
-        // M3 — `client:` passed through explicitly (its default,
-        // `StubMeshtasticClient()`, only exists so pre-M3 call sites in
-        // tests keep compiling): without this, "Apply to node" would
-        // silently write to a disconnected stand-in instead of
-        // `graph.dependencies.client`, the one real client the rest of
-        // this graph observes.
-        let importVM = ChannelImportViewModel(client: graph.dependencies.client)
-        _channelImport = State(initialValue: importVM)
-        // A02 — its own `ChannelImportViewModel`, deliberately separate
-        // from `importVM` above (this property's own doc comment).
-        // `CrewProfileStore`/`CrewSnapshotKeychainStore`/`CrewHiddenStore`
-        // are the real, persisted implementations — the stub stack
-        // (`.stub()`, tests) uses the in-memory ones instead, injected
-        // directly rather than through `AppDependencies` (A02 lands
-        // after A01's dependency list was frozen; adding three more
-        // fields there for a feature this self-contained was not worth
-        // widening a shared struct every other slice also constructs).
-        //
-        // PR #313 review — `profileStore:` is `graph.crewProfileStore`,
-        // NOT a second `CrewProfileStore()`: the graph configures
-        // `crewMembership` off that same store at `init`, and two
-        // instances would agree only by `UserDefaults` coincidence (and
-        // not at all in demo mode, where the graph's store is in-memory).
-        let crewVM = CrewController(
-            client: graph.dependencies.client,
-            profileStore: graph.crewProfileStore,
-            snapshotStore: CrewSnapshotKeychainStore(),
-            hiddenStore: CrewHiddenStore())
-        // …and the other direction: every Start/Join/switch/Leave points
-        // the membership engine at the crew the user is NOW on (or at
-        // none). `AppGraph.syncCrewMembershipWithProfile()` re-reads the
-        // store, so this closure carries no crew state of its own. No
-        // retain cycle: the graph does not hold `crewVM`.
-        crewVM.onProfileChanged = { [graph] in graph.syncCrewMembershipWithProfile() }
-        _crew = State(initialValue: crewVM)
-        // Slice C has landed (#306): the Crew page and Start's Joined
-        // list read the REAL `CrewMembershipEngine` — "admitted since
-        // `crewCreatedAt`, newest first" (§2.3) — through the same
-        // `CrewMembershipProviding` seam slice B defined. `CoreStore`
-        // sees only the gate half of this same object, so the list and
-        // the gate can never disagree about who is in the crew.
-        // `PairingCrewMembershipProvider` stays in the module as the
-        // stub for compositions with no graph.
-        _membership = State(initialValue: graph.crewMembership)
-        // Slice C's INTEGRATION TASK, now done: this used to construct
-        // its own `SettingsStore()` because `AppDependencies.store` was
-        // still `InMemorySettingsStore` under both `.stub()` and
-        // `.live()`. `.live()` is pointed at the real `SettingsStore`
-        // now, so Settings and every other reader of
-        // `dependencies.store.bool(.locationSharingEnabled)` — the
-        // phone-GPS uplink above all — share ONE instance, instead of
-        // agreeing only by `UserDefaults.standard` coincidence.
-        //
-        // `.makeObserving(...)`, not the plain initializer — that
-        // factory's own doc comment on `SettingsViewModel.swift` is
-        // where the fix (and the NavigationSplitView remount bug it
-        // fixes) is written up; this is the one call site that matters.
-        // M3 — `clearHistory:` reaches the SAME `inboxProvider` every
-        // screen reads (`AppGraph.inboxProvider`, `PersistingInboxProvider
-        // .clearAll()`), never a second, independent path — Settings
-        // owns the confirmation UI (`SettingsScreen.swift`), not a
-        // second opinion about what "history" means.
-        // "app: automatic almanac refresh + festival picker" — built
-        // BEFORE `_settings` (moved up from its previous spot below
-        // `_radar`) so the ONE `LineupViewModel` instance this graph
-        // ever creates (`lineup`'s own doc comment on `SettingsScreen`:
-        // "shared with the Lineup destination... so the 'Festival data'
-        // row and the Lineup tab can never show two different sourceState
-        // /URL answers") can be handed to `SettingsViewModel.makeObserving`
-        // too — its own `festivalPicker` calls `lineup.refresh()` on a
-        // selection, which must land on the SAME view model the Lineup
-        // tab renders, never a second one racing it.
-        let lineupVM = graph.makeLineupViewModel()
-        _lineup = State(initialValue: lineupVM)
-        // `indexProvider:` — same `dependencies.client is DemoMeshtasticClient`
-        // downcast `AppGraph.init` already uses to pick `festpack`/`picks`
-        // (that file's own doc comment): demo mode's Settings picker must
-        // never depend on whatever fest-almanac happens to publish live
-        // that day — `DemoAlmanacIndexProvider`'s own header comment.
-        let indexProvider: any AlmanacIndexProviding = graph.dependencies.client is DemoMeshtasticClient
-            ? DemoAlmanacIndexProvider()
-            : AlmanacIndexProvider()
-        _settings = State(initialValue: SettingsViewModel.makeObserving(store: graph.dependencies.store,
-                                                                         channelImport: importVM,
-                                                                         client: graph.dependencies.client,
-                                                                         clearHistory: { graph.inboxProvider.clearAll() },
-                                                                         location: graph.dependencies.location,
-                                                                         lineup: lineupVM,
-                                                                         indexProvider: indexProvider))
-        let inboxVM = graph.makeInboxViewModel()
-        _inbox = State(initialValue: inboxVM)
-        #if os(iOS)
-        let haptics: any HapticSignaling = UIKitHapticSignaling()
-        #else
-        // No Taptic Engine on a Mac — the honest answer, not a gap.
-        let haptics: any HapticSignaling = NoHapticSignaling()
-        #endif
-        let radarVM = graph.makeRadarViewModel(haptics: haptics)
-        _radar = State(initialValue: radarVM)
-        _map = State(initialValue: graph.makeMapViewModel())
-        // "app: five-tab bar per design" — read once, here, from the
-        // same persisted state `BLETransport`'s own auto-reconnect
-        // already trusts (`AppDependencies.live()`'s `lastPeripheralID`)
-        // plus the `-FireflyAutoConnect <name>` debug launch arg
-        // (`FireflyAutoConnectLaunch`) — never a fresh read of the
-        // live, still-connecting `ConnectViewModel` (`RootView
-        // .hasKnownRadio`'s own doc comment has the full reasoning).
-        // `.stub()`'s `InMemorySettingsStore` and the demo stack both
-        // report nothing persisted here, which is exactly right: a
-        // fresh simulator run has no radio to already know about.
-        self.hasKnownRadio = graph.dependencies.store.string(.lastPeripheralID) != nil
-            || FireflyAutoConnectLaunch.requestedPeripheralName() != nil
-        // A02 §6.1 — same "read persisted state once at construction"
-        // convention as `hasKnownRadio` just above.
-        self.hasCrew = crewVM.hasCrew
-        // M2: the FLARE takeover's own haptic pulse (S10: "3 long,
-        // overrides quiet hours") — late-injected for the same reason
-        // `makeRadarViewModel(haptics:)` takes it as a parameter rather
-        // than `AppGraph` picking a platform default itself (`AppGraph`
-        // has no UIKit dependency to pick `UIKitHapticSignaling` with).
-        graph.flareTakeover.setHaptics(haptics)
 
         // A03 §3.11.3 — install the notification delegate NOW. A tap
         // that launched the app is delivered right after launch, so
         // wiring this later is the same as not wiring it at all. It
         // also has to be a delegate at all before `willPresent` can
         // stop foreground notifications being swallowed
-        // (`NotificationTapRouter`'s own header).
+        // (`NotificationTapRouter`'s own header). Re-pointed at whichever
+        // graph is current by `enterDemoMode()`/`leaveDemoMode()` below —
+        // the router itself is built once and never rebuilt, since
+        // `UNUserNotificationCenter` retaining its delegate weakly means
+        // a fresh instance on every switch would need re-installing too,
+        // for no benefit over just updating where the one delegate routes.
         #if canImport(UserNotifications)
         let taps = NotificationTapRouter()
-        taps.onDeepLink = { url in graph.deepLinks.handle(url) }
+        taps.onDeepLink = { [graph = runtime.graph] url in graph.deepLinks.handle(url) }
         taps.install()
         _notificationTaps = State(initialValue: taps)
         #endif
+    }
 
-        if let demoClient = graph.dependencies.client as? DemoMeshtasticClient,
-           let demoLocation = graph.dependencies.location as? DemoLocationProvider,
-           let demoHeading = graph.dependencies.heading as? DemoHeadingProvider {
-            _demoRunner = State(initialValue: DemoRunner(
-                graph: graph, client: demoClient, location: demoLocation, heading: demoHeading,
-                connect: connectVM, inbox: inboxVM, radar: radarVM))
-        } else {
-            _demoRunner = State(initialValue: nil)
-        }
+    #if os(iOS)
+    private static func makeHaptics() -> any HapticSignaling { UIKitHapticSignaling() }
+    #else
+    // No Taptic Engine on a Mac — the honest answer, not a gap.
+    private static func makeHaptics() -> any HapticSignaling { NoHapticSignaling() }
+    #endif
+
+    /// "Try the demo" (`CrewConnectPuckView`'s connect-step button,
+    /// Settings' demo row) — the in-app entry point TestFlight reviewers
+    /// and App Review use in place of a real Meshtastic radio. A no-op
+    /// while already in demo mode (`DemoModeAction.requested(isDemoMode:)`
+    /// never returns `.enterDemo` then), so a stray second tap before the
+    /// button/row can re-render as "Leave the demo" does nothing rather
+    /// than tearing down and rebuilding the SAME world.
+    func enterDemoMode() async { await switchRuntime(to: .requested(isDemoMode: runtime.isDemoMode)) }
+
+    /// "Leave the demo" (Settings' demo row, once inside it) — tears the
+    /// demo world down and rebuilds the real stack from
+    /// `nonDemoDependencies` (that property's own doc comment: the SAME
+    /// `AppDependencies` — `.live()` on a device, `.stub()` in the
+    /// Simulator with no `-FireflyDemo` launch argument of its own — this
+    /// process built once, never a fresh `.nonDemo()` call). The user's
+    /// REAL state is untouched by construction, not by care taken here:
+    /// demo mode's own dependencies (`.demoBundle()`) are disposable,
+    /// in-memory, and never shared with the real `SettingsStore`/
+    /// `HistoryStore`/Keychain-backed stores in the first place
+    /// (`docs/specs/A01-companion-app.md`'s "Demo isolation" section), so
+    /// there is nothing demo-shaped to unwind on the way out — this just
+    /// re-installs the ordinary real composition, the same one a cold
+    /// launch with no demo flag would have built.
+    func leaveDemoMode() async { await switchRuntime(to: .requested(isDemoMode: runtime.isDemoMode)) }
+
+    /// Both entry points above funnel through here: stop the OUTGOING
+    /// bundle (`AppRuntimeBundle.stopObserving()`), build the requested
+    /// one, re-point the notification router at its graph, and install
+    /// it. `RootView`'s `.id(runtime.id)` (in `body`, below) is what
+    /// actually makes this feel like a relaunch to the rest of the app —
+    /// see `AppRuntimeBundle`'s own header comment for why a wholesale
+    /// rebuild, not an in-place mutation, is the only honest way to
+    /// switch dependency graphs at runtime.
+    private func switchRuntime(to action: DemoModeAction) async {
+        let outgoing = runtime
+        await outgoing.stopObserving()
+        // REVIEW FIX (PR #331 independent review, BLOCKING) —
+        // `nonDemoDependencies`'s own doc comment: `.leaveDemo` reuses the
+        // ONE real composition (and its ONE `BLETransport`/
+        // `CBCentralManager`) this process ever builds, rather than
+        // `action.dependencies` calling `.nonDemo()` fresh and
+        // constructing a second one. `.enterDemo` is unaffected —
+        // `action.dependencies` there is `AppDependencies.demoBundle()
+        // .dependencies`, which never touches Bluetooth at all.
+        let dependencies = action == .leaveDemo ? nonDemoDependencies : action.dependencies
+        let incoming = AppRuntimeBundle.build(dependencies: dependencies,
+                                               requestedScreen: action.requestedScreen,
+                                               hapticsFactory: Self.makeHaptics)
+        #if os(iOS)
+        FireflyAppDelegate.graph = incoming.graph
+        #endif
+        #if canImport(UserNotifications)
+        notificationTaps.onDeepLink = { [graph = incoming.graph] url in graph.deepLinks.handle(url) }
+        #endif
+        runtime = incoming
     }
 
     var body: some Scene {
@@ -348,24 +311,24 @@ struct FireflyApp: App {
             // of editing this call's single line, so sibling slices'
             // hunks land as pure insertions and never collide.
             RootView(
-                connect: connect,
-                settings: settings,
-                channelImport: channelImport,
-                client: graph.dependencies.client,
-                inbox: inbox,
-                radar: radar,
-                lineup: lineup,
-                scanner: graph.dependencies.scanner,
-                demoRunner: demoRunner,
-                initialDemoScreen: DemoLaunch.requestedScreen(),
-                flareTakeover: graph.flareTakeover,
-                pairing: graph.crewPairing,
+                connect: runtime.connect,
+                settings: runtime.settings,
+                channelImport: runtime.channelImport,
+                client: runtime.graph.dependencies.client,
+                inbox: runtime.inbox,
+                radar: runtime.radar,
+                lineup: runtime.lineup,
+                scanner: runtime.graph.dependencies.scanner,
+                demoRunner: runtime.demoRunner,
+                initialDemoScreen: runtime.requestedScreen,
+                flareTakeover: runtime.graph.flareTakeover,
+                pairing: runtime.graph.crewPairing,
                 // Map tab slice's own hunk — one view model, built once
                 // by the graph like every other destination here
                 // (`AppGraph.makeMapViewModel()`'s own doc comment), and
                 // two thin action closures over `radar`/tab selection
                 // rather than plumbing `graph` itself into `RootView`.
-                map: map,
+                map: runtime.map,
                 // PR #283 review, BLOCKING 2: this USED to call
                 // `graph.core.find.start(targetNodeID:now:)` directly on
                 // the raw `FindBridge` — that only flips `ff_find_t
@@ -382,21 +345,37 @@ struct FireflyApp: App {
                 // does, and Radar's STOP (`stopFind()`/`stopObserving()`
                 // on `.onDisappear`) stops it the same way regardless of
                 // which screen started it.
-                mapFind: { nodeID in radar.startFind(targetNodeID: nodeID) },
+                mapFind: { nodeID in runtime.radar.startFind(targetNodeID: nodeID) },
                 mapMessage: { _ in },
                 // "app: five-tab bar per design".
-                hasKnownRadio: hasKnownRadio,
+                hasKnownRadio: runtime.hasKnownRadio,
                 // A02 §2/§3/§5/§6.1.
-                crew: crew,
-                membership: membership,
-                hasCrew: hasCrew,
+                crew: runtime.crew,
+                membership: runtime.membership,
+                hasCrew: runtime.hasCrew,
                 incomingCrewLink: $incomingCrewLink,
                 // A03 §3.11.3 — where a tapped notification wants to go.
-                deepLinks: graph.deepLinks,
+                deepLinks: runtime.graph.deepLinks,
                 // A03 §3.10 — the graph's ONE notification seam, read by
                 // Diagnostics for its authorization state.
-                notifications: graph.notifications
+                notifications: runtime.graph.notifications,
+                // "app: Try the demo" — the connect-step button
+                // (`CrewConnectPuckView`) and Settings' demo row both
+                // read/act through these two rather than reaching
+                // `AppRuntimeBundle`/`AppDependencies` themselves, same
+                // "the screen only ever sees the one seam it needs"
+                // convention every other closure on this call already
+                // follows (`mapFind`/`mapMessage` just above).
+                isDemoMode: runtime.isDemoMode,
+                onTryDemo: { Task { await enterDemoMode() } },
+                onLeaveDemo: { Task { await leaveDemoMode() } }
             )
+            // `AppRuntimeBundle.id`'s own doc comment: forces SwiftUI to
+            // discard and reconstruct `RootView`'s `@State` (and restart
+            // every `.task` chained below) on a mode switch, rather than
+            // diffing new view models into a `RootView` that still
+            // thinks it is showing whatever the PREVIOUS graph was on.
+            .id(runtime.id)
             .preferredColorScheme(.dark)
             // A02 §1.8 — `firefly://crew?v=1&code=…&name=…`. Anything
             // that doesn't classify as a crew link/bare code is dropped
@@ -415,7 +394,7 @@ struct FireflyApp: App {
             // `.unrecognized` for those), so trying A03's router first
             // and falling through is total and unambiguous.
             .onOpenURL { url in
-                guard !graph.deepLinks.handle(url) else { return }
+                guard !runtime.graph.deepLinks.handle(url) else { return }
                 switch CrewScanPayload.classify(url.absoluteString) {
                 case .crewLink(let link):
                     incomingCrewLink = .crewLink(link)
@@ -434,7 +413,7 @@ struct FireflyApp: App {
             // `.background` rather than as foregrounded, since neither
             // one means the screen is what the user is looking at.
             .onChange(of: scenePhase) { _, newPhase in
-                graph.setForegrounded(newPhase == .active)
+                runtime.graph.setForegrounded(newPhase == .active)
             }
             // The graph's own subscriptions (CoreStore over the client's
             // streams, the portnum-269 reader, the phone-GPS uplink and
@@ -453,7 +432,31 @@ struct FireflyApp: App {
             // does not see it" rule). Awaiting `graph.start()` fully
             // first guarantees the subscription is live before demo mode
             // ever calls `connect()`.
-            .task {
+            //
+            // `.task(id: runtime.id)`, NOT a bare `.task` — this is the
+            // one thing that actually starts the newly-built graph after
+            // a demo-mode switch, and MEASURED (a device screen recording
+            // pinned this down, plus explicit `os_log` tracing across
+            // several bench runs), a bare `.task` on a view chain that
+            // also carries `.id(runtime.id)` does NOT reliably restart
+            // when that id changes: `RootView`'s own `@State` does reset
+            // (a fresh `CrewWelcome`/`showCrewOnboarding` render proves
+            // that much), but `.task`'s own cancel-and-relaunch tracks
+            // this MODIFIER's position in the tree, not `.id()` applied
+            // several modifiers earlier in the same chain. Without this,
+            // `switchRuntime` swaps `runtime` and rebuilds a real,
+            // independent `AppGraph`/`DemoRunner` — logged and confirmed
+            // — but NOTHING ever calls `.start()` on it: the app sits
+            // forever on whatever `RootLaunchPlan.findWithCrewWelcome`
+            // raised (a demo `hasKnownRadio`/`hasCrew` are honestly both
+            // false pre-`DemoRunner.start()`), because `RootView
+            // .runInitialDemoScreen()`'s own `await demoRunner
+            // .waitUntilStarted()` polls `isStarted` forever and it is
+            // never flipped. `id:` is the explicit, documented seam
+            // SwiftUI gives for exactly this — "restart this task when
+            // this value changes" — rather than a hope riding on an
+            // ancestor's `.id()`.
+            .task(id: runtime.id) {
                 // A03 §3.2 — SEED the foreground flag from the initial
                 // `scenePhase` before anything can deliver a packet.
                 // `.onChange(of: scenePhase)` below does not fire for an
@@ -469,9 +472,9 @@ struct FireflyApp: App {
                 // precisely the signal a CoreBluetooth background
                 // relaunch does NOT have, and why `false` has to be the
                 // default rather than something seeded here.
-                graph.setForegrounded(scenePhase == .active)
-                await graph.start()
-                await demoRunner?.start()
+                runtime.graph.setForegrounded(scenePhase == .active)
+                await runtime.graph.start()
+                await runtime.demoRunner?.start()
                 #if DEBUG
                 // `-FireflyDebugNotify <kind>` — the notification-tap
                 // repro seam (`FireflyDebugNotifyLaunch`'s own header).
@@ -485,7 +488,7 @@ struct FireflyApp: App {
                 // from the background hook below). The notification
                 // itself is scheduled when the app BACKGROUNDS.
                 if FireflyDebugNotifyLaunch.requestedKind() != nil,
-                   let sender = graph.notifications as? UNNotificationSending {
+                   let sender = runtime.graph.notifications as? UNNotificationSending {
                     _ = await sender.requestAuthorization()
                     await sender.registerCategories()
                 }
@@ -502,9 +505,9 @@ struct FireflyApp: App {
                 Task {
                     switch newPhase {
                     case .active:
-                        await graph.handleScenePhaseChange(.foreground)
+                        await runtime.graph.handleScenePhaseChange(.foreground)
                     case .background:
-                        await graph.handleScenePhaseChange(.background)
+                        await runtime.graph.handleScenePhaseChange(.background)
                         #if DEBUG
                         // The repro seam's actual schedule, fired from
                         // the BACKGROUND transition rather than a fixed
@@ -520,7 +523,7 @@ struct FireflyApp: App {
                         // timeout against it.
                         if let kind = FireflyDebugNotifyLaunch.requestedKind(),
                            let plan = FireflyDebugNotifyLaunch.plan(for: kind),
-                           let sender = graph.notifications as? UNNotificationSending {
+                           let sender = runtime.graph.notifications as? UNNotificationSending {
                             await sender.scheduleDebugNotification(plan, after: 3)
                         }
                         #endif

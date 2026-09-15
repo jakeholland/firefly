@@ -30,6 +30,7 @@ struct DemoBadge: View {
             .padding(.vertical, 5)
             .background(Color.ffStaleAmber)
             .accessibilityLabel("Demo mode — Firefly Fields sample data, not a live connection")
+            .accessibilityIdentifier("DemoBadge")
             .allowsHitTesting(false)
     }
 }

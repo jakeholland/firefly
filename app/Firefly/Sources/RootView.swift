@@ -155,6 +155,24 @@ struct RootView: View {
     /// "Background connection" line can say whether Firefly is actually
     /// allowed to alert anyone.
     let notifications: (any NotificationSending)?
+    /// "app: Try the demo" — `true` exactly when `demoRunner != nil`
+    /// (`AppRuntimeBundle.isDemoMode`'s own doc comment: the same test,
+    /// handed down rather than re-derived here, so there is exactly one
+    /// place that decides it). Read by `MoreScreen`/`SettingsScreen` to
+    /// label the demo row "Try the demo" vs "Leave the demo".
+    var isDemoMode: Bool = false
+    /// The connect-step button (`CrewConnectPuckView`, next to "Don't
+    /// have a puck yet?") and Settings' demo row both call this — never
+    /// while `isDemoMode` is already `true` (the button/row do not
+    /// render then; `FireflyApp.enterDemoMode()` is also a safe no-op on
+    /// its own if one somehow did). Fire-and-forget from the caller's
+    /// side (`FireflyApp`'s own `Task { await enterDemoMode() }`), same
+    /// shape as every other async action a plain SwiftUI `Button` here
+    /// already wraps (`CrewConnectPuckView.tap(_:)`'s `Task { await
+    /// connect.connect() }`).
+    var onTryDemo: () -> Void = {}
+    /// Settings' demo row, once inside demo mode.
+    var onLeaveDemo: () -> Void = {}
     @State private var selection: Destination = .more
     /// A03 §3.11.3 — the conversation a deep link asked for, handed to
     /// `InboxContainerView` and pushed through the SAME
@@ -330,7 +348,41 @@ struct RootView: View {
                     moreAutoOpen = .connect
                 },
                 initialJoinPayload: incomingCrewLink,
-                forceStep: crewOnboardingForceStep)
+                forceStep: crewOnboardingForceStep,
+                // "app: Try the demo" — `nil` (never rendered) once
+                // already in demo mode; this cover is not reachable from
+                // inside demo mode on an ordinary run anyway (entering
+                // demo requests the "find" screen, which lowers it), but
+                // a `nil` here rather than a redundant closure is the
+                // honest way to say "there is nothing to try" for a mode
+                // already running.
+                //
+                // `showCrewOnboarding = false` FIRST, same as
+                // `onFinished`/`onConnectPuck` just above — this cover is
+                // a `.fullScreenCover` (`crewOnboardingCover`'s own doc
+                // comment), a UIKit-level modal presentation, not merely
+                // SwiftUI state, and `FireflyApp.enterDemoMode()`'s
+                // rebuild tears out this whole `RootView` instance
+                // (`.id(runtime.id)`) a moment later — dismissing the
+                // cover explicitly, rather than trusting the identity
+                // change to also unwind an in-flight modal presentation,
+                // is the same defensive ordering `onFinished`/
+                // `onConnectPuck` already established. The short wait
+                // after gives `.fullScreenCover`'s own dismiss animation
+                // (UIKit's ~350ms default) room to finish before the
+                // rebuilt graph's `.task(id: runtime.id)` starts running
+                // underneath it — see that modifier's own doc comment in
+                // `FireflyApp.swift` for the actual bug this feature
+                // shipped with (a bare `.task` never restarting on an
+                // ancestor's `.id()` change) and why `id:` is what fixes
+                // it, independent of this cover's own timing.
+                onTryDemo: isDemoMode ? nil : {
+                    showCrewOnboarding = false
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(400))
+                        onTryDemo()
+                    }
+                })
         }
         .onChange(of: incomingCrewLink) { _, newValue in
             if newValue != nil { showCrewOnboarding = true }
@@ -449,7 +501,13 @@ struct RootView: View {
                                 autoOpenDiagnosticsInSettings: initialDemoScreen == "diagnostics",
                                 autoOpen: moreAutoOpen,
                                 onAutoOpenHandled: { moreAutoOpen = nil },
-                                path: $morePath)
+                                path: $morePath,
+                                // "app: Try the demo" — Settings' own
+                                // demo row (`SettingsScreen`'s own demo
+                                // section).
+                                isDemoMode: isDemoMode,
+                                onTryDemo: onTryDemo,
+                                onLeaveDemo: onLeaveDemo)
         }
     }
 

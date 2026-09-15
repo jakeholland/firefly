@@ -209,6 +209,70 @@ final class FireflyUITests: XCTestCase {
         dismissCameraPermissionAlertIfPresent()
     }
 
+    /// "app: Try the demo" (owner ask 2026-09-15: TestFlight reviewers
+    /// and App Review need a way in with no Meshtastic radio). A FRESH
+    /// launch, deliberately with NO `-FireflyDemo`/`-FireflyDemoScreen`
+    /// — the whole point is that this is the entry point somebody with
+    /// no launch arguments at all can reach: Welcome -> "Start a crew"
+    /// (no puck connected, so the connect step is pushed, same as
+    /// `testFirstLaunchWithNoPuckGoesThroughTheConnectStepAndGatesJoin`)
+    /// -> "Try the demo" -> the DEMO badge and a seeded crew, with NO
+    /// process relaunch anywhere in that walk. Then the other direction:
+    /// Settings' demo row leaves it and returns to the SAME honest
+    /// "no radio, no crew" welcome a plain launch would show, because
+    /// leaving rebuilds the ordinary real stack, not a memory of where
+    /// this session happened to have been before entering demo mode.
+    func testTryTheDemoFromFreshLaunchShowsFindWithDemoMembersThenLeaveReturnsToWelcome() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        assertScreen("Screen.CrewWelcome", in: app)
+        tapWhenHittable(app.descendants(matching: .any)["CrewWelcome.Start"])
+        assertScreen("Screen.CrewConnectPuck", in: app)
+
+        let tryDemo = app.descendants(matching: .any)["CrewConnect.TryDemo"]
+        XCTAssertTrue(tryDemo.waitForExistence(timeout: Self.uiTimeout),
+                      "\"Try the demo\" must be reachable from the connect step, next to \"Don't have a puck yet?\"")
+        tapWhenHittable(tryDemo)
+
+        // The DEMO badge and Find/Radar, seeded with a crew — the same
+        // "find" landing `-FireflyDemoScreen find` produces, reached
+        // here with zero launch arguments.
+        assertScreen("Screen.Radar", in: app)
+        XCTAssertTrue(app.descendants(matching: .any)["DemoBadge"].waitForExistence(timeout: Self.uiTimeout),
+                      "the DEMO badge must show once the demo starts")
+
+        // Inbox has real crew content, not just the always-present CREW
+        // row — proof the seeded members actually landed, not only that
+        // the tab opened.
+        tapDestination("Inbox", in: app)
+        assertScreen("Screen.Inbox", in: app)
+        XCTAssertTrue(app.buttons["InboxRow.Crew"].waitForExistence(timeout: Self.uiTimeout))
+        XCTAssertTrue(app.buttons["InboxRow.Member"].waitForExistence(timeout: Self.uiTimeout),
+                      "the demo's scripted crew members must show up as real Inbox rows")
+
+        // Settings' demo row, the other entry point, now reading "Leave
+        // the demo" — and using it returns to the welcome/connect step,
+        // with the badge gone.
+        tapDestination("Settings", in: app)
+        assertScreen("Screen.Settings", in: app)
+        let leaveDemo = app.buttons["Settings.ToggleDemo"]
+        XCTAssertTrue(leaveDemo.waitForExistence(timeout: Self.uiTimeout))
+        XCTAssertEqual(leaveDemo.label, "Leave the demo")
+        // The demo row sits near the bottom of Settings' own `ScrollView`
+        // (below the node identity/channel/connectivity/units/crew/
+        // appearance/festival-data/history sections) — `exists` sees it
+        // immediately, but nothing scrolls it into a tappable spot until
+        // something asks. Bounded, same "no unbounded retry" shape
+        // `popBack`'s own doc comment argues for elsewhere in this file.
+        scrollIntoView(leaveDemo, in: app)
+        tapWhenHittable(leaveDemo)
+
+        assertScreen("Screen.CrewWelcome", in: app)
+        XCTAssertFalse(app.descendants(matching: .any)["DemoBadge"].exists,
+                       "the DEMO badge must be gone once the demo ends")
+    }
+
     /// Answers the camera-permission alert `Screen.CrewJoin` raises, so
     /// it does not outlive this test.
     ///
@@ -304,6 +368,21 @@ final class FireflyUITests: XCTestCase {
     /// pop a second time.
     private func popBack(in app: XCUIApplication) {
         app.swipeRight()
+    }
+
+    /// Swipes the front scroll view up until `element` reports itself
+    /// hittable, or gives up after a bounded number of attempts —
+    /// `SettingsScreen`'s demo row is the one element this suite taps
+    /// that can start below the fold. `waitForExistence` alone (what
+    /// `tapWhenHittable` checks) says nothing about scroll position: a
+    /// SwiftUI `ScrollView` lays out everything at once, so an element
+    /// can exist and still be off-screen, unlike a lazily-loading list
+    /// where "doesn't exist yet" and "needs a scroll" are the same
+    /// thing.
+    private func scrollIntoView(_ element: XCUIElement, in app: XCUIApplication, maxSwipes: Int = 6) {
+        for _ in 0..<maxSwipes where !element.isHittable {
+            app.swipeUp()
+        }
     }
 
     private func assertScreen(_ identifier: String, in app: XCUIApplication) {

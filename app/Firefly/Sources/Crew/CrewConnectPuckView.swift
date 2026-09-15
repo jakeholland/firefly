@@ -49,6 +49,12 @@ struct CrewConnectPuckView: View {
     /// "Do this later" — never removed, never disabled. A person with no
     /// puck in reach must still be able to look around the app.
     let onSkip: () -> Void
+    /// "app: Try the demo" (owner ask 2026-09-15: TestFlight reviewers
+    /// and App Review need a way to exercise the app with no radio at
+    /// all) — `nil` hides the button entirely; `RootView` passes `nil`
+    /// once already in demo mode (`CrewOnboardingContainer`'s own doc
+    /// comment on this parameter).
+    var onTryDemo: (() -> Void)?
 
     @State private var peripherals: [DiscoveredPeripheral] = []
     @State private var isScanning = false
@@ -200,12 +206,24 @@ struct CrewConnectPuckView: View {
         }
     }
 
+    /// "Don't have a puck yet?" plus, when `onTryDemo` is set,
+    /// "Try the demo" right next to it — the same footnote/amber/44pt
+    /// style, and the same "still actionable with no radio" reasoning:
+    /// the explainer sheet says what the app can and cannot do without a
+    /// puck; this button is the other half of that answer, letting
+    /// someone actually see it working instead of only reading about it.
     private var noPuckYet: some View {
-        Button("Don't have a puck yet?") { showNoPuckHelp = true }
-            .font(.footnote)
-            .foregroundStyle(Color.ffAmber)
-            .frame(minHeight: 44)
-            .accessibilityIdentifier("CrewConnect.NoPuck")
+        HStack(spacing: 20) {
+            Button("Don't have a puck yet?") { showNoPuckHelp = true }
+                .accessibilityIdentifier("CrewConnect.NoPuck")
+            if let onTryDemo {
+                Button("Try the demo", action: onTryDemo)
+                    .accessibilityIdentifier("CrewConnect.TryDemo")
+            }
+        }
+        .font(.footnote)
+        .foregroundStyle(Color.ffAmber)
+        .frame(minHeight: 44)
     }
 
     private var noPuckSheet: some View {

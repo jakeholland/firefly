@@ -301,6 +301,21 @@ targets:
       # default, cover included" without `RootView.swift`'s SwiftUI/
       # Theme dependency.
       - path: Firefly/Sources/RootLaunchPlan.swift
+      # "app: Try the demo" — the mode-switch decision (which direction,
+      # which `AppDependencies`, which requested screen), split into its
+      # own `FireflyModel`-only file for the SAME reason `RootLaunchPlan
+      # .swift` just above is: so this target can exercise it without
+      # `AppRuntimeBundle.swift`'s own `AppGraph`/view-model composition
+      # (which pulls in enough of the app's other view models that it is
+      # exercised by `FireflyUITests` instead, not duplicated here).
+      - path: Firefly/Sources/DemoModeAction.swift
+      # REVIEW FIX (PR #331 independent review, BLOCKING) —
+      # `CrewStoreSelection.swift`'s own header comment: the demo-isolation
+      # rule for `CrewController`'s Keychain/UserDefaults-backed stores,
+      # split out the SAME way `DemoModeAction.swift` just above is, so
+      # `FireflyAppTests` can pin it without `AppRuntimeBundle.swift`'s
+      # own composition.
+      - path: Firefly/Sources/Crew/CrewStoreSelection.swift
       # `app/tools/store_media.sh`'s screenshot seam
       # (`-FireflyDebugHideBadge`) — SwiftUI-free by construction, same
       # shape and same reason as `FireflyDebugStartDestinationLaunch.swift`

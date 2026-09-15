@@ -85,6 +85,12 @@ struct MoreScreen: View {
     /// Settings/System are leaf destinations with nothing further to
     /// push from here.
     @Binding var path: [Row]
+    /// "app: Try the demo" — forwarded straight to `SettingsScreen`'s own
+    /// demo row (`destination(for:)`'s `.settings` case below); this
+    /// screen has no opinion of its own about demo mode.
+    var isDemoMode: Bool = false
+    var onTryDemo: () -> Void = {}
+    var onLeaveDemo: () -> Void = {}
 
     /// `MoreScreenRow`, under the name every call site already uses
     /// (`MoreScreen.Row`) — the real declaration and its `pushed(_:
@@ -181,7 +187,10 @@ struct MoreScreen: View {
                             // `scanner` already names, asked for its own
                             // counters; `nil` wherever there is no radio.
                             linkDiagnostics: scanner as? (any BLELinkDiagnosticsProviding),
-                            notifications: notifications)
+                            notifications: notifications,
+                            isDemoMode: isDemoMode,
+                            onTryDemo: onTryDemo,
+                            onLeaveDemo: onLeaveDemo)
         case .system:
             DiagnosticsScreen(model: DiagnosticsViewModel(
                 client: client, linkDiagnostics: scanner as? (any BLELinkDiagnosticsProviding),
