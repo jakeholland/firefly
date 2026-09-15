@@ -18,6 +18,7 @@
 		159595A99A88EA86CF1B6140 /* CrewSettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E1D66A6EFF83C09A11DB7FB /* CrewSettingsViewModel.swift */; };
 		17AE531969F0CDE913B44133 /* LineupPicksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EA34C071EFD0793A619E9A6 /* LineupPicksView.swift */; };
 		2AAC6CD53BBE7426EE632301 /* CrewJoinView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE6F9A5AF9F0435F34FF4D17 /* CrewJoinView.swift */; };
+		2B66FEB9552D2A87EE52013C /* QRScannerCameraConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = F78EC23800DF35BDE1C1D0E9 /* QRScannerCameraConfig.swift */; };
 		2B7DD47DF785EE9231009BF6 /* FireflyDebugCrewLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A420E1157BEDCF0AC2A6F67 /* FireflyDebugCrewLaunch.swift */; };
 		2C9CFE0AAFFCAA222D6479AB /* CrewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B18716DFC4744DFB2C85DB03 /* CrewController.swift */; };
 		2CA9CE64FE1C36426E116583 /* CrewOnboardingContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF2B70A0AD5BD84CDC921F8A /* CrewOnboardingContainer.swift */; };
@@ -25,6 +26,7 @@
 		2EDFEA952BC97A0A68C06034 /* MapTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F97FA0CFDE77FDFFA48612D /* MapTabView.swift */; };
 		33E79CCF47D6BFCC5B23DF6B /* NotificationTapRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE6C12AD5DA49E6EDD60B3B7 /* NotificationTapRouter.swift */; };
 		34354F6FF40B5D886262C2BE /* CrewDiagnosticsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079915169BD92106A7B73B11 /* CrewDiagnosticsViewModel.swift */; };
+		3553A3E7B45ACDD72CDBE8CA /* QRScannerCameraConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = F78EC23800DF35BDE1C1D0E9 /* QRScannerCameraConfig.swift */; };
 		3B10C3E4C23834FFBD6C3234 /* CrewDiagnosticsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079915169BD92106A7B73B11 /* CrewDiagnosticsViewModel.swift */; };
 		3B69F83116726CF8C396257C /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 9011CC84111BB0A130A3D3C7 /* FireflyModel */; };
 		3B7D019D97400C01DD83D3A7 /* RootDeepLinkWiringGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C24EB0A20BBB1556FFD71B1E /* RootDeepLinkWiringGuardTests.swift */; };
@@ -54,6 +56,7 @@
 		6A9AD720CC190DB306F0F9DA /* BLEReconnectHardwareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05F189342B5B984F2BBDAB8A /* BLEReconnectHardwareTests.swift */; };
 		6B26D15F635ACAA379CAF871 /* CrewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B18716DFC4744DFB2C85DB03 /* CrewController.swift */; };
 		6EED1D607A836BC23FCF5D43 /* SettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45BBB6E81333013CC2CE55F2 /* SettingsScreen.swift */; };
+		6F2F8649A33993ED7DAC45A5 /* QRScannerCameraConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 507EB6008D08A46C00004B77 /* QRScannerCameraConfigTests.swift */; };
 		6F6C3DEEBFEC351E8F1EA93B /* CrewSettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E1D66A6EFF83C09A11DB7FB /* CrewSettingsViewModel.swift */; };
 		71D8EF04CB8A979CD7738201 /* FireflyModel in Frameworks */ = {isa = PBXBuildFile; productRef = 4982066A256926406E7325EB /* FireflyModel */; };
 		736AA63B4C8C5FAD424729FA /* PeripheralDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 899B46141ED5400385D53007 /* PeripheralDiscovery.swift */; };
@@ -174,6 +177,7 @@
 		4E1D66A6EFF83C09A11DB7FB /* CrewSettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewSettingsViewModel.swift; sourceTree = "<group>"; };
 		4F84F0BF7FA9F0A3B2EAC7B8 /* NotificationTapUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationTapUITests.swift; sourceTree = "<group>"; };
 		500341CFF93F2572F5EABA8C /* FireflyUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyUITests.swift; sourceTree = "<group>"; };
+		507EB6008D08A46C00004B77 /* QRScannerCameraConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerCameraConfigTests.swift; sourceTree = "<group>"; };
 		543E6DDB6F011E69EFC86F32 /* Theme+SwiftUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Theme+SwiftUI.swift"; sourceTree = "<group>"; };
 		5E88E40B311FEE9B2F1B4382 /* ImportPicksSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportPicksSheet.swift; sourceTree = "<group>"; };
 		5F7A5628340F712EE61F598C /* fest-almanac-index.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = "fest-almanac-index.json"; path = "../../../firmware/assets/field/fest-almanac-index.json"; sourceTree = "<group>"; };
@@ -229,6 +233,7 @@
 		EDC28160EF0A8DD53FB3FFEB /* HapticSignaling+UIKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HapticSignaling+UIKit.swift"; sourceTree = "<group>"; };
 		F05346761183CE52D605D57C /* FireflyDebugStartDestinationLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyDebugStartDestinationLaunch.swift; sourceTree = "<group>"; };
 		F1F42EB3578D2B85C360FF91 /* FieldMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FieldMapView.swift; sourceTree = "<group>"; };
+		F78EC23800DF35BDE1C1D0E9 /* QRScannerCameraConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerCameraConfig.swift; sourceTree = "<group>"; };
 		F7CF15579506E65D391E2A50 /* CrewCopy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewCopy.swift; sourceTree = "<group>"; };
 		F924983B16F5985E124BBBC2 /* RootLaunchPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootLaunchPlan.swift; sourceTree = "<group>"; };
 		FE6C12AD5DA49E6EDD60B3B7 /* NotificationTapRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationTapRouter.swift; sourceTree = "<group>"; };
@@ -297,6 +302,7 @@
 				829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */,
 				2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */,
 				899B46141ED5400385D53007 /* PeripheralDiscovery.swift */,
+				F78EC23800DF35BDE1C1D0E9 /* QRScannerCameraConfig.swift */,
 				3FF340B133498D33D74D3976 /* QRScannerSheet.swift */,
 			);
 			path = Connect;
@@ -424,6 +430,7 @@
 				5FB3DC0128FD7652E2645386 /* MapBackgroundLifecycleGuardTests.swift */,
 				C195EF4E6C11A4F328A8A7A2 /* MoreScreenNavigationTests.swift */,
 				02E84854CAB87134C455E8F2 /* NotificationTapRouterTests.swift */,
+				507EB6008D08A46C00004B77 /* QRScannerCameraConfigTests.swift */,
 				C24EB0A20BBB1556FFD71B1E /* RootDeepLinkWiringGuardTests.swift */,
 				CE75CBD37ACA507F0446DCF3 /* RootLaunchPlanTests.swift */,
 				7CA0680B16ABBA1A558B1690 /* SettingsFestivalPickerWiringTests.swift */,
@@ -694,6 +701,8 @@
 				33E79CCF47D6BFCC5B23DF6B /* NotificationTapRouter.swift in Sources */,
 				5B1FDA589EBD527CF8A4440F /* NotificationTapRouterTests.swift in Sources */,
 				D4509A6BF45005057BE62C69 /* PeripheralDiscovery.swift in Sources */,
+				2B66FEB9552D2A87EE52013C /* QRScannerCameraConfig.swift in Sources */,
+				6F2F8649A33993ED7DAC45A5 /* QRScannerCameraConfigTests.swift in Sources */,
 				3B7D019D97400C01DD83D3A7 /* RootDeepLinkWiringGuardTests.swift in Sources */,
 				F1E50198C7D072D3853A2F71 /* RootLaunchPlan.swift in Sources */,
 				622B099B334CB9A36B8D20E7 /* RootLaunchPlanTests.swift in Sources */,
@@ -760,6 +769,7 @@
 				63F4CB9CD8015973BF2A6A87 /* NearbyNodesViewModel.swift in Sources */,
 				8E6EA5E5E4CEFF2B320671B4 /* NotificationTapRouter.swift in Sources */,
 				736AA63B4C8C5FAD424729FA /* PeripheralDiscovery.swift in Sources */,
+				3553A3E7B45ACDD72CDBE8CA /* QRScannerCameraConfig.swift in Sources */,
 				AC8AFA0CD87BCDBC83DDB4BD /* QRScannerSheet.swift in Sources */,
 				9CEECC7E8F408FEDB03E85E8 /* RadarColors.swift in Sources */,
 				79D200DF169D9565E09C7EF4 /* RadarRingView.swift in Sources */,
