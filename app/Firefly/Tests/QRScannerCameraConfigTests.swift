@@ -102,4 +102,80 @@ final class QRScannerCameraConfigTests: XCTestCase {
         XCTAssertEqual(QRScannerCameraConfig.clampedZoomFactor(preferred: 0.5, maximum: 5.0), 1.0)
         XCTAssertEqual(QRScannerCameraConfig.clampedZoomFactor(preferred: 3.0, maximum: 2.0), 2.0)
     }
+
+    // MARK: - Zoom vs. macro switching (`targetZoomFactor`)
+    //
+    // The property under test: a virtual (multi-lens) device must NOT
+    // get the digital `defaultZoomFactor` punch-in, because
+    // `videoZoomFactor` is itself the input Apple's
+    // `virtualDeviceSwitchOverVideoZoomFactors` uses to decide which
+    // physical constituent is active — pinning it to a fixed value could
+    // sit at/above that device's own (unread, device-specific)
+    // switch-over threshold and rule out the ultra-wide constituent
+    // entirely, defeating the macro switch this PR exists to enable.
+    // Only a plain single-lens device — with no constituent to switch
+    // to — gets the punch-in.
+
+    /// Virtual device: stays at its own minimum (which, per Apple's
+    /// docs, already represents the ultra-wide constituent's native
+    /// FOV on a `.triple`/`.dualWide` device), never the digital
+    /// `defaultZoomFactor` punch-in — that is what leaves `.auto`
+    /// constituent switching free to engage for a close subject.
+    func testVirtualDeviceKeepsMinimumZoomSoAutoSwitchingCanEngage() {
+        XCTAssertEqual(
+            QRScannerCameraConfig.targetZoomFactor(isVirtualDevice: true, minimum: 1.0, maximum: 6.0),
+            1.0)
+    }
+
+    /// Plain single-lens device (no constituent to switch to): gets the
+    /// digital `defaultZoomFactor` (1.75) punch-in — zoom is the only
+    /// lever available to make the code occupy more of the frame.
+    func testPlainWideDeviceGetsDigitalZoomPunchIn() {
+        XCTAssertEqual(
+            QRScannerCameraConfig.targetZoomFactor(isVirtualDevice: false, minimum: 1.0, maximum: 6.0),
+            1.75)
+    }
+
+    /// Plain single-lens device whose own maximum is below the default
+    /// (e.g. a budget device with a conservative format): still clamps
+    /// down rather than passing an out-of-range value to
+    /// `videoZoomFactor`.
+    func testPlainWideDeviceZoomClampsToDeviceMaximum() {
+        XCTAssertEqual(
+            QRScannerCameraConfig.targetZoomFactor(isVirtualDevice: false, minimum: 1.0, maximum: 1.2),
+            1.2)
+    }
+
+    /// Virtual device whose reported minimum (degenerate/fabricated
+    /// format) is above the device's own maximum: still clamps into
+    /// range rather than requesting an unsupported zoom.
+    func testVirtualDeviceMinimumClampsToDeviceMaximum() {
+        XCTAssertEqual(
+            QRScannerCameraConfig.targetZoomFactor(isVirtualDevice: true, minimum: 3.0, maximum: 2.0),
+            2.0)
+    }
+
+    /// Virtual device with a non-finite/degenerate reported minimum:
+    /// never trusts it, falls back to the same safe 1.0 floor as the
+    /// non-virtual path.
+    func testVirtualDeviceNonFiniteMinimumFallsBackToOne() {
+        XCTAssertEqual(
+            QRScannerCameraConfig.targetZoomFactor(isVirtualDevice: true, minimum: .nan, maximum: 5.0),
+            1.0)
+        XCTAssertEqual(
+            QRScannerCameraConfig.targetZoomFactor(isVirtualDevice: true, minimum: 0, maximum: 5.0),
+            1.0)
+    }
+
+    /// Either path: a non-finite/non-positive maximum never produces a
+    /// zoom request — the same degenerate-format guard as
+    /// `clampedZoomFactor`.
+    func testTargetZoomFactorNonPositiveMaximumFallsBackToOne() {
+        XCTAssertEqual(
+            QRScannerCameraConfig.targetZoomFactor(isVirtualDevice: true, minimum: 1.0, maximum: 0),
+            1.0)
+        XCTAssertEqual(
+            QRScannerCameraConfig.targetZoomFactor(isVirtualDevice: false, minimum: 1.0, maximum: .nan),
+            1.0)
+    }
 }

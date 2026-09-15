@@ -109,8 +109,59 @@ enum QRScannerCameraConfig {
     /// fabricated format. Never trusts a non-positive or non-finite
     /// maximum; falls back to no zoom (1.0) rather than passing a bad
     /// value to `videoZoomFactor`, which would throw at runtime.
+    ///
+    /// Only ever called for a **non-virtual** device (see
+    /// `targetZoomFactor(isVirtualDevice:minimum:maximum:)` below) — kept
+    /// `public` within this type because the tests exercise it directly
+    /// as the smaller, single-purpose primitive.
     static func clampedZoomFactor(preferred: CGFloat = defaultZoomFactor, maximum: CGFloat) -> CGFloat {
         guard maximum.isFinite, maximum >= 1.0 else { return 1.0 }
         return min(max(preferred, 1.0), maximum)
+    }
+
+    /// **The zoom-vs-macro decision.** What `videoZoomFactor` to apply
+    /// once a device is selected — and the answer is NOT the same
+    /// `defaultZoomFactor` in both cases.
+    ///
+    /// Apple's own docs on `virtualDeviceSwitchOverVideoZoomFactors`
+    /// define it as "the video zoom factors at or above which a virtual
+    /// device...may switch to its next constituent device" — i.e.
+    /// `videoZoomFactor` is not a passive cosmetic crop layered on top of
+    /// constituent selection, it is *itself* the input the system uses
+    /// to decide which physical lens is active. On a `.triple`/
+    /// `.dualWide` virtual device, `minAvailableVideoZoomFactor` (1.0)
+    /// already corresponds to the ultra-wide constituent's native field
+    /// of view; the first entry of `virtualDeviceSwitchOverVideoZoomFactors`
+    /// is the point at which the system hands off to the wide lens. That
+    /// threshold is device/generation-specific and this code never reads
+    /// it — so pinning `videoZoomFactor` to a fixed value like
+    /// `defaultZoomFactor` on a virtual device is a gamble: on some
+    /// phones it may stay under the threshold and do nothing harmful, on
+    /// others it may sit at or above it and permanently rule out the
+    /// ultra-wide constituent, defeating the entire reason this scanner
+    /// prefers a virtual device and turns on `.auto` switching in the
+    /// first place (`applyMacroFocusConfiguration`, `QRScannerSheet
+    /// .swift`).
+    ///
+    /// So the split:
+    /// - **Virtual device** (`isVirtualDevice == true`): leave zoom at
+    ///   its own `minimum` (`device.minAvailableVideoZoomFactor`) and do
+    ///   not apply the digital punch-in. That keeps the OS free to select
+    ///   the ultra-wide constituent via `primaryConstituentDeviceSwitchingBehavior
+    ///   = .auto` for a close subject — the actual mechanism this PR
+    ///   exists to enable.
+    /// - **Plain single-lens device** (`isVirtualDevice == false`, e.g.
+    ///   a `.wideAngle`-only back camera, or the `AVCaptureDevice
+    ///   .default(for:.video)` fallback when discovery finds nothing):
+    ///   there is no constituent to switch to, so zoom is the only lever
+    ///   available to make the code occupy more of the frame at the
+    ///   hinted distance — apply `defaultZoomFactor`, clamped as before.
+    static func targetZoomFactor(isVirtualDevice: Bool, minimum: CGFloat, maximum: CGFloat) -> CGFloat {
+        guard maximum.isFinite, maximum >= 1.0 else { return 1.0 }
+        if isVirtualDevice {
+            guard minimum.isFinite, minimum >= 1.0 else { return 1.0 }
+            return min(minimum, maximum)
+        }
+        return clampedZoomFactor(maximum: maximum)
     }
 }

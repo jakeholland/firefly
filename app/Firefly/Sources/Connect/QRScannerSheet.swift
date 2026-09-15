@@ -18,7 +18,10 @@
 //  closer. `configureSession()` below now (1) prefers a virtual
 //  multi-lens back camera and lets it switch to its ultra-wide
 //  constituent for close subjects, (2) restricts autofocus to the near
-//  range, (3) applies a modest default zoom, and (4) narrows the
+//  range, (3) applies a modest default zoom **only on a plain
+//  single-lens device** (a virtual device is left at its own minimum
+//  zoom instead, so `.auto` constituent switching stays free to engage
+//  — see `QRScannerCameraConfig.targetZoomFactor`), and (4) narrows the
 //  decode region to the on-screen guide box. See `QRScannerCameraConfig
 //  .swift` for the pure selection/zoom logic and its own reasoning
 //  comments, and the PR body for what a device is needed to verify.
@@ -231,11 +234,23 @@ final class QRScannerViewController: UIViewController, @preconcurrency AVCapture
                 device.focusMode = .continuousAutoFocus
             }
 
-            // (3) Modest default zoom. See `QRScannerCameraConfig
-            // .defaultZoomFactor`'s doc comment for the measured
-            // trade-off; clamped to what this device/format actually
-            // supports.
-            device.videoZoomFactor = QRScannerCameraConfig.clampedZoomFactor(
+            // (3) Zoom — NOT the same value for every device. See
+            // `QRScannerCameraConfig.targetZoomFactor`'s doc comment:
+            // `videoZoomFactor` is what gates which physical constituent
+            // a virtual (multi-lens) device is using
+            // (`virtualDeviceSwitchOverVideoZoomFactors`), so pinning it
+            // to a fixed digital-zoom value on a virtual device risks
+            // sitting at/above that device's own switch-over threshold
+            // and permanently ruling out the ultra-wide constituent —
+            // defeating the `.auto` switching just enabled in (1) above.
+            // `device.isVirtualDevice` is the real gate: virtual devices
+            // are left at their own minimum (letting `.auto` switching
+            // do the work); only a plain single-lens device gets the
+            // digital zoom punch-in, since it has no constituent to
+            // switch to and zoom is the only lever available.
+            device.videoZoomFactor = QRScannerCameraConfig.targetZoomFactor(
+                isVirtualDevice: device.isVirtualDevice,
+                minimum: device.minAvailableVideoZoomFactor,
                 maximum: device.activeFormat.videoMaxZoomFactor)
         } catch {
             // No configuration lock — the scanner still runs at
