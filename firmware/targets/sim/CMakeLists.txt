@@ -697,6 +697,35 @@ if(FF_BUILD_TESTS)
 endif()
 
 # ---------------------------------------------------------------------------
+# puck-ux-usability-review slice 1 (docs/reviews/puck-ux-usability-
+# 2026-09-15.md, finding 2 / acceptance criterion 1): every CLICKABLE
+# control with a real callback, on every committed fixture, must carry an
+# LV_STATE_PRESSED bg_opa or bg_color style. Same in-process
+# ff_build_face_screen + headless display shape as test_face_hit_targets
+# and test_tap_target_sizing above — no per-face rule table, because this
+# property is universal.
+# ---------------------------------------------------------------------------
+if(FF_BUILD_TESTS)
+    add_executable(test_press_feedback_all_faces
+        tests/test_press_feedback_all_faces.c
+    )
+    target_link_libraries(test_press_feedback_all_faces PRIVATE
+        ff-sim-fixture
+        ff-sim-face-dispatch
+        ff-app-ui
+        ff-layout
+        lvgl::lvgl
+        unity
+    )
+    target_compile_definitions(test_press_feedback_all_faces PRIVATE
+        FF_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/fixtures/"
+    )
+    ff_apply_warnings(test_press_feedback_all_faces)
+
+    add_test(NAME test_press_feedback_all_faces COMMAND test_press_feedback_all_faces)
+endif()
+
+# ---------------------------------------------------------------------------
 # Issue #75/#77 — the map face's circle-containment regression, targeted at
 # tests/fixtures/map_clip_stress.json. Same shape as test_face_hit_targets
 # above (in-process ff_build_face_screen + a headless display buffer, no

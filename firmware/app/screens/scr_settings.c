@@ -472,12 +472,21 @@ static void settings_emit_int(ff_setting_id_t id, int32_t v)
  * Pill widget: a rounded button with a centered label. bg/fg carry the pill
  * role (active / inactive / value). `letter_space` is applied to the label.
  * A thin adapter over the shared `ff_scr_pill_create` (scr_widgets.h, S17
- * debt cleanup), byte-identical to this file's pre-refactor pixels: no
- * press-feedback style (settings rows use their own dim/highlight
- * conventions, decided by the caller before the pill is built) and
- * absolute positioning (settings lays out every row in list-relative
- * coords, not centered-with-offset like scr_flare.c/scr_power_menu.c's
- * pills).
+ * debt cleanup) and absolute positioning (settings lays out every row in
+ * list-relative coords, not centered-with-offset like scr_flare.c/
+ * scr_power_menu.c's pills).
+ *
+ * puck-ux-usability-review slice 1, finding 2: this used to build every
+ * pill with `FF_SCR_PILL_PRESS_NONE` — "no press-feedback style", the
+ * exact gap the review measured as "22 controls on settings_default
+ * alone" with nothing between finger-down and the screen changing.
+ * `filled` is unconditionally `true` here (this function never builds
+ * an outlined pill — see `settings_make_toggle_pill` for the one shape
+ * that does), so `FF_SCR_PILL_PRESS_DIM` (the ink-wash-on-press
+ * convention every other filled pill in this codebase already uses) is
+ * the right, universal choice — not a per-call-site decision. Rest-state
+ * rendering (what every committed golden captures) is untouched: a
+ * press style only ever paints at LV_STATE_PRESSED.
  * ------------------------------------------------------------------- */
 static lv_obj_t *settings_make_pill(lv_obj_t *parent, char const *text, int32_t x, int32_t y, int32_t w, int32_t h,
                                      uint32_t bg_hex, uint32_t fg_hex, int32_t letter_space, lv_event_cb_t cb,
@@ -493,11 +502,55 @@ static lv_obj_t *settings_make_pill(lv_obj_t *parent, char const *text, int32_t 
         .filled = true,
         .bg_hex = bg_hex,
         .fg_hex = fg_hex,
-        .press = FF_SCR_PILL_PRESS_NONE,
+        .press = FF_SCR_PILL_PRESS_DIM,
         .font = FF_THEME_FONT_CHIP,
         .letter_space = letter_space,
         .cb = cb,
         .user_data = user_data,
+    };
+    return ff_scr_pill_create(parent, text, &cfg);
+}
+
+/* ---------------------------------------------------------------------
+ * Toggle-segment pill — the puck-ux-usability-review slice 1 fix
+ * (docs/reviews/puck-ux-usability-2026-09-15.md, findings 2 + 3 + the
+ * §5 "SURFACE chip/card is invisible" finding, bundled into slice 1's
+ * own fix-plan bullet list). Unlike `settings_make_pill` above (used by
+ * every OTHER pill in this file: value chips, nav rows, keys — none of
+ * which change here), a toggle segment now carries real state:
+ *
+ *  - `active`: the amber, solid-filled segment (`FF_SCR_PILL_PRESS_DIM`
+ *    — an ink wash on press, same convention as every other filled pill
+ *    in this codebase).
+ *  - `!active`: an OUTLINED pill (surface fill + a 1px MUTED border)
+ *    instead of the old flat SURFACE fill with no border at all. The
+ *    review measured `SURFACE` on `BG` at 1.07:1 — "you cannot see
+ *    where the button is, only where the word is" — `MUTED` at 5.78:1
+ *    fixes that. Presses tint toward AMBER (`FF_SCR_PILL_PRESS_TINT`):
+ *    what a tap on the inactive segment is about to make it become.
+ *
+ * Both segments of a pair still share `cb` with `user_data = NULL` —
+ * see settings_build_toggle_row_ex's own doc comment on why that
+ * identity must not change. */
+static lv_obj_t *settings_make_toggle_pill(lv_obj_t *parent, char const *text, int32_t x, int32_t y, int32_t w,
+                                           int32_t h, bool active, lv_event_cb_t cb)
+{
+    ff_scr_pill_cfg_t cfg = {
+        .w = w,
+        .h = h,
+        .use_pos = true,
+        .x = x,
+        .y = y,
+        .radius = FF_SETTINGS_PILL_RADIUS,
+        .filled = active,
+        .border_width = active ? 0 : 1,
+        .bg_hex = active ? FF_SETTINGS_PILL_ON_BG : FF_THEME_COLOR_MUTED,
+        .fg_hex = active ? FF_SETTINGS_PILL_ON_FG : FF_SETTINGS_PILL_OFF_FG,
+        .press = active ? FF_SCR_PILL_PRESS_DIM : FF_SCR_PILL_PRESS_TINT,
+        .press_tint_hex = FF_THEME_COLOR_AMBER,
+        .font = FF_THEME_FONT_CHIP,
+        .cb = cb,
+        .user_data = NULL,
     };
     return ff_scr_pill_create(parent, text, &cfg);
 }
@@ -532,7 +585,13 @@ static void settings_row_caption(lv_obj_t *row, char const *text)
 /* ---------------------------------------------------------------------
  * Toggle-pair row: label + two pills [left|right], the active one amber.
  * BOTH pills share `cb` with NULL user_data — one logical two-state control
- * (tap either to flip) and one composite pair to the adjacency sweep.
+ * (tap either to SET it — see each `cb`'s own doc comment, puck-ux-
+ * usability-review slice 1 finding 3) and one composite pair to the
+ * adjacency sweep (`test_face_hit_targets.c`'s Exclusion 1: same
+ * callback + same user_data == one logical control, so the pair's 6px
+ * gap stays legal against the 8px floor). Resolving WHICH segment was
+ * pressed inside `cb` via `user_data` instead would break that identity
+ * — see settings_toggle_pressed_is_left's own doc comment.
  * active_side: 0 = left pill active, 1 = right, -1 = neither (honest render
  * of a persisted value that maps to neither shown option).
  * ------------------------------------------------------------------- */
@@ -545,14 +604,10 @@ static void settings_build_toggle_row_ex(lv_obj_t *list, int32_t rel_y, int32_t 
 
     int32_t const grp_w = 2 * pill_w + FF_SETTINGS_TOGGLE_GAP;
     int32_t const grp_x = row_w - grp_w;
-    uint32_t const l_bg = (active_side == 0) ? FF_SETTINGS_PILL_ON_BG : FF_SETTINGS_PILL_OFF_BG;
-    uint32_t const l_fg = (active_side == 0) ? FF_SETTINGS_PILL_ON_FG : FF_SETTINGS_PILL_OFF_FG;
-    uint32_t const r_bg = (active_side == 1) ? FF_SETTINGS_PILL_ON_BG : FF_SETTINGS_PILL_OFF_BG;
-    uint32_t const r_fg = (active_side == 1) ? FF_SETTINGS_PILL_ON_FG : FF_SETTINGS_PILL_OFF_FG;
 
-    settings_make_pill(row, left_text, grp_x, 0, pill_w, FF_SETTINGS_ROW_H, l_bg, l_fg, 0, cb, NULL);
-    settings_make_pill(row, right_text, grp_x + pill_w + FF_SETTINGS_TOGGLE_GAP, 0, pill_w, FF_SETTINGS_ROW_H, r_bg,
-                       r_fg, 0, cb, NULL);
+    settings_make_toggle_pill(row, left_text, grp_x, 0, pill_w, FF_SETTINGS_ROW_H, active_side == 0, cb);
+    settings_make_toggle_pill(row, right_text, grp_x + pill_w + FF_SETTINGS_TOGGLE_GAP, 0, pill_w, FF_SETTINGS_ROW_H,
+                              active_side == 1, cb);
 }
 
 static void settings_build_toggle_row(lv_obj_t *list, int32_t rel_y, int32_t row_w, char const *label,
@@ -561,6 +616,22 @@ static void settings_build_toggle_row(lv_obj_t *list, int32_t rel_y, int32_t row
 {
     settings_build_toggle_row_ex(list, rel_y, row_w, label, left_text, right_text, active_side,
                                  FF_SETTINGS_TOGGLE_PILL_W, cb);
+}
+
+/* settings_hit_add_press_feedback — puck-ux-usability-review slice 1,
+ * finding 2: two rows (this value-row caption wrapper and
+ * settings_build_name_row's own identical wrapper below) build their
+ * clickable hit box as a bare `lv_obj_create` + `lv_obj_remove_style_all`
+ * — completely transparent at rest, with no `ff_scr_pill_create` under
+ * it to carry a press style. Same ink-wash convention every filled pill
+ * in this codebase uses (`FF_SCR_PILL_PRESS_DIM`'s own INK @ LV_OPA_20),
+ * and the same "the invisible hit box IS the press overlay" shape
+ * `scr_inbox.c`'s caption-wrapping hit box already uses — nothing here
+ * paints at rest (still LV_OPA_TRANSP there), only at LV_STATE_PRESSED. */
+static void settings_hit_add_press_feedback(lv_obj_t *hit)
+{
+    lv_obj_set_style_bg_color(hit, lv_color_hex(FF_THEME_COLOR_INK), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(hit, LV_OPA_20, LV_STATE_PRESSED);
 }
 
 /* ---------------------------------------------------------------------
@@ -584,6 +655,7 @@ static void settings_build_value_row(lv_obj_t *list, int32_t rel_y, int32_t row_
     lv_obj_clear_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(hit, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(hit, cb, LV_EVENT_CLICKED, NULL);
+    settings_hit_add_press_feedback(hit);
 
     lv_obj_t *lbl = lv_label_create(hit);
     lv_label_set_text(lbl, label);
@@ -598,44 +670,99 @@ static void settings_build_value_row(lv_obj_t *list, int32_t rel_y, int32_t row_
 }
 
 /* ---------------------------------------------------------------------
- * UNITS (FT|MI).
- * ------------------------------------------------------------------- */
-static void settings_units_cb(lv_event_t *e)
+ * settings_toggle_pressed_is_left — puck-ux-usability-review slice 1,
+ * finding 3: "tapping the already-active segment of a Settings toggle
+ * inverts the setting" (SCREEN NORMAL/FLIPPED's worst case: one
+ * confirming tap on the already-lit NORMAL flips the display upside
+ * down). Every toggle callback below must SET the tapped segment's
+ * value, never invert the current one — which means each callback needs
+ * to know WHICH of its row's two pills was actually pressed.
+ *
+ * The obvious fix — give the two pills distinct `user_data` — is the
+ * trap the review calls out by name (§5): `test_face_hit_targets.c`'s
+ * adjacency sweep identifies "one logical composite control" by an
+ * EXACT (callback, user_data) match (its Exclusion 1), which is the
+ * only reason the pair's 6px gap is legal against the 8px floor. Two
+ * different `user_data` values would make the sweep see two
+ * independent controls 6px apart — a fresh violation with zero pixels
+ * moved. So `cb` and `user_data` (always NULL) stay exactly as they
+ * are, and this resolves the pressed side from the EVENT TARGET's own
+ * position instead: `settings_build_toggle_row_ex` always builds
+ * exactly two pills, left then right, as the LAST two children it adds
+ * to `row` (the caption label is added first and never after) — so the
+ * left pill's `lv_obj_get_index()` is always exactly one less than the
+ * right pill's, and the right pill is always the row's last child.
+ * Comparing the pressed object's index against "is it the row's last
+ * child" tells left from right without needing to know either pill's
+ * absolute index. */
+static bool settings_toggle_pressed_is_left(lv_event_t *e)
 {
-    (void)e;
-    settings_emit_int(FF_SETTING_IMPERIAL, s_settings.imperial ? 0 : 1);
+    lv_obj_t *pressed = lv_event_get_target(e);
+    lv_obj_t *row = lv_obj_get_parent(pressed);
+    int32_t const last_idx = (int32_t)lv_obj_get_child_cnt(row) - 1;
+    return lv_obj_get_index(pressed) != last_idx;
+}
+
+/* settings_emit_toggle — the SET-not-invert core. Emits
+ * FF_INTENT_SETTING_SET only when the tapped segment's resolved value
+ * actually DIFFERS from the setting's current value — pressing the
+ * already-active segment is a genuine no-op (slice 1 acceptance
+ * criterion 2: "a synthetic press on the active segment ... emits ZERO
+ * FF_INTENT_SETTING_SET"), not an emit-with-the-same-value that merely
+ * looks like one from the outside. */
+static void settings_emit_toggle(ff_setting_id_t id, int32_t current, int32_t v)
+{
+    if (v == current) {
+        return;
+    }
+    settings_emit_int(id, v);
 }
 
 /* ---------------------------------------------------------------------
- * CLOCK (12H|24H) — S21 amendment. Same two-state toggle shape as UNITS
- * above: FF_SETTING_CLOCK_24H is bool-backed, "nonzero is true".
+ * UNITS (FT|MI). left=FT (imperial=1), right=M (imperial=0) — matches
+ * settings_build_toggle_row's own active_side argument at this row's
+ * call site (`imperial ? 0 : 1`: imperial true lights the LEFT/FT pill).
+ * ------------------------------------------------------------------- */
+static void settings_units_cb(lv_event_t *e)
+{
+    settings_emit_toggle(FF_SETTING_IMPERIAL, s_settings.imperial ? 1 : 0, settings_toggle_pressed_is_left(e) ? 1 : 0);
+}
+
+/* ---------------------------------------------------------------------
+ * CLOCK (12H|24H) — S21 amendment. left=12H (clock_24h=0), right=24H
+ * (clock_24h=1) — matches this row's `clock_24h ? 1 : 0` active_side.
  * ------------------------------------------------------------------- */
 static void settings_clock_cb(lv_event_t *e)
 {
-    (void)e;
-    settings_emit_int(FF_SETTING_CLOCK_24H, s_settings.clock_24h ? 0 : 1);
+    settings_emit_toggle(FF_SETTING_CLOCK_24H, s_settings.clock_24h ? 1 : 0,
+                         settings_toggle_pressed_is_left(e) ? 0 : 1);
 }
 
 /* ---------------------------------------------------------------------
  * SCREEN (NORMAL|FLIPPED) — format v8 amendment (maintainer ask,
  * 2026-09-02): the Fusion-designed case mounts the puck upside-down.
- * Same two-state toggle shape as UNITS/CLOCK above: FF_SETTING_SCREEN_FLIP
- * is bool-backed, "nonzero is true". The device applies a HARDWARE panel
- * mirror on change (app_main.c reads the shell's projected screen_flip
- * every tick, same pattern brightness_pct's live apply already uses) —
- * this row only ever emits the intent, never touches display HAL.
+ * left=NORMAL (screen_flip=0), right=FLIPPED (screen_flip=1) — matches
+ * this row's `screen_flip ? 1 : 0` active_side. The device applies a
+ * HARDWARE panel mirror on change (app_main.c reads the shell's
+ * projected screen_flip every tick, same pattern brightness_pct's live
+ * apply already uses) — this row only ever emits the intent, never
+ * touches display HAL.
  * ------------------------------------------------------------------- */
 static void settings_screen_cb(lv_event_t *e)
 {
-    (void)e;
-    settings_emit_int(FF_SETTING_SCREEN_FLIP, s_settings.screen_flip ? 0 : 1);
+    settings_emit_toggle(FF_SETTING_SCREEN_FLIP, s_settings.screen_flip ? 1 : 0,
+                         settings_toggle_pressed_is_left(e) ? 0 : 1);
 }
 
 /* ---------------------------------------------------------------------
- * SHARE (LIVE|GHOST). ZONES is deliberately NOT cycled into (PR #68 UX
- * review, blocking finding 1): selecting ZONES does not change sharing
- * behavior from LIVE in v1, so a tap moves LIVE<->GHOST only. A persisted
- * ZONES renders as neither pill active and one tap moves it to GHOST.
+ * SHARE (LIVE|GHOST). left=LIVE, right=GHOST — a direct SET now (see
+ * settings_toggle_pressed_is_left's doc comment), which also gives the
+ * ZONES-persisted case (PR #68 UX review, blocking finding 1: ZONES
+ * doesn't change sharing behavior from LIVE in v1, so this row only ever
+ * shows LIVE/GHOST) an honest tap-to-set instead of the old "tapping
+ * EITHER pill from ZONES always lands on GHOST" cycle. (ZONES itself
+ * never equals either resolved value, so a ZONES-persisted tap always
+ * emits — there is no "already active" segment to no-op against.)
  *
  * Settings audit 2026-09-03: this row is HIDDEN
  * (FF_SETTINGS_ROW_ENABLE_SHARE == 0, see that flag's own comment) — the
@@ -647,22 +774,24 @@ static void settings_screen_cb(lv_event_t *e)
 #if FF_SETTINGS_ROW_ENABLE_SHARE
 static void settings_share_cb(lv_event_t *e)
 {
-    (void)e;
-    uint8_t const next = (s_settings.share_mode == FF_SHARE_GHOST) ? FF_SHARE_LIVE : FF_SHARE_GHOST;
-    settings_emit_int(FF_SETTING_SHARE_MODE, next);
+    bool const left = settings_toggle_pressed_is_left(e);
+    int32_t const v = left ? FF_SHARE_LIVE : FF_SHARE_GHOST;
+    settings_emit_toggle(FF_SETTING_SHARE_MODE, (int32_t)s_settings.share_mode, v);
 }
 #endif
 
 /* ---------------------------------------------------------------------
- * HAPTICS / SOUNDS / UI TICKS / GLOW / COLORBLIND — plain booleans.
+ * HAPTICS / SOUNDS / UI TICKS / GLOW / COLORBLIND — plain booleans, all
+ * built "left=ON, right=OFF" with `active_side = <field> ? 0 : 1` at
+ * their call sites (true lights the LEFT/ON pill) — so left pressed
+ * means SET true, right pressed means SET false, for every one of them.
  * HAPTICS and GLOW are hidden rows (settings audit 2026-09-03); their
  * callbacks are guarded the same way SHARE's is above.
  * ------------------------------------------------------------------- */
 #if FF_SETTINGS_ROW_ENABLE_HAPTICS
 static void settings_haptics_cb(lv_event_t *e)
 {
-    (void)e;
-    settings_emit_int(FF_SETTING_HAPTICS, s_settings.haptics ? 0 : 1);
+    settings_emit_toggle(FF_SETTING_HAPTICS, s_settings.haptics ? 1 : 0, settings_toggle_pressed_is_left(e) ? 1 : 0);
 }
 #endif
 
@@ -670,30 +799,30 @@ static void settings_haptics_cb(lv_event_t *e)
  * sound this puck plays. Same two-state toggle shape as HAPTICS above. */
 static void settings_sounds_cb(lv_event_t *e)
 {
-    (void)e;
-    settings_emit_int(FF_SETTING_SOUNDS_ON, s_settings.sounds_on ? 0 : 1);
+    settings_emit_toggle(FF_SETTING_SOUNDS_ON, s_settings.sounds_on ? 1 : 0,
+                         settings_toggle_pressed_is_left(e) ? 1 : 0);
 }
 
 /* UI TICKS (S27) — the second, TAP-only gate. Same two-state toggle
  * shape; defaults OFF (ff_settings.h's doc comment on the field). */
 static void settings_ui_ticks_cb(lv_event_t *e)
 {
-    (void)e;
-    settings_emit_int(FF_SETTING_UI_TICKS, s_settings.ui_ticks ? 0 : 1);
+    settings_emit_toggle(FF_SETTING_UI_TICKS, s_settings.ui_ticks ? 1 : 0,
+                         settings_toggle_pressed_is_left(e) ? 1 : 0);
 }
 
 #if FF_SETTINGS_ROW_ENABLE_GLOW
 static void settings_night_glow_cb(lv_event_t *e)
 {
-    (void)e;
-    settings_emit_int(FF_SETTING_NIGHT_GLOW, s_settings.night_glow ? 0 : 1);
+    settings_emit_toggle(FF_SETTING_NIGHT_GLOW, s_settings.night_glow ? 1 : 0,
+                         settings_toggle_pressed_is_left(e) ? 1 : 0);
 }
 #endif
 
 static void settings_colorblind_cb(lv_event_t *e)
 {
-    (void)e;
-    settings_emit_int(FF_SETTING_COLORBLIND, s_settings.colorblind ? 0 : 1);
+    settings_emit_toggle(FF_SETTING_COLORBLIND, s_settings.colorblind ? 1 : 0,
+                         settings_toggle_pressed_is_left(e) ? 1 : 0);
 }
 
 /* ---------------------------------------------------------------------
@@ -1108,6 +1237,7 @@ static void settings_build_name_row(lv_obj_t *list, int32_t rel_y, int32_t row_w
     lv_obj_clear_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(hit, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(hit, settings_name_open_cb, LV_EVENT_CLICKED, NULL);
+    settings_hit_add_press_feedback(hit);
 
     lv_obj_t *lbl = lv_label_create(hit);
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_MODE_DOTS);

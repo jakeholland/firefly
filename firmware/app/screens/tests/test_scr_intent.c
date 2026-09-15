@@ -2946,20 +2946,223 @@ static void S16_c2_sender_overlay_cancel_emits_flare_end(void)
 /* button (see scr_settings.h), so the old back-emits-BACK test is gone.  */
 /* =================================================================== */
 
-static void S11b_settings_units_chip_toggles_imperial(void)
+/* puck-ux-usability-review slice 1, finding 3: a toggle SETS the tapped
+ * segment, it never inverts the current value — so tapping the segment
+ * that is already lit must be a no-op, and tapping the OTHER segment
+ * sets it directly (not "whatever the current value isn't"). This used
+ * to click the ACTIVE "FT" pill and assert it flipped to "M" — i.e. it
+ * pinned the exact bug this PR fixes. Rewritten to pin the fix instead:
+ * the active segment is a no-op, the inactive one sets. */
+static void S11b_settings_units_chip_sets_not_inverts(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
-    s.imperial = true; /* renders "FT" */
+    s.imperial = true; /* renders "FT" active */
 
     ff_scr_settings_build(lv_screen_active(), &s);
 
-    click(find_button_with_label(lv_screen_active(), "FT"));
+    click(find_button_with_label(lv_screen_active(), "FT")); /* the already-active segment */
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "tapping the already-active segment must be a no-op");
 
+    click(find_button_with_label(lv_screen_active(), "M")); /* the inactive segment */
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
     TEST_ASSERT_EQUAL(FF_SETTING_IMPERIAL, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(0, s_spy.last.u.setting.v.i); /* FT -> M */
+    TEST_ASSERT_EQUAL_INT32(0, s_spy.last.u.setting.v.i); /* M -> imperial=false, a real SET */
+}
+
+/* find_toggle_row_pills — locates a toggle-pair row by its (unique)
+ * caption label and returns its LEFT and RIGHT pill objects directly,
+ * rather than by searching for the pill's own text — CLOCK, SCREEN,
+ * COLORBLIND, SOUNDS and UI TICKS all render `("ON","OFF")`-shaped
+ * pairs, so `find_button_with_label(root, "ON")` would silently return
+ * whichever row happens to come FIRST in the tree, not the row this
+ * test means to press (the exact ambiguity a caption-anchored lookup
+ * avoids). Mirrors settings_toggle_pressed_is_left's own invariant
+ * (scr_settings.c): the row's two pills are always its LAST two
+ * children, left then right. */
+static void find_toggle_row_pills(lv_obj_t *root, char const *caption, lv_obj_t **out_left, lv_obj_t **out_right)
+{
+    lv_obj_t *label = find_label_exact(root, caption);
+    TEST_ASSERT_NOT_NULL_MESSAGE(label, caption);
+    lv_obj_t *row = lv_obj_get_parent(label);
+    uint32_t const n = lv_obj_get_child_cnt(row);
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32_MESSAGE(3, n, "a toggle row must have a caption + 2 pills");
+    int32_t const last = (int32_t)n - 1;
+    *out_right = lv_obj_get_child(row, last);
+    *out_left = lv_obj_get_child(row, last - 1);
+}
+
+/* puck-ux-usability-review slice 1 acceptance criterion 2: "a synthetic
+ * press on the ACTIVE segment of each of CLOCK / UNITS / SCREEN /
+ * COLORBLIND / SOUNDS / UI TICKS emits ZERO FF_INTENT_SETTING_SET."
+ * One sub-case per row: build with the field already set to the value
+ * the LEFT pill represents (each row's own doc comment in
+ * scr_settings.c states which side that is), click the left pill
+ * (already active), assert zero emits; then click the right pill
+ * (inactive) and assert exactly one SET with the right's value — proving
+ * both halves of "set, don't invert" for every row named in the
+ * acceptance criterion, not just UNITS (covered separately above).
+ *
+ * Mutation check (hand-verified before pushing, docs/review/code-
+ * review.md item 6): reverting any one of these six callbacks to its
+ * pre-fix `<field> ? 0 : 1` invert shape makes exactly that row's
+ * "active segment is a no-op" assertion fail (s_spy.count becomes 1,
+ * not 0) while the other five keep passing — see the PR body for the
+ * actual `ctest` output with SCREEN's callback reverted. */
+static void S_PUCK_UX_AC2_active_segment_is_noop_inactive_segment_sets(void)
+{
+    lv_obj_t *left, *right;
+
+    /* CLOCK: left=12H (clock_24h=0), right=24H (clock_24h=1). */
+    {
+        ff_app_settings_t s;
+        memset(&s, 0, sizeof(s));
+        s.clock_24h = false; /* left/12H active */
+        ff_scr_settings_build(lv_screen_active(), &s);
+        find_toggle_row_pills(lv_screen_active(), "CLOCK", &left, &right);
+
+        click(left);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "CLOCK: active 12H segment must be a no-op");
+        click(right);
+        TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+        TEST_ASSERT_EQUAL(FF_SETTING_CLOCK_24H, s_spy.last.u.setting.id);
+        TEST_ASSERT_EQUAL_INT32(1, s_spy.last.u.setting.v.i);
+        lv_obj_clean(lv_screen_active());
+        memset(&s_spy, 0, sizeof(s_spy));
+    }
+
+    /* SCREEN: left=NORMAL (screen_flip=0), right=FLIPPED (screen_flip=1). */
+    {
+        ff_app_settings_t s;
+        memset(&s, 0, sizeof(s));
+        s.screen_flip = false; /* left/NORMAL active */
+        ff_scr_settings_build(lv_screen_active(), &s);
+        find_toggle_row_pills(lv_screen_active(), "SCREEN", &left, &right);
+
+        click(left);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(
+            0, s_spy.count, "SCREEN: active NORMAL segment must be a no-op — a stray re-tap must never flip it");
+        click(right);
+        TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+        TEST_ASSERT_EQUAL(FF_SETTING_SCREEN_FLIP, s_spy.last.u.setting.id);
+        TEST_ASSERT_EQUAL_INT32(1, s_spy.last.u.setting.v.i);
+        lv_obj_clean(lv_screen_active());
+        memset(&s_spy, 0, sizeof(s_spy));
+    }
+
+    /* COLORBLIND: left=ON (colorblind=1), right=OFF (colorblind=0). */
+    {
+        ff_app_settings_t s;
+        memset(&s, 0, sizeof(s));
+        s.colorblind = true; /* left/ON active */
+        ff_scr_settings_build(lv_screen_active(), &s);
+        find_toggle_row_pills(lv_screen_active(), "COLORBLIND", &left, &right);
+
+        click(left);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "COLORBLIND: active ON segment must be a no-op");
+        click(right);
+        TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+        TEST_ASSERT_EQUAL(FF_SETTING_COLORBLIND, s_spy.last.u.setting.id);
+        TEST_ASSERT_EQUAL_INT32(0, s_spy.last.u.setting.v.i);
+        lv_obj_clean(lv_screen_active());
+        memset(&s_spy, 0, sizeof(s_spy));
+    }
+
+    /* SOUNDS: left=ON (sounds_on=1), right=OFF (sounds_on=0). */
+    {
+        ff_app_settings_t s;
+        memset(&s, 0, sizeof(s));
+        s.sounds_on = true; /* left/ON active */
+        ff_scr_settings_build(lv_screen_active(), &s);
+        find_toggle_row_pills(lv_screen_active(), "SOUNDS", &left, &right);
+
+        click(left);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "SOUNDS: active ON segment must be a no-op");
+        click(right);
+        TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+        TEST_ASSERT_EQUAL(FF_SETTING_SOUNDS_ON, s_spy.last.u.setting.id);
+        TEST_ASSERT_EQUAL_INT32(0, s_spy.last.u.setting.v.i);
+        lv_obj_clean(lv_screen_active());
+        memset(&s_spy, 0, sizeof(s_spy));
+    }
+
+    /* UI TICKS: left=ON (ui_ticks=1), right=OFF (ui_ticks=0). */
+    {
+        ff_app_settings_t s;
+        memset(&s, 0, sizeof(s));
+        s.ui_ticks = true; /* left/ON active */
+        ff_scr_settings_build(lv_screen_active(), &s);
+        find_toggle_row_pills(lv_screen_active(), "UI TICKS", &left, &right);
+
+        click(left);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "UI TICKS: active ON segment must be a no-op");
+        click(right);
+        TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+        TEST_ASSERT_EQUAL(FF_SETTING_UI_TICKS, s_spy.last.u.setting.id);
+        TEST_ASSERT_EQUAL_INT32(0, s_spy.last.u.setting.v.i);
+        lv_obj_clean(lv_screen_active());
+        memset(&s_spy, 0, sizeof(s_spy));
+    }
+
+    /* UNITS: left=FT (imperial=1), right=M (imperial=0) — the sixth row
+     * named by the acceptance criterion; covered end-to-end (both
+     * segments, both directions) by S11b_settings_units_chip_sets_not_
+     * inverts above, so this pass only needs the active-segment no-op
+     * half to complete the six-row sweep in one place. */
+    {
+        ff_app_settings_t s;
+        memset(&s, 0, sizeof(s));
+        s.imperial = true; /* left/FT active */
+        ff_scr_settings_build(lv_screen_active(), &s);
+        find_toggle_row_pills(lv_screen_active(), "UNITS", &left, &right);
+
+        click(left);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "UNITS: active FT segment must be a no-op");
+    }
+}
+
+/* puck-ux-usability-review slice 1 acceptance criterion 3: the composite-
+ * pair exclusion (test_face_hit_targets.c's Exclusion 1: same callback +
+ * same user_data == one logical control) must still fire after the
+ * set-not-invert fix — i.e. the fix must NOT have moved to distinct
+ * `user_data` per pill (the trap the review calls out by name). Proven
+ * directly here at the wiring level: both pills of every toggle row
+ * share the exact same event callback function pointer and NULL
+ * user_data, which is all Exclusion 1 checks. test_face_hit_targets.c
+ * itself (run as part of the same `ctest` pass) is the geometric half of
+ * this proof — it re-passes with these rows' 6px gap still legal. */
+static void S_PUCK_UX_AC3_toggle_pair_still_one_composite_control(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    lv_obj_t *left, *right;
+    find_toggle_row_pills(lv_screen_active(), "SCREEN", &left, &right);
+
+    /* Every pill also carries ff_scr_button_create's shared infrastructure
+     * descriptors (tap-sound on CLICKED + the PRESSED/PRESSING/DELETE
+     * slide-off tracking, scr_nav.c) registered BEFORE settings_screen_cb
+     * — so the row's own callback is the LAST descriptor, not index 0
+     * (see scr_nav.c's `ff_scr_button_create` doc comment on why index 0
+     * is deliberately NOT a control's identity in this codebase). Both
+     * pills go through the identical ff_scr_button_create + ff_scr_pill_
+     * create path, so they carry the same NUMBER of descriptors too. */
+    uint32_t const left_n = lv_obj_get_event_count(left);
+    uint32_t const right_n = lv_obj_get_event_count(right);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(left_n, right_n,
+                                     "both pills go through the same factory and must carry the same descriptor "
+                                     "count");
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32_MESSAGE(1, left_n, "a toggle pill must have at least one event callback");
+
+    lv_event_dsc_t *ld = lv_obj_get_event_dsc(left, left_n - 1);
+    lv_event_dsc_t *rd = lv_obj_get_event_dsc(right, right_n - 1);
+    TEST_ASSERT_EQUAL_PTR_MESSAGE(lv_event_dsc_get_cb(ld), lv_event_dsc_get_cb(rd),
+                                  "both pills of a toggle pair must share the SAME callback (composite identity)");
+    TEST_ASSERT_NULL_MESSAGE(lv_event_dsc_get_user_data(ld), "user_data must stay NULL — see the §5 trap");
+    TEST_ASSERT_NULL_MESSAGE(lv_event_dsc_get_user_data(rd), "user_data must stay NULL — see the §5 trap");
 }
 
 /* Settings audit 2026-09-03 (S11 Amendment, S21 Amendment "Settings audit
@@ -4893,7 +5096,9 @@ int main(void)
     RUN_TEST(S16_c2_flare_takeover_go_emits_takeover_go);
     RUN_TEST(S16_c2_flare_takeover_dismiss_emits_takeover_dismiss);
     RUN_TEST(S16_c2_sender_overlay_cancel_emits_flare_end);
-    RUN_TEST(S11b_settings_units_chip_toggles_imperial);
+    RUN_TEST(S11b_settings_units_chip_sets_not_inverts);
+    RUN_TEST(S_PUCK_UX_AC2_active_segment_is_noop_inactive_segment_sets);
+    RUN_TEST(S_PUCK_UX_AC3_toggle_pair_still_one_composite_control);
     RUN_TEST(S_audit_2026_09_03_hidden_rows_are_absent_from_settings);
     RUN_TEST(S11b_settings_quiet_chip_sets_both_from_and_to);
     RUN_TEST(S100_settings_brightness_stepper_steps_and_clamps);
