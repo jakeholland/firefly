@@ -316,9 +316,18 @@ private struct CrewScannerCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 16))
             VStack {
                 Spacer()
-                Text("Camera · point at the QR")
+                // (5) Owner report, 2026-09-15: the wide camera's focus
+                // distance meant there was no distance at which the
+                // puck's QR was both in frame and in focus. Camera-side
+                // fixes live in `QRScannerSheet.swift`; this line tells
+                // the user the distance those fixes are tuned for, in
+                // plain words (A02 §6.4 style — no "focus", "zoom" or
+                // "macro").
+                Text("Hold your phone about a hand's width from the puck")
                     .font(.caption)
                     .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 12)
                     .padding(.bottom, 8)
             }
         }
