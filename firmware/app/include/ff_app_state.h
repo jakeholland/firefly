@@ -796,12 +796,19 @@ typedef struct {
      * in words rather than rendering a fabricated code. */
     char crew_code[FF_CREWCODE_LEN + 1u];
 
-    /* The `firefly://crew?v=1&code=...` link the SHOW CODE face encodes
-     * as a QR, built by core's `ff_crewcode_invite_url` against the same
-     * fixture the app uses. "" exactly when `crew_code` is "". Built in
-     * the shell rather than the screen so the screen stays a pure
-     * renderer — and so there is exactly one place the link is
-     * composed. */
+    /* The `firefly://crew?v=1&code=...` deep link, built by core's
+     * `ff_crewcode_invite_url` against the same fixture the app uses.
+     * "" exactly when `crew_code` is "". Built in the shell rather than
+     * the screen so the screen stays a pure renderer — and so there is
+     * exactly one place the link is composed.
+     *
+     * 2026-09-15: the SHOW CODE face's QR no longer encodes this — it
+     * encodes the shorter `crew_code` above instead, to stay QR version
+     * 1 (21x21 modules) rather than this link's version 3 (29x29) on a
+     * 1.46" display (see `scr_settings.c`'s SHOW CODE header comment).
+     * This field is kept and still built every projection for any other
+     * consumer that wants the full deep link — the app's own Start/Join
+     * QR (A02 §1.8) and any future NFC share or console dump. */
     char invite_url[FF_CREWCODE_URL_MAX];
 
     /* HIDDEN (§C) — people the wearer took off their radar. Their

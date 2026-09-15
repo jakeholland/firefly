@@ -514,6 +514,23 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_scr_intent COMMAND test_scr_intent)
 
+    # 2026-09-15 amendment to A02 slice D (docs/specs/S02-core-crew.md
+    # §D, S02_AC14) — the SHOW CODE face's QR now encodes the bare crew
+    # code rather than the `firefly://` deep link, to stay QR version 1
+    # (21x21 modules) instead of version 3 (29x29). This drives the same
+    # vendored `qrcodegen` encoder `lv_qrcode_update` calls directly
+    # (`src/libs/qrcode/qrcodegen.h`, reached via lvgl's own PUBLIC
+    # include root) to prove the version/size, in place of a host-side
+    # QR *decoder* (neither `zbarimg` nor Python `pyzbar` is installed in
+    # this environment).
+    add_executable(test_scr_crewcode_qr
+        screens/tests/test_scr_crewcode_qr.c
+    )
+    target_link_libraries(test_scr_crewcode_qr PRIVATE ff-core lvgl::lvgl unity)
+    ff_apply_warnings(test_scr_crewcode_qr)
+
+    add_test(NAME test_scr_crewcode_qr COMMAND test_scr_crewcode_qr)
+
     # S26 slice d (maintainer decision B, 2026-09-02) — the banner strip's
     # move to cover the status bar: geometry (disjoint from Radar's name/
     # distance stack and a thread's first bubble, covers the status row,

@@ -1831,10 +1831,11 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
 
 /* ---------------------------------------------------------------------
  * SHOW CODE face — A02 slice D (docs/specs/S02-core-crew.md's 2026-09-13
- * amendment §D; the copy and the link format are A02 §1.8's)
+ * amendment §D; the copy is A02 §1.8's; the QR's own payload is the
+ * 2026-09-15 amendment directly below)
  * ---------------------------------------------------------------------
  *
- *        [ QR of firefly://crew?v=1&code=FIRE-4K9M7X ]
+ *              [ QR of FIRE-4K9M7X ]
  *
  *                    FIRE-4K9M7X
  *
@@ -1850,6 +1851,26 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
  * code somebody will type into their phone and then stand around
  * wondering why nobody appeared.
  *
+ * **2026-09-15 amendment — the QR encodes the bare code, not the deep
+ * link.** Owner report: the phone's scanner struggled with this face's
+ * QR up close, decoding only from further away than a wearer showing a
+ * puck across a tent has room for. Cause: this face encoded
+ * `cw->invite_url` (`firefly://crew?v=1&code=FIRE-4K9M7X`, 35 ASCII
+ * bytes), which LVGL's `lv_qrcode` — always BYTE mode, see below — puts
+ * at QR version 3 (29x29 modules) in the 170px canvas below, under 6px a
+ * module on this 1.46" glass. The bare canonical code alone
+ * (`cw->crew_code`, `FIRE-4K9M7X`, 11 bytes) is what this face actually
+ * needs the phone to read back — A02 §1.2's `CrewCode.parse` already
+ * accepts it typed, scanned, or read aloud, tag and all — and it fits QR
+ * version 1 (21x21 modules) in the same canvas, ~40% more px per module.
+ * `cw->invite_url` is UNCHANGED and still built every projection
+ * (`ff_shell.c`) for any consumer that does want the full deep link (the
+ * app's own Start/Join QR keeps it, A02 §1.8; a future NFC share or
+ * console dump could reuse it) — this face is simply no longer one of
+ * them. The `_Static_assert` below pins the bare code's byte-mode fit
+ * inside QR v1-M so a future change to `FF_CREWCODE_LEN` fails the build
+ * instead of silently growing the version back up.
+ *
  * The PRECISION line (S02's 2026-09-14 amendment, #47) is the one other
  * honest fact this face makes: "exact positions" when the crew
  * channel's own `position_precision` is proven to be exactly 32, and
@@ -1864,8 +1885,8 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
  * Geometry, against the round 412 glass — MEASURED off the committed
  * golden, not eyeballed. The `lv_qrcode` canvas is 170 px (trimmed from
  * slice D's original 190 px to make room for the PRECISION line below
- * the caption — still comfortably above the ~120 px floor a phone
- * camera needs for this payload's short URL) and carries a 6 px light
+ * the caption — comfortably above the ~120 px floor a phone camera needs
+ * even for the longer pre-amendment payload) and carries a 6 px light
  * border as its quiet zone, so the white ground the camera actually
  * sees is 170 + 2*6 = 182 px square. That leaves the code line, the
  * caption, the PRECISION line and a real 44 px BACK target room below
@@ -1875,6 +1896,16 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
  * that; what matters here is that the dark-on-light polarity is NOT
  * inverted (a scanner expects dark modules on a light ground, and a
  * clever dark-theme QR is a QR that does not scan).
+ *
+ * `lv_qrcode_update` always calls `qrcodegen_encodeBinary` — BYTE mode,
+ * unconditionally, never the alphanumeric mode qrcodegen also offers
+ * (`src/libs/qrcode/lv_qrcode.c`, LVGL v9.5.0 pinned by
+ * `firmware/CMakeLists.txt`). The 11-byte bare code still lands at
+ * version 1 in that mode: QR version 1's ECC-MEDIUM byte-mode capacity
+ * is 14 bytes (`qrcodegen_getMinFitVersion`), and 11 <= 14. Alphanumeric
+ * mode is not in play here despite the code's alphabet being a subset of
+ * it — worth pinning so nobody "fixes" a future regression by chasing a
+ * mode switch that was never happening.
  *
  * The square is centred on the GLASS (FF_THEME_GLASS_CX = 208), not on
  * the 412 pixel array (206). That 2 px is not cosmetic: the panel sits
@@ -1904,6 +1935,23 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
 #define FF_CREWCODE_BTN_Y     326
 
 _Static_assert(FF_CREWCODE_QR_PX <= 220, "A02 slice D: the QR must stay <= 220px to fit the round glass");
+/* 2026-09-15 amendment — this face's QR now encodes `cw->crew_code`
+ * (FF_CREWCODE_LEN == 11 ASCII bytes), not `cw->invite_url`, precisely
+ * so it stays QR version 1 (21x21 modules) instead of the deep link's
+ * version 3 (29x29) — see the big comment above. `lv_qrcode_update`
+ * always uses BYTE mode (`qrcodegen_encodeBinary`, never the
+ * alphanumeric mode qrcodegen also offers) at ECC MEDIUM, whose QR
+ * version 1 byte-mode capacity is 14 bytes
+ * (`qrcodegen_getMinFitVersion`/the QR spec's own table) — so this
+ * assert is the load-bearing one: a future change to `FF_CREWCODE_LEN`
+ * (or a switch back to encoding a longer string here) that crosses 14
+ * bytes silently buys back the exact module-size regression this
+ * amendment fixes, and this fails the build instead. Cross-checked
+ * against the live encoder, not just this arithmetic, by
+ * `test_scr_crewcode_qr.c`. */
+_Static_assert(FF_CREWCODE_LEN <= 14u,
+               "SHOW CODE's QR payload (the bare crew code) must fit QR v1-M's 14-byte byte-mode "
+               "capacity, or the code face silently grows past QR version 1 (21x21 modules)");
 /* The QR's light ground must stay INSIDE the glass, corners included —
  * the quiet zone is part of the symbol, and a scanner that loses it
  * loses the symbol. Its top corners are the worst case; stated as
@@ -1969,7 +2017,12 @@ static void settings_build_crew_code_page(lv_obj_t *parent, ff_app_crew_page_t c
         lv_qrcode_set_size(qr, FF_CREWCODE_QR_PX);
         lv_qrcode_set_dark_color(qr, lv_color_hex(0x000000));
         lv_qrcode_set_light_color(qr, lv_color_hex(0xFFFFFF));
-        lv_qrcode_update(qr, cw->invite_url, strlen(cw->invite_url));
+        /* 2026-09-15 amendment: the bare code, not `cw->invite_url` — see
+         * the SHOW CODE header comment above and the QR v1 capacity
+         * assert below. `cw->invite_url` is still built (ff_shell.c) and
+         * still exactly what A02 §1.2 parses; this face just no longer
+         * needs its extra 24 bytes on the glass. */
+        lv_qrcode_update(qr, cw->crew_code, strlen(cw->crew_code));
         lv_obj_align(qr, LV_ALIGN_TOP_MID, FF_CREWCODE_QR_DX, FF_CREWCODE_QR_Y);
         /* A quiet zone in the QR's own light colour: the module pattern
          * has to be surrounded by light, and the puck behind it is
