@@ -16,19 +16,35 @@
  * not a second copy that could drift), so a control that is missing
  * press feedback on ANY face fails here, not just on compose.
  *
- * has_press_feedback below is the identical check test_scr_intent.c's
- * own `has_press_feedback` uses (a SELECTOR query via
- * lv_obj_has_style_prop, not a "what does this look like right now"
- * query) — every press treatment in this codebase (scr_widgets.c's
- * `ff_scr_pill_create`, scr_radar.c's FLARE, scr_launcher.c's tiles,
- * scr_inbox.c's rows/chips, scr_banner.c, scr_compose.c) sets bg_opa
- * and/or bg_color at LV_STATE_PRESSED — see this codebase's own grep of
- * `LV_STATE_PRESSED` across every screen source file: every hit is one of those
- * two properties.
+ * has_press_feedback below MEASURES whether `obj`'s resolved bg_opa/
+ * bg_color actually change under LV_STATE_PRESSED (see that function's
+ * own doc comment — REVIEW FIX, independent review of #329: the
+ * original form here was a SELECTOR query via lv_obj_has_style_prop,
+ * which returns true for ANY filled object regardless of whether a
+ * dedicated pressed-state override exists, because LVGL treats a
+ * DEFAULT-state style as matching every queried state. Confirmed by
+ * mutation — reverting `settings_make_pill` to `FF_SCR_PILL_PRESS_NONE`
+ * did not fail this test under the old check).
  *
- * Two categories of CLICKABLE object are excluded, same reasoning
+ * NOT every press treatment in this codebase uses the LV_STATE_PRESSED
+ * mechanism this predicate can see. `scr_widgets.c`'s `ff_scr_pill_
+ * create`, `scr_radar.c`'s FLARE and `scr_banner.c`/`scr_compose.c`'s
+ * controls all do. `scr_inbox.c`'s FULL-ROW/FAB press wash does NOT:
+ * `inbox_row_press_ev` toggles a separate decoration object's bg_opa at
+ * the DEFAULT selector from manually-wired LV_EVENT_PRESSED/RELEASED/
+ * PRESS_LOST callbacks (scr_inbox.c:943), not via LV_STATE_PRESSED on
+ * the tap target itself — a real, working, pre-existing mechanism this
+ * predicate cannot observe without actually firing those events and
+ * diffing the rendered frame (which `--press-label`'s screenshot path
+ * does, for one control at a time, by hand). See the fixture-prefix
+ * exclusion in `press_walk` below: NOT a claim these controls lack
+ * feedback, only that this predicate cannot verify scr_inbox.c's
+ * different, already-reviewed-elsewhere technique. Tracked separately;
+ * do not widen this exclusion to cover a genuinely new gap.
+ *
+ * Three categories of CLICKABLE object are excluded, same reasoning
  * test_tap_target_sizing.c's `sizing_has_callback`/`is_whole_puck` use
- * for the identical shapes:
+ * for the first two (identical) shapes:
  *
  *   - The whole-puck gesture/tap-anywhere region (scr_nav.c's
  *     long-press-to-Settings hook, scr_map.c's tap-anywhere-back
@@ -40,6 +56,15 @@
  *     inert FLOATING scroll-relay catchers exist so
  *     `lv_indev_find_scroll_obj` has something to walk up from, not as
  *     controls a user presses.
+ *   - A SCROLLABLE object (REVIEW FIX): the ambient scroll surface of a
+ *     list (e.g. scr_settings.c's own `list`, which "must stay CLICKABLE"
+ *     per that file's own comment so a press anywhere in the list can be
+ *     hit-tested into a scroll, but carries no CLICKED handler of its
+ *     own). LVGL clears LV_OBJ_FLAG_SCROLLABLE on every `lv_button_create`
+ *     at construction and no button/pill factory in this codebase
+ *     re-adds it, so this is a safe, precise signal for "ambient scroll
+ *     surface", not "a control a thumb aims at" — confirmed by isolated
+ *     testing during review.
  *
  * Everything else that is CLICKABLE and has a real callback is a
  * control a user's finger lands on — per the review, "the puck answers
@@ -80,11 +105,40 @@ void tearDown(void)
  * duplicated here rather than shared across a app/-vs-targets/ boundary
  * for one four-line predicate (this file's whole reason to exist is to
  * apply that same check somewhere test_scr_intent.c cannot reach:
- * fixture-driven, cross-face, real-dispatch screens). */
+ * fixture-driven, cross-face, real-dispatch screens).
+ *
+ * REVIEW FIX (independent review of #329, mutation-verified): the
+ * previous form of this predicate was `lv_obj_has_style_prop(obj,
+ * LV_PART_MAIN | LV_STATE_PRESSED, LV_STYLE_BG_OPA/COLOR)` — a SELECTOR
+ * query. LVGL's style matching treats a style added at LV_STATE_DEFAULT
+ * (selector 0) as applicable to EVERY state, including a query for
+ * PART_MAIN|STATE_PRESSED — DEFAULT requires no state bits, so it always
+ * "matches". Every filled pill in this codebase sets bg_opa/bg_color at
+ * selector 0 unconditionally (`ff_scr_pill_create`'s `cfg->filled`
+ * branch, scr_widgets.c) whether or not `cfg->press` adds a DEDICATED
+ * PRESSED-state override — so the old query returned true for EVERY
+ * filled clickable, including ones with `FF_SCR_PILL_PRESS_NONE` and
+ * zero press styling at all. Confirmed by mutation: reverting
+ * `settings_make_pill` to `FF_SCR_PILL_PRESS_NONE` did NOT make this
+ * test fail (584 controls, 0 violations — unchanged). This function now
+ * MEASURES whether the object's resolved bg_opa/bg_color actually CHANGE
+ * when LV_STATE_PRESSED is applied — the same "force the state, read
+ * the real result" technique this same PR's own `ffsim --press-label`
+ * uses for its reference screenshots — rather than asserting a style
+ * rule merely exists at some selector. Re-verified by the same mutation:
+ * with this fix, reverting to FF_SCR_PILL_PRESS_NONE now fails with
+ * "584 controls checked, ... violation(s)" as expected. */
 static bool has_press_feedback(lv_obj_t *obj)
 {
-    return lv_obj_has_style_prop(obj, LV_PART_MAIN | LV_STATE_PRESSED, LV_STYLE_BG_OPA) ||
-           lv_obj_has_style_prop(obj, LV_PART_MAIN | LV_STATE_PRESSED, LV_STYLE_BG_COLOR);
+    lv_opa_t const opa_rest = lv_obj_get_style_bg_opa(obj, LV_PART_MAIN);
+    lv_color_t const color_rest = lv_obj_get_style_bg_color(obj, LV_PART_MAIN);
+
+    lv_obj_add_state(obj, LV_STATE_PRESSED);
+    lv_opa_t const opa_pressed = lv_obj_get_style_bg_opa(obj, LV_PART_MAIN);
+    lv_color_t const color_pressed = lv_obj_get_style_bg_color(obj, LV_PART_MAIN);
+    lv_obj_remove_state(obj, LV_STATE_PRESSED);
+
+    return (opa_pressed != opa_rest) || !lv_color_eq(color_pressed, color_rest);
 }
 
 /* has_real_callback — does this clickable actually DO anything, or is
@@ -102,6 +156,56 @@ typedef struct {
     int violations;
 } press_result_t;
 
+/* press_is_known_event_driven — is `obj` one of scr_inbox.c's row/FAB tap
+ * targets, whose press wash is real but implemented differently (see this
+ * file's top comment): `inbox_row_press_ev` (scr_inbox.c:943) toggles a
+ * SEPARATE decoration object's bg_opa from manually-wired LV_EVENT_PRESSED/
+ * RELEASED/PRESS_LOST callbacks, not via LV_STATE_PRESSED on the tap target
+ * `has_press_feedback` inspects — so this predicate cannot see it and would
+ * otherwise misreport a real, working control as a violation.
+ *
+ * Deliberately narrow and two-factor, not a blanket "every inbox_* fixture
+ * passes" rule:
+ *   1. `fixture_name` must be one of scr_inbox.c's own committed fixtures
+ *      (its rows/thread views, or `banner_on_thread` which renders a thread
+ *      underneath) — never any other face.
+ *   2. `obj` must carry MORE event descriptors than an ordinary
+ *      `ff_scr_button_create` control with one CLICKED handler ever has.
+ *      `ff_scr_button_create` (scr_nav.c) unconditionally registers 4 shared
+ *      infrastructure descriptors (tap-sound CLICKED + PRESSED/PRESSING/
+ *      DELETE slide-off tracking); a control's own CLICKED handler is a
+ *      5th. `inbox_row_press_ev`'s PRESSED+RELEASED+PRESS_LOST trio
+ *      (scr_inbox.c:1009-1011/1273-1275) adds 3 more — 8 total. Requiring
+ *      BOTH factors means a control that regresses to plain, unadorned
+ *      CLICKED-only wiring (5 descriptors) is NOT exempted by fixture name
+ *      alone and still fails the sweep below.
+ *
+ * A tracked follow-up (see the PR/review thread) should replace this with a
+ * real behavioral check — fire LV_EVENT_PRESSED for real and diff the
+ * rendered frame, the same thing a finger actually does — so scr_inbox.c's
+ * own convention is verified, not merely presumed correct from reading its
+ * source once during this review. */
+static bool press_is_known_event_driven(char const *fixture_name, lv_obj_t *obj)
+{
+    static char const *const inbox_family[] = {
+        "inbox_no_crew.json",      "inbox_thread_direct.json",  "inbox_thread_crew.json",
+        "inbox_inbox.json",        "inbox_thread_outbox_states.json",
+        "inbox_all_stale.json",    "inbox_quiet.json",          "inbox_thread_crew_long.json",
+        "inbox_thread_short.json", "inbox_picker.json",         "banner_on_thread.json",
+    };
+    bool in_family = false;
+    for (size_t i = 0; i < sizeof(inbox_family) / sizeof(inbox_family[0]); i++) {
+        if (strcmp(fixture_name, inbox_family[i]) == 0) {
+            in_family = true;
+            break;
+        }
+    }
+    if (!in_family) {
+        return false;
+    }
+    return lv_obj_get_event_count(obj) > 5;
+}
+
 static void press_walk(lv_obj_t *obj, char const *fixture_name, press_result_t *out)
 {
     uint32_t n = lv_obj_get_child_count(obj);
@@ -115,7 +219,39 @@ static void press_walk(lv_obj_t *obj, char const *fixture_name, press_result_t *
             float const h = (float)(area.y2 - area.y1 + 1);
             bool const is_whole_puck = (w == (float)FF_THEME_PUCK_PX) && (h == (float)FF_THEME_PUCK_PX);
 
-            if (!is_whole_puck && has_real_callback(child)) {
+            /* REVIEW FIX (independent review of #329): a third exclusion
+             * shape neither test_face_hit_targets.c's Exclusions 1-4 nor
+             * `has_real_callback` above covers — the SCROLLABLE ancestor
+             * of a list itself (scr_settings.c's own "list" object,
+             * `settings_build_settings_page`/`settings_build_diag_page`'s
+             * own doc comment: "#bug2 — the list MUST stay CLICKABLE ...
+             * It carries no CLICKED handler"). It genuinely registers
+             * event callbacks (LV_EVENT_SCROLL/SCROLL_END, to persist
+             * scroll position), so `has_real_callback`'s "any event count
+             * > 0" proxy — correct for the narrower size-floor question
+             * `sizing_has_callback` asks, see that function's own doc
+             * comment — wrongly counts it as a control here. LVGL clears
+             * LV_OBJ_FLAG_SCROLLABLE on every `lv_button_create` at
+             * construction (lv_button.c) and no button/pill factory in
+             * this codebase re-adds it, so no real control this sweep
+             * should catch is ever SCROLLABLE — it is a safe, precise
+             * signal for "ambient scroll surface", not "a control a
+             * thumb aims at", confirmed by isolated review testing. */
+            bool const is_scroll_surface = lv_obj_has_flag(child, LV_OBJ_FLAG_SCROLLABLE);
+
+            /* Not counted at all when true — see press_is_known_event_driven's
+             * doc comment. A narrow, named, source-verified carve-out, not a
+             * blanket "skip this face" rule: it still requires the object to
+             * carry the EXTRA event wiring the alternate mechanism needs, so
+             * an inbox control that regresses to having NO press wiring at
+             * all is NOT exempted and still fails below like anything else.
+             * Evaluated lazily (short-circuit) only when the object would
+             * otherwise be a violation, so it costs nothing on the 573
+             * controls that already pass the direct check. */
+            bool const is_known_event_driven =
+                !has_press_feedback(child) && press_is_known_event_driven(fixture_name, child);
+
+            if (!is_whole_puck && !is_scroll_surface && !is_known_event_driven && has_real_callback(child)) {
                 out->checked++;
                 if (!has_press_feedback(child)) {
                     out->violations++;

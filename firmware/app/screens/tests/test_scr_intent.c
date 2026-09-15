@@ -458,19 +458,44 @@ static void S99_compose_space_and_send_clear_the_maintainer_gap_ask(void)
                                                "for the actual measured gap");
 }
 
-/* has_press_feedback — true iff `obj` registers a LOCAL style rule for
- * (LV_PART_MAIN | LV_STATE_PRESSED) on either bg_opa or bg_color — the
- * two properties every press treatment in this file's target
- * (compose_key_press_feedback, and SEND's own dim-on-press) actually
- * sets. This is a SELECTOR query (lv_obj_has_style_prop with an
- * explicit part|state pair), not a "what does this look like right
- * now" query — it works without the object ever actually being
- * pressed, so a headless sweep like the one below can check every
- * control in one pass instead of driving a real press on each. */
+/* has_press_feedback — true iff `obj`'s resolved bg_opa or bg_color
+ * actually CHANGES when LV_STATE_PRESSED is applied — the two properties
+ * every press treatment in this file's target (compose_key_press_
+ * feedback, and SEND's own dim-on-press) actually sets. This forces the
+ * state and reads the real resolved value (the same technique
+ * `targets/sim/main.c`'s `--press-label` uses to render a live pressed
+ * reference shot), so it works without the object ever actually being
+ * touched — a headless sweep like the one below can check every control
+ * in one pass instead of driving a real press on each.
+ *
+ * REVIEW FIX (independent review of #329, mutation-verified): this used
+ * to be `lv_obj_has_style_prop(obj, LV_PART_MAIN | LV_STATE_PRESSED,
+ * LV_STYLE_BG_OPA/COLOR)` — a SELECTOR query, not a resolved-value one.
+ * LVGL treats a style added at LV_STATE_DEFAULT (selector 0) as matching
+ * EVERY queried state, including PART_MAIN|STATE_PRESSED — DEFAULT
+ * requires no state bits, so it always "matches". Every filled pill in
+ * this codebase sets bg_opa/bg_color at selector 0 unconditionally
+ * (`ff_scr_pill_create`'s `cfg->filled` branch, scr_widgets.c) whether
+ * or not a DEDICATED pressed-state override exists — so the old query
+ * returned true for every filled clickable regardless of whether it had
+ * any press styling at all, including `FF_SCR_PILL_PRESS_NONE` ones.
+ * Confirmed directly: an isolated LVGL object with bg_opa/bg_color set
+ * ONLY at selector 0 (no PRESSED override) made the old query return
+ * true for both properties. Measuring the RESOLVED value before/after
+ * forcing LV_STATE_PRESSED (what this function does now) is immune to
+ * that — a control with no dedicated pressed style resolves to the same
+ * value either way. */
 static bool has_press_feedback(lv_obj_t *obj)
 {
-    return lv_obj_has_style_prop(obj, LV_PART_MAIN | LV_STATE_PRESSED, LV_STYLE_BG_OPA) ||
-           lv_obj_has_style_prop(obj, LV_PART_MAIN | LV_STATE_PRESSED, LV_STYLE_BG_COLOR);
+    lv_opa_t const opa_rest = lv_obj_get_style_bg_opa(obj, LV_PART_MAIN);
+    lv_color_t const color_rest = lv_obj_get_style_bg_color(obj, LV_PART_MAIN);
+
+    lv_obj_add_state(obj, LV_STATE_PRESSED);
+    lv_opa_t const opa_pressed = lv_obj_get_style_bg_opa(obj, LV_PART_MAIN);
+    lv_color_t const color_pressed = lv_obj_get_style_bg_color(obj, LV_PART_MAIN);
+    lv_obj_remove_state(obj, LV_STATE_PRESSED);
+
+    return (opa_pressed != opa_rest) || !lv_color_eq(color_pressed, color_rest);
 }
 
 /* walk_assert_press_feedback — recursively asserts every CLICKABLE
@@ -478,13 +503,32 @@ static bool has_press_feedback(lv_obj_t *obj)
  * (S24 AC7 / the device-polish "presses must register" convention every
  * control in this file follows), incrementing *out_n for each one
  * checked so the caller can rule out a vacuous (zero-controls-found)
- * pass, same discipline test_face_hit_targets.c's own sweep uses. */
+ * pass, same discipline test_face_hit_targets.c's own sweep uses.
+ *
+ * REVIEW FIX (independent review of #329): this used to check EVERY
+ * clickable with no exemption at all, contradicting its own neighboring
+ * doc comments elsewhere in this file (e.g. `compose_add_pred_scroll_
+ * catcher`'s: "this file's local walk_assert_press_feedback ... already
+ * recognize[s]" a callback-less scroll catcher as exempt) — it never
+ * actually did. That went unnoticed because the OLD (buggy) `has_press_
+ * feedback` returned true for ANY object with bg_opa/bg_color set at
+ * ALL, including `LV_OPA_TRANSP` at rest with no PRESSED override
+ * (`compose_add_pred_scroll_catcher`'s own transparent hit rect) — so
+ * the catcher passed by the same false-positive as everything else, not
+ * because it was actually exempted. Fixing `has_press_feedback` to
+ * measure a REAL resolved-value change (see that function's own doc
+ * comment) exposed this: the catcher then failed, because it never had
+ * an exemption to begin with. Now added explicitly, matching
+ * `test_press_feedback_all_faces.c`'s own `has_real_callback` exclusion
+ * for the identical shape (a CLICKABLE object registering NO click
+ * callback exists only so `lv_indev_find_scroll_obj` has something to
+ * walk up from). */
 static void walk_assert_press_feedback(lv_obj_t *obj, int *out_n)
 {
     uint32_t n = lv_obj_get_child_count(obj);
     for (uint32_t i = 0; i < n; i++) {
         lv_obj_t *child = lv_obj_get_child(obj, i);
-        if (lv_obj_has_flag(child, LV_OBJ_FLAG_CLICKABLE)) {
+        if (lv_obj_has_flag(child, LV_OBJ_FLAG_CLICKABLE) && lv_obj_get_event_count(child) > 0) {
             (*out_n)++;
             TEST_ASSERT_TRUE_MESSAGE(has_press_feedback(child),
                                       "every clickable compose control must carry an LV_STATE_PRESSED style");

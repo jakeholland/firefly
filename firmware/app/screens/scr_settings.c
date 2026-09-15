@@ -1817,6 +1817,13 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
     lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(back, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
+    /* puck-ux-usability-review slice 1, finding 2 (review fix, confirmed
+     * by test_press_feedback_all_faces.c's corrected sweep): this back
+     * circle is the same "raw ff_scr_button_create wrapper, no
+     * ff_scr_pill_create under it" shape as the value/name row hit boxes
+     * this PR already fixed via settings_hit_add_press_feedback — same
+     * fix, same convention. */
+    settings_hit_add_press_feedback(back);
     lv_obj_add_event_cb(back, settings_crew_back_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *glyph = lv_label_create(back);
@@ -2799,6 +2806,10 @@ static void settings_build_name_edit_page(lv_obj_t *parent, ff_app_name_edit_t c
     lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(back, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
+    /* puck-ux-usability-review slice 1, finding 2 (review fix) — see the
+     * CREW page's own back-circle comment above (settings_build_crew_page):
+     * the identical raw-wrapper gap, the identical fix. */
+    settings_hit_add_press_feedback(back);
     lv_obj_add_event_cb(back, settings_crew_back_cb, LV_EVENT_CLICKED, NULL); /* BACK means the same thing everywhere */
     lv_obj_t *glyph = lv_label_create(back);
     lv_label_set_text(glyph, LV_SYMBOL_LEFT);
@@ -3103,6 +3114,10 @@ static void settings_build_diag_page(lv_obj_t *parent, ff_app_diag_t const *d)
     lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(back, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
+    /* puck-ux-usability-review slice 1, finding 2 (review fix) — see the
+     * CREW page's own back-circle comment (settings_build_crew_page): the
+     * identical raw-wrapper gap, the identical fix. */
+    settings_hit_add_press_feedback(back);
     lv_obj_add_event_cb(back, settings_diag_back_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *glyph = lv_label_create(back);
