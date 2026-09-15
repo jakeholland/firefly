@@ -27,6 +27,21 @@ import XCTest
 
 final class AdminWriteTests: XCTestCase {
 
+    /// `LoopbackTransport` never simulates the commit's reboot on its
+    /// own, so every test below that does NOT explicitly drive a
+    /// disconnect is modelling the case `postCommitDisconnectGrace`
+    /// exists for: a commit the radio applied without restarting. The
+    /// shipped 5 s grace is real waiting those tests have no reason to
+    /// do (and more than their own `waitForSentCount` budget allows), so
+    /// they dial it down — the same convention every other timing knob
+    /// on this client is injected with here.
+    ///
+    /// The two tests that DO drive a disconnect
+    /// (`testAPostCommitReboot…`, `testAPuckThatNeverComesBack…`) keep a
+    /// realistic grace on purpose: shrinking it there would be shrinking
+    /// the thing under test.
+    private static let noRebootGrace: Duration = .milliseconds(20)
+
     // MARK: - FromRadio / ToRadio builders
 
     private func fromRadio(_ build: (inout FromRadio) -> Void) -> Data {
@@ -188,7 +203,7 @@ final class AdminWriteTests: XCTestCase {
     /// read-back requests with matching content.
     func testApplyChannelSetSendsExactAdminFramesAndReadsBackSuccessfully() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
+        let client = MeshtasticClient(transport: transport, postCommitDisconnectGrace: Self.noRebootGrace, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 48_621_524)
 
         let channel = sampleChannel()
@@ -257,7 +272,7 @@ final class AdminWriteTests: XCTestCase {
     /// success = read-back matches; otherwise a clear error").
     func testChannelReadBackMismatchThrowsReadBackMismatch() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
+        let client = MeshtasticClient(transport: transport, postCommitDisconnectGrace: Self.noRebootGrace, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
 
         let channel = sampleChannel()
@@ -290,7 +305,7 @@ final class AdminWriteTests: XCTestCase {
     /// than hang or silently report success.
     func testReadBackNeverArrivingTimesOut() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport, adminResponseTimeout: .milliseconds(80), beginEditSettingsRetryDelay: .milliseconds(1))
+        let client = MeshtasticClient(transport: transport, adminResponseTimeout: .milliseconds(80), postCommitDisconnectGrace: Self.noRebootGrace, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
 
         let request = ChannelWriteRequest(channels: [sampleChannel()], loraConfig: nil)
@@ -306,7 +321,7 @@ final class AdminWriteTests: XCTestCase {
 
     func testSetOwnerWritesAndReadsBack() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
+        let client = MeshtasticClient(transport: transport, postCommitDisconnectGrace: Self.noRebootGrace, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
 
         let applyTask = Task { try await client.setOwner(longName: "Firefly One", shortName: "FF1") }
@@ -350,7 +365,7 @@ final class AdminWriteTests: XCTestCase {
     /// factor/tx power/etc to their zero defaults.
     func testSetRegionReadsCurrentConfigFirstAndPreservesEveryOtherField() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
+        let client = MeshtasticClient(transport: transport, postCommitDisconnectGrace: Self.noRebootGrace, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
 
         var currentLora = Config.LoRaConfig()
@@ -415,7 +430,7 @@ final class AdminWriteTests: XCTestCase {
     /// anything if it were somehow called anyway.
     func testNeverWritesWithoutAConnectedNode() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1)) // never connected
+        let client = MeshtasticClient(transport: transport, postCommitDisconnectGrace: Self.noRebootGrace, beginEditSettingsRetryDelay: .milliseconds(1)) // never connected
 
         do {
             _ = try await client.applyChannelSet(ChannelWriteRequest(channels: [sampleChannel()]))
@@ -466,7 +481,7 @@ final class AdminWriteTests: XCTestCase {
     /// bug would not hide behind coincidence.
     func testSetRegionWireEncodesTheExactRegionRequested() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
+        let client = MeshtasticClient(transport: transport, postCommitDisconnectGrace: Self.noRebootGrace, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
 
         let applyTask = Task { try await client.setRegion(.jp) }
@@ -508,7 +523,7 @@ final class AdminWriteTests: XCTestCase {
     /// (role primary/secondary); a `.disabled` index is simply omitted.
     func testCurrentChannelTableReadsEveryIndexAndOmitsDisabledOnes() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
+        let client = MeshtasticClient(transport: transport, postCommitDisconnectGrace: Self.noRebootGrace, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
 
         let tableTask = Task { try await client.currentChannelTable() }
@@ -600,7 +615,7 @@ final class AdminWriteTests: XCTestCase {
     /// came back.
     func testCurrentChannelIndexZeroSendsGetChannelRequestOneOnTheWire() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
+        let client = MeshtasticClient(transport: transport, postCommitDisconnectGrace: Self.noRebootGrace, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
 
         let readTask = Task { try await client.currentChannel(index: 0) }
@@ -642,7 +657,7 @@ final class AdminWriteTests: XCTestCase {
     /// touches the radio — not just the UI disabling the APPLY button.
     func testSetRegionUnsetThrowsWithoutSendingAnything() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
+        let client = MeshtasticClient(transport: transport, postCommitDisconnectGrace: Self.noRebootGrace, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
 
         let before = transport.sentMessages.count
@@ -664,7 +679,7 @@ final class AdminWriteTests: XCTestCase {
     /// be on the wire.
     func testApplyChannelSetSendFailureNamesTheFailingStep() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
+        let client = MeshtasticClient(transport: transport, postCommitDisconnectGrace: Self.noRebootGrace, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
 
         var first = sampleChannel()
@@ -705,7 +720,7 @@ final class AdminWriteTests: XCTestCase {
     /// with no context.
     func testApplyChannelSetReadBackReportsPerItemMismatch() async throws {
         let transport = LoopbackTransport()
-        let client = MeshtasticClient(transport: transport, beginEditSettingsRetryDelay: .milliseconds(1))
+        let client = MeshtasticClient(transport: transport, postCommitDisconnectGrace: Self.noRebootGrace, beginEditSettingsRetryDelay: .milliseconds(1))
         try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
 
         var chan0 = sampleChannel()
@@ -739,6 +754,126 @@ final class AdminWriteTests: XCTestCase {
             XCTAssertTrue(detail.contains("channel 1"), "expected the mismatching channel named: \(detail)")
             XCTAssertFalse(detail.contains("channel 0 "), "channel 0 matched — it must not be reported as a problem: \(detail)")
             XCTAssertTrue(detail.lowercased().contains("partial"), "expected an explicit partial-configuration note: \(detail)")
+        }
+    }
+
+    // MARK: - A02 §3.3 amendment / A03 §3.6 amendment (2026-09-14) — the
+    // post-commit wait is sized for a REBOOT, not for an admin reply.
+    //
+    // Bench, 2026-09-14, Mac bench app (main d8ee569d) against Heltec
+    // `TAY_06b0` fw 2.7.26, `-FireflyDebugJoinCrew FIRE-8MNTT2`:
+    // `applyChannelSet` wrote the crew channel (confirmed afterwards by
+    // `meshtastic --info`: channel 0 = FIRE-8MNTT2, precision 32),
+    // `commit_edit_settings` rebooted the radio, the link came back and
+    // reached `.ready` — and `waitForReadyAfterCommit()`, which waited
+    // only `adminResponseTimeout` (30 s), had already thrown. A join
+    // that SUCCEEDED on the radio was reported as "your puck didn't
+    // answer in time" and no crew profile was saved.
+
+    /// (b) The reboot outlasts an admin-read budget and the write still
+    /// succeeds.
+    ///
+    /// Timings are scaled, and deliberately scaled by RATIO rather than
+    /// picked: `adminResponseTimeout` stands in for the shipped 30 s and
+    /// the link comes back at **twice** that — the bench's own 45-s-past
+    /// -a-30-s-budget shape, with room to spare. On `main` this throws,
+    /// because the same 30 s bounded both waits.
+    ///
+    /// What the ratio alone cannot prove is that a REAL 45-second reboot
+    /// fits the SHIPPED budget — a scaled test would pass for a 31-second
+    /// one too. That is pinned separately, and directly, by
+    /// `testThePostCommitBudgetIsSizedForARealReboot` below.
+    func testAPostCommitRebootOutlastingAnAdminReadStillReadsBackAndSucceeds() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(
+            transport: transport,
+            adminResponseTimeout: .seconds(1),
+            postCommitReadyTimeout: .seconds(15),
+            beginEditSettingsRetryDelay: .milliseconds(1))
+        try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
+
+        let channel = sampleChannel()
+        let request = ChannelWriteRequest(channels: [channel], loraConfig: nil)
+        let applyTask = Task { try await client.applyChannelSet(request) }
+
+        // begin x2, set_channel, commit_edit_settings
+        try await waitForSentCount(7, on: transport)
+        try assertAdminFrame(transport, at: 6) { $0.commitEditSettings = true }
+        // The transport was TOLD the reboot is coming, before the commit
+        // write — the only thing that makes `BLETransport`'s prompt
+        // reconnect path reachable at all (A03 §3.6 amendment).
+        XCTAssertEqual(transport.expectedRebootNotices, 1,
+                        "the client must notice its own commit-driven reboot")
+
+        // The radio does what a commit makes it do: Bluetooth off, save,
+        // restart. On the bench this arrived as `CBErrorDomain Code=7`.
+        transport.simulateDisconnect(reason: "CBErrorDomain Code=7")
+        let sentAtLoss = transport.sentMessages.count
+
+        // ...and comes back at 2x the admin-read budget. On `main`,
+        // where that budget IS the post-commit budget, the wait has
+        // already thrown by now.
+        try await Task.sleep(for: .seconds(2))
+        transport.simulateReconnect()
+
+        // The handshake re-runs, exactly as it does on a real reconnect.
+        try await waitForSentCount(sentAtLoss + 2, on: transport) // heartbeat, want_config(onlyConfig)
+        transport.inject(myInfoFrame(num: 1))
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyConfig))
+        try await waitForSentCount(sentAtLoss + 3, on: transport) // want_config(onlyNodeDB)
+        transport.inject(configCompleteFrame(MeshtasticConfigNonce.onlyNodeDB))
+
+        // Only NOW does the read-back go out — which is the whole point:
+        // it could not have, before the puck came back.
+        try await waitForSentCount(sentAtLoss + 4, on: transport)
+        let readBackIndex = sentAtLoss + 3
+        try assertAdminFrame(transport, at: readBackIndex, wantResponse: true) { $0.getChannelRequest = 1 }
+        let (channelReqPacket, _) = try decodeAdminSend(transport, at: readBackIndex)
+        transport.inject(adminResponseFrame(requestID: channelReqPacket.id) { $0.getChannelResponse = channel })
+
+        let report = try await applyTask.value
+        XCTAssertEqual(report.channels, [channel],
+                        "a puck that rebooted, came back and read back the channel it was given has JOINED")
+    }
+
+    /// The other half of (b), and the half a scaled test cannot carry:
+    /// the SHIPPED budget has to cover a real reboot. 45 s is the bench
+    /// number the amendment is written against; 90 s is the floor the
+    /// task sets; 120 s is what ships.
+    func testThePostCommitBudgetIsSizedForARealReboot() {
+        XCTAssertGreaterThanOrEqual(MeshtasticClient.defaultPostCommitReadyTimeout, .seconds(90),
+                                     "a post-commit wait shorter than this is sized for an admin reply, not a reboot")
+        XCTAssertEqual(MeshtasticClient.defaultPostCommitReadyTimeout, .seconds(120))
+        // And it is a genuinely SEPARATE budget: the bug was one number
+        // doing both jobs.
+        XCTAssertGreaterThan(MeshtasticClient.defaultPostCommitReadyTimeout, .seconds(30),
+                              "30s is the admin-read budget — the two must not be the same number again")
+    }
+
+    /// (c), client half: a puck that never comes back is reported as
+    /// `committedButNotVerified`, NOT as `.timeout`. The distinction is
+    /// the whole reason the app can keep the join pending and settle it
+    /// with a read-back instead of either claiming it or discarding it.
+    func testAPuckThatNeverComesBackIsCommittedButNotVerifiedNotATimeout() async throws {
+        let transport = LoopbackTransport()
+        let client = MeshtasticClient(
+            transport: transport,
+            adminResponseTimeout: .seconds(5),
+            postCommitReadyTimeout: .milliseconds(200),
+            beginEditSettingsRetryDelay: .milliseconds(1))
+        try await completeHandshake(transport: transport, client: client, myNodeNum: 1)
+
+        let request = ChannelWriteRequest(channels: [sampleChannel()], loraConfig: nil)
+        let applyTask = Task { try await client.applyChannelSet(request) }
+        try await waitForSentCount(7, on: transport) // begin x2, set_channel, commit
+        transport.simulateDisconnect(reason: "CBErrorDomain Code=7")
+
+        do {
+            _ = try await applyTask.value
+            XCTFail("expected committedButNotVerified")
+        } catch let error as AdminWriteError {
+            XCTAssertEqual(error, .committedButNotVerified,
+                            "the commit went out and the radio restarted — that is not 'didn\'t answer'")
         }
     }
 }

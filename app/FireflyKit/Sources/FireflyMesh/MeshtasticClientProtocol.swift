@@ -653,9 +653,32 @@ public enum AdminWriteError: Error, Equatable, Sendable {
     /// No connected node to address the admin message to.
     case notConnected
     case encodingFailed
-    /// The node never answered a read (request or read-back), or never
-    /// came back after the reboot a `commit_edit_settings` triggers.
+    /// The node never answered a read (request or read-back). It no
+    /// longer covers "never came back after the reboot" — that is
+    /// `committedButNotVerified` below, and the bench run that split
+    /// them is cited there.
     case timeout
+    /// A02 §3.3 amendment / A03 §3.6 amendment, 2026-09-14.
+    ///
+    /// `commit_edit_settings` went out and the link did not come back to
+    /// `.ready` inside `MeshtasticClient.postCommitReadyTimeout`. This
+    /// is **not** `.timeout`: the two describe different worlds, and the
+    /// bench proved the difference is what the user sees.
+    ///
+    /// * `.timeout` — the radio is there and did not answer. Nothing is
+    ///   known to have changed.
+    /// * `.committedButNotVerified` — the write and the commit both
+    ///   reached the radio, which then did exactly what a commit makes
+    ///   it do: dropped the link and restarted. The change has very
+    ///   likely taken. This client simply has not been able to READ IT
+    ///   BACK yet, and refuses to claim a success it has not observed.
+    ///
+    /// The contract that comes with it: a caller may not treat this as
+    /// success, and may not treat it as "nothing happened" either. What
+    /// it may do is keep the attempt pending and read back once the link
+    /// returns — which is exactly what `CrewController` does on the next
+    /// `.ready`.
+    case committedButNotVerified
     /// The write reached the node, but the read-back that followed does
     /// not match what was sent — a clear, honest failure rather than an
     /// assumed success. For `applyChannelSet`'s multi-item read-back the

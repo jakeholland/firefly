@@ -130,15 +130,61 @@ public struct ReconnectLadder: Sendable, Equatable {
                              requiresPendingConnect: Bool = true,
                              jitterFraction: Double = ReconnectLadder.randomJitterFraction()) {
         if self.target == target, self.disconnectedAt == disconnectedAt,
-           self.requiresPendingConnect == requiresPendingConnect { return }
+           self.requiresPendingConnect == requiresPendingConnect, !isExpectedReboot { return }
         self.target = target
         self.disconnectedAt = disconnectedAt
         self.requiresPendingConnect = requiresPendingConnect
+        isExpectedReboot = false
         attempt = 1
         scanStartedAt = nil
         nextFireAt = disconnectedAt.addingTimeInterval(
             Self.ladderDelaySeconds(forAttempt: 1, jitterFraction: jitterFraction))
     }
+
+    /// A03 §3.6 **amendment, 2026-09-14** — arm for the ONE disconnect
+    /// this app can see coming: the reboot a `commit_edit_settings`
+    /// triggers (`MeshTransport.noteExpectedReboot()`).
+    ///
+    /// Identical to `arm(target:disconnectedAt:…)` in every respect but
+    /// the first rung's delay, which is **zero**: the first
+    /// `evaluate(now:…)` at or after `disconnectedAt` opens the
+    /// rediscovery window immediately instead of 20 s (±20 %) later.
+    /// That 20 s is §3.6's own "a Heltec's own boot time" — the right
+    /// answer for a radio that vanished for an unknown reason, and the
+    /// wrong one for a radio we just told to reboot and are actively
+    /// waiting for: the bench measured a crew join spending the whole
+    /// first rung doing nothing while the puck had already finished
+    /// booting (2026-09-14, `-FireflyDebugJoinCrew FIRE-8MNTT2`).
+    ///
+    /// Only the FIRST rung is special. If the immediate window closes
+    /// without a sighting, `evaluate` climbs the ordinary table from
+    /// attempt 2 (60 s, 2 min, 5 min, 10 min, 15 min capped), so the
+    /// duty-cycle bound §3.6 exists to enforce is unchanged — one extra
+    /// 30 s window, once, per commit.
+    ///
+    /// Jitter is deliberately NOT applied to a zero delay: the reason
+    /// for jitter is two phones that lost the same radio scanning in
+    /// lockstep (§3.6), and two phones do not commit to the same radio
+    /// at the same moment — each one's expected reboot is its own
+    /// deliberate act, not a shared event.
+    public mutating func armExpectingReboot(target: UUID, disconnectedAt: Date,
+                                            requiresPendingConnect: Bool = true) {
+        if self.target == target, self.disconnectedAt == disconnectedAt,
+           self.requiresPendingConnect == requiresPendingConnect, isExpectedReboot { return }
+        self.target = target
+        self.disconnectedAt = disconnectedAt
+        self.requiresPendingConnect = requiresPendingConnect
+        isExpectedReboot = true
+        attempt = 1
+        scanStartedAt = nil
+        nextFireAt = disconnectedAt
+    }
+
+    /// Whether this ladder was armed by `armExpectingReboot` — read only
+    /// for diagnostics and by the tests that pin the distinction. It
+    /// stops being true the moment the ladder is cancelled or re-armed
+    /// ordinarily.
+    public private(set) var isExpectedReboot: Bool = false
 
     /// Stand the ladder down. Returns `true` when a scan window was
     /// open, so the caller knows it still owes a `stopScan()` — the
@@ -200,6 +246,64 @@ public struct ReconnectLadder: Sendable, Equatable {
     public func nextDeadline() -> Date? {
         if let scanStartedAt { return scanStartedAt.addingTimeInterval(Self.scanWindowSeconds) }
         return nextFireAt
+    }
+}
+
+/// A03 §3.6 amendment (2026-09-14) — "did WE cause this disconnect?",
+/// as a pure, bounded, one-shot marker.
+///
+/// `MeshtasticClient` sends `commit_edit_settings` and the firmware
+/// answers by disabling Bluetooth, saving to flash and rebooting. That
+/// is the ONE disconnect this app can see coming, and the whole value of
+/// knowing it is that the recovery can be prompt instead of waiting out
+/// §3.6's first rung (20 s, sized for a radio that vanished for reasons
+/// unknown).
+///
+/// Two bounds, both deliberate:
+/// * **one-shot** — `consume(now:)` answers `true` at most once per
+///   `arm(at:)`. One commit produces one reboot, so a second disconnect
+///   is an ordinary loss and gets the ordinary ladder.
+/// * **time-bounded** — a notice older than `lifetime` is stale and
+///   answers `false`. Without this, a commit whose reboot never came
+///   would leave the marker standing and silently re-label some
+///   unrelated drop, minutes later, as expected. The bench's own
+///   measurement is the bound's justification: the disconnect follows
+///   the commit write within a second or two, never tens of seconds.
+///
+/// Pure and CoreBluetooth-free for the same reason every other decision
+/// in this file is: a `CBCentralManager` cannot be constructed outside a
+/// signed `.app`, so a rule only reachable through one is a rule no unit
+/// test can check.
+public struct ExpectedRebootWindow: Sendable, Equatable {
+    /// How long a commit notice stays good for. 30 s is generous
+    /// against the measured gap (about a second) and far short of the
+    /// post-commit ready budget (`MeshtasticClient
+    /// .defaultPostCommitReadyTimeout`), so a radio that is genuinely
+    /// slow to drop is still covered while a drop minutes later is not.
+    public static let defaultLifetime: TimeInterval = 30
+
+    public private(set) var armedAt: Date?
+
+    public init() {}
+
+    public var isArmed: Bool { armedAt != nil }
+
+    /// Record that a `commit_edit_settings` has just gone out.
+    public mutating func arm(at: Date) { armedAt = at }
+
+    /// Stand the marker down without consuming it — a user-initiated
+    /// disconnect, a different peripheral, Bluetooth off. Nothing after
+    /// any of those is the reboot we asked for.
+    public mutating func cancel() { armedAt = nil }
+
+    /// `true` exactly once, for a disconnect that arrives within
+    /// `lifetime` of the commit. Clears the marker either way: a stale
+    /// notice has no second chance, and a consumed one has had its.
+    public mutating func consume(now: Date, lifetime: TimeInterval = ExpectedRebootWindow.defaultLifetime) -> Bool {
+        guard let armedAt else { return false }
+        self.armedAt = nil
+        let elapsed = now.timeIntervalSince(armedAt)
+        return elapsed >= 0 && elapsed <= lifetime
     }
 }
 

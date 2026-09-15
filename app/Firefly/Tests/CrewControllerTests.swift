@@ -735,4 +735,156 @@ final class CrewControllerTests: XCTestCase {
         controller.clearFailure()
         XCTAssertEqual(controller.phase, .joined, "a finished join is not a failure to clear")
     }
+
+    // MARK: - A02 §3.3 amendment (2026-09-14) — a puck that restarts and
+    // comes back late still joins, and is still read back first.
+    //
+    // Bench, 2026-09-14 (main d8ee569d, Heltec `TAY_06b0` fw 2.7.26):
+    // the crew channel WAS written — `meshtastic --info` afterwards
+    // showed channel 0 = FIRE-8MNTT2, precision 32 — and the app
+    // reported "Your puck didn't answer in time", ran no read-back, and
+    // saved no profile (`com.jakeholland.Firefly.plist` held no
+    // `firefly.crew.profile.v1` at all).
+
+    /// (c) The whole recovery, end to end: the commit reaches the puck,
+    /// the puck restarts and is slow, the join stays PENDING with an
+    /// honest sentence — and the next `.ready` settles it by reading the
+    /// puck back, which is the only thing allowed to turn it into a
+    /// join.
+    func testAPuckThatRestartsAndComesBackLateStillJoinsAfterAReadBack() async {
+        let profileStore = InMemoryCrewProfileStore()
+        let (controller, client) = makeController(profileStore: profileStore)
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        let code = try! CrewCode.parse("FIRE-4K9M7X")
+
+        let staged = await controller.beginJoin(payload: .bareCode(code))
+        XCTAssertTrue(staged)
+        client.failNextChannelWrite(with: .committedButNotVerified)
+        let applied = await controller.confirmApply()
+
+        XCTAssertFalse(applied, "nothing has been read back yet — this is not a join")
+        XCTAssertNil(controller.profile)
+        XCTAssertNil(profileStore.load(), "no profile may be saved on a write that was never verified")
+        guard case .awaitingPuck(let message) = controller.phase else {
+            return XCTFail("expected .awaitingPuck, got \(controller.phase)")
+        }
+        XCTAssertEqual(message,
+                        "Your puck restarted but hasn't come back yet — reconnect and Firefly " +
+                        "will check the crew took.")
+        XCTAssertEqual(controller.failureMessage, message)
+        XCTAssertNil(controller.progressLabel, "nothing is running")
+        XCTAssertNotNil(controller.pendingVerification, "the join has to survive the puck being away")
+
+        // A screen coming back from the connect step must not quietly
+        // throw the pending read-back away.
+        controller.clearFailure()
+        XCTAssertNotNil(controller.pendingVerification)
+
+        // The puck comes back — holding the crew it was given.
+        client.channelTable = [Self.crewChannel(for: code)]
+        try? await client.connect()
+
+        await eventually { controller.profile != nil }
+        XCTAssertEqual(controller.profile?.code, code.canonical)
+        XCTAssertEqual(profileStore.load()?.code, code.canonical,
+                        "the profile is SAVED, not just held in memory")
+        XCTAssertEqual(controller.phase, .joined)
+        XCTAssertNil(controller.pendingVerification, "the read-back runs once")
+        XCTAssertNil(controller.pending)
+        XCTAssertTrue(client.sentChannelWriteLog.isEmpty,
+                       "the recovery is a READ — it must never rewrite the channel and reboot the puck again")
+    }
+
+    /// The other half of the same rule, and the one that keeps the
+    /// recovery honest: a puck that comes back on something else is NOT
+    /// a join, however much the app would like it to be.
+    func testAPuckThatComesBackOnADifferentCrewIsNeverClaimedAsAJoin() async {
+        let profileStore = InMemoryCrewProfileStore()
+        let (controller, client) = makeController(profileStore: profileStore)
+        client.nodeConfig = NodeConfigSnapshot(region: .us)
+        let code = try! CrewCode.parse("FIRE-4K9M7X")
+
+        _ = await controller.beginJoin(payload: .bareCode(code))
+        client.failNextChannelWrite(with: .committedButNotVerified)
+        _ = await controller.confirmApply()
+
+        client.channelTable = [Self.crewChannel(for: try! CrewCode.parse("FIRE-8MNTT2"))]
+        try? await client.connect()
+
+        await eventually {
+            if case .failed = controller.phase { return true }
+            return false
+        }
+        XCTAssertNil(controller.profile)
+        XCTAssertNil(profileStore.load())
+        XCTAssertEqual(controller.failureMessage,
+                        "Your puck didn't come back with FIRE-4K9M7X. " +
+                        "Nothing is certain until it does — try again.")
+    }
+
+    /// The name is public — it is printed on a screen and read out loud
+    /// across a tent — so a channel that merely SHARES it is not this
+    /// crew. The read-back checks the key too.
+    func testAReadBackWithTheRightNameButTheWrongKeyIsNotThisCrew() {
+        let code = try! CrewCode.parse("FIRE-4K9M7X")
+        XCTAssertTrue(CrewController.table([Self.crewChannel(for: code)], carries: code))
+
+        var impostor = Self.crewChannel(for: code)
+        impostor.settings.psk = Data(repeating: 0xAB, count: 32)
+        XCTAssertFalse(CrewController.table([impostor], carries: code),
+                        "same name, different key — not this crew")
+
+        var notPrimary = Self.crewChannel(for: code)
+        notPrimary.role = .secondary
+        XCTAssertFalse(CrewController.table([notPrimary], carries: code))
+        XCTAssertFalse(CrewController.table([], carries: code))
+    }
+
+    /// `committedButNotVerified` is the ONLY failure that leaves a join
+    /// pending. Everything else ends the attempt, and a later `.ready`
+    /// must not resurrect it.
+    func testEveryOtherFailureEndsTheAttemptAndIsNeverResurrectedByAReconnect() async {
+        for scripted: AdminWriteError in [.timeout, .notConnected, .readBackMismatch("channel 0")] {
+            let (controller, client) = makeController()
+            client.nodeConfig = NodeConfigSnapshot(region: .us)
+            let code = try! CrewCode.parse("FIRE-4K9M7X")
+            _ = await controller.beginJoin(payload: .bareCode(code))
+            client.failNextChannelWrite(with: scripted)
+            _ = await controller.confirmApply()
+
+            guard case .failed = controller.phase else {
+                return XCTFail("expected .failed for \(scripted), got \(controller.phase)")
+            }
+            XCTAssertNil(controller.pendingVerification, "\(scripted)")
+
+            // Even with the crew sitting on the puck, a link that comes
+            // back must not turn a failed attempt into a join.
+            client.channelTable = [Self.crewChannel(for: code)]
+            try? await client.connect()
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            XCTAssertNil(controller.profile, "\(scripted)")
+        }
+    }
+
+    // MARK: - Helpers for the amendment tests
+
+    /// The channel a puck is holding once a crew join has actually taken
+    /// — built from the SAME `CrewChannel` derivation the join writes,
+    /// never hand-rolled, so this fixture cannot drift from the product.
+    private static func crewChannel(for code: CrewCode) -> Channel {
+        var channel = Channel()
+        channel.index = 0
+        channel.role = .primary
+        channel.settings = CrewChannel.channelSettings(for: code)
+        return channel
+    }
+
+    private func eventually(_ condition: @escaping @MainActor () -> Bool, timeout: Int = 300,
+                            file: StaticString = #filePath, line: UInt = #line) async {
+        for _ in 0..<timeout {
+            if condition() { return }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("condition never became true", file: file, line: line)
+    }
 }

@@ -45,6 +45,17 @@ final class ChannelImportViewModel {
     /// stale from a previous one.
     private(set) var isApplying = false
     private(set) var applyErrorMessage: String?
+    /// The same failure as `applyErrorMessage`, as the error itself
+    /// rather than as words — `nil` when the last apply succeeded or
+    /// failed with something that is not an `AdminWriteError`.
+    ///
+    /// It exists for exactly one caller and one case: `CrewController`
+    /// has to tell `committedButNotVerified` (the commit went out, the
+    /// puck is rebooting, the join is still PENDING a read-back) apart
+    /// from every other failure (the attempt is over), and matching on
+    /// a rendered sentence to do it would be the kind of string-shaped
+    /// control flow that goes wrong the first time the copy is edited.
+    private(set) var applyError: AdminWriteError?
     private(set) var lastAppliedReport: ChannelWriteReport?
 
     /// M3 (PR #274 review, BLOCKING 1 & 2) — the plan `preparePlan()`
@@ -74,6 +85,7 @@ final class ChannelImportViewModel {
     func importURL(_ text: String) {
         errorMessage = nil
         applyErrorMessage = nil
+        applyError = nil
         lastAppliedReport = nil
         applyPlan = nil
         planErrorMessage = nil
@@ -89,6 +101,7 @@ final class ChannelImportViewModel {
         result = nil
         errorMessage = nil
         applyErrorMessage = nil
+        applyError = nil
         lastAppliedReport = nil
         applyPlan = nil
         planErrorMessage = nil
@@ -111,6 +124,7 @@ final class ChannelImportViewModel {
         planErrorMessage = nil
         applyPlan = nil
         applyErrorMessage = nil
+        applyError = nil
         defer { isPreparingPlan = false }
         do {
             let occupied = try await currentOccupiedIndexes()
@@ -164,6 +178,7 @@ final class ChannelImportViewModel {
         guard let applyPlan else { return false }
         isApplying = true
         applyErrorMessage = nil
+        applyError = nil
         defer { isApplying = false }
         do {
             let report = try await client.applyChannelSet(applyPlan.request)
@@ -171,6 +186,7 @@ final class ChannelImportViewModel {
             return true
         } catch {
             applyErrorMessage = Self.writeMessage(for: error)
+            applyError = error as? AdminWriteError
             return false
         }
     }
@@ -200,8 +216,8 @@ final class ChannelImportViewModel {
     /// outside. `AdminWriteError` now gets the same plain-language
     /// treatment `writeMessage(for:)` gives it, and `CrewController`
     /// refuses the attempt before it ever gets here.
-    static func planMessage(for error: Error) -> String {
-        if let writeError = error as? AdminWriteError { return writeMessage(for: writeError) }
+    static func planMessage(for error: Error, subject: String = defaultWriteSubject) -> String {
+        if let writeError = error as? AdminWriteError { return writeMessage(for: writeError, subject: subject) }
         guard let planError = error as? ChannelWritePlanError else { return String(describing: error) }
         switch planError {
         case .noFreeChannelSlots:
@@ -218,7 +234,15 @@ final class ChannelImportViewModel {
     /// known to have happened, and (where there is one) the next step —
     /// never a Swift enum case, and never a claim that the write
     /// half-succeeded when the app cannot tell.
-    static func writeMessage(for error: Error) -> String {
+    /// What the "…Firefly will check X took" sentence below calls the
+    /// thing that was written. Defaulted to the crew, because every
+    /// caller that can actually reach `committedButNotVerified` on a
+    /// user's main path is a crew Start/Join (A02 §6.4); Settings' name
+    /// and region writes pass their own, so a name write never claims
+    /// Firefly is about to check a crew.
+    static let defaultWriteSubject = "the crew"
+
+    static func writeMessage(for error: Error, subject: String = defaultWriteSubject) -> String {
         guard let writeError = error as? AdminWriteError else { return String(describing: error) }
         switch writeError {
         case .notConnected:
@@ -227,6 +251,16 @@ final class ChannelImportViewModel {
             return "Couldn't prepare that change to send."
         case .timeout:
             return "Your puck didn't answer in time — it may still be restarting. Try again in a moment."
+        // A02 §6.4 amendment (2026-09-14). Deliberately NOT the
+        // `.timeout` sentence and deliberately not an instruction to try
+        // again: the commit went out, so trying again means writing the
+        // same channel and rebooting the puck a second time — the exact
+        // loop the bench run produced. What is true is that the puck
+        // restarted, that it has not come back yet, and that Firefly
+        // will settle it by reading the puck back the moment it does.
+        case .committedButNotVerified:
+            return "Your puck restarted but hasn't come back yet — reconnect and Firefly will " +
+                   "check \(subject) took."
         case .readBackMismatch(let detail):
             return "Your puck didn't confirm the change (\(detail)). Nothing is certain until it " +
                    "does — try again."

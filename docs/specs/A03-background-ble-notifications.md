@@ -979,6 +979,73 @@ The interval table is a pure function
 exactly like `MeshtasticClient.handshakeRetryDelay(forAttempt:base:cap:)`
 already is.
 
+**Amendment (2026-09-14, bench) — the one disconnect this app can see
+coming.** The table above is sized for a radio that vanished for reasons
+unknown: attempt 1 at 20 s is "a Heltec's own boot time", and waiting it
+out is the right answer when we have no idea what happened. There is
+exactly one case where we do know. `commit_edit_settings` makes the
+firmware disable Bluetooth, save to flash and reboot — *we asked for
+this disconnect* — and the bench (2026-09-14, Heltec `TAY_06b0` fw
+2.7.26, `-FireflyDebugJoinCrew FIRE-8MNTT2`) measured a crew join
+spending the whole first rung idle while the puck had already finished
+booting: `linkState -> reconnecting(attempt: 1)`, `armed … first window
+in 20.0s (±20%)`, then a 30 s scan that found it immediately.
+
+- **The notice.** `MeshTransport.noteExpectedReboot()`, sent by
+  `MeshtasticClient` **before** the commit write (the firmware can drop
+  the link while that write is still being confirmed, so a notice after
+  it would explain a disconnect that already happened). Default
+  implementation is a no-op: a transport with one reconnect path has
+  nothing to do differently.
+- **It is a notice, not a claim.** It says the app asked for a reboot,
+  never that one happened. Whether the radio actually restarted is
+  still decided by what the radio does — and by the read-back.
+- **Bounded and one-shot** (`ExpectedRebootWindow`). One commit explains
+  at most one disconnect; a notice older than 30 s is stale and is not
+  honoured, so a commit whose reboot never came cannot silently
+  re-label some unrelated drop minutes later. A user-initiated
+  disconnect or Bluetooth going off stands the marker down outright.
+- **What changes: the first rung only.** `armExpectingReboot` fires
+  attempt 1 **immediately** instead of at 20 s (±20 %). Jitter is not
+  applied to a zero delay — jitter exists so two phones that lost the
+  same radio do not scan in lockstep, and two phones do not commit to
+  the same radio at the same moment. If that window closes without a
+  sighting, the ladder climbs the ordinary table from attempt 2 (1 min,
+  2 min, 5 min, …) and caps exactly where it always did.
+- **The duty cycle §4.2 budgets for is intact**: one extra 30 s window,
+  once, per commit — an act the user deliberately took. Every other
+  rule in this section (windows always end, the pending connect stays
+  armed, `.poweredOff` cancels) is unchanged.
+- **Plus a fresh `retrievePeripherals`** on the expected-reboot path,
+  for §3.5's own reason: a radio that re-advertises after a cold boot
+  may present an identity CoreBluetooth does not reassociate with the
+  old `CBPeripheral` object's still-pending connect.
+
+**The client-side half.** The budget `applyChannelSet`/`setOwner`/
+`setRegion` allow for the link to return after a commit is no longer
+`adminResponseTimeout` — a number sized for *a radio answering a
+question* (30 s) — but `postCommitReadyTimeout`, sized for a **reboot**
+(120 s shipped, ≥ 90 s by contract). Two further rules the bench forced:
+
+- **A pre-commit `.ready` is not evidence.** `linkHub` is a
+  `CurrentValueEventHub`, so subscribing replays the state the link is
+  in right now, which a beat after a commit write is still the `.ready`
+  from *before* it. Accepting that sent the read-back into a link that
+  was already going down. The client now waits for the link to LEAVE
+  `.ready` first, bounded by `postCommitDisconnectGrace` (5 s) so a
+  config the firmware applies live — no restart, no drop — still
+  finishes.
+- **Running out throws `.committedButNotVerified`, not `.timeout`.**
+  The commit reached the radio; the change has very likely taken; this
+  client simply has not read it back yet and will not claim what it has
+  not seen. A02 §3.3's amendment owns what the app does with that.
+
+Tests: `BLEReconnectLadderTests` (the prompt first rung, the ordinary
+rung that is unchanged, the table resuming at attempt 2, and
+`ExpectedRebootWindow`'s one-shot / staleness / clock-went-backwards
+rules — all pure, injected clock, no `CBCentralManager`);
+`AdminWriteTests` and `PostCommitRebootTests` for the client half.
+
 ### 3.7 A radio that reboots, and a handshake that gives up
 
 *(partly closes 2.2.8)*

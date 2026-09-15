@@ -62,10 +62,29 @@ public protocol MeshTransport: AnyObject, Sendable {
     /// `connect()` that brings it up, and `connect()` awaits its own
     /// `.ready`.
     var isLinkReady: Bool { get async }
+
+    /// A03 §3.6 amendment (2026-09-14) — the client is about to send
+    /// `commit_edit_settings`, which makes the firmware disable
+    /// Bluetooth, save to flash and reboot (Meshtastic-Apple's own
+    /// `commitEditSettings` doc comment). The disconnect that follows is
+    /// therefore EXPECTED, and is the one disconnect this app can see
+    /// coming.
+    ///
+    /// A transport that can reconnect faster when it knows a drop is a
+    /// reboot rather than a loss overrides this; everything else keeps
+    /// the no-op default. It is deliberately a NOTICE and not a promise:
+    /// nothing here claims the radio will actually reboot, only that the
+    /// client just asked it to, so a transport may not treat this as
+    /// evidence of anything it has not itself observed.
+    func noteExpectedReboot() async
 }
 
 public extension MeshTransport {
     var isLinkReady: Bool { get async { false } }
+    /// Default: a transport with one reconnect path treats every
+    /// disconnect the same way, so knowing one was expected changes
+    /// nothing it does.
+    func noteExpectedReboot() async {}
 }
 
 public enum TransportError: Error, Equatable, Sendable {
@@ -364,5 +383,29 @@ public final class LoopbackTransport: MeshTransport, @unchecked Sendable {
     public func simulateReconnect() {
         setLinkReady(true)
         hub.yield(.ready)
+    }
+
+    // MARK: - A03 §3.6 amendment: expected post-commit reboot
+
+    /// How many times the client has told this transport a commit-driven
+    /// reboot is coming (`MeshTransport.noteExpectedReboot()`). Recorded
+    /// rather than acted on: this transport has no reconnect path to
+    /// make prompt, and a test asserting the client actually gives the
+    /// notice is the only thing that can prove `BLETransport`'s prompt
+    /// path is reachable at all.
+    public var expectedRebootNotices: Int {
+        lock.lock(); defer { lock.unlock() }
+        return expectedRebootNoticeCount
+    }
+    private var expectedRebootNoticeCount = 0
+
+    public func noteExpectedReboot() async {
+        recordExpectedRebootNotice()
+    }
+
+    // Non-async, same NSLock-across-a-suspension-point convention as
+    // `record(_:)` above.
+    private func recordExpectedRebootNotice() {
+        lock.lock(); expectedRebootNoticeCount += 1; lock.unlock()
     }
 }

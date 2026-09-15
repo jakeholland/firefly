@@ -261,14 +261,66 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// rule `configCompleteHub` follows.
     private let adminResponseHub = EventHub<(requestID: UInt32, message: AdminMessage)>()
     /// How long a single admin read (a `get_*_request`, including the
-    /// read-back after a write) waits for its response, and how long
-    /// `applyChannelSet`/`setOwner`/`setRegion` wait for the link to
-    /// reach `.ready` again after a `commit_edit_settings` — real
-    /// firmware disables Bluetooth and reboots at commit (Meshtastic-
-    /// Apple's own `commitEditSettings` doc comment), so the read-back
-    /// routinely has to outlive a real disconnect/reboot/reconnect
-    /// cycle. Injectable, same convention as `configPhaseTimeout`.
+    /// read-back after a write) waits for its response. Injectable, same
+    /// convention as `configPhaseTimeout`.
+    ///
+    /// **It is no longer also the post-commit budget** — see
+    /// `postCommitReadyTimeout` below, and the bench run that separated
+    /// them.
     private let adminResponseTimeout: Duration
+    /// How long `applyChannelSet`/`setOwner`/`setRegion` wait for the
+    /// link to reach `.ready` again after a `commit_edit_settings`.
+    ///
+    /// A02 §3.3 amendment / A03 §3.6 amendment, 2026-09-14. This used to
+    /// be `adminResponseTimeout` — 30 s, a budget sized for *a radio
+    /// answering a question*. What actually has to fit inside it is a
+    /// **reboot**: the firmware disables Bluetooth, writes flash,
+    /// restarts, re-advertises, CoreBluetooth reconnects, and this
+    /// client re-runs the whole `want_config` handshake. Measured on the
+    /// bench (2026-09-14, Heltec V3 fw 2.7.26, `-FireflyDebugJoinCrew
+    /// FIRE-8MNTT2`): the channel was written and verified on the radio,
+    /// the link came back — and `waitForReadyAfterCommit()` had already
+    /// given up at 30 s, so a join that SUCCEEDED was reported as
+    /// "your puck didn't answer in time" and no crew profile was saved.
+    ///
+    /// 120 s is the shipped default: comfortably past the worst
+    /// reboot-plus-handshake this project has measured, and still an end
+    /// rather than an open-ended wait. Injectable, same convention as
+    /// every other timing knob on this type.
+    private let postCommitReadyTimeout: Duration
+    /// How long, after a `commit_edit_settings`, this client waits to
+    /// SEE the link drop before concluding that this particular write
+    /// did not reboot the radio at all.
+    ///
+    /// This is the other half of the 2026-09-14 bench defect, and the
+    /// half a bigger budget alone would not have fixed. `linkHub` is a
+    /// `CurrentValueEventHub`: subscribing to it replays the state the
+    /// link is in RIGHT NOW. A commit write returns a beat before the
+    /// firmware actually pulls Bluetooth down, so the state replayed to
+    /// `waitForReadyAfterCommit()` is the `.ready` from BEFORE the
+    /// commit — and accepting it meant the read-back went out into a
+    /// link that was already on its way down, to sit there until
+    /// `adminResponseTimeout` gave up. Reproduced with no radio at all
+    /// by `AdminWriteTests
+    /// .testAPuckThatNeverComesBackIsCommittedButNotVerifiedNotATimeout`,
+    /// which failed with `.timeout` until this existed.
+    ///
+    /// So a pre-commit `.ready` is no longer evidence of anything: this
+    /// client waits for the link to go somewhere else first. The grace
+    /// bounds that wait, because "it never drops" is a real (if rare)
+    /// outcome — a config item the firmware applies live — and hanging
+    /// on a reboot that is not coming would be its own bug. 5 s is
+    /// generous against a measured sub-second drop, and is paid ONLY by
+    /// a write that does not restart the radio.
+    private let postCommitDisconnectGrace: Duration
+
+    /// The shipped default above, exposed so a test can pin the BUDGET
+    /// itself rather than only the behaviour at some scaled-down value
+    /// (a scaled test proves the wait is not bounded by
+    /// `adminResponseTimeout`; this constant is what makes "a reboot
+    /// that takes 45 s still joins" true of the app people actually
+    /// run).
+    public static let defaultPostCommitReadyTimeout: Duration = .seconds(120)
     /// NIT 10 (PR #274 review) — the pause between `beginEditSettings`'s
     /// two copies. Injectable so a test can drive the whole
     /// begin/set/commit sequence in milliseconds rather than waiting out
@@ -348,6 +400,8 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         handshakeRetryMaxDelay: Duration = .seconds(60),
         handshakeRetryClock: HandshakeRetryClock = SystemHandshakeRetryClock(),
         adminResponseTimeout: Duration = .seconds(30),
+        postCommitReadyTimeout: Duration = MeshtasticClient.defaultPostCommitReadyTimeout,
+        postCommitDisconnectGrace: Duration = .seconds(5),
         beginEditSettingsRetryDelay: Duration = .milliseconds(150)
     ) {
         self.transport = transport
@@ -360,6 +414,8 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         self.handshakeRetryMaxDelay = handshakeRetryMaxDelay
         self.handshakeRetryClock = handshakeRetryClock
         self.adminResponseTimeout = adminResponseTimeout
+        self.postCommitReadyTimeout = postCommitReadyTimeout
+        self.postCommitDisconnectGrace = postCommitDisconnectGrace
         self.beginEditSettingsRetryDelay = beginEditSettingsRetryDelay
         // Seeded, not started at 1: two client lifetimes that both start
         // packet ids at 1 collide on every id until the higher session's
@@ -1015,6 +1071,16 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// (`beginEditSettings`'s own citation of `AdminModule.cpp`), so an
     /// abandoned transaction must never be left behind.
     private func commitEditSettingsBestEffort(to dest: UInt32) async {
+        // A03 §3.6 amendment (2026-09-14) — told BEFORE the write, not
+        // after: the firmware disables Bluetooth as the first step of
+        // the commit, so the disconnect can land while `sendAdminWrite`
+        // is still awaiting its own write confirmation. A notice that
+        // arrives after the disconnect it is about explains nothing.
+        //
+        // This is a notice, not a claim: it says the app just ASKED for
+        // a reboot. Whether one happened is still decided by what the
+        // radio does, and by the read-back below.
+        await transport.noteExpectedReboot()
         var admin = AdminMessage()
         admin.commitEditSettings = true
         _ = try? await sendAdminWrite(admin, to: dest)
@@ -1175,31 +1241,75 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     }
 
     /// A `commit_edit_settings` reboots the node and drops the link
-    /// (this section's own header comment). If the link is ALREADY
-    /// `.ready` — nothing actually disconnected (a loopback transport in
-    /// a test, or 2.8's live-apply path for some config types) —
-    /// `linkHub`'s current-value replay resolves this immediately.
+    /// (this section's own header comment), so this waits for exactly
+    /// that: the link to LEAVE `.ready`, and then to come back to it.
+    ///
+    /// The order matters and is the 2026-09-14 bench fix. `linkHub` is a
+    /// `CurrentValueEventHub`, so subscribing replays whatever state the
+    /// link is in right now — which, a beat after a commit write, is
+    /// still the `.ready` from before the commit. Accepting that
+    /// replayed value (what this used to do) sent the read-back into a
+    /// link that was already going down. A `.ready` seen before anything
+    /// has dropped is therefore ignored; `postCommitDisconnectGrace`
+    /// bounds how long "before anything has dropped" is allowed to last,
+    /// so a write the firmware applies live — no restart, no drop —
+    /// still finishes.
+    ///
     /// Otherwise this waits out the disconnect/reconnect M2's own
-    /// background-BLE retry loop already drives, up to `timeout`. A
-    /// terminal `.failed` is treated the same as a timeout: the node did
-    /// not come back, so there is nothing honest left to read back from.
+    /// background-BLE retry loop already drives, up to
+    /// `postCommitReadyTimeout` — a budget sized for a REBOOT, not for a
+    /// radio answering a question (see that property's own doc comment
+    /// and the bench run that separated the two).
+    ///
+    /// Running out of it throws `AdminWriteError.committedButNotVerified`
+    /// and NOT `.timeout`, because the two are different facts and the
+    /// bench proved the difference matters: the commit went out, so the
+    /// radio may well be on the new channel already — "nothing is
+    /// certain" is the honest half, "nothing happened" would be a lie. A
+    /// terminal `.failed` is the same fact and throws the same error:
+    /// the node did not come back, so there is nothing to read back from
+    /// YET. What settles it is the read-back a later `.ready` makes
+    /// possible (`CrewController.completePendingVerification()`), never
+    /// an assumption made here.
     private func waitForReadyAfterCommit() async throws {
         let states = linkHub.subscribe()
-        let timeout = adminResponseTimeout
+        let grace = postCommitDisconnectGrace
+        let budget = postCommitReadyTimeout
+        // Shared between the two tasks below, which is the whole point:
+        // the budget the second one applies depends on what the first
+        // one has actually SEEN, not on a guess about what a commit
+        // usually does.
+        let sawDrop = LockedValue<Bool>(false)
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
                 for await state in states {
                     switch state {
-                    case .ready: return
-                    case .failed: throw AdminWriteError.timeout
-                    default: continue
+                    case .ready:
+                        // A `.ready` before anything dropped is the
+                        // pre-commit state replayed by
+                        // `CurrentValueEventHub`, not an observation of
+                        // the radio coming back. It is not evidence.
+                        if sawDrop.value { return }
+                    case .failed:
+                        throw AdminWriteError.committedButNotVerified
+                    default:
+                        // `.disconnected`, `.connecting`, `.handshaking`,
+                        // `.reconnecting` — the link left `.ready`, which
+                        // is exactly what a commit-driven reboot looks
+                        // like from here.
+                        sawDrop.value = true
                     }
                 }
-                throw AdminWriteError.timeout
+                throw AdminWriteError.committedButNotVerified
             }
             group.addTask {
-                try await Task.sleep(for: timeout)
-                throw AdminWriteError.timeout
+                try await Task.sleep(for: grace)
+                // Nothing dropped inside the grace: this write did not
+                // restart the radio, the link never went anywhere, and
+                // there is nothing to wait for.
+                guard sawDrop.value else { return }
+                try await Task.sleep(for: budget)
+                throw AdminWriteError.committedButNotVerified
             }
             try await group.next()
             group.cancelAll()

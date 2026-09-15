@@ -409,12 +409,35 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
     /// only when CoreBluetooth did not give us one (the legacy 2-arg
     /// delegate, and macOS).
     private func armReconnectFallback(for target: UUID, at disconnectedAt: Date,
-                                      requiresPendingConnect: Bool = true) {
-        ladder.arm(target: target, disconnectedAt: disconnectedAt,
-                   requiresPendingConnect: requiresPendingConnect)
-        BLETransport.log("reconnect ladder: armed for \(target) at \(disconnectedAt), " +
-                          "first window in \(ReconnectLadder.ladderDelaySeconds(forAttempt: 1))s (±20%)")
+                                      requiresPendingConnect: Bool = true,
+                                      expectingReboot: Bool = false) {
+        if expectingReboot {
+            ladder.armExpectingReboot(target: target, disconnectedAt: disconnectedAt,
+                                      requiresPendingConnect: requiresPendingConnect)
+            BLETransport.log("reconnect ladder: armed for \(target) at \(disconnectedAt) " +
+                              "EXPECTING A POST-COMMIT REBOOT — first window now, no ladder delay")
+        } else {
+            ladder.arm(target: target, disconnectedAt: disconnectedAt,
+                       requiresPendingConnect: requiresPendingConnect)
+            BLETransport.log("reconnect ladder: armed for \(target) at \(disconnectedAt), " +
+                              "first window in \(ReconnectLadder.ladderDelaySeconds(forAttempt: 1))s (±20%)")
+        }
         evaluateReconnectLadder()
+    }
+
+    /// A03 §3.6 amendment (2026-09-14) — the marker
+    /// `noteExpectedReboot()` arms and `handleDisconnected` consumes.
+    /// See `ExpectedRebootWindow`'s own doc comment for both bounds.
+    private var expectedReboot = ExpectedRebootWindow()
+
+    /// `MeshTransport.noteExpectedReboot()` — the client has just sent
+    /// (or is about to send) `commit_edit_settings`. Nothing happens
+    /// here: this only records that the NEXT disconnect, if it arrives
+    /// promptly, is the reboot we asked for rather than a loss.
+    public func noteExpectedReboot() {
+        expectedReboot.arm(at: now())
+        BLETransport.log("noteExpectedReboot: the next disconnect within " +
+                          "\(Int(ExpectedRebootWindow.defaultLifetime))s is an expected post-commit reboot")
     }
 
     /// THE ladder tick. Called from every CoreBluetooth callback this
@@ -755,6 +778,9 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         // A03 §3.6 — and the ladder with it: a user who asked to
         // disconnect must not have a scan window open N minutes later.
         cancelReconnectLadder(reason: "user disconnected")
+        // A03 §3.6 amendment — and the expected-reboot marker: the
+        // disconnect that follows THIS is the user's, not a commit's.
+        expectedReboot.cancel()
         endFallbackScan()
         central?.stopScan()
         if let peripheral {
@@ -1280,6 +1306,10 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
     /// below can recover with no user action at all.
     private func handleBluetoothPoweredOff() {
         cancelReconnectLadder(reason: "bluetooth off")
+        // A03 §3.6 amendment — Bluetooth going off is not the reboot we
+        // asked for, and a marker left standing across it would mislabel
+        // whatever disconnect comes next.
+        expectedReboot.cancel()
         endFallbackScan()
         isReady = false
         toRadioChar = nil; fromRadioChar = nil; fromNumChar = nil; logRadioChar = nil
@@ -1331,6 +1361,48 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         // original loss, that starts this clock.
         cancelReconnectLadder(reason: "bluetooth back on — restarting at attempt 1")
         armReconnectFallback(for: known.identifier, at: now())
+    }
+
+    /// A03 §3.6 amendment (2026-09-14) — the prompt half of an expected
+    /// post-commit reconnect: ask CoreBluetooth for the peripheral by
+    /// identifier RIGHT NOW, rather than only leaning on the pending
+    /// connect that was just re-issued against the old object.
+    ///
+    /// In the ordinary case `retrievePeripherals(withIdentifiers:)`
+    /// hands back the very object we already hold, and this is a no-op
+    /// beyond a log line — the pending connect above is the whole
+    /// mechanism. It earns its keep in the case the bench measured: a
+    /// radio that re-advertises after a cold boot can present an
+    /// identity CoreBluetooth does not reassociate with the old object's
+    /// still-pending connect, and there the retrieved object is the one
+    /// worth connecting to.
+    ///
+    /// Replacing `peripheral` releases the old object, which implicitly
+    /// cancels its connection (§1.2) — safe here and ONLY here: this
+    /// runs from `handleDisconnected`, so the old object's connection is
+    /// already gone, and a fresh connect is issued against the
+    /// replacement in the same breath.
+    private func reissueConnectAfterExpectedReboot(_ current: CBPeripheral) {
+        guard let central else { return }
+        guard let known = central.retrievePeripherals(withIdentifiers: [current.identifier]).first else {
+            BLETransport.log("expected post-commit reboot: \(current.identifier) does not resolve yet — " +
+                              "the immediate rediscovery window is the recovery")
+            return
+        }
+        guard known !== current else {
+            BLETransport.log("expected post-commit reboot: retrievePeripherals returned the same object " +
+                              "for \(known.identifier) — the pending connect already covers it")
+            return
+        }
+        BLETransport.log("expected post-commit reboot: retrievePeripherals returned a FRESH object for " +
+                          "\(known.identifier) — connecting to that one")
+        peripheral = known
+        known.delegate = bridge
+        // The pending connect recorded above belongs to the object we
+        // are replacing, so it must not suppress this one
+        // (`shouldIssueConnect(for:pendingConnectPeripheralID:)`).
+        pendingConnectPeripheralID = nil
+        issueConnect(known)
     }
 
     /// A03 §3.6's share of `centralManagerDidUpdateState`, unchanged
@@ -1498,18 +1570,38 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
             cancelReconnectLadder(reason: "system is reconnecting")
         case .reconnectOurselves:
             hub.yield(.disconnected(reason: error.map { String(describing: $0) }))
+            // A03 §3.6 amendment (2026-09-14) — is this the reboot we
+            // asked for? Consumed here and nowhere else, so one commit
+            // can only ever explain one disconnect.
+            let isExpectedReboot = expectedReboot.consume(now: now())
             // This is a PENDING connect, not a poll: CoreBluetooth holds
             // it open — even backgrounded, given `bluetooth-central` in
             // `UIBackgroundModes` — until the peripheral is back in range
             // or powered back on, and resumes exactly where
             // `handleConnected` picks up.
             issueConnect(peripheral)
+            if isExpectedReboot {
+                BLETransport.log("expected post-commit reboot: reconnecting promptly " +
+                                  "(no \(Int(ReconnectLadder.ladderDelaySeconds(forAttempt: 1)))s ladder delay)")
+                // §3.5's own "retrievePeripherals then connect, never a
+                // scan first", applied here for the same reason it
+                // applies when Bluetooth comes back: a radio that
+                // re-advertises after a reboot may present an identity
+                // CoreBluetooth does not reassociate with the OLD
+                // `CBPeripheral` object's still-pending connect
+                // (`reconnectFallbackDelay`'s own doc comment cites the
+                // bench run that measured exactly that).
+                reissueConnectAfterExpectedReboot(peripheral)
+            }
             // A03 §3.6 — the BOUNDED backstop, replacing the single
             // unbounded scan armed by a `Task.sleep` that does not run
             // while the process is suspended (audit 2.2.6/2.2.7, §1.7).
             // `disconnectedAt` is CoreBluetooth's own measured timestamp
-            // where we have one; our clock only where we do not.
-            armReconnectFallback(for: peripheral.identifier, at: disconnectedAt ?? now())
+            // where we have one; our clock only where we do not. For an
+            // expected reboot the FIRST window opens immediately; every
+            // rung after it is the ordinary table.
+            armReconnectFallback(for: peripheral.identifier, at: disconnectedAt ?? now(),
+                                 expectingReboot: isExpectedReboot)
         case .stop:
             hub.yield(.disconnected(reason: error.map { String(describing: $0) }))
             cancelReconnectLadder(reason: isBondLost ? "bond lost" : "auto-reconnect is off")
