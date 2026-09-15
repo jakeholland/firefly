@@ -543,13 +543,41 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
   Settings → CREW gains a **SHOW CODE** full-screen face:
 
   ```
-        [ QR of firefly://crew?v=1&code=FIRE-4K9M7X ]
+              [ QR of FIRE-4K9M7X ]
 
                     FIRE-4K9M7X
 
         Anyone who scans or types this is in your crew.
                         [ BACK ]
   ```
+
+  > **2026-09-15 amendment — the QR carries the bare code, not the deep
+  > link.** This section originally showed the QR encoding
+  > `firefly://crew?v=1&code=FIRE-4K9M7X` (35 bytes), matching A02
+  > §1.8's phone-side QR byte for byte. Owner report from the field:
+  > the phone's scanner struggled with that QR up close on the puck's
+  > 1.46" glass, decoding only from further away than a wearer showing
+  > a puck across a tent has room for. Cause, measured: `lv_qrcode`
+  > always encodes in BYTE mode at ECC MEDIUM
+  > (`qrcodegen_encodeBinary`, never the alphanumeric mode qrcodegen
+  > also offers), and 35 bytes needs QR version 3 (29x29 modules) —
+  > under 6px a module in this face's 170px canvas. The bare canonical
+  > code alone (11 bytes) is everything A02 §1.2's `CrewCode.parse`
+  > needs — scanned, typed, or read aloud, tag included — and it fits
+  > QR version 1 (21x21 modules, byte-mode capacity 14 bytes at ECC
+  > MEDIUM) in the same canvas: ~40% more pixels per module, decodable
+  > from further away. **This is a puck-only change.** The app's own
+  > Start/Join QR (A02 §1.8, `CrewStartView`) is unaffected and still
+  > carries the full deep link — that QR is scanned from a screen at a
+  > comfortable distance and needs the link's `name` parameter and
+  > `v=1` version gate a bare code cannot carry. `ff_crewcode_invite_url`
+  > and `cw->invite_url` are unchanged and still built every projection
+  > for that consumer (and any future one, e.g. an NFC share); the SHOW
+  > CODE face's QR simply now reads `cw->crew_code` instead. S02_AC14
+  > below is amended to match. `firmware/app/screens/scr_settings.c`'s
+  > `_Static_assert(FF_CREWCODE_LEN <= 14u, ...)` pins the byte-capacity
+  > arithmetic at compile time; `test_scr_crewcode_qr.c` cross-checks it
+  > against the live encoder.
 
   - QR rendering uses LVGL's own `lv_qrcode`. **Verified present** in
     the pinned LVGL — `src/libs/qrcode/{lv_qrcode.c,qrcodegen.c}` with
@@ -572,8 +600,11 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
     nothing in `lv_conf.h` to explain it. `LV_USE_QRCODE` itself
     defaults to 0 on both. Slice D's first commit is these two config
     lines plus a build of each target.
-  - The deep-link string is built by the same core function the app
-    uses (`ff_crewcode_invite_url`), against the same fixture.
+  - The deep-link string is still built by the same core function the
+    app uses (`ff_crewcode_invite_url`), against the same fixture — kept
+    for any other consumer (e.g. a future NFC share), but as of the
+    2026-09-15 amendment above the SHOW CODE face's own QR no longer
+    encodes it; the QR encodes the bare `crew_code` instead.
   - **There is no remote trigger, and this is deliberate.** A02 §2.4:
     the phone and the puck are two clients of the *same* comms brain,
     not mesh peers of each other, so there is no packet the app could
@@ -628,10 +659,17 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
     while hidden; unhiding re-admits on the next qualifying packet; a
     full list fails honestly rather than evicting a user decision.
   - **S02_AC14 — code face.** A valid channel name renders the code and
-    a scannable QR whose payload matches `ff_crewcode_invite_url`
-    byte-for-byte against `docs/specs/fixtures/A02-crew-codes.json`; an
-    invalid or empty channel name renders "no crew code", never a
-    fabricated one. Sim golden: `crew_show_code.json`.
+    a scannable QR whose payload matches the bare canonical crew code
+    (`canonical` in `docs/specs/fixtures/A02-crew-codes.json`, NOT
+    `ff_crewcode_invite_url`'s deep link — amended 2026-09-15, above)
+    byte-for-byte; an invalid or empty channel name renders "no crew
+    code", never a fabricated one. Sim golden: `crew_show_code.json`.
+    The QR's own version/module-count is pinned separately: it must fit
+    QR version 1 (21x21 modules) under `qrcodegen`'s BYTE mode at ECC
+    MEDIUM, which `firmware/app/screens/tests/test_scr_crewcode_qr.c`
+    checks against the live encoder and
+    `firmware/app/screens/scr_settings.c`'s `_Static_assert` pins at
+    compile time from the byte-capacity arithmetic.
   - **S02_AC15 — overflow.** With 8/8 paired, a 9th qualifying sender
     is not admitted, is surfaced from `ff_heard_t` in the CREW page's
     overflow list with its honest last-heard age, and is admitted on

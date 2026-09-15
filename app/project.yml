@@ -220,6 +220,13 @@ targets:
       - path: Firefly/Sources/Connect/NearbyNodesViewModel.swift
       - path: Firefly/Sources/Connect/ChannelImportViewModel.swift
       - path: Firefly/Sources/Connect/PeripheralDiscovery.swift
+      # The QR scanner's macro/near-focus fix (owner report, 2026-09-15)
+      # — device-preference-order and zoom-clamping logic split out of
+      # `QRScannerSheet.swift` (which stays `#if os(iOS)`-only, real
+      # AVFoundation capture code) specifically so it has no
+      # SwiftUI/AVFoundation dependency and can sit in this list, same
+      # reasoning as every other file here.
+      - path: Firefly/Sources/Connect/QRScannerCameraConfig.swift
       - path: Firefly/Sources/Settings/SettingsViewModel.swift
       - path: Firefly/Sources/Settings/DiagnosticsViewModel.swift
       # M2's addition: the Crew section's own view model (rename/remove,
@@ -309,6 +316,11 @@ targets:
       # `FireflyAppTests` can pin it without `AppRuntimeBundle.swift`'s
       # own composition.
       - path: Firefly/Sources/Crew/CrewStoreSelection.swift
+      # `app/tools/store_media.sh`'s screenshot seam
+      # (`-FireflyDebugHideBadge`) — SwiftUI-free by construction, same
+      # shape and same reason as `FireflyDebugStartDestinationLaunch.swift`
+      # above.
+      - path: Firefly/Sources/FireflyDebugHideBadgeLaunch.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit

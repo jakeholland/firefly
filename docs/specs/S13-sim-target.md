@@ -9,6 +9,7 @@ Run the whole app on a Mac/Linux host: LVGL in an SDL window or fully headless, 
    - `--window` (default): SDL 456×456 with bezel chrome, mouse=touch, arrow keys=swipe, `s` saves screenshot.
    - `--headless --screenshot DIR`: renders each fixture state once → `DIR/<fixture>.png`, exits.
    - `--fixture FILE.json`: loads an `ff_app_state` fixture (JSON schema documented in `tests/fixtures/README.md`) instead of live wiring.
+   - `--press-label TEXT` (puck-ux-usability-review slice 1, PR #329): headless + `--fixture` only, forces the first button whose label text matches `TEXT` exactly into `LV_STATE_PRESSED` before the one frame is rendered, writing `DIR/<fixture>_pressed.png` instead of `DIR/<fixture>.png`. For capturing one-off reference shots of a control's pressed state (`docs/screens/`, not `firmware/tests/golden/`) — a normal `--screenshot` run (`press_label` NULL) is untouched by this flag and every committed golden still renders through the exact same path it always has, so this adds zero risk to the golden pipeline. Errors (no `--fixture`, or no button matches `TEXT` on that fixture's face) exit 1 without writing a file.
    - `--connect HOST:PORT`: live mode via mc TCP transport; `--pack FILE` preloads festpack.
    - `--script FILE.py`⇢ no — scripting stays external: sim exposes a control socket (`--ctl PORT`, newline JSON: inject touch, advance mock clock, dump state, screenshot) that the Python e2e harness drives.
 3. **PNG writer**: LVGL snapshot buffer → PNG (stb_image_write, vendored single header).

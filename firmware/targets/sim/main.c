@@ -201,6 +201,41 @@ static void ff_build_boot_screen(void)
     lv_obj_center(label);
 }
 
+/* ff_find_button_with_label — depth-first search for a `lv_button` whose
+ * DIRECT-child label matches `label_text` exactly (every pill/button this
+ * codebase builds — ff_scr_pill_create's own label, Radar's FLARE label —
+ * makes its label a direct child of the button itself, the same contract
+ * `ff_scr_pill_create`'s own doc comment states). Only used by
+ * `--press-label` (see ff_run_headless_once's doc comment) — the same
+ * "exact-text label lookup, then confirm the enclosing button" shape as
+ * `app/screens/tests/support/lv_test_harness.h`'s `find_button_with_label`,
+ * reimplemented here rather than shared across the app/tests vs.
+ * targets/sim boundary for one depth-first tree walk. */
+static lv_obj_t *ff_find_button_with_label(lv_obj_t *root, char const *label_text)
+{
+    uint32_t n = lv_obj_get_child_count(root);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(root, i);
+        lv_obj_t *deeper = ff_find_button_with_label(child, label_text);
+        if (deeper != NULL) {
+            return deeper;
+        }
+        if (lv_obj_check_type(child, &lv_button_class)) {
+            uint32_t cn = lv_obj_get_child_count(child);
+            for (uint32_t j = 0; j < cn; j++) {
+                lv_obj_t *maybe_label = lv_obj_get_child(child, j);
+                if (lv_obj_check_type(maybe_label, &lv_label_class)) {
+                    char const *txt = lv_label_get_text(maybe_label);
+                    if (txt != NULL && strcmp(txt, label_text) == 0) {
+                        return child;
+                    }
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
 /* Full-frame render mode: the whole buffer is the flushed frame, so the
  * flush callback only needs to signal completion. */
 static void ff_headless_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
@@ -260,8 +295,23 @@ static uint32_t ff_win_clock_now_ms(void *user)
  * OOM, or PNG write). Deliberately unaffected by S16 slice d: this path
  * never ticks a shell, so the golden suite it feeds stays byte-identical
  * — a lifecycle refactor that changed pixels here would be wrong (see
- * this file's top comment). */
-static int ff_run_headless_once(const char *screenshot_dir, const char *fixture_path)
+ * this file's top comment).
+ *
+ * `press_label` (puck-ux-usability-review slice 1, item 5 — "the sim can
+ * render with a pressed object") is NOT wired into tests/run_goldens.sh
+ * at all — it exists purely so a one-off invocation can capture what a
+ * control's `LV_STATE_PRESSED` style actually looks like, for a
+ * docs/screens/ reference shot proving the fix visually. When non-NULL,
+ * the first BUTTON anywhere in the built tree whose label matches it
+ * exactly is forced into LV_STATE_PRESSED before the one frame this
+ * function renders — same "SELECTOR query, not a real touch" shape as
+ * `test_scr_intent.c`'s own `has_press_feedback` sweep, just rendering
+ * the result instead of only asserting the style exists. A resting-state
+ * (`press_label == NULL`) render is completely unaffected — every
+ * committed golden under tests/fixtures/ still goes through this exact
+ * path with press_label NULL, so this addition changes zero existing
+ * pixels. */
+static int ff_run_headless_once(const char *screenshot_dir, const char *fixture_path, const char *press_label)
 {
     lv_init();
     lv_tick_set_cb(ff_mock_tick_cb);
@@ -299,9 +349,25 @@ static int ff_run_headless_once(const char *screenshot_dir, const char *fixture_
          * inertly, with no special-casing needed here at all. */
         ff_build_face_screen(&state);
 
+        if (press_label != NULL) {
+            lv_obj_t *btn = ff_find_button_with_label(lv_screen_active(), press_label);
+            if (btn == NULL) {
+                fprintf(stderr, "ffsim: --press-label \"%s\" matched no button on this fixture's face\n",
+                        press_label);
+                free(xrgb_buf);
+                lv_deinit();
+                return 1;
+            }
+            lv_obj_add_state(btn, LV_STATE_PRESSED);
+        }
+
         char stem[256];
         ff_fixture_stem(fixture_path, stem, sizeof(stem));
-        snprintf(path, sizeof(path), "%s/%s.png", screenshot_dir, stem);
+        if (press_label != NULL) {
+            snprintf(path, sizeof(path), "%s/%s_pressed.png", screenshot_dir, stem);
+        } else {
+            snprintf(path, sizeof(path), "%s/%s.png", screenshot_dir, stem);
+        }
     } else {
         ff_build_boot_screen();
         snprintf(path, sizeof(path), "%s/boot.png", screenshot_dir);
@@ -540,6 +606,7 @@ int main(int argc, char **argv)
     bool mock_clock = false;
     const char *screenshot_dir = NULL;
     const char *fixture_path = NULL;
+    const char *press_label = NULL;
     const char *ctl_port_str = NULL;
     const char *connect_hostport = NULL;
     const char *pack_path = NULL;
@@ -555,6 +622,10 @@ int main(int argc, char **argv)
             screenshot_dir = argv[++i];
         } else if (strcmp(argv[i], "--fixture") == 0 && i + 1 < argc) {
             fixture_path = argv[++i];
+        } else if (strcmp(argv[i], "--press-label") == 0 && i + 1 < argc) {
+            /* puck-ux-usability-review slice 1, item 5 — headless-only,
+             * --fixture required; see ff_run_headless_once's doc comment. */
+            press_label = argv[++i];
         } else if (strcmp(argv[i], "--mock-clock") == 0) {
             mock_clock = true;
         } else if (strcmp(argv[i], "--ctl") == 0 && i + 1 < argc) {
@@ -701,6 +772,11 @@ int main(int argc, char **argv)
                     "--headless --screenshot render never ticks a shell\n");
             return 1;
         }
+        if (press_label != NULL && fixture_path == NULL) {
+            fprintf(stderr, "ffsim: --press-label requires --fixture (there is no button to press on the boot "
+                            "placeholder)\n");
+            return 1;
+        }
         /* mock_clock is unconditionally honored in headless mode (see
          * ff_run_headless_once's tick setup) — accepted here without a
          * "not meaningful" warning since passing it explicitly is the
@@ -708,7 +784,7 @@ int main(int argc, char **argv)
          * into that guarantee rather than depending on an undocumented
          * default. */
         (void)mock_clock;
-        return ff_run_headless_once(screenshot_dir, fixture_path);
+        return ff_run_headless_once(screenshot_dir, fixture_path, press_label);
     }
 
     return ff_run_window(fixture_path, mock_clock, connect_hostport, pack_path, dev_trust_all, packet_id_seed);

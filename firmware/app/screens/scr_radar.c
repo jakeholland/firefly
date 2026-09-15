@@ -1045,6 +1045,16 @@ static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r)
     lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+    /* puck-ux-usability-review slice 1, finding 2: this is the device's
+     * signature CTA and had NO LV_STATE_PRESSED style at all — "nothing
+     * between finger-down and the screen changing". Same ink-wash
+     * convention every other filled pill in this codebase uses on press
+     * (FF_SCR_PILL_PRESS_DIM's own INK @ LV_OPA_20, scr_widgets.c) —
+     * this button predates ff_scr_pill_create and isn't worth migrating
+     * onto it just for this fix, so the two style calls are inlined
+     * instead of pulled through the shared factory. */
+    lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_INK), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_20, LV_STATE_PRESSED);
     lv_obj_align(btn, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_CLOSE_FLARE_DY);
     lv_obj_add_event_cb(btn, radar_flare_cb, LV_EVENT_CLICKED, NULL);
 

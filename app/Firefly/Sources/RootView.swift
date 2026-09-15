@@ -66,8 +66,12 @@ struct RootView: View {
     let scanner: (any NodeScanning)?
     /// Non-nil in exactly one case: `FireflyApp.init` built a demo
     /// graph (`-FireflyDemo`/`FIREFLY_DEMO=1`, simulator-only). This is
-    /// ALSO the one source of truth for whether the DEMO badge shows —
-    /// never a second flag that could drift from it.
+    /// ALSO the one source of truth for whether demo mode is running at
+    /// all — never a second flag that could drift from it. Whether the
+    /// DEMO badge is actually drawn ALSO consults
+    /// `FireflyDebugHideBadgeLaunch.isRequested()` (`body`, below) —
+    /// see that type's own header for why a debug-only opt-out exists
+    /// on top of this rather than a second way to turn demo mode on.
     var demoRunner: DemoRunner?
     /// `-FireflyDemoScreen <name>`'s parsed value — see
     /// `DemoLaunch.requestedScreen`. `nil` outside demo mode.
@@ -268,7 +272,12 @@ struct RootView: View {
             // nav bar down instead of racing it for the same row, so the
             // badge can never collide with a title again, on any screen.
             VStack(spacing: 0) {
-                if demoRunner != nil {
+                // `-FireflyDebugHideBadge` (DEBUG-only,
+                // `FireflyDebugHideBadgeLaunch`'s own header) is the one
+                // seam that can drop this strip for a shot — built for
+                // `app/tools/store_media.sh`'s App Store screenshots,
+                // never a second way to turn demo mode itself on or off.
+                if demoRunner != nil, !FireflyDebugHideBadgeLaunch.isRequested() {
                     DemoBadge()
                 }
                 content
