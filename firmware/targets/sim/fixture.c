@@ -433,6 +433,7 @@ static ff_fixture_result_t fx_parse_radar_dots(fx_ctx_t const *c, int arr_i, ff_
         if (fx_obj_get(c, obj_i, "stale", &t)) d->stale = fx_bool(c, t, false);
         if (fx_obj_get(c, obj_i, "place", &t)) d->place = fx_bool(c, t, false); /* issue #33 */
         if (fx_obj_get(c, obj_i, "imprecise", &t)) d->imprecise = fx_bool(c, t, false); /* issue #74 */
+        if (fx_obj_get(c, obj_i, "selected", &t)) d->selected = fx_bool(c, t, false); /* slice 2 */
         r->n_dots++;
         idx = fx_skip(c, obj_i);
     }
@@ -2320,7 +2321,8 @@ static void fw_radar_dot(fw_cur_t *w, ff_radar_dot_t const *d)
     fw_fmt(w, ",\"color_idx\":%u", (unsigned)d->color_idx);
     fw_raw(w, d->stale ? ",\"stale\":true" : ",\"stale\":false");
     fw_raw(w, d->place ? ",\"place\":true" : ",\"place\":false"); /* issue #33 */
-    fw_raw(w, d->imprecise ? ",\"imprecise\":true}" : ",\"imprecise\":false}"); /* issue #74 */
+    fw_raw(w, d->imprecise ? ",\"imprecise\":true" : ",\"imprecise\":false"); /* issue #74 */
+    fw_raw(w, d->selected ? ",\"selected\":true}" : ",\"selected\":false}"); /* slice 2 */
 }
 
 /* S29 — mirrors fx_parse_radar_signal_dots field-for-field, same

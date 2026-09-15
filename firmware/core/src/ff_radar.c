@@ -65,9 +65,17 @@ static float radar_smooth_step(ff_radar_smooth_t *s, float target_deg, uint32_t 
  * and members with no fix ever are excluded (S06 AC3). Requires a usable
  * bearing frame (my_pos_ok && heading valid) — with neither, no bearing is
  * honestly computable for anyone, so the ring is left empty rather than
- * fabricated. */
+ * fabricated.
+ *
+ * `selected_member` (puck-ux-usability-2026-09-15 finding 1 / slice 2):
+ * the CURRENT selection, resolved by the caller via `ff_crew_selected()`
+ * BEFORE this function runs, so a dot can be identity-compared against
+ * it (`m == selected_member`) as it's built — NULL when there is no
+ * selection (RADAR_NOSEL), in which case every dot's `selected` is
+ * false, honestly. */
 static void radar_compute_dots(ff_radar_view_t *v, ff_crew_t const *crew, float heading_deg, bool heading_ok,
-                                ff_latlon_t my_pos, bool my_pos_ok, uint32_t now_ms)
+                                ff_latlon_t my_pos, bool my_pos_ok, uint32_t now_ms,
+                                ff_crew_member_t const *selected_member)
 {
     v->n_dots = 0;
     if (!crew || !my_pos_ok || !heading_ok) {
@@ -85,6 +93,7 @@ static void radar_compute_dots(ff_radar_view_t *v, ff_crew_t const *crew, float 
         d->ring_deg = ff_geo_arrow_deg(bearing, heading_deg);
         d->initial = m->initial;
         d->color_idx = m->color_idx;
+        d->selected = (selected_member != NULL) && (m == selected_member);
         ff_freshness_t const dot_fresh = ff_crew_freshness(m, now_ms);
         /* issue #33: an asserted member is a place, not an aging friend —
          * `place` and `stale` are mutually exclusive (ff_radar_dot_t's doc
@@ -195,13 +204,21 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
 
     bool heading_ok = heading_deg >= 0.0f;
 
-    radar_compute_dots(v, crew, heading_deg, heading_ok, my_pos, my_pos_ok, now_ms);
+    /* Resolved BEFORE radar_compute_dots (moved up from just below,
+     * puck-ux-usability-2026-09-15 slice 2) so a dot can be identity-
+     * compared against the selection as it's built — see that
+     * function's own doc comment on `selected_member`. ff_crew_selected
+     * self-heals as a side effect (picks the first paired member if the
+     * prior selection vanished); calling it here instead of after does
+     * not change that behavior, only when it happens — radar_compute_dots
+     * reads nothing selection-dependent otherwise. */
+    ff_crew_member_t *member = ff_crew_selected(crew);
+    radar_compute_dots(v, crew, heading_deg, heading_ok, my_pos, my_pos_ok, now_ms, member);
     /* S29: independent of selection/my_pos_ok/heading — see ff_radar.h's
      * doc comment. Computed here, before the NOSEL early return, so the
      * signal ring is populated even with nothing selected. */
     radar_compute_signal_dots(v, crew);
 
-    ff_crew_member_t *member = ff_crew_selected(crew);
     if (!member) {
         v->mode = RADAR_NOSEL;
         v->arrow_valid = false;

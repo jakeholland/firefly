@@ -1139,6 +1139,91 @@ static void S06_AC3_dots_bearings_colors_stale_flags_unpaired_excluded(void)
     TEST_ASSERT_FALSE(v.dots[3].imprecise);
 }
 
+/* puck-ux-usability-2026-09-15 finding 1 / slice 2 — ff_radar_dot_t
+ * gained `selected`: true for the ring dot belonging to whichever member
+ * ff_crew_selected() currently names, false for every other dot. Reuses
+ * this file's own 3-member-ish shape (deliberately at least 3 dots, not
+ * 1) so this is checked against a REAL multi-dot ring, not a
+ * single-dot fixture that cannot distinguish "always true" from
+ * "correctly true for exactly one". */
+static void S06_slice2_dot_selected_flag_marks_only_the_selected_members_dot(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_crew_member_t *a = ff_crew_upsert(&c, 1u);
+    a->initial = 'A';
+    a->color_idx = 0;
+    a->has_pos = true;
+    a->pos = (ff_latlon_t){1.0, 0.0};
+    a->pos_age_ms = 0u;
+    ff_crew_set_paired(&c, 1u, true);
+
+    ff_crew_member_t *b = ff_crew_upsert(&c, 2u);
+    b->initial = 'B';
+    b->color_idx = 1;
+    b->has_pos = true;
+    b->pos = (ff_latlon_t){0.0, 1.0};
+    b->pos_age_ms = 0u;
+    ff_crew_set_paired(&c, 2u, true);
+
+    ff_crew_member_t *cc = ff_crew_upsert(&c, 3u);
+    cc->initial = 'C';
+    cc->color_idx = 2;
+    cc->has_pos = true;
+    cc->pos = (ff_latlon_t){-1.0, 0.0};
+    cc->pos_age_ms = 0u;
+    ff_crew_set_paired(&c, 3u, true);
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    uint32_t const now_ms = 1000u;
+
+    /* Default selection self-heals to A (the first paired member) — see
+     * ff_crew_selected's own doc comment. */
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, now_ms);
+    TEST_ASSERT_EQUAL_UINT8(3, v.n_dots);
+    TEST_ASSERT_TRUE_MESSAGE(v.dots[0].selected, "A (the default selection) should be marked selected");
+    TEST_ASSERT_FALSE_MESSAGE(v.dots[1].selected, "B is not the selection");
+    TEST_ASSERT_FALSE_MESSAGE(v.dots[2].selected, "C is not the selection");
+
+    /* Advancing the selection moves the flag WITH it, to exactly one dot
+     * at a time — a mutation that folds this into "always false", "always
+     * true", or "stuck on the first dot" fails this second compute. */
+    ff_crew_select_next(&c);
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, now_ms);
+    TEST_ASSERT_FALSE_MESSAGE(v.dots[0].selected, "selection moved away from A");
+    TEST_ASSERT_TRUE_MESSAGE(v.dots[1].selected, "selection is now B");
+    TEST_ASSERT_FALSE_MESSAGE(v.dots[2].selected, "C is still not the selection");
+}
+
+/* RADAR_NOSEL (no paired member at all): nothing is selected, so nothing
+ * should ever read `selected == true` — checked over the WHOLE dots[]
+ * array (not just the n_dots==0 ones radar_compute_dots ever touches) so
+ * a mutation that forgets to zero the field on a fresh view cannot hide
+ * behind "there were no dots to check anyway". */
+static void S06_slice2_dot_selected_all_false_when_nosel(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 1000u);
+    TEST_ASSERT_EQUAL(RADAR_NOSEL, v.mode);
+    TEST_ASSERT_EQUAL_UINT8(0, v.n_dots);
+    for (size_t i = 0; i < FF_CREW_MAX; i++) {
+        TEST_ASSERT_FALSE_MESSAGE(v.dots[i].selected, "no selection exists; nothing should read as selected");
+    }
+}
+
 /* issue #74 (S17 slice a): dot.imprecise is set PER MEMBER, independent of
  * stale/place — a mutation that folds this into "always false" or "copies
  * .stale" would still pass every other dots test in this file (none of
@@ -1645,6 +1730,8 @@ int main(void)
 
     RUN_TEST(S06_AC3_dots_bearings_colors_stale_flags_unpaired_excluded);
     RUN_TEST(S06_AC3_dots_empty_when_my_pos_or_heading_invalid);
+    RUN_TEST(S06_slice2_dot_selected_flag_marks_only_the_selected_members_dot);
+    RUN_TEST(S06_slice2_dot_selected_all_false_when_nosel);
     RUN_TEST(S17a_AC4_dot_imprecise_flag_is_set_per_member_independent_of_stale);
 
     RUN_TEST(S33_mode_place_for_asserted_position);

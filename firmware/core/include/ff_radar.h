@@ -223,6 +223,31 @@ typedef struct {
      * separate facts about the same fix, so this can be true alongside
      * either (or neither) of them. */
     bool    imprecise;
+    /* [api] puck-ux-usability-2026-09-15 finding 1 / slice 2 — true for
+     * the ring dot belonging to whichever member `ff_crew_selected()`
+     * currently names, false for every other dot. This is the SAME
+     * member the arrow/name/distance stack already renders; the ring
+     * carries a dot for the selection too (radar_compute_dots below
+     * gives every paired member-with-a-fix a dot, selection included),
+     * and until this field existed nothing on the ring said WHICH one
+     * that was — the S06 spec's own "tap center = cycle selected
+     * member" input rule had a way to CHANGE the selection (this slice)
+     * but no way to SEE it reflected on the ring itself. Computed once,
+     * here, by identity (`m == selected_member` in `radar_compute_dots`)
+     * rather than re-derived by a screen file comparing name/color_idx —
+     * two members can share an initial or a (mod-4-wrapped) crew color,
+     * so identity is the only honest comparison. Always false when
+     * there is no selection (`RADAR_NOSEL`) or the selected member has
+     * no position (excluded from `dots[]` entirely, same as any other
+     * member with no fix). `scr_radar.c` renders this as an additional
+     * outline ring around the dot's own existing styling — additive to,
+     * never a replacement for, `stale`/`place`/`imprecise`'s treatment,
+     * since a selected member can also be any of those. KNOWN GAP (same
+     * class as `place`'s clustered-marker gap above): a cluster marker
+     * has no single dot to mark "selected" on without redesigning the
+     * marker itself, so a selected member folded into a cluster renders
+     * with no selection indicator — not fixed here. */
+    bool    selected;
 } ff_radar_dot_t;
 
 /**

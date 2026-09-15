@@ -2798,6 +2798,83 @@ static void S16_c2_radar_flare_button_emits_flare_start(void)
 }
 
 /* =================================================================== */
+/* Radar centre-disc tap -> SELECT_CREW (puck-ux-usability-2026-09-15   */
+/* finding 1 / slice 2, "you can point it at your friend")              */
+/* =================================================================== */
+
+/* The disc is anonymous (no label — see radar_build_select_tap's own
+ * doc comment on why it draws nothing), so it's found by size the same
+ * way S26e's launcher hub/satellites are (find_clickable_by_size, this
+ * file's own helper, above) — 120x120 is unique on a Radar-only tree. */
+static void S06_slice2_radar_center_disc_emits_select_crew(void)
+{
+    ff_radar_view_t r;
+    memset(&r, 0, sizeof(r));
+    r.mode = RADAR_LIVE;
+    r.arrow_valid = true;
+    strncpy(r.name, "DANA", sizeof(r.name) - 1);
+    strncpy(r.dist_str, "320 m", sizeof(r.dist_str) - 1);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_radar_build(parent, &r, false, false, /*locked=*/false, NULL);
+
+    lv_obj_t *disc = find_clickable_by_size(parent, 120, 120);
+    TEST_ASSERT_NOT_NULL_MESSAGE(disc, "Radar's centre-select disc not found — is scr_radar.c still building it?");
+
+    click(disc);
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SELECT_CREW, s_spy.last.kind);
+}
+
+/* RADAR_NOSEL: nothing paired, nothing to cycle to — the disc must be
+ * ABSENT (not merely a no-op click), so the center of a genuinely empty
+ * Radar face stays free of any clickable object for S28's G3 long-press
+ * panic gesture (test_gesture_glue.c's own
+ * S28_AC15_long_press_on_empty_radar_arms_flare_countdown covers G3
+ * itself; this is the render-side half of the same contract). */
+static void S06_slice2_radar_nosel_has_no_center_disc(void)
+{
+    ff_radar_view_t r;
+    memset(&r, 0, sizeof(r));
+    r.mode = RADAR_NOSEL;
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_radar_build(parent, &r, false, false, /*locked=*/false, NULL);
+
+    TEST_ASSERT_NULL_MESSAGE(find_clickable_by_size(parent, 120, 120),
+                              "RADAR_NOSEL must build no centre-select disc at all");
+}
+
+/* CLOSE mode has BOTH the FLARE button and the centre disc on the same
+ * face (the disc spans dy -60..60; FLARE sits at RADAR_LAYOUT_CLOSE_FLARE_DY,
+ * well below it — see radar_build_select_tap's own doc comment on why
+ * they don't collide). Clicking each must produce its OWN single intent,
+ * never both from one tap — the same "exactly one intent" discipline
+ * this file's header comment states for every wired control. */
+static void S06_slice2_radar_close_mode_flare_and_disc_each_emit_their_own_intent(void)
+{
+    ff_radar_view_t r;
+    memset(&r, 0, sizeof(r));
+    r.mode = RADAR_CLOSE;
+    strncpy(r.name, "DANA", sizeof(r.name) - 1);
+    strncpy(r.dist_str, "15 m", sizeof(r.dist_str) - 1);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_radar_build(parent, &r, false, false, /*locked=*/false, NULL);
+
+    lv_obj_t *disc = find_clickable_by_size(parent, 120, 120);
+    TEST_ASSERT_NOT_NULL(disc);
+    click(disc);
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SELECT_CREW, s_spy.last.kind);
+
+    click(find_button_with_label(parent, "FLARE"));
+    TEST_ASSERT_EQUAL_INT(2, s_spy.count); /* one more, not zero and not a repeat of the first */
+    TEST_ASSERT_EQUAL(FF_INTENT_FLARE_START, s_spy.last.kind);
+}
+
+/* =================================================================== */
 /* Radar imprecise-dot RENDER styling (S17 slice a, issue #74)          */
 /*                                                                       */
 /* Code review finding on PR #83: the flag computation (ff_radar_dot_t  */
@@ -2923,6 +3000,79 @@ static void S17a_AC4_radar_imprecise_dot_renders_as_hollow_ring_with_no_initial(
     TEST_ASSERT_EQUAL_INT32(6, lv_obj_get_style_border_width(dot, LV_PART_MAIN));
     TEST_ASSERT_EQUAL(LV_OPA_40, lv_obj_get_style_border_opa(dot, LV_PART_MAIN));
     TEST_ASSERT_EQUAL_STRING("", first_label_text(dot));
+}
+
+/* =================================================================== */
+/* Radar selected-dot RENDER styling (puck-ux-usability-2026-09-15      */
+/* finding 1 / slice 2 — the ring's own "who is selected" indicator)    */
+/* =================================================================== */
+
+/* A single dot flagged `selected` must grow the extra outline ring
+ * (radar_draw_selection_ring, scr_radar.c) — found by its own distinct
+ * size (RADAR_LAYOUT_DOT_PX + 6), unambiguous next to the dot's own
+ * RADAR_LAYOUT_DOT_PX square in a single-dot scene (same "exactly one
+ * object this predicate can match, by construction" reasoning
+ * find_obj_by_size's own doc comment above uses). */
+static void S06_slice2_selected_dot_renders_with_a_selection_ring(void)
+{
+    ff_radar_view_t r;
+    memset(&r, 0, sizeof(r));
+    r.mode = RADAR_LIVE;
+    r.arrow_valid = true;
+    strncpy(r.name, "DANA", sizeof(r.name) - 1);
+    strncpy(r.dist_str, "320 m", sizeof(r.dist_str) - 1);
+    r.n_dots = 1;
+    r.dots[0].ring_deg = 42.0f; /* clear of every reserved chrome rect */
+    r.dots[0].initial = 'R';
+    r.dots[0].color_idx = 1;
+    r.dots[0].selected = true;
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_radar_build(parent, &r, false, false, /*locked=*/false, NULL);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *dot = find_obj_by_size(parent, (int32_t)RADAR_LAYOUT_DOT_PX);
+    TEST_ASSERT_NOT_NULL(dot);
+
+    lv_obj_t *ring = find_obj_by_size(parent, (int32_t)RADAR_LAYOUT_DOT_PX + 6);
+    TEST_ASSERT_NOT_NULL_MESSAGE(ring, "selected dot must render an extra selection ring");
+    TEST_ASSERT_EQUAL(LV_OPA_TRANSP, lv_obj_get_style_bg_opa(ring, LV_PART_MAIN));
+    TEST_ASSERT_EQUAL_INT32(2, lv_obj_get_style_border_width(ring, LV_PART_MAIN));
+    TEST_ASSERT_EQUAL(LV_OPA_COVER, lv_obj_get_style_border_opa(ring, LV_PART_MAIN));
+    /* lv_color_to_u32 sets the top byte to opaque alpha (0xFF......) —
+     * same mask test_ctl_batt.c's own color assertions already apply —
+     * so compare only the low 24 bits against the plain 0xRRGGBB
+     * ff_theme_crew_color returns. */
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(ff_theme_crew_color(1, false),
+                                     lv_color_to_u32(lv_obj_get_style_border_color(ring, LV_PART_MAIN)) & 0x00FFFFFFu,
+                                     "selection ring must be drawn in the member's own crew color");
+}
+
+/* Negative control: the identical dot, NOT selected, must not grow the
+ * ring at all — proves the ring is conditional on the flag, not always
+ * drawn (a mutation that always builds the ring would still pass the
+ * positive test above but fails this one). */
+static void S06_slice2_unselected_dot_renders_without_a_selection_ring(void)
+{
+    ff_radar_view_t r;
+    memset(&r, 0, sizeof(r));
+    r.mode = RADAR_LIVE;
+    r.arrow_valid = true;
+    strncpy(r.name, "DANA", sizeof(r.name) - 1);
+    strncpy(r.dist_str, "320 m", sizeof(r.dist_str) - 1);
+    r.n_dots = 1;
+    r.dots[0].ring_deg = 42.0f;
+    r.dots[0].initial = 'R';
+    r.dots[0].color_idx = 1;
+    r.dots[0].selected = false;
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_radar_build(parent, &r, false, false, /*locked=*/false, NULL);
+    lv_obj_update_layout(lv_screen_active());
+
+    TEST_ASSERT_NOT_NULL(find_obj_by_size(parent, (int32_t)RADAR_LAYOUT_DOT_PX));
+    TEST_ASSERT_NULL_MESSAGE(find_obj_by_size(parent, (int32_t)RADAR_LAYOUT_DOT_PX + 6),
+                              "an unselected dot must not render a selection ring");
 }
 
 /* =================================================================== */
@@ -5135,8 +5285,13 @@ int main(void)
     RUN_TEST(S24d_rally_send_button_emits_rally_send);
     RUN_TEST(S24d_rally_disabled_on_me_is_not_tappable);
     RUN_TEST(S16_c2_radar_flare_button_emits_flare_start);
+    RUN_TEST(S06_slice2_radar_center_disc_emits_select_crew);
+    RUN_TEST(S06_slice2_radar_nosel_has_no_center_disc);
+    RUN_TEST(S06_slice2_radar_close_mode_flare_and_disc_each_emit_their_own_intent);
     RUN_TEST(S17a_AC4_radar_precise_dot_renders_filled_with_its_initial);
     RUN_TEST(S17a_AC4_radar_imprecise_dot_renders_as_hollow_ring_with_no_initial);
+    RUN_TEST(S06_slice2_selected_dot_renders_with_a_selection_ring);
+    RUN_TEST(S06_slice2_unselected_dot_renders_without_a_selection_ring);
     RUN_TEST(S16_c2_flare_takeover_go_emits_takeover_go);
     RUN_TEST(S16_c2_flare_takeover_dismiss_emits_takeover_dismiss);
     RUN_TEST(S16_c2_sender_overlay_cancel_emits_flare_end);
