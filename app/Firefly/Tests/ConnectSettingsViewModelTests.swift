@@ -961,6 +961,11 @@ private final class ScriptedLinkClient: MeshtasticClientProtocol, @unchecked Sen
     func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
     func incomingTexts() -> AsyncStream<IncomingText> { textHub.subscribe() }
     func incomingPrivate() -> AsyncStream<IncomingPrivate> { privateHub.subscribe() }
+    /// The ordered pipeline (`InboundPacketEvent`). This double drives
+    /// no inbound traffic of its own, so nothing is ever published on
+    /// it — the same honest-empty answer it already gives for the
+    /// streams above.
+    func inboundPackets() -> AsyncStream<InboundPacketEvent> { EventHub<InboundPacketEvent>().subscribe() }
     var connectedNodeNum: UInt32?
 
     func connect() async throws {}
@@ -1023,6 +1028,11 @@ private final class RecordingAdminWriteClient: MeshtasticClientProtocol, @unchec
     func deliveryUpdates() -> AsyncStream<DeliveryEvent> { deliveryHub.subscribe() }
     func incomingTexts() -> AsyncStream<IncomingText> { textHub.subscribe() }
     func incomingPrivate() -> AsyncStream<IncomingPrivate> { privateHub.subscribe() }
+    /// The ordered pipeline (`InboundPacketEvent`). This double drives
+    /// no inbound traffic of its own, so nothing is ever published on
+    /// it — the same honest-empty answer it already gives for the
+    /// streams above.
+    func inboundPackets() -> AsyncStream<InboundPacketEvent> { EventHub<InboundPacketEvent>().subscribe() }
     var connectedNodeNum: UInt32? = 1
 
     func connect() async throws { linkHub.yield(.ready) }

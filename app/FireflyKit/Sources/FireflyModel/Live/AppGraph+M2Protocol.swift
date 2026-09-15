@@ -157,6 +157,17 @@ extension AppGraph {
     /// method's own `inboxProvider.push` upserts the sender into the
     /// roster as a pre-existing side effect, so the pairing check can
     /// never be inferred from having already reached that call.
+    ///
+    /// A02 §4.2.2 (bench amendment, 2026-09-14): this reads the roster
+    /// AFTER the same packet's own node facts have already been applied
+    /// — `AppGraph.observeInboundPackets()` runs `core.apply(nodeUpdate:)`
+    /// for the `.node` half of a packet before dispatching its payload
+    /// half, from one loop over one ordered stream. So a sender this
+    /// very packet admits reads `paired == true` here, and the FLARE
+    /// that announced them is not dropped for not knowing them yet.
+    /// This function is unchanged and deliberately so: it asks the
+    /// roster, never the packet, and there is no second admission
+    /// implementation behind it.
     func isPairedSender(_ from: UInt32) -> Bool {
         core.crew.member(nodeID: from, now: FireflyClock.nowMillis())?.paired == true
     }
@@ -218,7 +229,7 @@ extension AppGraph {
     /// multicast — a second, independent subscriber is free, not a
     /// conflict).
     // NIT (PR #275 review): no `await MainActor.run` per fix, same
-    // reasoning as `AppGraph.observePrivatePackets()`'s own comment —
+    // reasoning as `AppGraph.observeInboundPackets()`'s own comment —
     // this extension's `Task { ... }` inherits `@MainActor` isolation
     // from `AppGraph` itself for its whole lifetime, so `self.myFix =
     // fix` already runs on the main actor directly.
@@ -244,7 +255,7 @@ extension AppGraph {
     /// subscription for actually rendering the thread, and the two never
     /// interfere with each other.
     // NIT (PR #275 review): same reasoning as `AppGraph
-    // .observePrivatePackets()`'s own comment — inherited `@MainActor`
+    // .observeInboundPackets()`'s own comment — inherited `@MainActor`
     // isolation, not a missing hop, is why nothing here needs
     // `await MainActor.run` per incoming text either.
     func observeIncomingTextsForNotifications() {

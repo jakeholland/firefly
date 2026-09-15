@@ -107,12 +107,31 @@ public final class CoreStore {
     /// runs. It defaults to `true` so a caller with no view models at
     /// all — `CoreStoreTests`, or any future headless consumer that owns
     /// both ends of the id space — keeps the full routing.
-    public func observe(client: any MeshtasticClientProtocol, routeDeliveriesToInbox: Bool = true) {
+    ///
+    /// `routeNodeUpdates` exists for the 2026-09-14 bench race (see
+    /// `InboundPacketEvent`). A composition where SOMETHING ELSE owns a
+    /// packet's payload gate — `AppGraph`, whose `handleInboundFlare`
+    /// asks `isCrew` about a sender this store is what admits — cannot
+    /// let admission ride a stream of its own, because two independent
+    /// `Task`s over two independent `AsyncStream`s have no ordering
+    /// between them and the gate lost that race on the bench. Such a
+    /// caller passes `false` here and drives `apply(nodeUpdate:)` itself
+    /// off `client.inboundPackets()`, in the SAME loop that dispatches
+    /// the payload, which is the only thing that makes
+    /// "admission-before-gate" a guarantee rather than a hope.
+    ///
+    /// It defaults to `true` so every OTHER composition — `CoreStoreTests`,
+    /// any headless consumer, anything with no payload gate of its own —
+    /// keeps the subscription it has always had. Nothing is dropped in
+    /// either mode: `inboundPackets()` carries every element
+    /// `nodeUpdates()` does (`MeshtasticClient.publishNode(_:)`).
+    public func observe(client: any MeshtasticClientProtocol, routeDeliveriesToInbox: Bool = true,
+                        routeNodeUpdates: Bool = true) {
         guard linkObservation == nil else { return }
         self.routeDeliveriesToInbox = routeDeliveriesToInbox
 
         let links = client.linkState()
-        let nodes = client.nodeUpdates()
+        let nodes = routeNodeUpdates ? client.nodeUpdates() : nil
         let deliveries = client.deliveryUpdates()
 
         linkObservation = Task { [weak self] in
@@ -121,10 +140,12 @@ public final class CoreStore {
                 self.linkState = state
             }
         }
-        nodeObservation = Task { [weak self] in
-            for await snapshot in nodes {
-                guard let self else { return }
-                self.apply(nodeUpdate: snapshot)
+        if let nodes {
+            nodeObservation = Task { [weak self] in
+                for await snapshot in nodes {
+                    guard let self else { return }
+                    self.apply(nodeUpdate: snapshot)
+                }
             }
         }
         deliveryObservation = Task { [weak self] in
