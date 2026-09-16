@@ -38,6 +38,7 @@
 #ifndef FF_THEME_H
 #define FF_THEME_H
 
+#include <math.h> /* powf — ff_theme_dot_letter_color's WCAG contrast helper below */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -58,7 +59,28 @@ extern "C" {
 #define FF_THEME_COLOR_STALE_AMBER 0xFFB454 /* STALE rim tint / chip */
 #define FF_THEME_COLOR_LIVE_GREEN  0x9BE07B /* LIVE chip, CLOSE pulse rings */
 #define FF_THEME_COLOR_MUTED       0x8B8A97 /* secondary text, LOST rim tint */
-#define FF_THEME_COLOR_DIM         0x55545F /* tertiary text (the retired page-dot row's inactive-dot color, before S26e) */
+/* puck-ux-usability-2026-09-15 finding 8 (slice 4): RETIRED as a TEXT
+ * colour — 2.64:1 against FF_THEME_COLOR_BG, below both WCAG AA (4.5:1)
+ * and AA-large (3.0:1), yet 21 call sites across scr_inbox.c/scr_compose.c
+ * (plus a handful more this header's own audit found in scr_radar.c,
+ * scr_launcher.c, scr_settings.c, scr_lineup.c) had drifted into using it
+ * for message ages, timestamps, SENT/WAITING, disabled names, and the
+ * SHOW CODE face's `exact positions` privacy disclosure. This constant
+ * started life (before S26e) as the retired page-dot row's INACTIVE-DOT
+ * colour — a decorative stroke/fill at native resolution, where 2.64:1
+ * is irrelevant (nothing reads a dot's contrast ratio) — and quietly
+ * became a text colour on top of that without anyone re-deriving whether
+ * it could still carry one. It cannot. Every former text use now reads
+ * `FF_THEME_COLOR_MUTED` (5.78:1, AA-passing) instead; a grep-asserted
+ * test (`test_no_dim_text_color.c`) keeps it that way. Still fine, and
+ * still used, for genuinely non-text purposes: a decorative chip
+ * background whose own label is set in a DIFFERENT, legible colour
+ * (`radar_make_chip`'s LAST SEEN/SIGNAL chips pair this fill with
+ * `FF_THEME_COLOR_INK` text, measuring 6.48:1 — the chip's FILL contrast
+ * against BG was never the question, only what's WRITTEN on it), and a
+ * 2px decorative "ghost" dot outline (scr_radar.c) that carries no text
+ * at all. */
+#define FF_THEME_COLOR_DIM         0x55545F
 #define FF_THEME_COLOR_INK         0xF2EFE6 /* primary text on dark surfaces */
 
 /* Crew palette — indexed by ff_crew_member_t::color_idx / ff_radar_dot_t
@@ -180,6 +202,69 @@ static inline uint32_t ff_theme_crew_color(uint8_t color_idx, bool colorblind)
     size_t const n = colorblind ? (sizeof(colorblind_palette) / sizeof(colorblind_palette[0]))
                                  : (sizeof(brand_palette) / sizeof(brand_palette[0]));
     return palette[color_idx % n];
+}
+
+/* -------------------------------------------------------------------
+ * WCAG 2.1 contrast helper + dot-letter colour pick (puck-ux-usability-
+ * 2026-09-15 slice 4, finding 8's "measure, don't reason harder" lesson
+ * extended past the retired FF_THEME_COLOR_DIM constant itself, by
+ * `test_text_contrast_all_faces.c`'s whole-fixture sweep): a crew-ring
+ * dot's own initial-letter text used to be hardcoded `FF_THEME_COLOR_BG`
+ * on every filled (non-stale) dot, tuned against the BRAND palette alone
+ * (its darkest entry, MAGENTA, still measures 6.0:1 with BG text) and
+ * never re-checked against the colourblind-safe palette added later (S17
+ * slice a) — `CB_BLUE` (0x0072B2) measures only 3.79:1 with BG text,
+ * below WCAG AA, while `INK` measures 4.51:1 on the SAME fill. Every
+ * other one of the 16 brand+colourblind colours already passes with BG
+ * (worst case besides CB_BLUE is 5.08:1). Rather than hardcoding a
+ * single CB_BLUE exception (which would need re-deriving by hand if
+ * either palette ever changes), this computes the REAL higher-contrast
+ * choice for whatever fill colour it is given.
+ * ------------------------------------------------------------------- */
+
+static inline float ff_theme_srgb_channel_linear(uint8_t c8)
+{
+    float c = (float)c8 / 255.0f;
+    return (c <= 0.03928f) ? (c / 12.92f) : powf((c + 0.055f) / 1.055f, 2.4f);
+}
+
+static inline float ff_theme_relative_luminance(uint32_t hex)
+{
+    uint8_t const r = (uint8_t)((hex >> 16) & 0xFFu);
+    uint8_t const g = (uint8_t)((hex >> 8) & 0xFFu);
+    uint8_t const b = (uint8_t)(hex & 0xFFu);
+    return 0.2126f * ff_theme_srgb_channel_linear(r) + 0.7152f * ff_theme_srgb_channel_linear(g) +
+           0.0722f * ff_theme_srgb_channel_linear(b);
+}
+
+/** ff_theme_contrast_ratio — WCAG 2.1 contrast ratio between two
+ *  0xRRGGBB colours, in [1.0, 21.0]. The same formula this slice's
+ *  `test_text_contrast_all_faces.c` computes with (and the same one
+ *  docs/reviews/puck-ux-usability-2026-09-15.md's own §5 table was
+ *  independently verified against before this PR: INK/BG 17.08:1,
+ *  MUTED/BG 5.78:1, DIM/BG 2.64:1 — all match), so a colour this
+ *  function calls "safe" and that test's measurement can never disagree
+ *  with each other. */
+static inline float ff_theme_contrast_ratio(uint32_t a_hex, uint32_t b_hex)
+{
+    float const la = ff_theme_relative_luminance(a_hex);
+    float const lb = ff_theme_relative_luminance(b_hex);
+    float const hi = (la > lb) ? la : lb;
+    float const lo = (la > lb) ? lb : la;
+    return (hi + 0.05f) / (lo + 0.05f);
+}
+
+/** ff_theme_dot_letter_color — INK or BG, whichever reads with higher
+ *  contrast against `fill_hex` (a crew-ring dot's own filled background
+ *  colour, from `ff_theme_crew_color` above). Used by scr_radar.c for a
+ *  live/place dot's initial-letter text; a `stale` ghost dot has no
+ *  fill to contrast against (its own border colour doubles as its text
+ *  colour instead — see scr_radar.c's own call site). */
+static inline uint32_t ff_theme_dot_letter_color(uint32_t fill_hex)
+{
+    float const bg_contrast = ff_theme_contrast_ratio(FF_THEME_COLOR_BG, fill_hex);
+    float const ink_contrast = ff_theme_contrast_ratio(FF_THEME_COLOR_INK, fill_hex);
+    return (ink_contrast > bg_contrast) ? FF_THEME_COLOR_INK : FF_THEME_COLOR_BG;
 }
 
 /* -------------------------------------------------------------------

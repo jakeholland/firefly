@@ -827,7 +827,7 @@ static void launcher_build_status_row(lv_obj_t *puck, ff_radar_view_t const *r)
     lv_obj_t *sep_lbl = lv_label_create(puck);
     lv_label_set_text(sep_lbl, ".");
     lv_obj_set_style_text_font(sep_lbl, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(sep_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_style_text_color(sep_lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_align(sep_lbl, LV_ALIGN_CENTER, -8, (int32_t)LAUNCHER_STATUS_ROW_DY);
 
     if (r->batt_pct >= 0) {

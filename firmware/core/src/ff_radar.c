@@ -6,7 +6,11 @@
 #include "ff_geo.h"
 
 /* Arrow smoothing time constant (docs/specs/S06-radar-face.md: "exponential,
- * time-constant 250 ms"). */
+ * time-constant 250 ms"). puck-ux-usability-2026-09-15 slice 4 (ring-dot
+ * jitter finding) reuses this SAME constant and SAME step function for
+ * each crew-ring dot's own bearing — the review's own fix wording ("run
+ * ring_deg through the same radar_smooth_step the arrow uses") means one
+ * time constant for both channels, not a second tunable. */
 #define FF_RADAR_SMOOTH_TAU_MS 250.0f
 
 /* ------------------------------------------------------------------- */
@@ -34,8 +38,13 @@ static void radar_copy_str(char *dst, size_t dst_sz, char const *src)
  * ff_geo_angdiff_deg. First-ever call (has_prev == false) snaps straight
  * to the target — there is no prior value to smooth from. See ff_radar.h's
  * ff_radar_compute doc comment for why composing several small steps here
- * is mathematically identical to one big step over the same total dt. */
-static float radar_smooth_step(ff_radar_smooth_t *s, float target_deg, uint32_t now_ms)
+ * is mathematically identical to one big step over the same total dt.
+ *
+ * Operates on one `ff_radar_angle_smooth_t` channel — the arrow's own
+ * (`ff_radar_smooth_t.arrow`) or a single ring dot's (`ff_radar_smooth_t.
+ * dot[i]`), both the same shape as of slice 4's ring-dot smoothing fix —
+ * so this one function serves both without duplication. */
+static float radar_smooth_step(ff_radar_angle_smooth_t *s, float target_deg, uint32_t now_ms)
 {
     target_deg = ff_geo_wrap_deg(target_deg);
 
@@ -72,10 +81,23 @@ static float radar_smooth_step(ff_radar_smooth_t *s, float target_deg, uint32_t 
  * BEFORE this function runs, so a dot can be identity-compared against
  * it (`m == selected_member`) as it's built — NULL when there is no
  * selection (RADAR_NOSEL), in which case every dot's `selected` is
- * false, honestly. */
-static void radar_compute_dots(ff_radar_view_t *v, ff_crew_t const *crew, float heading_deg, bool heading_ok,
-                                ff_latlon_t my_pos, bool my_pos_ok, uint32_t now_ms,
-                                ff_crew_member_t const *selected_member)
+ * false, honestly.
+ *
+ * `smooth` (puck-ux-usability-2026-09-15 slice 4, ring-dot jitter finding):
+ * the caller-owned per-roster-slot smoothing channels (`ff_radar_smooth_t.
+ * dot[FF_CREW_MAX]`) — `dot[i]`'s channel is fed with THIS member's raw
+ * bearing-relative angle before it's written into `d->ring_deg`, the exact
+ * same `radar_smooth_step`/τ=250ms path `ff_radar_compute` already uses for
+ * the selection arrow (see this file's own `FF_RADAR_SMOOTH_TAU_MS`
+ * comment). Keyed by roster slot `i`, not by `v->n_dots` — the two can
+ * differ (a member earlier in the roster with no fix yet is skipped, so a
+ * later member's dot can land at a lower `n_dots` index than its own
+ * roster slot), and it is the ROSTER SLOT that must stay associated with
+ * one member's smoothing history across ticks, not the dot array's
+ * this-frame packing order. */
+static void radar_compute_dots(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t const *crew,
+                                float heading_deg, bool heading_ok, ff_latlon_t my_pos, bool my_pos_ok,
+                                uint32_t now_ms, ff_crew_member_t const *selected_member)
 {
     v->n_dots = 0;
     if (!crew || !my_pos_ok || !heading_ok) {
@@ -90,7 +112,8 @@ static void radar_compute_dots(ff_radar_view_t *v, ff_crew_t const *crew, float 
 
         float bearing = ff_geo_bearing_deg(my_pos, m->pos);
         ff_radar_dot_t *d = &v->dots[v->n_dots];
-        d->ring_deg = ff_geo_arrow_deg(bearing, heading_deg);
+        float const raw_ring_deg = ff_geo_arrow_deg(bearing, heading_deg);
+        d->ring_deg = radar_smooth_step(&smooth->dot[i], raw_ring_deg, now_ms);
         d->initial = m->initial;
         d->color_idx = m->color_idx;
         d->selected = (selected_member != NULL) && (m == selected_member);
@@ -190,9 +213,12 @@ void ff_radar_smooth_reset(ff_radar_smooth_t *s)
     if (!s) {
         return;
     }
-    s->has_prev = false;
-    s->smoothed_deg = 0.0f;
-    s->last_update_ms = 0;
+    /* Zeroing every field of both the arrow's channel and every ring dot's
+     * channel (slice 4) is exactly "has_prev = false, smoothed_deg = 0,
+     * last_update_ms = 0" for each — the honest "never smoothed yet" state
+     * — so a single memset stays correct as the struct grows rather than
+     * needing a per-channel loop kept in sync by hand. */
+    memset(s, 0, sizeof(*s));
 }
 
 void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *crew, float heading_deg,
@@ -213,7 +239,7 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
      * not change that behavior, only when it happens — radar_compute_dots
      * reads nothing selection-dependent otherwise. */
     ff_crew_member_t *member = ff_crew_selected(crew);
-    radar_compute_dots(v, crew, heading_deg, heading_ok, my_pos, my_pos_ok, now_ms, member);
+    radar_compute_dots(v, smooth, crew, heading_deg, heading_ok, my_pos, my_pos_ok, now_ms, member);
     /* S29: independent of selection/my_pos_ok/heading — see ff_radar.h's
      * doc comment. Computed here, before the NOSEL early return, so the
      * signal ring is populated even with nothing selected. */
@@ -235,7 +261,7 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
         v->signal_heard = false;
         v->signal_via_relay = false;
         v->signal_age_str[0] = '\0';
-        v->arrow_deg = smooth->smoothed_deg; /* frozen: nothing to smooth toward */
+        v->arrow_deg = smooth->arrow.smoothed_deg; /* frozen: nothing to smooth toward */
         return;
     }
 
@@ -350,9 +376,9 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
     bool have_bearing = bearing_known && heading_ok;
     if (have_bearing) {
         float target = ff_geo_arrow_deg(v->bearing_deg, heading_deg);
-        v->arrow_deg = radar_smooth_step(smooth, target, now_ms);
+        v->arrow_deg = radar_smooth_step(&smooth->arrow, target, now_ms);
     } else {
-        v->arrow_deg = smooth->smoothed_deg; /* frozen */
+        v->arrow_deg = smooth->arrow.smoothed_deg; /* frozen */
     }
 
     if (!my_pos_ok) {

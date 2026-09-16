@@ -137,38 +137,46 @@ A notification **wakes the screen** (DIM/OFF → ACTIVE) — otherwise "come fin
 me" is useless while idle. Honest data: a banner shows the real `at_ms`
 age via `ff_fmt_age`, never a fabricated "now".
 
-**Placement (maintainer decision B, 2026-09-02; refined 2026-09-02 orchestrator
-review round 2):** the BANNER strip covers the status bar row (clock · MESH ·
-battery — `RADAR_LAYOUT_STATUS_BAR_DY`), not the row below it. A transient
-banner should hide the LEAST valuable row on whatever face is showing; the
-strip's original position (just below the status bar) instead covered the
-top of Radar's compass/close-range readout, or a thread's first message
-bubble — both more valuable than the clock/mesh/battery row a 6 s banner can
-safely eclipse.
+**Placement — SUPERSEDED 2026-09-15 (puck-ux-usability-2026-09-15.md finding 4,
+fix-plan slice 4).** Maintainer decision B (2026-09-02; refined by orchestrator
+review round 2) put the BANNER strip on top of the status bar row (clock ·
+MESH · battery — `RADAR_LAYOUT_STATUS_BAR_DY`), on the theory that a
+transient banner should hide the LEAST valuable row on whatever face is
+showing, and that row was less valuable than Radar's compass/close-range
+readout or a thread's first message bubble. The 2026-09-15 usability review
+measured the actual result and found that reasoning wrong:
+`banner_on_radar.png` showed the clock truncated, `LINKED` entirely gone, and
+the battery reduced to a bare `%` — "the two facts a user checks before
+trusting the device — can it reach anyone and will it last — are hidden by
+the notification that made them look." **The strip now sits BELOW the status
+row instead, disjoint from its text** (`BANNER_CY = RADAR_LAYOUT_STATUS_BAR_DY
++ 33`, puck-local y≈84 — see `scr_banner.c`'s own layout comment for the full,
+measured derivation, including the two corrections its `+ 40` first draft
+needed once checked against the launcher's satellite ring and the thread's
+first bubble, neither of which the original review's own worked example
+checked). The extra room bought by moving down still pays for a wider strip
+(160 → 200 px), which is what fixes the message-preview truncation the
+review also named ("The Firefly To…").
 
-Round 1 centered the strip exactly on `RADAR_LAYOUT_STATUS_BAR_DY` (-160)
-and shrank its width to ~90 px to fit the round glass there — technically
-correct but too narrow to read as a banner (only the MESH label was ever
-covered; sender name and preview text were crushed to one or two
-characters). Round 2 instead finds the LOWEST (least-negative) centre whose
-top edge still clears the status text's own measured top (y=38 on a 412 px
-puck): `BANNER_CY = RADAR_LAYOUT_STATUS_BAR_DY + 14` (dy -146, puck-local
-y=60) — still derived from the status-row constant, not a second
-independent number, just offset by the amount that trade needs. At that
-height the strip widens back out to 160 px (up from round 1's 90, still well
-short of the original 240) while keeping a real ≥10 px margin off
-`FF_THEME_GLASS_R`/`FF_THEME_GLASS_CX/CY` at every corner (see
-`scr_banner.c`'s own layout comment for the exact chord math, including a
-correction to which radius that check runs against — `FF_THEME_GLASS_R`
-200, the real measured glass, not the framebuffer's 206). At this width the
-strip now reaches (and partially covers) the clock and battery labels too,
-not just MESH — accepted deliberately: the strip's own rectangle has one
-constant y-range across its whole width, so wherever it does reach it
-covers the text FULLY top-to-bottom, never a half-height sliver poking out.
-The age no longer fits as a separate top-right corner chip; it sits beside
-the name on the same row instead, and at 160 px both the sender's full demo
-name and a preview past 10 characters render before DOTS ellipsis has to
-step in.
+The one place this move could not buy a fully clean trade: `scr_inbox.c`'s
+thread view leaves only a 44 px band between the status text's real bottom
+edge and the first message bubble's real top edge — one pixel short of the
+banner's own 48 px hit-target floor with zero margin to spare on either
+side. The strip is positioned to keep the status-row clearance genuine (a
+real, non-zero gap) and accepts a small, deliberate, documented overlap with
+the thread bubble's own decorative background instead — never its actual
+text, which sits far enough below the bubble's own top edge to stay clear
+(see `test_scr_banner.c`'s own doc comment for the exact numbers and the
+"interpretation call" this trade is flagged as, per AGENTS.md).
+
+Width and corner-clearance math (the `FF_THEME_GLASS_R`/`FF_THEME_GLASS_CX/CY`
+chord check, `S26d_AC2_banner_corners_clear_glass_by_10px`) is unchanged in
+kind from the original round-2 derivation — only the numbers moved, since the
+centre is now lower (closer to the puck's own centre), which widens the
+available chord rather than narrowing it. The age still sits beside the name
+on the same row (not a separate corner chip), and at 200 px both the sender's
+full demo name and a longer preview render before DOTS ellipsis has to step
+in.
 
 Widening the strip this much also reaches `scr_inbox.c`'s pinned BACK
 button (`FF_INBOX_BACK_Y`/`_PX`) on the thread/picker/popup/rally
@@ -201,14 +209,24 @@ fails the width floor and stays masked; nothing currently produces a
 "built after, drawn on top" convention `scr_nav.c` uses for every other
 face, then calls the SAME shared `ff_scr_nav_mask_clickables_under_banner`
 pass rather than a second, launcher-specific rule. The banner only ever
-reaches the top compass satellite (Inbox, `compass_pos == 0`); its
-remainder there (~88x37px) fails the 44px HEIGHT floor, so it is masked —
-accepted as intentional and semantically consistent: while a banner shows,
-that region IS the banner, and tapping it opens the sender's thread, which
-is roughly where tapping Inbox would have led anyway. The launcher's own
-status row (bottom of the puck, `LAUNCHER_STATUS_ROW_DY`) is far enough
-from the banner's position to never compete with it. Launcher renders
-WITHOUT an active banner are untouched (goldens byte-identical).
+reaches the top compass satellite (Inbox, `compass_pos == 0`, a 100×100
+disc centred at the orbit radius (`LAUNCHER_ORBIT_RADIUS_PX`, 128) directly
+above the hub); at the 2026-09-15 slice-4 geometry its uncovered remainder
+splits into a 100×27px sliver above the strip and a 100×25px sliver below
+it — both well under the 44px HEIGHT floor either way — so it stays masked,
+same as before slice 4 moved the strip (only the exact remainder height
+changed, not the outcome). Accepted as intentional and semantically
+consistent: while a banner shows, that region IS the banner, and tapping it
+opens the sender's thread, which is roughly where tapping Inbox would have
+led anyway. Slice 4 ALSO had to clear the two neighbouring satellites
+(Lineup/Music, `compass_pos` ±1) by the ordinary `FF_HIT_MIN_GAP_PX` (8px)
+adjacency floor — a genuine near-miss the wider (200px) strip introduced,
+fixed by the same `BANNER_CY` placement described above rather than a
+launcher-specific carve-out (`test_face_hit_targets.c`'s whole-device sweep
+is what caught it; see `scr_banner.c`'s own comment for the exact numbers).
+The launcher's own status row (bottom of the puck, `LAUNCHER_STATUS_ROW_DY`)
+is far enough from the banner's position to never compete with it. Launcher
+renders WITHOUT an active banner are untouched (goldens byte-identical).
 
 ## Slices + acceptance criteria
 

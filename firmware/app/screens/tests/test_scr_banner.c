@@ -1,12 +1,16 @@
 /**
- * test_scr_banner.c — S26 slice d, maintainer decision B (2026-09-02,
- * docs/specs/S26-device-lifecycle.md "Notifications (slice d)"): the
- * banner strip's move to cover the status bar row instead of the row
- * below it. Round 2 (orchestrator review on PR #157) widened the strip
- * (90 -> 160px) and moved its centre down slightly (dy -160 -> -146) so
- * it reads as a real banner (full demo names, a readable preview) while
- * still covering the status row, and wired it into the launcher (home)
- * face, which never rendered one at all before this round.
+ * test_scr_banner.c — S26 slice d (docs/specs/S26-device-lifecycle.md
+ * "Notifications (slice d)"), REWORKED by puck-ux-usability-2026-09-15
+ * slice 4 (finding 4: "the banner occludes the status row"). Slice d's
+ * original maintainer decision moved the strip to COVER the status bar
+ * (clock/mesh/battery), on the theory that row was the least valuable
+ * thing a transient banner could hide. The 2026-09-15 review measured the
+ * result and found it wrong — `banner_on_radar.png` truncated the clock,
+ * dropped `LINKED` entirely, and reduced the battery to a bare `%`, the
+ * two facts a user checks before trusting the device at all. Slice 4
+ * moves the strip BELOW the row instead, so every test in section (b)
+ * below now asserts DISJOINT-from, not COVERS — the exact opposite of
+ * what this file used to check.
  *
  * Same "build the real screens, measure the real rects" discipline
  * test_radar_layout.c / test_scr_flare.c / test_scr_intent.c's S99
@@ -18,32 +22,39 @@
  * ## Real measured geometry (this file's own tests are the proof; these
  * numbers are recorded here so a future reader doesn't have to re-derive
  * them by hand)
- *   - strip:            (128,36)-(287,83)   — BANNER_W=160, BANNER_H=48,
- *     centered at (208,60) = (FF_THEME_GLASS_CX, PUCK_RADIUS+BANNER_CY)
- *   - clock label:      (99,38)-(157,53)    — PARTIALLY under the strip
- *     (its left 29px stay exposed, its right 30px are covered)
- *   - MESH label:        (185,38)-(226,53)   — entirely INSIDE the strip
- *   - battery label:     (270,38)-(297,53)   — PARTIALLY under the strip
- *     (its left 17px are covered, its right 10px stay exposed)
- * At this width the strip DOES now overlap the outer two labels, unlike
- * round 1's 90px strip — accepted deliberately (see scr_banner.c's own
- * geometry comment): the achievable, tested property is that the
- * strip's own y-range (one constant band across its whole width, being
- * a rectangle) fully contains the status text's y-band [38,53] — so
- * wherever it does reach, coverage is total top-to-bottom, never a
- * half-height sliver of text peeking out vertically. There is no
- * per-label "never touch it" guarantee any more; there IS a per-band
- * "never touch it by half" guarantee, which is what's actually testable
- * and what "no half-visible clock" can honestly mean once the strip is
- * wide enough to reach the clock at all.
+ *   - strip:            (108,55)-(307,102)  — BANNER_W=200, BANNER_H=48,
+ *     centered at (208,79) = (FF_THEME_GLASS_CX, PUCK_RADIUS+BANNER_CY)
+ *   - clock label:      (95,37)-(161,54)    — FF_THEME_FONT_MSG_BODY/INK
+ *     as of slice 4 item 3 ("status-row time in INK"); ABOVE the strip,
+ *     1px genuine gap (strip.y1=55 > clock.y2=54)
+ *   - battery label:    (270,38)-(297,53)   — unchanged font/color;
+ *     also entirely above the strip
+ *   - thread's first bubble BACKGROUND: overlaps the strip by 5px at its
+ *     own top edge (98 vs strip bottom 102) — the one deliberate,
+ *     documented trade this slice makes (see scr_banner.c's own
+ *     `BANNER_CY` comment) — but its TEXT label sits 8px further down
+ *     (106) and never touches the strip at all.
+ * There is no "never touch it" guarantee for the bubble's own decorative
+ * background any more (see scr_banner.c's `BANNER_CY` comment for the
+ * measured 44px-window conflict that makes this unavoidable at a valid
+ * BANNER_H); there IS a "never touch the actual TEXT" guarantee, which is
+ * what `S26d_AC2_banner_disjoint_from_thread_first_bubble_TEXT` checks.
  *
  * ## Mutation check (AGENTS.md standing brief item 2 / docs/review/
  * code-review.md item 6), hand-verified before pushing:
- * Temporarily reverting BANNER_CY to its pre-move value (-90.0f) and
- * rebuilding fails S26d_AC2_banner_covers_mesh_status_label AND
- * S26d_AC2_banner_covers_status_text_row_band — at the old position the
- * strip never reaches the status row at all, so it covers nothing
- * there. See the PR body for the exact `ctest` output.
+ * Temporarily reverting `BANNER_CY` to its pre-slice-4 value
+ * (`RADAR_LAYOUT_STATUS_BAR_DY + 14.0f`, i.e. covering the status row
+ * again — strip y-range [36,83]) and rebuilding fails FOUR of this
+ * file's own tests, not just the two the mutation targets:
+ * `S26d_AC2_banner_disjoint_from_thread_first_bubble_TEXT` (now vacuous —
+ * the old, higher strip no longer even reaches the bubble's background),
+ * `S26d_AC2_banner_disjoint_from_mesh_status_label`,
+ * `S26d_AC2_banner_disjoint_from_status_text_row` (strip [36,83] does not
+ * sit below the status band [37,54]), and even
+ * `S26d_AC2_banner_corners_clear_glass_by_10px` (the old centre's own
+ * corner measures 197.23px against a 190px bar — it was already this
+ * close to the glass at the old position). See the PR body for the exact
+ * `ctest` output.
  */
 #include <math.h>
 #include <string.h>
@@ -81,21 +92,21 @@ void tearDown(void)
 }
 
 /* ---------------------------------------------------------------------
- * Small geometry helpers — lv_area_t's x2/y2 are INCLUSIVE (ff_layout.h's
+ * Small geometry helper — lv_area_t's x2/y2 are INCLUSIVE (ff_layout.h's
  * own doc comment on the convention mismatch with this codebase's usual
- * "size = far - near" rects), so both helpers below work directly in
- * that inclusive convention rather than converting. Banner-specific (not
- * part of the shared header — test_scr_intent.c has no equivalent).
+ * "size = far - near" rects), so it works directly in that inclusive
+ * convention rather than converting. Banner-specific (not part of the
+ * shared header — test_scr_intent.c has no equivalent).
+ *
+ * `area_contains` (the old "does the strip fully cover this label"
+ * check) is gone as of slice 4 — finding 4 flips the whole banner-vs-
+ * status-row relationship from "covers it" to "disjoint from it", so
+ * nothing in this file needs a containment check anymore, only overlap.
  * ------------------------------------------------------------------- */
 
 static bool areas_overlap(lv_area_t const *a, lv_area_t const *b)
 {
     return a->x1 <= b->x2 && b->x1 <= a->x2 && a->y1 <= b->y2 && b->y1 <= a->y2;
-}
-
-static bool area_contains(lv_area_t const *outer, lv_area_t const *inner)
-{
-    return outer->x1 <= inner->x1 && outer->x2 >= inner->x2 && outer->y1 <= inner->y1 && outer->y2 >= inner->y2;
 }
 
 /* ---------------------------------------------------------------------
@@ -151,9 +162,27 @@ static void make_thread(ff_app_inbox_t *v)
 
 /* ---------------------------------------------------------------------
  * (a) Disjoint from Radar's name/distance stack, and from a thread's
- * first message bubble — the ORIGINAL bug this whole move exists to
- * avoid recreating one row down (this file's own top comment / the PR
- * this lands in).
+ * first message bubble's actual TEXT — the ORIGINAL bug this whole move
+ * exists to avoid recreating one row down (this file's own top comment /
+ * the PR this lands in).
+ *
+ * puck-ux-usability-2026-09-15 slice 4 (finding 4): moving the strip
+ * BELOW the status row (see scr_banner.c's own `BANNER_CY` comment for
+ * the full derivation) leaves only a 44px window between the status
+ * text's real bottom edge (54, montserrat_16 now that the clock is
+ * FF_THEME_FONT_MSG_BODY) and the thread's first bubble's real top edge
+ * (98) — ONE px short of BANNER_H (48) with zero margin to spare on
+ * either side. No placement can keep BOTH disjoint at once (measured,
+ * not assumed — see scr_banner.c's own doc comment on this exact
+ * conflict). `BANNER_CY` is pinned to keep the EXPLICIT, reviewed
+ * obligation (never overlap the status TEXT — finding 4's whole point)
+ * at a genuine, non-zero margin, and accepts the smallest achievable
+ * overlap with the thread bubble's own decorative background instead —
+ * verified below to land ABOVE the bubble's own text (its `inbox_msg_
+ * bubble` label sits 8px down from the bubble's own top edge, scr_inbox.c),
+ * so the readable message itself is never touched. An AGENTS.md-flagged
+ * interpretation call: the review never analyzed the banner-vs-
+ * first-bubble case, only status-row/glass.
  * ------------------------------------------------------------------- */
 
 static void S26d_AC2_banner_disjoint_from_radar_name_distance_stack(void)
@@ -186,7 +215,7 @@ static void S26d_AC2_banner_disjoint_from_radar_name_distance_stack(void)
     TEST_ASSERT_FALSE_MESSAGE(areas_overlap(&strip_a, &dist_a), "banner must not overlap Radar's distance label");
 }
 
-static void S26d_AC2_banner_disjoint_from_thread_first_bubble(void)
+static void S26d_AC2_banner_disjoint_from_thread_first_bubble_TEXT(void)
 {
     ff_app_inbox_t v;
     make_thread(&v);
@@ -199,6 +228,11 @@ static void S26d_AC2_banner_disjoint_from_thread_first_bubble(void)
     ff_scr_banner_build(parent, &b, false);
     lv_obj_update_layout(parent);
 
+    /* The READABLE content is the label itself, not the bubble's own
+     * decorative background box — see this section's top comment for why
+     * the 44px window forces a choice, and why the bubble's own rounded
+     * background (not its text) is the one that can afford to give up a
+     * few px. */
     lv_obj_t *label = find_label_exact(parent, "copy, see you there");
     TEST_ASSERT_NOT_NULL_MESSAGE(label, "message bubble text not found");
     lv_obj_t *bubble = lv_obj_get_parent(label);
@@ -206,37 +240,41 @@ static void S26d_AC2_banner_disjoint_from_thread_first_bubble(void)
 
     uint32_t n = lv_obj_get_child_count(parent);
     lv_obj_t *strip = lv_obj_get_child(parent, n - 1);
-    lv_area_t strip_a, bubble_a;
+    lv_area_t strip_a, bubble_a, label_a;
     lv_obj_get_coords(strip, &strip_a);
     lv_obj_get_coords(bubble, &bubble_a);
+    lv_obj_get_coords(label, &label_a);
 
-    TEST_ASSERT_FALSE_MESSAGE(areas_overlap(&strip_a, &bubble_a), "banner must not overlap the thread's first bubble");
+    TEST_ASSERT_FALSE_MESSAGE(areas_overlap(&strip_a, &label_a),
+                              "banner must never overlap the thread's first bubble's actual TEXT");
+    /* Not vacuous: the bubble's OWN background genuinely does sit under
+     * the banner at this width/centre (mutation-sensitive — widening the
+     * disjoint-text margin above without also checking this would let a
+     * regression that pushes the banner low enough to reach the text
+     * itself slip through, since a banner clear of the whole bubble box
+     * trivially clears its text too). */
+    TEST_ASSERT_TRUE_MESSAGE(areas_overlap(&strip_a, &bubble_a),
+                             "test is vacuous unless the banner reaches the bubble's own background");
 }
 
 /* ---------------------------------------------------------------------
- * (b) Covers the status bar row.
+ * (b) Disjoint from the status bar row — puck-ux-usability-2026-09-15
+ * finding 4, the reason this whole slice exists.
  *
- * Orchestrator review, round 2: round 1's strip (90px) only ever
- * touched the MESH label and never reached clock/battery at all, so
- * "never half-clips" was trivially true by staying away. This round's
- * wider strip (160px, see the top-of-file / scr_banner.c geometry
- * comments for why) is a deliberate trade the other way — it now
- * reaches clock and battery too, PARTIALLY (measured: clock's left 29px
- * of 58 stays exposed, battery's right 10px of 27 stays exposed) — and
- * that is accepted, not a regression: the real, achievable, testable
- * property "covers the status bar row" can mean is the strip's own
- * rect (which has one constant y-range across its whole width, being a
- * rectangle) spans the status TEXT's y-band (measured 38..53) — i.e.
- * covers it FULLY wherever it reaches, never a half-height sliver of
- * text peeking out from under the pill vertically. That holds by
- * construction for any correctly-sized rectangle and is what's checked
- * below, plus the concrete MESH-label containment as the "this isn't
- * vacuous" proof that the strip really does sit over real content.
- * This is also the mutation-sensitive half of (a)/(b): reverting
- * BANNER_CY to -90 fails the first of these two (see top comment).
+ * Before slice 4: the strip was DELIBERATELY positioned to COVER the
+ * status row (the maintainer decision `scr_banner.c` used to document at
+ * the top of its layout-constants comment), on the theory that the
+ * clock/mesh/battery row was the least valuable thing a transient banner
+ * could hide. The review measured the result and found it wrong:
+ * `banner_on_radar.png` showed `9:46` truncated, `LINKED` entirely gone,
+ * and the battery reduced to a bare `%` — "the two facts a user checks
+ * before trusting the device... are hidden by the notification that made
+ * them look." Finding 4's fix moves the strip BELOW the row instead, so
+ * these tests now assert the OPPOSITE of what they used to: never
+ * overlapping the status text at all, not covering it fully.
  * ------------------------------------------------------------------- */
 
-static void S26d_AC2_banner_covers_mesh_status_label(void)
+static void S26d_AC2_banner_disjoint_from_mesh_status_label(void)
 {
     ff_radar_view_t r;
     make_radar_live(&r);
@@ -259,20 +297,22 @@ static void S26d_AC2_banner_covers_mesh_status_label(void)
     lv_obj_get_coords(strip, &strip_a);
     lv_obj_get_coords(mesh_lbl, &mesh_a);
 
-    TEST_ASSERT_TRUE_MESSAGE(area_contains(&strip_a, &mesh_a),
-                             "banner must fully cover the LINKED status label — no half-visible text behind it");
+    TEST_ASSERT_FALSE_MESSAGE(areas_overlap(&strip_a, &mesh_a),
+                              "banner must no longer overlap the LINKED status label (finding 4)");
 }
 
-/* The status TEXT's own measured y-band (clock/MESH/battery all share
- * one font/baseline, so one band covers all three — measured directly
- * off the rendered labels, not assumed). A strip whose own y-range
- * fully contains this band covers it FULLY across the strip's entire
- * width by construction (a rectangle has one y-range for every x in
- * it) — no per-x variation to separately check. */
-#define STATUS_TEXT_ROW_TOP_Y 38 /* measured; coordinator review said "39..53", real render is 38..53 */
-#define STATUS_TEXT_ROW_BOTTOM_Y 53
+/* The status TEXT's own measured y-band. The clock (finding 4 / item 3:
+ * "status-row time in INK") is now FF_THEME_FONT_MSG_BODY (montserrat_16)
+ * while MESH/battery stay FF_THEME_FONT_LABEL (montserrat_14), so the two
+ * no longer share one exact y-range the way they did before this slice —
+ * the band below is the UNION (min top, max bottom) of both, measured
+ * directly off the rendered labels, not assumed. A strip whose own
+ * y-range is entirely BELOW this band (banner.y1 > band.y2) cannot
+ * overlap it anywhere along its width — no per-x variation to check. */
+#define STATUS_TEXT_ROW_TOP_Y 37    /* measured: clock's real top at montserrat_16 */
+#define STATUS_TEXT_ROW_BOTTOM_Y 54 /* measured: clock's real bottom at montserrat_16 (battery's is 53) */
 
-static void S26d_AC2_banner_covers_status_text_row_band(void)
+static void S26d_AC2_banner_disjoint_from_status_text_row(void)
 {
     ff_radar_view_t r;
     make_radar_live(&r);
@@ -285,7 +325,7 @@ static void S26d_AC2_banner_covers_status_text_row_band(void)
     /* Cross-check the hardcoded band against the real rendered labels —
      * if scr_radar.c's status-row layout ever moves, this test fails
      * LOUDLY (NOT_NULL/message) rather than silently checking a stale
-     * band against a strip that quietly stopped covering anything. */
+     * band against a strip that quietly stopped being disjoint from it. */
     lv_obj_t *clock_lbl = find_label_exact(parent, "9:46 pm");
     lv_obj_t *batt_lbl = find_label_exact(parent, "74%");
     TEST_ASSERT_NOT_NULL(clock_lbl);
@@ -297,8 +337,10 @@ static void S26d_AC2_banner_covers_status_text_row_band(void)
                                     "measured status-text top drifted — update STATUS_TEXT_ROW_TOP_Y");
     TEST_ASSERT_EQUAL_INT32_MESSAGE(STATUS_TEXT_ROW_BOTTOM_Y, clock_a.y2,
                                     "measured status-text bottom drifted — update STATUS_TEXT_ROW_BOTTOM_Y");
-    TEST_ASSERT_EQUAL_INT32(clock_a.y1, batt_a.y1);
-    TEST_ASSERT_EQUAL_INT32(clock_a.y2, batt_a.y2);
+    /* The clock's own bottom edge is the binding one now that it's a
+     * bigger font than battery/MESH (54 vs 53) — assert that, not
+     * equality, since the two rows are no longer pinned to one baseline. */
+    TEST_ASSERT_TRUE_MESSAGE(batt_a.y2 <= clock_a.y2, "battery's bottom must not exceed the clock's own (the binding edge)");
 
     ff_app_banner_t b;
     make_banner(&b);
@@ -311,9 +353,9 @@ static void S26d_AC2_banner_covers_status_text_row_band(void)
     lv_obj_get_coords(strip, &strip_a);
 
     char msg[128];
-    snprintf(msg, sizeof(msg), "banner y-range [%d,%d] must fully contain the status-text band [%d,%d]",
+    snprintf(msg, sizeof(msg), "banner y-range [%d,%d] must sit entirely below the status-text band [%d,%d]",
              strip_a.y1, strip_a.y2, STATUS_TEXT_ROW_TOP_Y, STATUS_TEXT_ROW_BOTTOM_Y);
-    TEST_ASSERT_TRUE_MESSAGE(strip_a.y1 <= STATUS_TEXT_ROW_TOP_Y && strip_a.y2 >= STATUS_TEXT_ROW_BOTTOM_Y, msg);
+    TEST_ASSERT_TRUE_MESSAGE(strip_a.y1 > STATUS_TEXT_ROW_BOTTOM_Y, msg);
 }
 
 /* ---------------------------------------------------------------------
@@ -633,9 +675,9 @@ int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(S26d_AC2_banner_disjoint_from_radar_name_distance_stack);
-    RUN_TEST(S26d_AC2_banner_disjoint_from_thread_first_bubble);
-    RUN_TEST(S26d_AC2_banner_covers_mesh_status_label);
-    RUN_TEST(S26d_AC2_banner_covers_status_text_row_band);
+    RUN_TEST(S26d_AC2_banner_disjoint_from_thread_first_bubble_TEXT);
+    RUN_TEST(S26d_AC2_banner_disjoint_from_mesh_status_label);
+    RUN_TEST(S26d_AC2_banner_disjoint_from_status_text_row);
     RUN_TEST(S26d_AC2_banner_corners_clear_glass_by_10px);
     RUN_TEST(S26d_AC2_banner_tap_emits_banner_open_exactly_once);
     RUN_TEST(S26d_AC2_banner_drag_off_emits_nothing);

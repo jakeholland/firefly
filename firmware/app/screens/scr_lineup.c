@@ -142,7 +142,7 @@ static void lineup_build_unknown_list(lv_obj_t *parent, ff_app_lineup_item_t con
         lv_obj_t *empty_lbl = lv_label_create(list);
         lv_label_set_text(empty_lbl, "No sets listed for today yet");
         lv_obj_set_style_text_font(empty_lbl, FF_THEME_FONT_LABEL, 0);
-        lv_obj_set_style_text_color(empty_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_set_style_text_color(empty_lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
         return;
     }
 
@@ -229,7 +229,7 @@ static void lineup_build_next_card(lv_obj_t *parent, ff_app_next_t const *next)
     lv_obj_t *label = lv_label_create(parent);
     lv_label_set_text(label, "UP NEXT (STARRED)");
     lv_obj_set_style_text_font(label, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(label, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_align(label, LV_ALIGN_CENTER, 0, (int32_t)LINEUP_LAYOUT_NEXT_LABEL_DY);
 
     lv_obj_t *artist_lbl = lv_label_create(parent);
@@ -278,7 +278,7 @@ static void lineup_render_live(lv_obj_t *parent, ff_app_now_t const *now)
         lv_obj_t *header = lv_label_create(parent);
         lv_label_set_text(header, "NOW PLAYING");
         lv_obj_set_style_text_font(header, FF_THEME_FONT_LABEL, 0);
-        lv_obj_set_style_text_color(header, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_set_style_text_color(header, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
         lv_obj_align(header, LV_ALIGN_CENTER, 0, (int32_t)LINEUP_LAYOUT_LIVE_HEADER_DY);
     }
 
@@ -312,7 +312,7 @@ static void lineup_render_nothing_playing(lv_obj_t *parent)
     lv_obj_t *sub = lv_label_create(parent);
     lv_label_set_text(sub, "Check back closer to your next set");
     lv_obj_set_style_text_font(sub, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_align(sub, LV_ALIGN_CENTER, 0, (int32_t)LINEUP_LAYOUT_NOTHING_PLAYING_SUB_DY);
 }
 
@@ -396,7 +396,7 @@ static void lineup_render_mixed(lv_obj_t *parent, ff_app_now_t const *now)
         lv_obj_t *header = lv_label_create(parent);
         lv_label_set_text(header, "KNOWN SO FAR");
         lv_obj_set_style_text_font(header, FF_THEME_FONT_LABEL, 0);
-        lv_obj_set_style_text_color(header, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_set_style_text_color(header, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
         lv_obj_align(header, LV_ALIGN_CENTER, 0, (int32_t)LINEUP_LAYOUT_MIXED_KNOWN_HEADER_DY);
 
         /* Class (a) first — reuses lineup_build_row() verbatim (stage-
@@ -428,7 +428,7 @@ static void lineup_render_mixed(lv_obj_t *parent, ff_app_now_t const *now)
     lv_obj_t *unknown_header = lv_label_create(parent);
     lv_label_set_text(unknown_header, "STILL TBD");
     lv_obj_set_style_text_font(unknown_header, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(unknown_header, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_style_text_color(unknown_header, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_align(unknown_header, LV_ALIGN_CENTER, 0, unknown_header_dy);
 
     lineup_build_unknown_list(parent, now->lineup, now->n_lineup,
@@ -451,7 +451,7 @@ static void lineup_render_no_pack(lv_obj_t *parent)
     lv_obj_t *sub = lv_label_create(parent);
     lv_label_set_text(sub, "Ask whoever set up your puck to load one");
     lv_obj_set_style_text_font(sub, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_set_width(sub, 280);
     lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(sub, LV_ALIGN_CENTER, 0, (int32_t)LINEUP_LAYOUT_NO_PACK_SUB_DY);
@@ -485,7 +485,7 @@ static void lineup_render_time_unknown(lv_obj_t *parent)
     lv_obj_t *sub = lv_label_create(parent);
     lv_label_set_text(sub, "Clock hasn't synced from the radio yet");
     lv_obj_set_style_text_font(sub, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_set_width(sub, 280);
     lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(sub, LV_ALIGN_CENTER, 0, (int32_t)LINEUP_LAYOUT_TIME_UNKNOWN_SUB_DY);

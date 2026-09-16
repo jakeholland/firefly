@@ -658,7 +658,7 @@ static void compose_render_bubble_text(lv_obj_t *label, char const *text, bool h
 
     if (n == 0 && !has_pending) {
         lv_label_set_recolor(label, false);
-        lv_obj_set_style_text_color(label, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
         lv_label_set_text(label, "Type a message...");
         return;
     }
@@ -1039,14 +1039,14 @@ static void compose_build_pred_draft(lv_obj_t *puck, ff_app_compose_t const *com
     snprintf(to_prefix_buf, sizeof(to_prefix_buf), "%s: ", (compose->to_name[0] != '\0') ? compose->to_name : "EVERYONE");
     lv_label_set_text(to_prefix, to_prefix_buf);
     lv_obj_set_style_text_font(to_prefix, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(to_prefix, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_style_text_color(to_prefix, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
 
     bool cold_open = (compose->text[0] == '\0' && compose->word[0] == '\0' && !compose->word_nomatch);
     if (cold_open) {
         lv_obj_t *ph = lv_label_create(cont);
         lv_label_set_text(ph, "Type a message...");
         lv_obj_set_style_text_font(ph, FF_THEME_FONT_LABEL, 0);
-        lv_obj_set_style_text_color(ph, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_set_style_text_color(ph, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
         return;
     }
 
@@ -1211,7 +1211,7 @@ static void compose_build_pred_strip(lv_obj_t *puck, ff_app_compose_t const *com
         lv_obj_t *nm = lv_label_create(puck);
         lv_label_set_text(nm, "no match");
         lv_obj_set_style_text_font(nm, FF_THEME_FONT_CHIP, 0);
-        lv_obj_set_style_text_color(nm, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_set_style_text_color(nm, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
         lv_obj_align(nm, LV_ALIGN_TOP_MID, 0, FF_COMPOSE_PRED_STRIP_Y + (FF_COMPOSE_PRED_CHIP_H - 16) / 2);
         return;
     }
@@ -1265,7 +1265,7 @@ static void compose_build_pred_strip(lv_obj_t *puck, ff_app_compose_t const *com
         lv_obj_t *lbl = lv_label_create(more);
         lv_label_set_text(lbl, ">");
         lv_obj_set_style_text_font(lbl, FF_THEME_FONT_CHIP, 0);
-        lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
         lv_obj_center(lbl);
         compose_key_press_feedback(more, lbl);
     }
@@ -1319,7 +1319,7 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     lv_obj_t *back_lbl = lv_label_create(back);
     lv_label_set_text(back_lbl, "<");
     lv_obj_set_style_text_font(back_lbl, FF_THEME_FONT_NAME, 0);
-    lv_obj_set_style_text_color(back_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_style_text_color(back_lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_center(back_lbl);
     compose_key_press_feedback(back, back_lbl); /* transparent normally; amber fill on press */
 
@@ -1350,7 +1350,7 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
         snprintf(to_buf, sizeof(to_buf), "TO: %s", (compose->to_name[0] != '\0') ? compose->to_name : "EVERYONE");
         lv_label_set_text(to_lbl, to_buf);
         lv_obj_set_style_text_font(to_lbl, FF_THEME_FONT_LABEL, 0);
-        lv_obj_set_style_text_color(to_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_set_style_text_color(to_lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
         lv_obj_set_style_text_align(to_lbl, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_long_mode(to_lbl, LV_LABEL_LONG_MODE_DOTS);
         /* Height pinned to FF_COMPOSE_TO_H — the SAME constant the layout

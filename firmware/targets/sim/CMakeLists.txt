@@ -726,6 +726,36 @@ if(FF_BUILD_TESTS)
 endif()
 
 # ---------------------------------------------------------------------------
+# puck-ux-usability-review slice 4 (docs/reviews/puck-ux-usability-
+# 2026-09-15.md, finding 8 / slice 4's acceptance criterion 1): no text
+# object on any committed fixture may fall below WCAG AA (4.5:1) against
+# its real, resolved effective background. Same in-process
+# ff_build_face_screen + headless display shape as
+# test_press_feedback_all_faces above.
+# ---------------------------------------------------------------------------
+if(FF_BUILD_TESTS)
+    add_executable(test_text_contrast_all_faces
+        tests/test_text_contrast_all_faces.c
+    )
+    target_link_libraries(test_text_contrast_all_faces PRIVATE
+        ff-sim-fixture
+        ff-sim-face-dispatch
+        ff-app-ui
+        ff-layout
+        lvgl::lvgl
+        unity
+        m
+    )
+    target_compile_definitions(test_text_contrast_all_faces PRIVATE
+        FF_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/fixtures/"
+        FF_APP_SCREENS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../app/screens/"
+    )
+    ff_apply_warnings(test_text_contrast_all_faces)
+
+    add_test(NAME test_text_contrast_all_faces COMMAND test_text_contrast_all_faces)
+endif()
+
+# ---------------------------------------------------------------------------
 # Issue #75/#77 — the map face's circle-containment regression, targeted at
 # tests/fixtures/map_clip_stress.json. Same shape as test_face_hit_targets
 # above (in-process ff_build_face_screen + a headless display buffer, no
