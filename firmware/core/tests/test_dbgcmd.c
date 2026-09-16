@@ -338,6 +338,83 @@ static void dbgcmd_mic_dump_rejects_missing_or_trailing_arg(void)
     TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic dump 5 now", &cmd));
 }
 
+/* ------------------------------------------------------------------- */
+/* 2026-09-16 S26f field fix — "sleep" / "sleep <ms>" / "tpint"          */
+/* ------------------------------------------------------------------- */
+
+static void dbgcmd_sleep_bare_parses_with_no_ms(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("sleep", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_SLEEP, cmd.kind);
+    TEST_ASSERT_FALSE(cmd.u.sleep.has_ms);
+}
+
+static void dbgcmd_sleep_with_ms_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("sleep 5000", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_SLEEP, cmd.kind);
+    TEST_ASSERT_TRUE(cmd.u.sleep.has_ms);
+    TEST_ASSERT_EQUAL_UINT32(5000u, cmd.u.sleep.ms);
+}
+
+/* Boundaries need the 5th decimal digit (60000) — the property
+ * `parse_u32_dec5` exists for (parse_u32_dec's 3-digit cap tops out at
+ * 999, well under FF_DBGCMD_SLEEP_MAX_MS). */
+static void dbgcmd_sleep_accepts_boundaries(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("sleep 50", &cmd));
+    TEST_ASSERT_EQUAL_UINT32(50u, cmd.u.sleep.ms);
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("sleep 60000", &cmd));
+    TEST_ASSERT_EQUAL_UINT32(60000u, cmd.u.sleep.ms);
+}
+
+static void dbgcmd_sleep_rejects_out_of_range(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("sleep 0", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("sleep 49", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("sleep 60001", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("sleep 99999", &cmd));
+}
+
+static void dbgcmd_sleep_rejects_non_decimal(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("sleep now", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("sleep -5", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("sleep 1.5", &cmd));
+}
+
+static void dbgcmd_sleep_rejects_trailing_arg(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("sleep 500 now", &cmd));
+}
+
+/* six digits (>5) must fail the same way a too-long token fails
+ * elsewhere in this parser — never silently truncated/overflowed. */
+static void dbgcmd_sleep_rejects_six_digit_token(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("sleep 100000", &cmd));
+}
+
+static void dbgcmd_tpint_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("tpint", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_TPINT, cmd.kind);
+}
+
+static void dbgcmd_tpint_rejects_trailing_arg(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("tpint now", &cmd));
+}
+
 static void dbgcmd_mic_unknown_sub_verb_rejected(void)
 {
     ff_dbgcmd_t cmd;
@@ -777,6 +854,16 @@ int main(void)
     RUN_TEST(dbgcmd_mic_dump_rejects_non_decimal);
     RUN_TEST(dbgcmd_mic_dump_rejects_missing_or_trailing_arg);
     RUN_TEST(dbgcmd_mic_unknown_sub_verb_rejected);
+
+    RUN_TEST(dbgcmd_sleep_bare_parses_with_no_ms);
+    RUN_TEST(dbgcmd_sleep_with_ms_parses);
+    RUN_TEST(dbgcmd_sleep_accepts_boundaries);
+    RUN_TEST(dbgcmd_sleep_rejects_out_of_range);
+    RUN_TEST(dbgcmd_sleep_rejects_non_decimal);
+    RUN_TEST(dbgcmd_sleep_rejects_trailing_arg);
+    RUN_TEST(dbgcmd_sleep_rejects_six_digit_token);
+    RUN_TEST(dbgcmd_tpint_parses);
+    RUN_TEST(dbgcmd_tpint_rejects_trailing_arg);
 
     RUN_TEST(dbgcmd_music_parses);
     RUN_TEST(dbgcmd_music_with_extra_arg_rejected);

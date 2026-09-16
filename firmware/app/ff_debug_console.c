@@ -164,6 +164,9 @@ static void dbgconsole_help(ff_dbgconsole_reply_fn reply, void *user)
     reply_line(reply, user, "dbg: mic dump <secs>          2026-09-09: stream raw 16kHz PCM as base64, 1-10s");
     reply_line(reply, user, "dbg: music                    S31: beat detector source/loudness/bpm-estimate");
     reply_line(reply, user, "dbg: music seed <n>           S31: reseed the swarm (bench determinism)");
+    reply_line(reply, user, "dbg: sleep                    S26f: force one light-sleep cycle (default period)");
+    reply_line(reply, user, "dbg: sleep <ms>               S26f: same, with an explicit timer-wake period, 50-60000ms");
+    reply_line(reply, user, "dbg: tpint                    S26f: poll touch-INT level for 5s (tap the glass to test)");
 }
 
 static void dbgconsole_me(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
@@ -713,7 +716,8 @@ static void dbgconsole_crew_leave(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, 
  * Every "?" below is this fact's own `has_*`-flag (or enum-UNKNOWN
  * member) reading false — never a fabricated value, same honest-data
  * discipline as every other command in this file. */
-static void dbgconsole_diag(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+static void dbgconsole_diag(ff_shell_t *sh, ff_dbgconsole_wake_log_fn wake_log, void *hook_user,
+                             ff_dbgconsole_reply_fn reply, void *user)
 {
     ff_app_diag_t const d = ff_shell_diag_debug(sh);
     char line[DBGCONSOLE_LINE_BUF];
@@ -831,6 +835,32 @@ static void dbgconsole_diag(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *
                  d.fw_build_date[0] != '\0' ? d.fw_build_date : "unknown", heap_buf);
     }
     reply_line(reply, user, line);
+
+    /* 7. Wakes (2026-09-16 S26f field fix) — the last few light-sleep
+     * wake causes, honestly omitted (not a fabricated "no wakes yet")
+     * when the target has no hook (the sim, which has no light sleep at
+     * all), same NULL convention as `i2c_health` above. This is what
+     * lets the owner put the puck to sleep on battery, tap the glass,
+     * plug back into USB, and read `diag` to see what happened, without
+     * needing a live console session spanning the sleep itself (the
+     * S26f amendment's own USB power-down during light sleep already
+     * makes holding one open across a sleep impossible).
+     *
+     * A DEDICATED (wider than DBGCONSOLE_LINE_BUF) buffer here, unlike
+     * every other `diag` fragment above: `ff_wake_log_format`'s own
+     * caller (app_main.c) can hold several ring-buffer entries (~70 bytes
+     * each), which the shared 200-byte `line` would truncate to 2-3 of
+     * them. 768 comfortably covers a header plus 8 entries with headroom
+     * (the target's own ring-buffer capacity, small and fixed, but not a
+     * fact this app-layer file depends on by name). */
+    if (wake_log != NULL) {
+        char wake_body[768];
+        if (wake_log(hook_user, wake_body, sizeof(wake_body)) >= 0) {
+            char wake_line[sizeof(wake_body) + 16u];
+            snprintf(wake_line, sizeof(wake_line), "dbg: diag %s", wake_body);
+            reply_line(reply, user, wake_line);
+        }
+    }
 }
 
 static void dbgconsole_wall(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
@@ -1011,11 +1041,36 @@ static void dbgconsole_music_seed(ff_shell_t *sh, uint32_t seed, ff_dbgconsole_r
     reply_line(reply, user, line);
 }
 
+/* 2026-09-16 S26f field fix — `sleep`/`tpint`, own-lines shape identical
+ * to `dbgconsole_perf`/`dbgconsole_mic` above: the hook is handed the
+ * reply sink directly and prints its own already-`"dbg: "`-prefixed
+ * lines. NULL is the one case this function itself handles. */
+static void dbgconsole_sleep(ff_dbgconsole_sleep_fn sleep_fn, bool has_ms, uint32_t ms, void *hook_user,
+                              ff_dbgconsole_reply_fn reply, void *user)
+{
+    if (sleep_fn == NULL) {
+        reply_line(reply, user, "dbg: sleep unavailable on this target");
+        return;
+    }
+    sleep_fn(hook_user, has_ms, ms, reply, user);
+}
+
+static void dbgconsole_tpint(ff_dbgconsole_tpint_fn tpint, void *hook_user, ff_dbgconsole_reply_fn reply, void *user)
+{
+    if (tpint == NULL) {
+        reply_line(reply, user, "dbg: tpint unavailable on this target");
+        return;
+    }
+    tpint(hook_user, reply, user);
+}
+
 void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len, uint32_t now_ms,
                                 ff_dbgconsole_reply_fn reply, void *user, ff_dbgconsole_i2c_scan_fn i2c_scan,
                                 ff_dbgconsole_compass_status_fn compass_status,
                                 ff_dbgconsole_i2c_health_fn i2c_health, ff_dbgconsole_perf_fn perf,
-                                ff_dbgconsole_mic_fn mic, ff_dbgconsole_music_frame_fn music_frame)
+                                ff_dbgconsole_mic_fn mic, ff_dbgconsole_music_frame_fn music_frame,
+                                ff_dbgconsole_sleep_fn sleep_fn, ff_dbgconsole_tpint_fn tpint,
+                                ff_dbgconsole_wake_log_fn wake_log)
 {
     (void)now_ms; /* every command below reaches "now" via a shell getter, not this parameter */
     if (sh == NULL || reply == NULL) return;
@@ -1050,7 +1105,7 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
     case FF_DBGCMD_CREW: dbgconsole_crew_status(sh, reply, user); return;
     case FF_DBGCMD_CREW_START: dbgconsole_crew_start(sh, reply, user); return;
     case FF_DBGCMD_CREW_LEAVE: dbgconsole_crew_leave(sh, reply, user); return;
-    case FF_DBGCMD_DIAG: dbgconsole_diag(sh, reply, user); return;
+    case FF_DBGCMD_DIAG: dbgconsole_diag(sh, wake_log, user, reply, user); return;
     case FF_DBGCMD_PERF: dbgconsole_perf(perf, user, reply, user); return;
     case FF_DBGCMD_PING: dbgconsole_ping(sh, cmd.u.node, reply, user); return;
     case FF_DBGCMD_FIND: dbgconsole_find(sh, cmd.u.node, reply, user); return;
@@ -1066,6 +1121,8 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
         return;
     case FF_DBGCMD_MUSIC: dbgconsole_music(sh, music_frame, user, reply, user); return;
     case FF_DBGCMD_MUSIC_SEED: dbgconsole_music_seed(sh, cmd.u.music_seed, reply, user); return;
+    case FF_DBGCMD_SLEEP: dbgconsole_sleep(sleep_fn, cmd.u.sleep.has_ms, cmd.u.sleep.ms, user, reply, user); return;
+    case FF_DBGCMD_TPINT: dbgconsole_tpint(tpint, user, reply, user); return;
     case FF_DBGCMD_NONE: break; /* ff_dbgcmd_parse never returns OK with NONE — unreachable */
     }
     reply_line(reply, user, "dbg: ? try help");

@@ -719,6 +719,129 @@ power, and is already linked into this build (this project's sdkconfig sets
 `esp_driver_usb_serial_jtag`'s own CMakeLists.txt force-links the connection
 monitor on) — no new Kconfig, no `usb_serial_jtag_driver_install()` call.
 
+**AMENDED 2026-09-16 — "on battery the screen went black and tapping the
+screen didn't wake it; had to use PWR"** (owner field report). Root cause,
+confirmed by reading `ff_display.c`'s own S15b comment and by bench
+evidence below: the SPD2010 touch controller is POLLED, not interrupt-
+driven, on this board — the ONLY way a tap can wake the device from light
+sleep is the periodic TIMER wake sampling the controller right after each
+wake. At the steady-state 1500ms period this slice originally used, an
+ordinary short tap (well under a second) can land entirely BETWEEN two
+timer wakes and never be sampled — only a HELD press (>= one full period)
+was guaranteed to still be down at the next wake's poll. This was
+invisible on the bench because light sleep is inhibited while USB is
+connected (the amendment above) — every prior bench session was, by
+construction, never exercising this path at all.
+
+**The fix:** `ff_idle_light_sleep_timer_ms` (`core/include/ff_idle.h`
+`[api]`) — a pure function of "how long has the device been asleep" —
+shortens the timer-wake period to `FF_IDLE_LIGHT_SLEEP_FAST_TIMER_MS`
+(300ms) for the first `FF_IDLE_LIGHT_SLEEP_FAST_WINDOW_MS` (5 minutes)
+after SLEEP is entered — the window a wearer who just set the puck down
+is statistically most likely to still be interacting with it — then backs
+off to `FF_IDLE_LIGHT_SLEEP_SLOW_TIMER_MS` (1500ms, the original spec
+value) for the rest of the sleep. Deterministic and unit-tested (short,
+then long — `S26f_fix_timer_ms_*`, `core/tests/test_idle.c`), independent
+of whether touch-INT ever fires. `app_main.c` computes "ms since SLEEP was
+entered" from `ff_idle_t.ref_ms` (the struct is fully-defined, not opaque)
+and reprograms `esp_sleep_enable_timer_wakeup()` fresh before every light-
+sleep cycle. This does not change touch delivery or the wake-only rule at
+all (the waking touch is still never delivered as a tap) — only how OFTEN
+the existing timer-wake-plus-poll mechanism samples the controller.
+
+**Estimated battery cost** (published ESP32-S3 figures, NOT a bench
+measurement — no ammeter was available for this fix; state this
+explicitly rather than fabricate precision): light-sleep current on this
+chip is on the order of several hundred µA to ~1 mA depending on which
+domains stay powered (this build forces `VDD_SDIO` ON for PSRAM/flash,
+above the datasheet's minimal-config baseline); each wake burst runs one
+ordinary render-loop iteration (single-digit milliseconds, per this file's
+own TWDT-margin comments) at roughly tens of mA. Over the fast window,
+300ms cadence costs ~1000 wake bursts in 5 minutes versus ~200 at the
+1500ms steady-state period — ~800 extra brief bursts, ONCE per sleep-entry
+event, each on the order of 8e-5 mAh: comfortably under 0.1 mAh total per
+occurrence, negligible against any battery capacity this puck could carry.
+This is an estimate to be confirmed with a real measurement in the field,
+not a claim of a measured number.
+
+**New bench tooling** (`CONFIG_FF_DEBUG_CONSOLE`, device only — see
+`docs/hardware/comms-brain.md`'s "Bench console" section for the full
+reference): `sleep` / `sleep <ms>` forces ONE light-sleep cycle right now,
+ignoring the USB-connected inhibit (every wake source stays armed), and
+reports the wake cause, the touch-INT GPIO level sampled immediately
+before sleep and immediately after wake, and the elapsed time; `tpint`
+polls the touch-INT GPIO level for a fixed 5s window so a bench operator
+can tap the glass and see whether the line moves. Both share
+`ff_run_light_sleep_cycle` (`app_main.c`) with the ordinary scheduled
+sleep path — never two hand-copied implementations. Every cycle (forced
+or scheduled) is recorded into a small ring buffer
+(`FF_WAKE_LOG_CAPACITY` = 8 entries) that `diag` reads back — this is
+what lets the owner put the puck to sleep on battery, tap the glass, plug
+back into USB, and read `diag` to see what actually happened, since a
+live console session cannot span a sleep (USB drops during it) — reconnect
+after, then run `diag`.
+
+**Bench evidence gathered** (2026-09-16, board 3 XIAO `!8f48af24`, crew
+FIRE-8MNTT2, USB-tethered — `sleep`/`tpint` exist specifically to make
+this possible without inhibiting sleep): with NO finger anywhere near the
+glass, repeated `sleep`/`sleep <ms>` calls at periods from 50ms to 10000ms
+show two honest, unexpected results, reported here without being
+smoothed over:
+  1. At a genuinely short period (50ms) the TIMER wake fires with
+     `elapsed_ms` matching the configured period EXACTLY, every time —
+     direct confirmation the fast-window mechanism itself works correctly
+     on real hardware.
+  2. At longer periods (1500ms, and even an explicit 10000ms), most
+     cycles instead woke on a GPIO cause well BEFORE the configured timer
+     — elapsed times of 52-487ms were observed against configured periods
+     up to 10s — with the touch-INT level reading HIGH immediately before
+     sleep and LOW immediately after. One cycle returned near-instantly
+     (`elapsed_ms=1`, wake cause `UNDEFINED`) with touch-INT ALREADY LOW
+     at the pre-sleep sample, consistent with a level wake source that was
+     already asserted aborting sleep entry outright.
+  This is real, repeatable evidence that GPIO4 (touch-INT) does NOT idle
+  cleanly HIGH on this bench unit — it is honest to report, and it is
+  NOT the same claim as "the SPD2010 asserts INT on a genuine touch": the
+  bench evidence was gathered entirely over USB, which could itself be an
+  EMI/ground-noise source for this GPIO (the CDC link's own activity) —
+  this cannot be ruled out without a battery-only test, which needs the
+  owner (an active console session cannot survive a real light sleep to
+  observe it directly; the ring-buffer/`diag` readback above is the
+  designed workaround). If the noise turns out to be real (not
+  USB-induced) it also means an occasional light-sleep call may fail to
+  actually sleep at all (the `UNDEFINED`-cause case above) — a possible
+  additional battery cost distinct from the tap-wake bug this fix
+  targets, flagged for the owner's awareness rather than addressed here,
+  given the field deadline.
+
+**Owner steps to finish verification** (needs a real finger and/or real
+battery operation — an agent cannot do either):
+  1. **On-glass tap test** (bench, USB fine): `sleep 5000` on the console,
+     then tap the glass once within the 5s window. Reconnect after (the
+     port drops during the sleep) and read the direct reply if it landed,
+     or run `diag` and read the newest `wakes` entry — `cause=GPIO`
+     alongside `touch_int_post=0` (assuming an active-LOW controller,
+     matching this file's own polarity assumption) is the signature of a
+     touch-INT-caused wake; `cause=TIMER` means the fast-window fix (not
+     touch-INT) caught it, still correct per the spec's wake-only rule.
+  2. **`tpint` with a tap**: `tpint`, then tap the glass once during the
+     5s window; `transitions` and `ever_low` should move from whatever the
+     no-touch baseline showed.
+  3. **Real battery test**: unplug USB, let the puck sit untouched for a
+     few minutes past `t_off + t_sleep` (~2.5 min) so it enters SLEEP for
+     real, optionally tap once, then reconnect USB and run `diag` — the
+     `wakes` line's newest (non-`forced`) entries are genuine battery-
+     power evidence, unlike every bench number above (all forced, all
+     USB-tethered). This is also the only way to confirm the fast-window
+     schedule's own device-side wiring (`app_main.c`'s `ms_since_sleep_
+     entered` computation, which `sleep`/`sleep <ms>` deliberately bypass
+     by taking an explicit period) actually engages on device — it is
+     unit-tested at the pure-function level
+     (`ff_idle_light_sleep_timer_ms`) and code-reviewed, but not yet
+     exercised end-to-end on hardware, since light sleep cannot be
+     naturally entered while USB-tethered (the amendment above) and no
+     agent can unplug the cable.
+
 ### (g) Boot animation
 A splash (the firefly mark, ~1 s: ramp up, hold at full amber, ramp down —
 raised from ≤ 1 s after the first cut read as a blink on glass) drawn as the

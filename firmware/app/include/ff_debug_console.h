@@ -60,6 +60,7 @@
 #ifndef FF_DEBUG_CONSOLE_H
 #define FF_DEBUG_CONSOLE_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -290,6 +291,73 @@ typedef void (*ff_dbgconsole_mic_fn)(void *user, ff_dbgconsole_mic_action_t acti
 typedef int (*ff_dbgconsole_music_frame_fn)(void *user, char *out, size_t cap);
 
 /**
+ * ff_dbgconsole_sleep_fn / ff_dbgconsole_tpint_fn / ff_dbgconsole_wake_log_fn
+ * — 2026-09-16 field fix (S26f, owner report "on battery the screen went
+ * black and tapping didn't wake it; had to use PWR"). Device-only bench
+ * tooling for the touch-INT/timer light-sleep wake investigation — see
+ * `docs/specs/S26-device-lifecycle.md` slice (f)'s dated amendment for
+ * the full bug writeup and `firmware/targets/esp32s3/main/app_main.c` for
+ * the implementation (`ff_run_light_sleep_cycle`, the wake-cause ring
+ * buffer).
+ *
+ * `ff_dbgconsole_sleep_fn` — the `sleep`/`sleep <ms>` command's ONE hook.
+ * Follows `ff_dbgconsole_perf_fn`'s own-lines shape (handed the reply sink
+ * directly): forces exactly ONE light-sleep cycle right now — ignoring
+ * the S26f amendment's USB-connected inhibit (this is the whole point: a
+ * bench engineer on USB needs to force a cycle to test it), but still
+ * arming every normal wake source (timer/PWR/BOOT/touch-INT) — and
+ * reports the wake cause, the touch-INT GPIO level sampled immediately
+ * before sleep and immediately after wake, and the elapsed wall time.
+ * `has_ms`/`ms` mirror `ff_dbgcmd_t.u.sleep` exactly (`ms` meaningless
+ * when `has_ms` is false — the hook picks its own default period).
+ * `sleep == NULL` (the sim, which has no light sleep at all) is this
+ * function's own job in `ff_debug_console.c`, mirroring `perf`/`mic`'s
+ * identical NULL contract: `"dbg: sleep unavailable on this target"`.
+ *
+ * A caveat this doc comment states rather than hides (honest-data rule,
+ * CLAUDE.md): `esp_light_sleep_start()` powers down the USB-Serial/JTAG
+ * peripheral for the cycle's own duration (the SAME fact that motivates
+ * the S26f amendment this command bypasses) — the reply this hook writes
+ * AFTER waking may be lost if the host has not yet re-enumerated the port
+ * by the time it is written. The wake-cause ring buffer
+ * (`ff_dbgconsole_wake_log_fn` below, read back via `diag`) is what makes
+ * the result recoverable even when the direct reply is lost.
+ */
+typedef void (*ff_dbgconsole_sleep_fn)(void *user, bool has_ms, uint32_t ms, ff_dbgconsole_reply_fn reply,
+                                        void *reply_user);
+
+/**
+ * ff_dbgconsole_tpint_fn — the `tpint` command's hook. Polls the SPD2010
+ * touch-INT GPIO level for a fixed 5s window (own-lines shape, same as
+ * `sleep` above — one summary line, not a stream) so a bench operator can
+ * tap the glass during that window and see whether the line ever moves —
+ * the direct experiment for "does the SPD2010 assert INT on this board at
+ * all, and which polarity" (`app_main.c`'s own S26f doc comment on
+ * `FF_PIN_TOUCH_INT` has the "unverified, prior evidence it never
+ * asserts" background). This BLOCKS the calling task for the whole 5s,
+ * the same bench-only tradeoff `ff_dbgconsole_mic_fn`'s `mic watch`
+ * already documents. `tpint == NULL` (the sim, no touch-INT GPIO at all)
+ * replies `"dbg: tpint unavailable on this target"`.
+ */
+typedef void (*ff_dbgconsole_tpint_fn)(void *user, ff_dbgconsole_reply_fn reply, void *reply_user);
+
+/**
+ * ff_dbgconsole_wake_log_fn — `diag`'s OPTIONAL extra fragment: the last
+ * few light-sleep wake causes (both the ordinary scheduled ones and any
+ * forced by `sleep`), so a maintainer can put the puck to sleep on
+ * battery, walk away, tap the glass, plug back into USB, and read `diag`
+ * to see what actually happened without having had a live console
+ * session spanning the sleep itself (which the S26f amendment's own USB
+ * power-down already makes impossible to hold open). Same single-line-
+ * fragment shape as `i2c_health`/`compass_status` (`out`/`cap`, `>= 0` on
+ * success) — appended to `diag`'s existing reply, never a command of its
+ * own. `wake_log == NULL` (the sim, no light sleep at all) honestly omits
+ * the fragment, the same NULL-is-honestly-omitted convention `i2c_health`
+ * already establishes — never a fabricated "no wakes yet".
+ */
+typedef int (*ff_dbgconsole_wake_log_fn)(void *user, char *out, size_t cap);
+
+/**
  * ff_dbgconsole_handle_line — parse one raw line (via
  * `ff_dbgcmd_parse`) and dispatch it against `sh`, emitting zero or
  * more `"dbg: "`-prefixed reply lines through `reply`.
@@ -334,12 +402,21 @@ typedef int (*ff_dbgconsole_music_frame_fn)(void *user, char *out, size_t cap);
  * mic's "whole feature unavailable" NULL contract, `music` itself is
  * real on both targets (see `dbgconsole_music`'s own doc comment); only
  * this ONE fragment of its reply is conditionally absent-data.
+ *
+ * `sleep`/`tpint` (2026-09-16 S26f field fix) are `ff_dbgconsole_sleep_fn`/
+ * `ff_dbgconsole_tpint_fn` — see their own doc comments just above for the
+ * NULL-is-"unavailable on this target" contract, identical to `perf`/
+ * `mic`. `wake_log` is `ff_dbgconsole_wake_log_fn`, `diag`'s OPTIONAL
+ * extra fragment (own doc comment above) — `wake_log == NULL` honestly
+ * omits it, the same convention `i2c_health` already establishes.
  */
 void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len, uint32_t now_ms,
                                 ff_dbgconsole_reply_fn reply, void *user, ff_dbgconsole_i2c_scan_fn i2c_scan,
                                 ff_dbgconsole_compass_status_fn compass_status,
                                 ff_dbgconsole_i2c_health_fn i2c_health, ff_dbgconsole_perf_fn perf,
-                                ff_dbgconsole_mic_fn mic, ff_dbgconsole_music_frame_fn music_frame);
+                                ff_dbgconsole_mic_fn mic, ff_dbgconsole_music_frame_fn music_frame,
+                                ff_dbgconsole_sleep_fn sleep_fn, ff_dbgconsole_tpint_fn tpint,
+                                ff_dbgconsole_wake_log_fn wake_log);
 
 #endif /* FF_TARGET_SIM || CONFIG_FF_DEBUG_CONSOLE */
 

@@ -75,6 +75,15 @@
  *   find <node_hex>         — S29 PR2: start an ordinary FIND session on
  *                             that node, exactly as the UI gesture would
  *   find off                — S29 PR2: cancel the active FIND session
+ *   sleep | sleep <ms>      — 2026-09-16 field fix (S26f): force ONE
+ *                             light-sleep cycle right now, ignoring the
+ *                             USB-connected inhibit, still applying every
+ *                             wake source; reports the wake cause + INT
+ *                             level + elapsed time (device only)
+ *   tpint                   — 2026-09-16 field fix (S26f): poll the touch-
+ *                             INT GPIO level for a fixed 5s window, for a
+ *                             bench operator to correlate against a tap
+ *                             (device only)
  * Anything else is `FF_DBGCMD_ERR_UNKNOWN` — the dispatcher's reply for
  * that is the fixed string `"dbg: ? try help"` (S16-style "the shell
  * decides", except here the deciding is this table).
@@ -190,10 +199,33 @@
  * `tools/beat_replay.py`) — this parser still carries no mic policy of
  * its own; the actual ring-buffer/streaming plumbing lives entirely in
  * the esp32s3 target (`ff_mic.h`'s own doc comment).
+ *
+ * `sleep` / `sleep <ms>` (2026-09-16 field fix, S26f — owner report "on
+ * battery the screen went black and tapping didn't wake it") is a bare
+ * verb with an OPTIONAL decimal argument, unlike every other verb above:
+ * `sleep` alone carries no payload (`out->u.sleep.has_ms = false`);
+ * `sleep <ms>` carries one (`has_ms = true`, `u.sleep.ms` already bounds-
+ * checked into `[FF_DBGCMD_SLEEP_MIN_MS, FF_DBGCMD_SLEEP_MAX_MS]`, the
+ * same "never let an out-of-range value reach the dispatcher" discipline
+ * `mic watch`/`mic dump` already apply). Up to 5 digits (unlike `mic`'s
+ * 3): `FF_DBGCMD_SLEEP_MAX_MS` needs 5. This parser carries no sleep
+ * policy of its own (same "zero I/O, zero policy" split every verb here
+ * keeps) — what a forced light-sleep cycle actually DOES (which wake
+ * sources, how the cycle is measured) lives entirely in the esp32s3
+ * target (`app_main.c`'s `ff_run_light_sleep_cycle`); the sim/host build
+ * has no light sleep at all and reports the command unavailable
+ * (`ff_debug_console.h`'s `ff_dbgconsole_sleep_fn` doc comment).
+ *
+ * `tpint` (2026-09-16 field fix, S26f) is zero-arg like `i2c`/`diag`
+ * above — a bare verb, no sub-verb, no argument, no policy of its own:
+ * the fixed 5s poll window lives in the esp32s3 target's
+ * `ff_dbgconsole_tpint_fn` hook, honestly unavailable on the sim (no
+ * touch-INT GPIO to poll at all).
  */
 #ifndef FF_DBGCMD_H
 #define FF_DBGCMD_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -233,6 +265,17 @@ extern "C" {
 #define FF_DBGCMD_MIC_DUMP_MIN_S 1u
 #define FF_DBGCMD_MIC_DUMP_MAX_S 10u
 
+/** `sleep <ms>` bounds (2026-09-16 field fix, S26f) — see this header's
+ *  top comment, "sleep". Min 50ms: anything shorter is not a meaningful
+ *  light-sleep cycle (esp_light_sleep_start's own wake/resume overhead is
+ *  on that order). Max 60000ms (60s): comfortably longer than the normal
+ *  1500ms steady-state period or the 300ms fast-window period
+ *  (ff_idle.h's `FF_IDLE_LIGHT_SLEEP_*_TIMER_MS`) while still bounding a
+ *  bench operator's console from accidentally blocking the render loop
+ *  task for an unbounded time. */
+#define FF_DBGCMD_SLEEP_MIN_MS 50u
+#define FF_DBGCMD_SLEEP_MAX_MS 60000u
+
 /** Every line this parser recognizes. `FF_DBGCMD_NONE` is the zero value
  *  used for "nothing parsed yet" / a rejected line; it is never a
  *  successful parse's `kind`. */
@@ -270,6 +313,8 @@ typedef enum {
     FF_DBGCMD_CREW,         /* A02 slice D2: "crew" bare — crew code/index/region/precision/operation status */
     FF_DBGCMD_CREW_START,   /* A02 slice D2: "crew start" */
     FF_DBGCMD_CREW_LEAVE,   /* A02 slice D2: "crew leave" */
+    FF_DBGCMD_SLEEP,        /* 2026-09-16 S26f field fix: "sleep" / "sleep <ms>" — u.sleep, device only */
+    FF_DBGCMD_TPINT,        /* 2026-09-16 S26f field fix: "tpint" — 5s touch-INT GPIO poll, device only */
 } ff_dbgcmd_kind_t;
 
 /** Why a line failed to become a command. `FF_DBGCMD_ERR_EMPTY` is not
@@ -299,9 +344,11 @@ typedef enum {
  * seed <n>", a plain decimal via the same `parse_u32_dec` helper `mic
  * watch` uses, capped at that helper's own 3-digit/999 ceiling — no
  * further range check needed, unlike `mic watch`'s duration, since any
- * u32 is a legal PRNG seed); every other kind (including `FF_DBGCMD_
+ * u32 is a legal PRNG seed); `u.sleep` only for `FF_DBGCMD_SLEEP`
+ * (2026-09-16 S26f field fix — `has_ms`/`ms`, see this header's top
+ * comment, "sleep"); every other kind (including `FF_DBGCMD_
  * FIND_OFF`, `FF_DBGCMD_MIC`, `FF_DBGCMD_MIC_ON`, `FF_DBGCMD_MIC_OFF`,
- * `FF_DBGCMD_MUSIC`) carries no payload at all.
+ * `FF_DBGCMD_MUSIC`, `FF_DBGCMD_TPINT`) carries no payload at all.
  */
 typedef struct {
     ff_dbgcmd_kind_t kind;
@@ -315,6 +362,10 @@ typedef struct {
         uint32_t mic_watch_secs;   /* S30: "mic watch <secs>" duration, already bounds-checked */
         uint32_t mic_dump_secs;    /* 2026-09-09 amendment: "mic dump <secs>" duration, already bounds-checked */
         uint32_t music_seed;       /* S31: "music seed <n>" — the swarm PRNG seed to apply next build */
+        struct {
+            bool     has_ms; /* false: "sleep" bare — dispatcher picks the default period */
+            uint32_t ms;     /* "sleep <ms>": already bounds-checked into [FF_DBGCMD_SLEEP_MIN_MS, _MAX_MS] */
+        } sleep;                   /* 2026-09-16 S26f field fix: FF_DBGCMD_SLEEP only */
     } u;
 } ff_dbgcmd_t;
 
