@@ -2803,6 +2803,71 @@ static void S26e_home_is_rejected_while_the_power_menu_covers_the_launcher(void)
     ff_shell_close(&h.shell);
 }
 
+/* =================================================================== */
+/* S26 slice b amendment, field-hardening ahead of Lost Lands — the      */
+/* Settings "POWER" row (scr_settings.c). The printed case's physical    */
+/* PWR button does not actuate reliably, so the row gives a second way   */
+/* into the SAME power menu. The row itself emits nothing but the        */
+/* ordinary FF_INTENT_POWER_MENU_OPEN (the screen-level test,             */
+/* S26b_settings_power_row_emits_power_menu_open_intent in                */
+/* test_scr_intent.c, pins that emission) — these two tests instead pin  */
+/* the SHELL-level fact the task asked for: sent from a state where       */
+/* Settings is the visible base (the only state the real row can ever be */
+/* tapped from), it produces the exact same FF_APP_FACE_POWER_MENU state */
+/* a PWR long-press produces, and Cancel returns to Settings — never to  */
+/* the launcher/boot default, since Settings (unlike the launcher in the */
+/* S26e tests above) was never replaced, only had a modal pushed over    */
+/* it. */
+/* =================================================================== */
+
+static void S26b_power_menu_open_from_settings_reaches_the_same_state_a_long_press_does(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    /* Land on Settings first — the only base the real row is ever tapped
+     * from — the same launcher-select technique
+     * bug1_brightness_change_does_not_mark_the_render_dirty above uses to
+     * leave the boot-default launcher. */
+    ff_intent_t goto_settings = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    goto_settings.u.launcher_idx = 4u; /* Settings */
+    ff_shell_intent(&h.shell, &goto_settings);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, power_view(&h)->active_face);
+
+    /* The row's own emission (screen-level, pinned separately) and the PWR
+     * long-press both resolve to this one intent — sending it here is
+     * exactly what a tap on the row does. */
+    send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
+
+    TEST_ASSERT_EQUAL(FF_APP_FACE_POWER_MENU, power_view(&h)->active_face);
+
+    ff_shell_close(&h.shell);
+}
+
+static void S26b_power_menu_cancel_from_settings_returns_to_settings(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    ff_intent_t goto_settings = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    goto_settings.u.launcher_idx = 4u; /* Settings */
+    ff_shell_intent(&h.shell, &goto_settings);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, power_view(&h)->active_face);
+
+    send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_POWER_MENU, power_view(&h)->active_face);
+
+    send_power(&h.shell, FF_INTENT_POWER_CANCEL);
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_SETTINGS, power_view(&h)->active_face,
+                              "Cancel must reveal Settings again — it was never replaced, only covered");
+    TEST_ASSERT_EQUAL_INT(0, spy.off_calls);
+    TEST_ASSERT_EQUAL_INT(0, spy.reboot_calls);
+
+    ff_shell_close(&h.shell);
+}
+
 /* S17 slice a: FF_SETTING_COLORBLIND — the exact same bool-backed,
  * persist-on-change-only contract as IMPERIAL above, pinned separately
  * per this repo's own "test names mirror the criteria" convention
@@ -3260,6 +3325,8 @@ int main(void)
     RUN_TEST(S26e_power_menu_opens_over_the_launcher_base);
     RUN_TEST(S26e_power_menu_cancel_over_the_launcher_returns_to_the_launcher);
     RUN_TEST(S26e_home_is_rejected_while_the_power_menu_covers_the_launcher);
+    RUN_TEST(S26b_power_menu_open_from_settings_reaches_the_same_state_a_long_press_does);
+    RUN_TEST(S26b_power_menu_cancel_from_settings_returns_to_settings);
     RUN_TEST(S16_AC8_setting_set_out_of_range_is_rejected_not_clamped);
     RUN_TEST(S16_AC8_setting_set_my_name_is_bounded_and_terminated);
     RUN_TEST(S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible);

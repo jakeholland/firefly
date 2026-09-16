@@ -280,12 +280,21 @@ typedef enum {
      * injected power_off/power_reboot hooks), never on anything the
      * screen or the hardware sampler carries.
      *
-     * POWER_MENU_OPEN — NOT emitted by a screen. The esp32s3 target's
-     *   app_main calls `ff_shell_intent()` with this directly (the same
-     *   pattern FF_INTENT_CALIBRATE_TOUCH's in-app re-emit already uses,
+     * POWER_MENU_OPEN — has TWO emitters as of the field-hardening pass
+     *   ahead of Lost Lands (the printed case's physical PWR button does
+     *   not actuate reliably): the esp32s3 target's app_main calls
+     *   `ff_shell_intent()` with this directly (the same pattern
+     *   FF_INTENT_CALIBRATE_TOUCH's in-app re-emit already uses,
      *   ff_shell.c) when its `ff_power_fsm_t` reports LONG_PRESS —
      *   app_main forwards the FSM's decision; it makes none of its own
-     *   (CLAUDE.md's "no `if` about behavior in app_main"). Pushes the
+     *   (CLAUDE.md's "no `if` about behavior in app_main") — AND
+     *   `scr_settings.c`'s "POWER" row (bottom of the Settings list,
+     *   `settings_power_open_cb`) emits the exact same intent on a tap,
+     *   reusing this one handler and the `ff_scr_power_menu_build` modal
+     *   verbatim rather than a second power-menu path. Both land on the
+     *   same `ff_route_push_modal(&sh->route, FF_APP_FACE_POWER_MENU)`
+     *   call below, so a Settings-row tap produces the identical
+     *   `FF_APP_FACE_POWER_MENU` state a PWR long-press does. Pushes the
      *   FF_APP_FACE_POWER_MENU modal (rejected, silently, exactly like
      *   any other push_modal call, if a takeover is up or another modal
      *   is already open — Compose's draft is never interrupted by a

@@ -4025,6 +4025,26 @@ static void S12_settings_crew_row_emits_open_crew_intent(void)
     TEST_ASSERT_EQUAL(FF_INTENT_SETTINGS_OPEN_CREW, s_spy.last.kind);
 }
 
+/* S26 slice b amendment (field-hardening ahead of Lost Lands) — the
+ * "POWER" row, at the bottom of the list, emits the exact same
+ * FF_INTENT_POWER_MENU_OPEN the esp32s3 target's PWR long-press
+ * dispatches (ff_intent.h's own doc comment). The screen only reports
+ * the tap; the shell decides the modal transition — same "bare action
+ * row" shape as CREW/CALIBRATE TOUCH above, and the same click()-
+ * injection convention. */
+static void S26b_settings_power_row_emits_power_menu_open_intent(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    click(find_button_with_label(lv_screen_active(), "POWER"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_POWER_MENU_OPEN, s_spy.last.kind);
+}
+
 /* =================================================================== */
 /* S12/S04 — the CREW page: real lv_indev taps (not click()'s direct     */
 /* LV_EVENT_CLICKED injection) on REMOVE/ADD, proving each control       */
@@ -5351,6 +5371,7 @@ int main(void)
     RUN_TEST(S_name_edit_back_emits_back_intent);
 
     RUN_TEST(S12_settings_crew_row_emits_open_crew_intent);
+    RUN_TEST(S26b_settings_power_row_emits_power_menu_open_intent);
     RUN_TEST(S12_crew_hide_real_tap_emits_hide_with_node_id);
     RUN_TEST(S12_crew_hide_full_area_tap_emits_hide_exactly_once);
     RUN_TEST(S12_crew_add_real_tap_emits_pair_with_node_id);

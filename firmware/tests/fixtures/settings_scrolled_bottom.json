@@ -1,7 +1,7 @@
 {
   "fixture": "settings_scrolled_bottom",
   "face": "settings",
-  "ui_settings_scroll_y": 1000,
+  "ui_settings_scroll_y": 5000,
   "settings": {
     "imperial": true,
     "share_mode": "live",

@@ -7920,12 +7920,16 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
     /* --- S26 slice b — PWR button -> power menu -> soft power-off ---- */
 
     case FF_INTENT_POWER_MENU_OPEN:
-        /* NOT screen-originated (see ff_intent.h's doc comment on this
-         * kind) — the esp32s3 target's app_main dispatches this directly
-         * when its ff_power_fsm_t reports LONG_PRESS. Gated on the
-         * takeover exactly like OPEN_COMPOSE/OPEN_SETTINGS above
-         * (routing rule 4): a PWR long-press must not steal input from a
-         * live takeover. push_modal's own rules do the rest — rejected,
+        /* Two emitters as of the field-hardening pass ahead of Lost
+         * Lands (see ff_intent.h's doc comment on this kind): the
+         * esp32s3 target's app_main dispatches this directly when its
+         * ff_power_fsm_t reports LONG_PRESS, and scr_settings.c's
+         * "POWER" row dispatches the identical intent on a tap — both
+         * land here, so a Settings-row tap produces the same
+         * FF_APP_FACE_POWER_MENU state a PWR long-press does. Gated on
+         * the takeover exactly like OPEN_COMPOSE/OPEN_SETTINGS above
+         * (routing rule 4): neither emitter may steal input from a live
+         * takeover. push_modal's own rules do the rest — rejected,
          * silently, over an already-open modal (Compose's draft is never
          * interrupted) or an off-axis base. */
         if (takeover_up) return;
