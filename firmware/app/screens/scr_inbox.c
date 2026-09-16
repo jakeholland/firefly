@@ -1089,7 +1089,7 @@ static void inbox_build_conv_row(lv_obj_t *parent, ff_inbox_conv_t const *cv, in
         inbox_preview_text(cv, line, sizeof(line));
     } else if (cv->kind == FF_CONV_CREW) {
         snprintf(line, sizeof(line), "NO MESSAGES YET");
-        line_color = FF_THEME_COLOR_DIM;
+        line_color = FF_THEME_COLOR_MUTED;
     } else {
         inbox_presence_text(cv, line, sizeof(line), &line_color);
     }
@@ -1115,7 +1115,7 @@ static void inbox_build_conv_row(lv_obj_t *parent, ff_inbox_conv_t const *cv, in
         lv_label_set_text(age, age_buf);
         lv_obj_set_style_text_font(age, FF_THEME_FONT_CHIP, 0);
         lv_obj_set_style_text_color(age,
-                                    lv_color_hex(cv->unread > 0 ? FF_THEME_COLOR_MUTED : FF_THEME_COLOR_DIM), 0);
+                                    lv_color_hex(cv->unread > 0 ? FF_THEME_COLOR_MUTED : FF_THEME_COLOR_MUTED), 0);
         lv_obj_align(age, LV_ALIGN_RIGHT_MID, -2, cv->unread > 0 ? -12 : 0);
     }
     if (cv->unread > 0) {
@@ -1329,7 +1329,7 @@ static void inbox_build_no_crew_hint(lv_obj_t *list, int32_t y, int32_t margin_x
     lv_obj_t *sub = lv_label_create(box);
     lv_label_set_text(sub, "Add crew in Settings > Crew"); /* S12/S04 */
     lv_obj_set_style_text_font(sub, FF_THEME_FONT_CHIP, 0);
-    lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 34);
 }
 
@@ -1440,7 +1440,7 @@ static void inbox_build_picker(lv_obj_t *parent, ff_app_inbox_t const *v, bool c
              * is informed ("is Dana even reachable?"); the CREW row's
              * subtitle names what it is. */
             char line[32];
-            uint32_t line_color = FF_THEME_COLOR_DIM;
+            uint32_t line_color = FF_THEME_COLOR_MUTED;
             if (is_crew) {
                 snprintf(line, sizeof(line), "EVERYONE PAIRED");
             } else {
@@ -1557,7 +1557,7 @@ static void inbox_msg_sender_line(lv_obj_t *row, ff_inbox_msg_t const *m, char c
     lv_obj_set_pos(name, x, 0);
     x += inbox_label_clamp(name, 120) + 8;
 
-    lv_obj_t *age_l = inbox_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+    lv_obj_t *age_l = inbox_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
     lv_obj_set_pos(age_l, x, 1);
 }
 
@@ -1595,7 +1595,7 @@ static uint32_t inbox_send_status_color(ff_feed_send_status_t s)
     case FF_SEND_WAITING:
     case FF_SEND_SENT:
     case FF_SEND_NONE:
-    default: return FF_THEME_COLOR_DIM; /* neutral in-progress / nothing to report */
+    default: return FF_THEME_COLOR_MUTED; /* neutral in-progress / nothing to report */
     }
 }
 
@@ -1611,7 +1611,7 @@ static void inbox_msg_age_below(lv_obj_t *row, ff_inbox_msg_t const *m, char con
     bool const out = (m->dir == FEED_DIR_OUT);
     char const *status_text = out ? inbox_send_status_text(m->send_status) : NULL;
 
-    lv_obj_t *l = inbox_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+    lv_obj_t *l = inbox_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
     lv_obj_update_layout(l);
     int32_t const age_x = out ? (row_w - lv_obj_get_width(l) - 4) : 4;
     lv_obj_set_pos(l, age_x, y);
@@ -1734,7 +1734,7 @@ static void inbox_msg_event_line(lv_obj_t *row, ff_inbox_msg_t const *m, char co
     lv_obj_set_pos(what, x, 1);
     (void)inbox_label_clamp(what, row_w - x - 58);
 
-    lv_obj_t *age_l = inbox_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+    lv_obj_t *age_l = inbox_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
     lv_obj_update_layout(age_l);
     lv_obj_set_pos(age_l, row_w - lv_obj_get_width(age_l) - 4, 1);
 }
@@ -1869,7 +1869,7 @@ static void inbox_build_thread_header(lv_obj_t *parent, ff_app_inbox_t const *v,
         uint8_t const n = ff_inbox_conv_count(&v->inbox);
         char buf[16];
         snprintf(buf, sizeof(buf), "%u CREW", (n > 0u) ? (unsigned)(n - 1u) : 0u);
-        lv_obj_t *sub = inbox_mk_label(parent, buf, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+        lv_obj_t *sub = inbox_mk_label(parent, buf, FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
         lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 58);
         return;
     }
@@ -2039,7 +2039,7 @@ static void inbox_build_thread(lv_obj_t *parent, ff_app_inbox_t const *v, bool c
          * Renamed 2026-09-01, was "NO SIGNALS YET" (reviewer PR #144
          * round 2). */
         lv_obj_t *empty = inbox_mk_label(list, "NO MESSAGES YET", FF_THEME_FONT_CHIP,
-                                           FF_THEME_COLOR_DIM);
+                                           FF_THEME_COLOR_MUTED);
         lv_obj_set_style_text_letter_space(empty, 2, 0);
         lv_obj_align(empty, LV_ALIGN_CENTER, 0, -20);
     }
@@ -2256,7 +2256,11 @@ static void inbox_build_popup(lv_obj_t *parent, ff_app_inbox_t const *v, bool co
 
     lv_obj_t *hint = inbox_mk_label(parent, scope, FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
     lv_obj_set_style_text_letter_space(hint, 1, 0);
-    lv_obj_set_style_text_opa(hint, LV_OPA_40, 0); /* the dimmed thread-context cue */
+    /* puck-ux-usability-2026-09-15 slice 4: MUTED at LV_OPA_40 measured
+     * 1.85:1 against BG (test_text_contrast_all_faces.c's whole-fixture
+     * sweep) — nowhere near AA. Same fix as scr_settings.c's section
+     * headers: full opacity instead of a second dimming pass on top of
+     * MUTED's own already-secondary colour. */
     /* Lifted 34 -> 26 / 60 -> 46 by the tap-target sizing pass: the three
      * action rows grew 66 -> 80 and the whole stack moved up to fit, so
      * the scope hint and title move with it rather than being overlapped
@@ -2332,11 +2336,11 @@ static lv_obj_t *inbox_build_rally_row(lv_obj_t *list, int32_t y, uint8_t idx, c
         lv_obj_add_event_cb(hit, inbox_rally_place_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)idx);
     }
 
-    uint32_t const name_color = !enabled ? FF_THEME_COLOR_DIM : FF_THEME_COLOR_INK;
+    uint32_t const name_color = !enabled ? FF_THEME_COLOR_MUTED : FF_THEME_COLOR_INK;
     lv_obj_t *nm = inbox_mk_label(row, name, FF_THEME_FONT_LABEL, name_color);
     lv_obj_align(nm, LV_ALIGN_LEFT_MID, 16, sub != NULL ? -8 : 0);
     if (sub != NULL) {
-        lv_obj_t *s = inbox_mk_label(row, sub, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+        lv_obj_t *s = inbox_mk_label(row, sub, FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
         lv_obj_align(s, LV_ALIGN_LEFT_MID, 16, 11);
     }
     if (selected) {
@@ -2350,7 +2354,7 @@ static lv_obj_t *inbox_build_rally_row(lv_obj_t *list, int32_t y, uint8_t idx, c
 static void inbox_build_rally_divider(lv_obj_t *list, int32_t y)
 {
     int32_t const margin = inbox_safe_margin_x(FF_INBOX_RALLY_LIST_TOP_Y, FF_INBOX_RALLY_LIST_H);
-    lv_obj_t *lab = inbox_mk_label(list, "PLACES", FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+    lv_obj_t *lab = inbox_mk_label(list, "PLACES", FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
     lv_obj_set_style_text_letter_space(lab, 2, 0);
     lv_obj_set_pos(lab, margin + 8, y + 6);
 }
@@ -2390,7 +2394,7 @@ static void inbox_build_rally_footer(lv_obj_t *parent, ff_app_rally_t const *r)
         lv_obj_set_style_radius(dead, 16, 0);
         lv_obj_set_style_bg_color(dead, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
         lv_obj_set_style_bg_opa(dead, LV_OPA_50, 0);
-        lv_obj_t *dl = inbox_mk_label(dead, "PICK A PLACE", FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+        lv_obj_t *dl = inbox_mk_label(dead, "PICK A PLACE", FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
         lv_obj_center(dl);
         return;
     }

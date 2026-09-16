@@ -13,6 +13,8 @@
  * (ff_radar_view_t, ff_radar_smooth_t) is fixed-size fields only, safe on
  * the stack. The runtime half (<1ms) is measured directly below.
  */
+#include <math.h>   /* fabsf — puck-ux-usability-2026-09-15 slice 4's ring-dot smoothing tests */
+#include <stdio.h>  /* snprintf — same tests' failure messages */
 #include <stdlib.h> /* strtof — test-only, see this file's own top comment about ff_radar.c itself */
 #include <string.h>
 #include <time.h>
@@ -1139,6 +1141,233 @@ static void S06_AC3_dots_bearings_colors_stale_flags_unpaired_excluded(void)
     TEST_ASSERT_FALSE(v.dots[3].imprecise);
 }
 
+/* ------------------------------------------------------------------- */
+/* puck-ux-usability-2026-09-15 slice 4 — ring-dot smoothing            */
+/*                                                                       */
+/* Finding (§3.4 Animation): "with a stationary puck and a noisy         */
+/* compass, eight dots jitter around a ring while the arrow they         */
+/* surround sits still" — ff_radar_dot_t.ring_deg used to be recomputed  */
+/* from the RAW heading every tick with no smoothing at all, unlike      */
+/* arrow_deg's exponential smoothing (AC2 above). Fix: run ring_deg      */
+/* through the SAME radar_smooth_step/tau=250ms path, one channel per    */
+/* roster slot (ff_radar_smooth_t.dot[FF_CREW_MAX]).                     */
+/*                                                                       */
+/* "Deterministic, testable interpolation, host test with an injected    */
+/* clock" (this slice's own brief): ff_radar_compute already takes       */
+/* `now_ms` as a plain parameter — the "injected clock" IS this          */
+/* argument, no separate clock abstraction needed — so these tests       */
+/* drive it with explicit, chosen timestamps exactly the way AC2's own   */
+/* arrow-smoothing tests already do, just aimed at dots[] instead of     */
+/* arrow_deg.                                                            */
+/* ------------------------------------------------------------------- */
+
+/* Mirrors S06_AC2_smoothing_reaches_at_least_81deg_by_600ms_no_overshoot
+ * exactly, but reads dots[0].ring_deg instead of arrow_deg — proves the
+ * ring dot is smoothed by the identical law (same tau, same step
+ * function), not merely "some" damping. */
+static void S06_SLICE4_ring_dot_smoothing_reaches_at_least_81deg_by_600ms_no_overshoot(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.0, 1.0}; /* due east of origin: bearing ~90 deg */
+    m->pos_age_ms = 0u;
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    /* t=0, heading=90 -> target = wrap(90-90) = 0. First-ever call for
+     * this roster slot's channel: snaps straight to the target, exactly
+     * like the arrow's own first call. */
+    ff_radar_compute(&v, &sm, &c, 90.0f, my_pos, true, false, 0u);
+    TEST_ASSERT_EQUAL_UINT8(1, v.n_dots);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f, v.dots[0].ring_deg);
+
+    /* t=600ms, heading swings to 0 -> target jumps to 90 deg. Same
+     * tau=250ms law as the arrow: alpha = 1 - exp(-600/250) ~= 0.9093,
+     * landing at ~81.8 deg — clearing the arrow's own ">=81 deg by
+     * 600ms" bar with no overshoot past 90, because it is the SAME
+     * function on the SAME time constant. */
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 600u);
+
+    TEST_ASSERT_TRUE_MESSAGE(v.dots[0].ring_deg >= 81.0f, "expected dots[0].ring_deg >= 81 deg at t=600ms");
+    TEST_ASSERT_TRUE_MESSAGE(v.dots[0].ring_deg <= 90.5f, "dots[0].ring_deg overshot the 90 deg target");
+}
+
+/* Mirrors S06_AC2_smoothing_350_to_10_wraps_through_zero_not_180 — proves
+ * the ring dot's smoothing is wrap-aware too (ff_geo_angdiff_deg), not a
+ * naive linear blend that would take the long way around through 180. */
+static void S06_SLICE4_ring_dot_smoothing_wraps_through_zero_not_180(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){1.0, 0.0}; /* due north of origin: bearing ~0 deg */
+    m->pos_age_ms = 0u;
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    /* heading=10 -> target = wrap(0-10) = 350. First call snaps there. */
+    ff_radar_compute(&v, &sm, &c, 10.0f, my_pos, true, false, 0u);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 350.0f, v.dots[0].ring_deg);
+
+    /* 100ms later, heading=350 -> target = wrap(0-350) = 10. Shortest
+     * path 350->10 is +20 deg through 0, never through 180. */
+    ff_radar_compute(&v, &sm, &c, 350.0f, my_pos, true, false, 100u);
+
+    TEST_ASSERT_FLOAT_WITHIN(1.5f, 356.6f, v.dots[0].ring_deg);
+    TEST_ASSERT_TRUE_MESSAGE(v.dots[0].ring_deg > 340.0f,
+                             "smoothed ring dot took the long way around through ~180 deg");
+}
+
+/* The actual acceptance property (slice 4, item 4): "with a static puck
+ * and +/-2deg of injected compass noise, no ring dot's rendered position
+ * moves [meaningfully]". A static member (bearing fixed at due north) +
+ * a heading that oscillates by a small +/-2deg of noise between frames
+ * 50ms apart (tau=250ms => alpha = 1-exp(-50/250) ~= 0.181 per step) —
+ * the SAME "0.1deg is LVGL's rotation unit, below it no pixel moves"
+ * floor `ff_shell.c`'s render-key coarsening already applies to arrow_deg
+ * (see that file's own comment). After the first (snap) frame, each
+ * further raw +/-2deg wiggle should move the SMOOTHED value by well under
+ * 1deg per step — nowhere near the 4deg of raw noise a naive, unsmoothed
+ * `ring_deg = raw bearing` would show every tick. */
+static void S06_SLICE4_ring_dot_damps_small_heading_noise_after_first_frame(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){1.0, 0.0}; /* due north: bearing 0 deg, member never moves */
+    m->pos_age_ms = 0u;
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    /* t=0, heading=0 (no noise yet) -> target 0. First call snaps. */
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 0.0f, v.dots[0].ring_deg);
+
+    /* Five more frames, 50ms apart, heading alternating +2/-2deg of
+     * "compass noise" around 0 with the member itself perfectly still.
+     * An UNSMOOTHED ring dot (the pre-slice-4 bug) would show ring_deg
+     * itself flipping by a full 4deg swing every single frame. The
+     * smoothed value must move far less each step. */
+    float const noise_deg[5] = {2.0f, -2.0f, 2.0f, -2.0f, 2.0f};
+    uint32_t now_ms = 0u;
+    float prev = v.dots[0].ring_deg;
+    for (int i = 0; i < 5; i++) {
+        now_ms += 50u;
+        /* heading = noise (target = wrap(bearing(0) - heading) = wrap(-noise) = 360-noise). */
+        ff_radar_compute(&v, &sm, &c, noise_deg[i], my_pos, true, false, now_ms);
+        float step = v.dots[0].ring_deg - prev;
+        /* wrap the delta into (-180,180] before measuring its size */
+        if (step > 180.0f) step -= 360.0f;
+        if (step < -180.0f) step += 360.0f;
+        char msg[96];
+        snprintf(msg, sizeof(msg), "frame %d: ring dot moved %.3f deg on a +/-2deg noise step (expected << 1deg)",
+                 i, (double)step);
+        TEST_ASSERT_TRUE_MESSAGE(fabsf(step) < 1.0f, msg);
+        prev = v.dots[0].ring_deg;
+    }
+}
+
+/* Proves the per-roster-slot keying (ff_radar_smooth_t.dot[i]) is real:
+ * two members at DIFFERENT bearings smooth INDEPENDENTLY — member A's
+ * channel does not leak into member B's, and vice versa. Without this,
+ * a shared/aliased channel would make one dot's smoothed value chase the
+ * other member's target instead of its own. */
+static void S06_SLICE4_two_ring_dots_smooth_independently_by_roster_slot(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_crew_member_t *a = ff_crew_upsert(&c, 1u); /* roster slot 0 */
+    a->initial = 'A';
+    a->has_pos = true;
+    a->pos = (ff_latlon_t){0.0, 1.0}; /* due east: bearing 90 */
+    a->pos_age_ms = 0u;
+    ff_crew_set_paired(&c, 1u, true);
+
+    ff_crew_member_t *b = ff_crew_upsert(&c, 2u); /* roster slot 1 */
+    b->initial = 'B';
+    b->has_pos = true;
+    b->pos = (ff_latlon_t){-1.0, 0.0}; /* due south: bearing 180 */
+    b->pos_age_ms = 0u;
+    ff_crew_set_paired(&c, 2u, true);
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+
+    /* t=0, heading=0: A's target=90, B's target=180. First call snaps
+     * both. */
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+    TEST_ASSERT_EQUAL_UINT8(2, v.n_dots);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 90.0f, v.dots[0].ring_deg);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 180.0f, v.dots[1].ring_deg);
+
+    /* t=600ms, heading STILL 0 (unchanged): both targets stay put, so
+     * both dots should stay at their converged values — a sanity check
+     * that neither channel drifted from being aliased to the other's. */
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 600u);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 90.0f, v.dots[0].ring_deg);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 180.0f, v.dots[1].ring_deg);
+
+    /* t=600ms -> only A's member MOVES (new position, due WEST -> target
+     * 270); B stays put. If the two channels were aliased, B's ring_deg
+     * would move too. It must not. */
+    a->pos = (ff_latlon_t){0.0, -1.0}; /* due west: bearing 270 */
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 850u);
+    /* A is mid-swing toward 270 (not yet arrived — smoothing, not a
+     * snap), but has moved measurably off 90 toward it. */
+    TEST_ASSERT_TRUE_MESSAGE(v.dots[0].ring_deg > 95.0f, "member A's dot should have started moving toward 270");
+    /* B's dot must be untouched by A's change. */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 180.0f, v.dots[1].ring_deg);
+}
+
+/* ff_radar_smooth_reset resets EVERY channel — the arrow's AND every
+ * ring dot's — not just the arrow's. Confirmed by measuring a real
+ * post-reset first-call snap on a dot channel that had already
+ * converged to a different value before the reset. */
+static void S06_SLICE4_smooth_reset_clears_ring_dot_channels_too(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.0, 1.0}; /* due east: bearing 90 */
+    m->pos_age_ms = 0u;
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    /* Converge the dot's channel at ring_deg ~= 90 over a few frames. */
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 1000u);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 90.0f, v.dots[0].ring_deg);
+
+    /* Reset, then move the member elsewhere and call again — the FIRST
+     * call after a reset must SNAP (has_prev == false again), not ease
+     * in from the pre-reset 90 deg value. */
+    ff_radar_smooth_reset(&sm);
+    m->pos = (ff_latlon_t){-1.0, 0.0}; /* due south: bearing 180 */
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 1010u); /* 10ms later — too soon to ease that far without a snap */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 180.0f, v.dots[0].ring_deg);
+}
+
 /* puck-ux-usability-2026-09-15 finding 1 / slice 2 — ff_radar_dot_t
  * gained `selected`: true for the ring dot belonging to whichever member
  * ff_crew_selected() currently names, false for every other dot. Reuses
@@ -1730,6 +1959,12 @@ int main(void)
 
     RUN_TEST(S06_AC3_dots_bearings_colors_stale_flags_unpaired_excluded);
     RUN_TEST(S06_AC3_dots_empty_when_my_pos_or_heading_invalid);
+
+    RUN_TEST(S06_SLICE4_ring_dot_smoothing_reaches_at_least_81deg_by_600ms_no_overshoot);
+    RUN_TEST(S06_SLICE4_ring_dot_smoothing_wraps_through_zero_not_180);
+    RUN_TEST(S06_SLICE4_ring_dot_damps_small_heading_noise_after_first_frame);
+    RUN_TEST(S06_SLICE4_two_ring_dots_smooth_independently_by_roster_slot);
+    RUN_TEST(S06_SLICE4_smooth_reset_clears_ring_dot_channels_too);
     RUN_TEST(S06_slice2_dot_selected_flag_marks_only_the_selected_members_dot);
     RUN_TEST(S06_slice2_dot_selected_all_false_when_nosel);
     RUN_TEST(S17a_AC4_dot_imprecise_flag_is_set_per_member_independent_of_stale);

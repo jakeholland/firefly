@@ -1377,7 +1377,17 @@ static int32_t settings_build_section_header(lv_obj_t *list, int32_t y, int32_t 
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_font(lbl, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
-    lv_obj_set_style_text_opa(lbl, LV_OPA_60, 0); /* dimmer than a row caption's full opacity */
+    /* puck-ux-usability-2026-09-15 slice 4 (finding 8's own "measure,
+     * don't reason harder" lesson, extended past the DIM constant itself
+     * by test_text_contrast_all_faces.c's whole-fixture sweep): MUTED at
+     * LV_OPA_60 measures 2.76:1 against BG — MUTED's own 5.78:1 needs
+     * >= ~86% opacity (219/255) just to clear 4.5:1, at which point the
+     * "dimmer than a row caption" effect this opacity existed for is
+     * barely perceptible anyway. Full opacity instead: still visually
+     * SECONDARY to a row's own INK caption (MUTED is a dimmer colour to
+     * begin with), just not dimmed a second time past AA. Letter-tracking
+     * (the actual visual distinguisher between a section header and a
+     * row caption) is unchanged. */
     lv_obj_set_style_text_letter_space(lbl, 3, 0); /* wider tracking than a row caption's 2px */
     lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(lbl, LV_OBJ_FLAG_SCROLLABLE);
@@ -1717,7 +1727,7 @@ static void settings_crew_build_hidden_row(lv_obj_t *list, int32_t rel_y, int32_
         snprintf(top, sizeof(top), "#%s", h->short_id);
     }
 
-    settings_crew_row_labels(row, label_w, top, "off your radar", FF_THEME_COLOR_DIM);
+    settings_crew_row_labels(row, label_w, top, "off your radar", FF_THEME_COLOR_MUTED);
 
     settings_make_pill(row, "UNHIDE", row_w - FF_CREW_ACTION_PILL_W, (FF_CREW_ROW_H - FF_CREW_PAGE_ROW_H) / 2,
                        FF_CREW_ACTION_PILL_W, FF_CREW_PAGE_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_AMBER,
@@ -1772,7 +1782,7 @@ static int32_t settings_crew_caption(lv_obj_t *list, int32_t y, int32_t row_w, c
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_font(lbl, FF_THEME_FONT_CHIP, 0);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(lbl, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_update_layout(lbl);
@@ -1816,7 +1826,7 @@ static void settings_crew_build_heard_row(lv_obj_t *list, int32_t rel_y, int32_t
     if (roster_full) {
         pill = settings_make_pill(row, "FULL (8)", row_w - FF_CREW_ACTION_PILL_W,
                                   (FF_CREW_ROW_H - FF_CREW_PAGE_ROW_H) / 2, FF_CREW_ACTION_PILL_W,
-                                  FF_CREW_PAGE_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_DIM, 0, NULL, NULL);
+                                  FF_CREW_PAGE_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_MUTED, 0, NULL, NULL);
         lv_obj_clear_flag(pill, LV_OBJ_FLAG_CLICKABLE);
     } else {
         pill = settings_make_pill(row, "ADD", row_w - FF_CREW_ACTION_PILL_W,
@@ -1839,7 +1849,7 @@ static void settings_crew_build_heard_empty(lv_obj_t *list, int32_t rel_y, int32
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
     lv_label_set_text(lbl, link_connected ? "nobody heard yet" : "No crew yet. Add people from HEARD once your radio is on.");
     lv_obj_set_style_text_font(lbl, FF_THEME_FONT_CHIP, 0);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(lbl, LV_OBJ_FLAG_SCROLLABLE);

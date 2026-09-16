@@ -252,10 +252,17 @@ static void radar_build_status_bar(lv_obj_t *parent, ff_radar_view_t const *r)
 {
     char buf[24];
 
+    /* puck-ux-usability-2026-09-15 §5 ("the 12h clock"): the meridiem
+     * marker carries the am/pm ambiguity a festival-goer actually cares
+     * about at 4 a.m., yet used to be the smallest, dimmest thing on the
+     * status row (FONT_LABEL/montserrat_14 at MUTED, 5.78:1). Slice 4's
+     * fix plan: render the whole time string at FONT_MSG_BODY
+     * (montserrat_16) in INK (17.08:1) — legible outdoors at a glance,
+     * not just decodable up close. */
     lv_obj_t *clock_lbl = lv_label_create(parent);
     lv_label_set_text(clock_lbl, r->clock_str[0] != '\0' ? r->clock_str : "--:--");
-    lv_obj_set_style_text_font(clock_lbl, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(clock_lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_set_style_text_font(clock_lbl, FF_THEME_FONT_MSG_BODY, 0);
+    lv_obj_set_style_text_color(clock_lbl, lv_color_hex(FF_THEME_COLOR_INK), 0);
     lv_obj_align(clock_lbl, LV_ALIGN_CENTER, -78, (int32_t)RADAR_LAYOUT_STATUS_BAR_DY);
 
     lv_obj_t *mesh_lbl = lv_label_create(parent);
@@ -469,7 +476,13 @@ static void radar_build_dots(lv_obj_t *parent, ff_radar_view_t const *r, radar_l
             }
             char ch[2] = {d->initial, '\0'};
             lv_label_set_text(label, d->initial != '\0' ? ch : "");
-            lv_obj_set_style_text_color(label, lv_color_hex(d->stale && !d->place ? crew_hex : FF_THEME_COLOR_BG), 0);
+            /* puck-ux-usability-2026-09-15 slice 4: a filled (non-stale)
+             * dot's initial letter used to hardcode FF_THEME_COLOR_BG —
+             * fine for every brand-palette colour but under WCAG AA
+             * (3.79:1) on the colourblind-safe palette's CB_BLUE. See
+             * ff_theme_dot_letter_color's own doc comment. */
+            lv_obj_set_style_text_color(
+                label, lv_color_hex(d->stale && !d->place ? crew_hex : ff_theme_dot_letter_color(crew_hex)), 0);
             if (d->selected) {
                 radar_draw_selection_ring(parent, (int32_t)resolved[i].dx, (int32_t)resolved[i].dy, crew_hex);
             }
@@ -1017,7 +1030,7 @@ static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r, radar_
         lv_obj_t *sub = lv_label_create(parent);
         lv_label_set_text(sub, heard_recently ? "Their puck is near but hasn't found a location yet" : "Waiting for their first location");
         lv_obj_set_style_text_font(sub, FF_THEME_FONT_LABEL, 0);
-        lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
         lv_obj_align(sub, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NEVER_SUB_DY);
     }
 }
@@ -1343,7 +1356,7 @@ static void radar_render_nofix(lv_obj_t *parent, ff_radar_view_t const *r)
         lv_obj_t *sub_lbl = lv_label_create(parent);
         lv_label_set_text(sub_lbl, sub);
         lv_obj_set_style_text_font(sub_lbl, FF_THEME_FONT_LABEL, 0);
-        lv_obj_set_style_text_color(sub_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_set_style_text_color(sub_lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
         lv_obj_set_width(sub_lbl, 320);
         /* DOTS truncates to one line only with a bounded height too — see
          * radar_build_name_label's identical fix just above. */
@@ -1516,7 +1529,7 @@ static void radar_render_signal(lv_obj_t *parent, ff_radar_view_t const *r, rada
         lv_obj_t *age_lbl = lv_label_create(parent);
         lv_label_set_text(age_lbl, age_line);
         lv_obj_set_style_text_font(age_lbl, FF_THEME_FONT_LABEL, 0);
-        lv_obj_set_style_text_color(age_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_set_style_text_color(age_lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
         lv_obj_align(age_lbl, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_SIGNAL_AGE_DY);
     }
 
@@ -1589,7 +1602,7 @@ static void radar_render_nosel(lv_obj_t *parent)
     lv_obj_t *sub = lv_label_create(parent);
     lv_label_set_text(sub, "Pair a friend in Settings > Crew"); /* S12/S04 */
     lv_obj_set_style_text_font(sub, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_align(sub, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NOSEL_SUB_DY);
 }
 

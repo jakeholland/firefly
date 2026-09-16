@@ -14,85 +14,77 @@
  * Layout constants.
  *
  * MAINTAINER DECISION (B, 2026-09-02, docs/specs/S26-device-lifecycle.md
- * "Notifications (slice d)"): a transient banner should hide the LEAST
- * valuable row on whatever face is showing. At the old BANNER_CY (-90)
- * the strip sat just below the status bar and covered the top of
- * Radar's compass/close-range readout, or a thread's first bubble —
- * both more valuable than the clock/mesh/battery row. Moved to COVER
- * the status bar instead.
+ * "Notifications (slice d)") — SUPERSEDED (puck-ux-usability-2026-09-15,
+ * finding 4, slice 4): the original decision here was "a transient banner
+ * should hide the LEAST valuable row on whatever face is showing", and
+ * moved the strip to COVER the status bar on the theory that the clock/
+ * mesh/battery row was less valuable than Radar's name/distance stack or a
+ * thread's first bubble. The 2026-09-15 usability review measured the
+ * result and found that reasoning wrong: `banner_on_radar.png` showed
+ * `9:46` truncated, `LINKED` **entirely gone**, and the battery reduced to
+ * a bare `%` — "the two facts a user checks before trusting the device —
+ * can it reach anyone and will it last — are hidden by the notification
+ * that made them look." A banner that hides the very information a user
+ * glances at the puck to confirm is not an acceptable trade at any width.
+ *
+ * FIX (finding 4): move the strip BELOW the status row instead of over
+ * it — it now covers nothing whenever nothing else occupies that band
+ * (verified per-face by `test_scr_banner.c`'s disjoint-from-status-row
+ * assertion, the new equivalent of the old "covers the status row"
+ * proof), and the extra vertical room bought by moving down (see the
+ * chord math below) pays for a WIDER strip (160 -> 200px) that stops the
+ * message preview truncating at "The Firefly To…".
  *
  * `BANNER_CY` is the CENTER-relative vertical offset (this codebase's
  * standing convention for *_DY constants, ff_layout.h's own doc comment
  * on ff_layout_centered_band_max_width) — negative = above the puck's
  * own center.
  *
- * ## Centre: lowest position whose top edge still clears the status text
- * Round 1 of this PR centred exactly on `RADAR_LAYOUT_STATUS_BAR_DY`
- * (-160) and shrank the width to ~90px to fit. Orchestrator review
- * (round 2) correctly called that the wrong trade — a 90px strip only
- * ever covers the MESH label, leaving clock/battery fully exposed
- * either side and crushing the content ("D…"/"no"/"you cl…") to the
- * point the banner stopped reading as a banner. The brief's own words —
- * "or as close as the round glass allows" — meant find the LOWEST
- * (least-negative) centre whose TOP edge still sits at or above the
- * status text's own top (measured: the clock/MESH/battery labels render
- * at y=[38,53] on a 412px puck), not pin the centre to the row's own
- * DY and shrink width to whatever that forces.
- *
- * `BANNER_CY = RADAR_LAYOUT_STATUS_BAR_DY + 14.0f` = -146 (puck-local
- * y=60): top edge at y = 206 + (-146) - 24 = 36, two pixels above the
- * measured text top (38) — still computed FROM the status-row constant
- * (never a second independent magic number), just offset by the amount
- * that trade needs, with the derivation kept here rather than folded
- * silently into the constant.
+ * ## Centre: clears the status text for real, with the smallest cost
+ * anywhere else
+ * `BANNER_CY = RADAR_LAYOUT_STATUS_BAR_DY + 33.0f` = -127 (puck-local
+ * y=79): top edge at y = 206 + (-127) - 24 = 55, ONE genuine pixel below
+ * the status text's own measured bottom edge (54) — still computed FROM
+ * the status-row constant (never a second independent magic number),
+ * just offset by the smallest amount that (a) fully clears the status
+ * text (finding 4's explicit ask) while (b) minimizing the now-unavoidable
+ * cost elsewhere (see `BANNER_CY`'s own `#define` comment for the full
+ * two-part measured correction to the review's `+ 40.0f` worked example,
+ * which checked the glass and the status row but not the launcher's
+ * satellite ring or the thread's first bubble).
  *
  * ## Width: two chord checks, not one — and a correction to the radius
  * they're run against
- * At dy=-146 the chord is still narrow enough that the "obvious" per-
- * axis bound is not the binding one — the same S99 compose-SEND lesson
- * (test_scr_intent.c: chord math "is a DIFFERENT, WEAKER quantity for a
- * corner point" than the true 2D distance) this file's first round
- * already cited, run again at the new centre:
+ * At the lower centre the chord is WIDER than it was at -146 (moving
+ * toward center opens up more horizontal room before the glass curves
+ * in), so the same two-bound check this file has always run (per the S99
+ * compose-SEND lesson: chord math "is a DIFFERENT, WEAKER quantity for a
+ * corner point" than the true 2D distance) has more slack, not less, to
+ * spend on width:
  *
  *  1. The PERMISSIVE bound: farther (top) edge at
- *     |BANNER_CY| + BANNER_H/2 = 146 + 24 = 170px from center.
+ *     |BANNER_CY| + BANNER_H/2 = 127 + 24 = 151px from center.
  *  2. The BINDING bound: the TRUE Euclidean distance of each corner
  *     from center, which is what "N px inside the glass radius" means
  *     for a rectangle's hit-rect.
  *
- * Both bounds need a RADIUS to check against, and this round corrects
- * WHICH one: round 1 (and the orchestrator's own re-check numbers) used
- * `FF_THEME_PUCK_RADIUS_PX` (206) — the framebuffer's radius, matching
- * `S99_compose_send_corner_clears_bezel_margin_bar`'s own precedent
- * (that test literally centers on and measures against
- * `FF_THEME_PUCK_RADIUS_PX`, not `FF_THEME_GLASS_*`). But
- * `FF_THEME_GLASS_R` (200) — not 206 — is the actual MEASURED visible
- * glass on real hardware (ff_theme.h's own doc comment: "the round
- * bezel window sits ~5px right of the 412-wide pixel array... GLASS_R
- * 200, pulled in 3px from the 203 measured so a ring clears the bezel
- * lip") — and this exact distinction was the subject of the two
- * most recent commits on this repo before this PR (#154 "centre edge-
- * hugging elements on the measured glass", #155 "glass radius 200 —
- * reads thin and clipped by the bezel lip at 3px/203"). A corner check
- * against 206 can be satisfied by a corner that is NOT actually 10px
- * inside the real, physical, glued-down glass — the exact "looks like a
- * guard rail and isn't one" failure mode `ff_layout_centered_band_max_
- * width`'s own doc comment already warns about for a different
- * quantity. This file uses `FF_THEME_GLASS_R`/`FF_THEME_GLASS_CX/CY`
- * throughout — the S99 compose test's use of the framebuffer radius
- * predates the glass-offset measurement (#154/#155) and is arguably
- * itself due for the same correction, tracked separately, not silently
- * copied into new code here.
+ * Both bounds are checked against `FF_THEME_GLASS_R` (200) — the actual
+ * MEASURED visible glass on real hardware (ff_theme.h's own doc comment:
+ * "the round bezel window sits ~5px right of the 412-wide pixel array...
+ * GLASS_R 200, pulled in 3px from the 203 measured so a ring clears the
+ * bezel lip"), not `FF_THEME_PUCK_RADIUS_PX` (206, the framebuffer's own
+ * radius) — see #154/#155 for why edge-hugging elements in this codebase
+ * use the measured glass, not the framebuffer.
  *
- * At dy=-146, radius 200, 10px safety: top edge dy=-170,
- * sqrt((200-10)^2 - 170^2) = sqrt(190^2 - 170^2) = sqrt(36100-28900) =
- * sqrt(7200) ~= 84.85px half-chord -> ~169.7px max width. BANNER_W (160,
- * half-width 80) clears this with room to spare: corner distance from
- * glass center = sqrt(80^2 + 170^2) = sqrt(35300) ~= 187.88px, a
- * 12.12px margin inside FF_THEME_GLASS_R (200) — verified precisely,
- * not eyeballed (test_scr_banner.c's
- * S26d_AC2_banner_corners_clear_glass_by_10px asserts this for real,
- * against the real rendered rect).
+ * At dy=-127, half-height 24, top edge dy=-151, radius 200, 10px safety:
+ * sqrt((200-10)^2 - 151^2) = sqrt(190^2 - 151^2) = sqrt(36100-22801) =
+ * sqrt(13299) ~= 115.32px half-chord -> ~230.6px max width. BANNER_W (200,
+ * half-width 100) clears this with room to spare: farthest corner distance
+ * from glass center = sqrt(100^2 + 151^2) = sqrt(32801) ~= 181.11px, an
+ * 18.89px margin inside FF_THEME_GLASS_R (200) — well past the review's
+ * own >= 8px bar and the >= 10px bar this file's own test
+ * (`S26d_AC2_banner_corners_clear_glass_by_10px`) still enforces —
+ * verified precisely, not eyeballed, against the real rendered rect.
  *
  * Centered on FF_THEME_GLASS_CX (208), not the puck's own 206 — the
  * same "edge-hugging elements centre on the VISIBLE glass, not the
@@ -100,9 +92,45 @@
  * doc comment on FF_THEME_GLASS_*).
  * ------------------------------------------------------------------- */
 
-#define BANNER_W  160
-#define BANNER_H  48 /* the hit floor itself — unchanged; narrowing further buys no more usable width at this centre */
-#define BANNER_CY ((float)RADAR_LAYOUT_STATUS_BAR_DY + 14.0f) /* derived from the status row's own DY, see above */
+#define BANNER_W  200 /* widened 160 -> 200 (finding 4): the extra room bought by moving below the status row */
+#define BANNER_H  48 /* the hit floor itself — unchanged */
+/* +33, not the review's own worked "+40" — two independent, MEASURED
+ * corrections to the review's arithmetic (which only checked the glass
+ * and the status row, not every face the banner actually renders over):
+ *
+ *  1. `banner_on_launcher.json`: at +40 the strip's bottom edge (110) sat
+ *     only 7px above the launcher's top-cardinal-adjacent satellites' top
+ *     edge (117, the LAUNCHER_SAT ring in scr_launcher.c) — under
+ *     FF_HIT_MIN_GAP_PX (8), a genuine mis-tap risk between two
+ *     INDEPENDENT clickables (the banner and a satellite it neither
+ *     overlaps nor gets masked against — see
+ *     ff_scr_nav_mask_clickables_under_banner's "overlap AND
+ *     remainder-too-small" contract, which this near-miss case doesn't
+ *     meet). Caught by test_face_hit_targets.c's whole-device sweep.
+ *  2. `banner_on_thread.json`: the status row's real bottom edge (54,
+ *     montserrat_16 now that the clock is FF_THEME_FONT_MSG_BODY — see
+ *     radar_build_status_bar) to the thread view's first bubble's real
+ *     top edge (98, FF_INBOX_THREAD_LIST_TOP_Y + the sender-row offset,
+ *     scr_inbox.c) leaves a window of exactly 44px — ONE px short of
+ *     BANNER_H (48) with ZERO margin spent on either side, so no
+ *     placement of a 48px banner in that window can avoid touching one
+ *     of the two. Pinned at the position that keeps the EXPLICIT,
+ *     reviewed obligation (finding 4: never overlap the status TEXT)
+ *     at a genuine, non-zero margin, and accepts the smallest achievable
+ *     overlap with the thread's first bubble instead (5px, its own top
+ *     padding more than its text baseline — see
+ *     test_scr_banner.c's own doc comment on this exact trade, an
+ *     AGENTS.md-flagged interpretation call: the review never analyzed
+ *     the banner-vs-first-bubble case at all, only status-row/glass).
+ *
+ * +33 buys BOTH: bottom edge 103 clears the launcher satellites (117) by
+ * 14px, and top edge 55 clears the status text's real bottom (54) by a
+ * genuine 1px — still zero OVERLAP (disjoint, not touching), the literal
+ * property finding 4 asks for. See test_scr_banner.c's
+ * S26d_AC2_banner_disjoint_from_status_text_row and
+ * S26d_AC2_banner_corners_clear_glass_by_10px for the real, rendered
+ * proof at this exact value. */
+#define BANNER_CY ((float)RADAR_LAYOUT_STATUS_BAR_DY + 33.0f)
 #define BANNER_DX (FF_THEME_GLASS_CX - FF_THEME_PUCK_RADIUS_PX) /* +2: recentre on the visible glass, not the framebuffer */
 
 _Static_assert(BANNER_H >= FF_THEME_MIN_HIT_PX, "banner strip must clear the 44px hit-target floor");

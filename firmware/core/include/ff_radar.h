@@ -444,22 +444,49 @@ typedef enum {
 ff_batt_icon_t ff_radar_batt_icon(int8_t batt_pct);
 
 /**
- * ff_radar_smooth_t — caller-owned state for the arrow's exponential
- * smoothing (see this header's deviation note for why `ff_radar_compute`
- * needs it passed in rather than owning it internally). Zero-initialize
- * (or call `ff_radar_smooth_reset`) before the first call for a given
- * radar session; safe on the stack or in a static, no allocation.
+ * ff_radar_angle_smooth_t — one exponential-smoothing channel (a single
+ * angle, its "have we ever smoothed this" flag, and the clock time of its
+ * last update). Extracted as its own type (puck-ux-usability-2026-09-15
+ * slice 4, the ring-dot jitter finding) so `ff_radar_smooth_t` below can
+ * carry MORE than one of these — the arrow's own channel plus one per
+ * crew-ring dot — without duplicating the three fields by hand.
  */
 typedef struct {
     bool     has_prev;      /* false until the first smoothing update */
-    float    smoothed_deg;  /* last smoothed arrow_deg, valid iff has_prev */
+    float    smoothed_deg;  /* last smoothed angle, valid iff has_prev */
     uint32_t last_update_ms; /* clock time of that update */
+} ff_radar_angle_smooth_t;
+
+/**
+ * ff_radar_smooth_t — caller-owned state for the arrow's exponential
+ * smoothing (see this header's deviation note for why `ff_radar_compute`
+ * needs it passed in rather than owning it internally), PLUS
+ * (puck-ux-usability-2026-09-15 slice 4) one identically-shaped channel per
+ * crew-ring dot, `dot[FF_CREW_MAX]` — the fix for finding "the ring dots
+ * jitter": before this slice, `ff_radar_dot_t.ring_deg` was recomputed from
+ * the raw heading every tick with no smoothing at all, so a stationary puck
+ * with a noisy compass showed every ring dot vibrating around a static
+ * arrow. `dot[i]` is keyed by the SAME roster slot index `i`
+ * `radar_compute_dots` already iterates `crew->members[]` by — a member's
+ * smoothing channel therefore stays associated with THAT member across
+ * ticks even though `ff_radar_view_t.dots[]` itself is rebuilt fresh every
+ * call and can drop/reorder entries when membership or fix availability
+ * changes (an unpaired or never-fixed slot's channel simply goes unused,
+ * not reassigned to a different member — the roster array itself does not
+ * reshuffle live members to fill gaps). Zero-initialize (or call
+ * `ff_radar_smooth_reset`) before the first call for a given radar
+ * session; safe on the stack or in a static, no allocation.
+ */
+typedef struct {
+    ff_radar_angle_smooth_t arrow;
+    ff_radar_angle_smooth_t dot[FF_CREW_MAX]; /* indexed by crew roster slot */
 } ff_radar_smooth_t;
 
 /** ff_radar_smooth_reset — reset smoothing state (e.g. on selection change,
  * if the caller wants the next valid frame to snap rather than sweep — see
  * ff_radar_compute's doc comment on why that's rarely necessary in
- * practice). Equivalent to zero-initializing the struct. */
+ * practice). Equivalent to zero-initializing the struct — resets the
+ * arrow's channel AND every ring dot's channel in `dot[]`. */
 void ff_radar_smooth_reset(ff_radar_smooth_t *s);
 
 /**
