@@ -661,7 +661,38 @@ struct RootView: View {
             selection = .find
         case .findWithCrewWelcome:
             selection = .find
-            showCrewOnboarding = true
+            // A pending `-FireflyDemoScreen` name is an explicit
+            // instruction `runInitialDemoScreen()` is about to act on —
+            // and for every name but `"welcome"`, that includes turning
+            // THIS SAME cover back off again within a few hundred
+            // milliseconds of it appearing (that function's own "A demo
+            // screen name... OVERRIDES the first-launch gate" comment).
+            // Raising it here only for that async task to immediately
+            // lower it was never just wasted motion: measured on device
+            // (`os_log` tracing across several runs, a cold/CI-speed
+            // simulator reproduces it every time, a warm local one only
+            // occasionally) — when the LOWER lands before
+            // `.fullScreenCover`'s own PRESENT animation has finished,
+            // UIKit's presentation coordinator can leave the tab bar
+            // underneath permanently non-hittable (`exists` still sees
+            // it; `isHittable` never flips true again). That is exactly
+            // this suite's CI-only `Screen.Inbox did not appear` flake —
+            // "Try the demo" always requests screen `"find"`
+            // (`DemoModeAction.enterDemo.requestedScreen`), which used to
+            // flash this cover on and straight back off on every single
+            // run. Skip the raise entirely whenever a demo screen name is
+            // already waiting to decide the real state; `demoRunner ==
+            // nil` (no `-FireflyDemo` at all) or `initialDemoScreen ==
+            // nil` (`-FireflyDemo` with no screen name) both mean nothing
+            // will ever lower it, so those two keep raising it exactly as
+            // before. The four names that still want the cover up
+            // (`"welcome"`, `"crew-start"`, `"crew-join"`,
+            // `"crew-connect"`) raise it themselves in
+            // `runInitialDemoScreen()` — once, cleanly, with no
+            // present/dismiss thrash.
+            if demoRunner == nil || initialDemoScreen == nil {
+                showCrewOnboarding = true
+            }
         }
         // "app: Map subscribes to festpack updates" (2026-09-13) —
         // `-FireflyStartTab`/`-FireflyFindSegment`, debug-only
