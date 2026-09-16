@@ -99,9 +99,11 @@ static void test_S05_field_pack_after_midnight_set_folds_onto_festival_night(voi
     for (uint16_t i = 0; i < pack.n_sets; i++) {
         if (strcmp(pack.sets[i].artist, "The Resistance") == 0) resistance = &pack.sets[i];
         if (strcmp(pack.sets[i].artist, "Sippy") == 0) sippy = &pack.sets[i];
-        /* Two sets are billed "Excision"; the Friday one on Prehistoric
-         * is the 2-hour set with the explicit end. */
-        if (strcmp(pack.sets[i].artist, "Excision") == 0 && pack.sets[i].end_min >= 0) {
+        /* Two sets are billed "Excision". 2026-09-16: since the almanac's
+         * app-sourced end times (221 of 222 sets) BOTH carry an end, so
+         * "has an end" no longer picks the Friday one — the pack's own
+         * note ("2 hour set") on the Friday Prehistoric set does. */
+        if (strcmp(pack.sets[i].artist, "Excision") == 0 && strcmp(pack.sets[i].note, "2 hour set") == 0) {
             excision_fri = &pack.sets[i];
         }
     }
@@ -115,11 +117,13 @@ static void test_S05_field_pack_after_midnight_set_folds_onto_festival_night(voi
     TEST_ASSERT_TRUE(sippy->start_min > resistance->start_min);
 
     /* `end_day` is the field that makes Excision's end unambiguous:
-     * 00:10 on 2026-09-19, i.e. 1450 measured from Friday night's
-     * midnight — strictly after its own 22:10 start, no fold needed. */
+     * 00:00 on 2026-09-19 (the almanac corrected 00:10 -> 00:00 on
+     * 2026-09-13 from the official app), i.e. 1440 measured from Friday
+     * night's midnight — strictly after its own 22:10 start, no fold
+     * needed. */
     TEST_ASSERT_EQUAL_UINT16(resistance->day_doy, excision_fri->day_doy);
     TEST_ASSERT_EQUAL_INT16(22 * 60 + 10, excision_fri->start_min);
-    TEST_ASSERT_EQUAL_INT16(24 * 60 + 10, excision_fri->end_min);
+    TEST_ASSERT_EQUAL_INT16(24 * 60 + 0, excision_fri->end_min);
     TEST_ASSERT_TRUE(excision_fri->end_min > excision_fri->start_min);
 }
 
@@ -149,11 +153,36 @@ static void test_S05_field_pack_has_222_sets_55_after_midnight(void)
     TEST_ASSERT_EQUAL_UINT16(55, folded);  /* the after-midnight ones */
 }
 
+/* 2026-09-16: the refreshed pack (87 `events`, 9 landmarks, 18 map
+ * features, long meta.notes) is 91,403 bytes — over the parser's OLD
+ * 64 KB FP_MAX_JSON_LEN, which is exactly why that bound was raised to
+ * 256 KB (docs/specs/S05-festpack.md, dated amendment). Asserting the
+ * size here, against the embedded asset, means a future "tidy" of the
+ * bound back down fails this test instead of shipping a puck that boots
+ * with no festival. The landmark/feature counts are pinned the same way
+ * the 222/55 schedule shape is above: facts about the upstream pack a
+ * careless refresh must not quietly change. */
+static void test_S05_field_pack_exceeds_old_64k_cap_and_parses(void)
+{
+    static char buf[BUF_SZ];
+    size_t len = load(buf, sizeof(buf));
+    TEST_ASSERT_GREATER_THAN_UINT32(64u * 1024u, (uint32_t)len);
+    TEST_ASSERT_LESS_THAN_UINT32(256u * 1024u, (uint32_t)len);
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_UINT8(9, pack.n_landmarks);
+    TEST_ASSERT_EQUAL_UINT8(18, pack.n_features);
+    TEST_ASSERT_TRUE(pack.meta.present);
+    TEST_ASSERT_EQUAL_STRING("2026-09-16", pack.meta.updated);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_S05_field_pack_parses);
     RUN_TEST(test_S05_field_pack_after_midnight_set_folds_onto_festival_night);
     RUN_TEST(test_S05_field_pack_has_222_sets_55_after_midnight);
+    RUN_TEST(test_S05_field_pack_exceeds_old_64k_cap_and_parses);
     return UNITY_END();
 }

@@ -176,7 +176,7 @@ static uint32_t s_demo_clock_ms;
 static fp_pack_t *s_demo_pack;
 /* S26 slice (a) — the jsmn token scratch fp_parse tokenizes into while
  * parsing the demo festpack above. FP_MAX_TOKENS * sizeof(jsmntok_t) is
- * 128KB: PSRAM, never internal DIRAM — reclaiming THAT is the whole point
+ * 256KB (16384 tokens since 2026-09-16, was 128KB): PSRAM, never internal DIRAM — reclaiming THAT is the whole point
  * of this slice (docs/specs/S26-device-lifecycle.md). Intentionally
  * NEVER FREED: ff_shell_cfg_t.toks is stored by the shell and reused by
  * every ff_shell_load_pack call for the shell's whole lifetime (same
@@ -184,7 +184,7 @@ static fp_pack_t *s_demo_pack;
  * demo parse — ff_shell_load_pack is the shell's real production
  * pack-load path (already used off-device by the sim's --pack/--connect
  * flow), so a future on-device reload would parse into freed memory if
- * this were freed after ff_demo_seed. 128KB out of 8MB PSRAM is a
+ * this were freed after ff_demo_seed. 256KB out of 8MB PSRAM is a
  * trade worth making to keep that pointer valid for as long as the
  * shell might call ff_shell_load_pack again. */
 static jsmntok_t *s_demo_toks;

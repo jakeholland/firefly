@@ -437,7 +437,7 @@ typedef struct {
      * S26 slice (a) — the jsmn token scratch `ff_shell_load_pack` hands
      * to `fp_parse` (fp_pack.h). Same "beside the shell, not inside it"
      * reasoning as `pack` above, for the same reason `fp_parse` stopped
-     * owning a static arena: this is ~128KB at FP_MAX_TOKENS, and the
+     * owning a static arena: this is ~256KB at FP_MAX_TOKENS (16384 since 2026-09-16), and the
      * target is the one that knows whether it can afford that in
      * internal RAM or should put it in PSRAM.
      *

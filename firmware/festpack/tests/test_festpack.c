@@ -1028,6 +1028,40 @@ static void S14_utf8_truncate_does_not_split_landmark_name_codepoint(void)
     }
 }
 
+/* 2026-09-16 (S05 amendment, parser budgets): a document over the OLD
+ * 64 KB FP_MAX_JSON_LEN but well under the new 256 KB one parses. Built
+ * from a small valid fixture with a ~70 KB unknown string member spliced
+ * in right after the opening brace — unknown keys are tolerantly skipped,
+ * but their bytes still count against the input bound, which is exactly
+ * how the real 91 KB Lost Lands pack tripped the old cap. */
+static void S05_2026_09_16_70kb_document_with_unknown_member_parses(void)
+{
+    static char small[4096];
+    static char big[96u * 1024u];
+    size_t slen = load_fixture("null_venue.festpack.json", small, sizeof(small));
+    TEST_ASSERT_TRUE(slen > 1 && small[0] == '{');
+
+    fp_pack_t ref;
+    TEST_ASSERT_EQUAL_INT(FP_OK, fp_parse(small, slen, &ref, s_toks, FP_MAX_TOKENS));
+
+    const char *head = "{\"pad\":\"";
+    const char *tail = "\",";
+    size_t padn = 70u * 1024u;
+    size_t n = 0;
+    memcpy(big + n, head, strlen(head)); n += strlen(head);
+    memset(big + n, 'x', padn); n += padn;
+    memcpy(big + n, tail, strlen(tail)); n += strlen(tail);
+    memcpy(big + n, small + 1, slen - 1); n += slen - 1; /* rest of the fixture, sans its '{' */
+    TEST_ASSERT_TRUE(n > 64u * 1024u);
+
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(big, n, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_UINT8(ref.n_stages, pack.n_stages);
+    TEST_ASSERT_EQUAL_UINT16(ref.n_sets, pack.n_sets);
+    TEST_ASSERT_EQUAL_STRING(ref.name, pack.name);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1069,6 +1103,7 @@ int main(void)
     RUN_TEST(S05_AC5_feature_polygon_projects_known_square_within_1m);
 
     RUN_TEST(S05_review_null_venue_position_sets_origin_known_false);
+    RUN_TEST(S05_2026_09_16_70kb_document_with_unknown_member_parses);
 
     RUN_TEST(S05_review_string_origin_lat_sets_origin_known_false);
     RUN_TEST(S05_review_string_landmark_lat_sets_has_pos_false);
