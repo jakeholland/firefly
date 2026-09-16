@@ -1,0 +1,62 @@
+// firebase/firestore.rules — A04 (docs/specs/A04-telemetry.md).
+//
+// Firebase project firefly-36297 (app/Firefly/Resources/GoogleService-Info.plist),
+// Firestore database for one collection tree:
+//
+//   devices/{installId}
+//   devices/{installId}/sessions/{sessionId}/events/{seq}
+//
+// `installId` IS the Firebase Anonymous Auth uid this app signs in with
+// (FirebaseTelemetryBootstrap.swift's own doc comment on why identity
+// and the write path's security boundary are the same value) — so the
+// rule below is the whole security model: a client may write its OWN
+// device's documents and nothing else's, and may never read anything
+// back at all. This is a field-diagnostics upload path, not a synced
+// datastore the app itself ever reads from Firestore — every value a
+// screen shows comes from the local JSONL / the connected radio, never
+// a round trip through here.
+//
+// Deploy with the Firebase CLI from repo root:
+//   firebase deploy --only firestore:rules --project firefly-36297
+//
+// (`firebase.json`/`.firebaserc` are NOT part of this PR — the owner's
+// own `firebase init` in the console, or a follow-up CLI setup PR, wires
+// those; this file is the rules SOURCE, reviewable and versioned here
+// regardless of how it gets deployed.)
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /devices/{installId} {
+      // No reads, ever — this app is write-only against Firestore (the
+      // owner reads the console instead; see app/README.md, "Reading
+      // the data"). A client-side read path would mean the phone trusts
+      // whatever Firestore hands back, which nothing in this app is
+      // designed to do — every screen already has an honest local
+      // source of truth for its own values.
+      allow read: if false;
+      // A device may write only its OWN summary document — the uid
+      // this app signed in as, matching the `installId` path segment
+      // it wrote its own way in (`FirebaseTelemetryBootstrap`'s own
+      // comment on why those are the same value by construction).
+      allow write: if request.auth != null && request.auth.uid == installId;
+
+      match /sessions/{sessionId}/events/{seq} {
+        allow read: if false;
+        // Same rule, one level down: a session's events may only be
+        // written by the device that owns the PARENT `devices/{installId}`
+        // document — never a session under someone else's uid.
+        allow write: if request.auth != null && request.auth.uid == installId;
+      }
+    }
+
+    // Everything else: closed. No collection this app does not name
+    // above gets a default-allow — Firestore's own default (with no
+    // matching rule) is already deny, stated here for a reader who
+    // wants the whole security model on one screen rather than trusting
+    // an implicit default.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

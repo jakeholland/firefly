@@ -7,7 +7,7 @@
 //  hermeticity `InMemorySettingsStore` gives tests for free, applied
 //  here because this store is deliberately NOT in-memory.
 //
-import FireflyModel
+@testable import FireflyModel
 import XCTest
 
 final class SettingsStoreTests: XCTestCase {
@@ -195,5 +195,50 @@ final class SettingsStoreTests: XCTestCase {
         store.backgroundConnectEnabled = false
         XCTAssertTrue(store.bool(.unitsMetric))
         XCTAssertFalse(store.backgroundConnectEnabled)
+    }
+
+    // MARK: - A04 (docs/specs/A04-telemetry.md) — "Share diagnostics"
+
+    /// `#if DEBUG` — this test target always builds DEBUG, so the
+    /// build-config half of the default is pinned here; the TestFlight
+    /// half is `testDefaultShareDiagnosticsIsTestFlightReceiptOutsideDebug`
+    /// below, against the pure helper directly (no way to flip `#if
+    /// DEBUG` from inside a test).
+    func testShareDiagnosticsDefaultsTrueInDebugAndRoundTrips() {
+        let store = SettingsStore(defaults: defaults)
+        XCTAssertTrue(store.shareDiagnosticsEnabled, "nothing persisted, DEBUG build -> ON")
+        store.shareDiagnosticsEnabled = false
+        XCTAssertFalse(store.shareDiagnosticsEnabled)
+        store.shareDiagnosticsEnabled = true
+        XCTAssertTrue(store.shareDiagnosticsEnabled)
+    }
+
+    /// Same "an explicit choice survives the default" shape as
+    /// `testA03_AC9_AnExplicitFalseSurvivesTheDefaultFlip` — a phone
+    /// that turned this OFF stays off across a relaunch, whatever the
+    /// build-config default says.
+    func testShareDiagnosticsExplicitFalseSurvivesAFreshInstance() {
+        let store = SettingsStore(defaults: defaults)
+        store.shareDiagnosticsEnabled = false
+        let nextLaunch = SettingsStore(defaults: defaults)
+        XCTAssertFalse(nextLaunch.shareDiagnosticsEnabled)
+    }
+
+    func testShareDiagnosticsInMemoryStoreAgreesAboutTheDefault() {
+        let store = InMemorySettingsStore()
+        XCTAssertTrue(store.shareDiagnosticsEnabled)
+        store.shareDiagnosticsEnabled = false
+        XCTAssertFalse(store.shareDiagnosticsEnabled)
+    }
+
+    /// The pure TestFlight-receipt check, independent of `#if DEBUG`
+    /// (which this test target can never turn off): a `Bundle` with no
+    /// receipt URL at all (this test target's own `Bundle`, which is
+    /// never code-signed with a receipt) reads `false` — the honest
+    /// "we do not know this is TestFlight" answer, never a guessed
+    /// `true`.
+    func testDefaultShareDiagnosticsIsTestFlightReceiptOutsideDebug() {
+        XCTAssertFalse(SettingsStore.isTestFlightReceipt(bundle: Bundle(for: SettingsStoreTests.self)),
+                        "the test bundle carries no App Store receipt at all")
     }
 }

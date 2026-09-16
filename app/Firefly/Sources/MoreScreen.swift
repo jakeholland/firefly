@@ -37,6 +37,7 @@
 //
 import FireflyMesh
 import FireflyModel
+import FireflyTelemetry
 import SwiftUI
 
 struct MoreScreen: View {
@@ -56,6 +57,11 @@ struct MoreScreen: View {
     let crew: CrewController
     let membership: any CrewMembershipProviding
     let colorblind: Bool
+    /// A04 (docs/specs/A04-telemetry.md) — "Export diagnostics"'s own
+    /// seam, forwarded to `SettingsScreen`/`DiagnosticsViewModel`
+    /// exactly like `notifications` above it. `nil` on any composition
+    /// with no real, file-backed recorder.
+    var telemetryExporting: (any TelemetryExporting)?
     /// Demo-only (`-FireflyDemoScreen diagnostics`, `RootView`'s own
     /// mapping) — forwarded to `SettingsScreen` exactly as it was when
     /// Settings was its own top-level tab; `false` on every non-demo
@@ -190,12 +196,16 @@ struct MoreScreen: View {
                             notifications: notifications,
                             isDemoMode: isDemoMode,
                             onTryDemo: onTryDemo,
-                            onLeaveDemo: onLeaveDemo)
+                            onLeaveDemo: onLeaveDemo,
+                            telemetryExporting: telemetryExporting)
         case .system:
             DiagnosticsScreen(model: DiagnosticsViewModel(
                 client: client, linkDiagnostics: scanner as? (any BLELinkDiagnosticsProviding),
                 notifications: notifications,
-                backgroundConnectEnabled: { settings.stayConnectedInBackground }))
+                backgroundConnectEnabled: { settings.stayConnectedInBackground },
+                shareDiagnosticsEnabled: { settings.shareDiagnostics },
+                setShareDiagnosticsEnabled: { settings.setShareDiagnostics($0) },
+                telemetryExporting: telemetryExporting))
         }
     }
 }

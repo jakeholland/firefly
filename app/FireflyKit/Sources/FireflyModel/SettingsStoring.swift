@@ -165,6 +165,15 @@ public final class InMemorySettingsStore: FireflyExtraSettingsStoring, @unchecke
         set { setExtraBool(newValue, "backgroundConnectEnabled") }
     }
 
+    /// A04 — same "defaults ON" three-state shape `backgroundConnectEnabled`
+    /// just above uses, so a stub/demo composition exercises the same
+    /// on-by-default path a real DEBUG/TestFlight install does — never a
+    /// stand-in whose default silently disagrees with the real store's.
+    public var shareDiagnosticsEnabled: Bool {
+        get { extraBool("shareDiagnosticsEnabled", default: true) }
+        set { setExtraBool(newValue, "shareDiagnosticsEnabled") }
+    }
+
     public var nodeLongNamePreference: String? {
         get { extraString("nodeLongNamePreference") }
         set { setExtraString(newValue, "nodeLongNamePreference") }

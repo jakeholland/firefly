@@ -22,6 +22,16 @@
 //                    on protocols, never on a concrete transport, so
 //                    every screen is testable against a mock.
 //
+// A fifth target, `FireflyTelemetry` (docs/specs/A04-telemetry.md),
+// appended below `FireflyCore` for the field-test telemetry work: the
+// event/value types, the durable JSON-lines recorder, the sink seam and
+// the event-name catalogue. It has no dependency on `FireflyCore` and
+// depends on nothing but `Foundation`/`CryptoKit`, so `FireflyMesh` AND
+// `FireflyModel` can both depend on it (the reason it is not simply
+// folded into `FireflyModel`: `BLETransport`/`MeshtasticClient` live in
+// `FireflyMesh`, which — per this file's own dependency graph — cannot
+// depend on `FireflyModel`).
+//
 import PackageDescription
 
 // M3 (docs/specs/A01-companion-app.md, "the package builds clean under
@@ -41,11 +51,12 @@ let package = Package(
         .macOS(.v14),
     ],
     products: [
-        .library(name: "FireflyKit", targets: ["FireflyCore", "MeshtasticProto", "FireflyMesh", "FireflyModel"]),
+        .library(name: "FireflyKit", targets: ["FireflyCore", "MeshtasticProto", "FireflyMesh", "FireflyModel", "FireflyTelemetry"]),
         .library(name: "FireflyCore", targets: ["FireflyCore"]),
         .library(name: "MeshtasticProto", targets: ["MeshtasticProto"]),
         .library(name: "FireflyMesh", targets: ["FireflyMesh"]),
         .library(name: "FireflyModel", targets: ["FireflyModel"]),
+        .library(name: "FireflyTelemetry", targets: ["FireflyTelemetry"]),
     ],
     dependencies: [
         // Pinned to the runtime that matches protoc-gen-swift 1.38.0, the
@@ -72,9 +83,22 @@ let package = Package(
             exclude: ["GENERATED.md"],
             swiftSettings: strictConcurrency
         ),
+        // A04 — the telemetry event/value types, the durable recorder
+        // and the sink seam. `Foundation` + `CryptoKit` only (the latter
+        // for `TelemetryHash`'s truncated SHA-256), so it sits BELOW
+        // `FireflyMesh` in this stack, same tier as `FireflyCore` — see
+        // this file's own header comment for why it cannot simply be
+        // folded into `FireflyModel`.
+        .target(
+            name: "FireflyTelemetry",
+            path: "Sources/FireflyTelemetry",
+            swiftSettings: strictConcurrency
+        ),
         .target(
             name: "FireflyMesh",
-            dependencies: ["FireflyCore", "MeshtasticProto"],
+            // FireflyTelemetry appended (A04): BLETransport/MeshtasticClient
+            // record connectivity events at their existing log points.
+            dependencies: ["FireflyCore", "MeshtasticProto", "FireflyTelemetry"],
             path: "Sources/FireflyMesh",
             swiftSettings: strictConcurrency
         ),
@@ -85,8 +109,10 @@ let package = Package(
             // imported channel's protobuf bytes and needs the generated
             // ChannelSettings/ModuleSettings types to do it with the
             // same wire format the puck's nanopb sources use, rather
-            // than hand-rolling field parsing.
-            dependencies: ["FireflyCore", "FireflyMesh", "MeshtasticProto"],
+            // than hand-rolling field parsing. FireflyTelemetry appended
+            // (A04): AppDependencies/AppGraph own the recorder and emit
+            // app-lifecycle/crew/notification events.
+            dependencies: ["FireflyCore", "FireflyMesh", "MeshtasticProto", "FireflyTelemetry"],
             path: "Sources/FireflyModel",
             swiftSettings: strictConcurrency
         ),
@@ -100,6 +126,9 @@ let package = Package(
         .testTarget(name: "MeshtasticProtoTests", dependencies: ["MeshtasticProto"], path: "Tests/MeshtasticProtoTests", swiftSettings: strictConcurrency),
         .testTarget(name: "FireflyMeshTests", dependencies: ["FireflyMesh"], path: "Tests/FireflyMeshTests", swiftSettings: strictConcurrency),
         .testTarget(name: "FireflyModelTests", dependencies: ["FireflyModel"], path: "Tests/FireflyModelTests", swiftSettings: strictConcurrency),
+        // A04 — recorder durability, catalogue pinning, hashing,
+        // batching/flush and the no-coordinates/no-text attribute guard.
+        .testTarget(name: "FireflyTelemetryTests", dependencies: ["FireflyTelemetry"], path: "Tests/FireflyTelemetryTests", swiftSettings: strictConcurrency),
 
         // Serial + TCP hardware integration tests (slice F). NOT
         // CoreBluetooth, so unaffected by the TCC restriction that

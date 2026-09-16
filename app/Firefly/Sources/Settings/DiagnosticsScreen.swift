@@ -2,14 +2,28 @@
 //  DiagnosticsScreen.swift — the Diagnostics sub-screen (docs/specs/
 //  A01-companion-app.md, Design language > Diagnostics).
 //
+//  A04 (docs/specs/A04-telemetry.md) adds two rows: "Share diagnostics"
+//  (a toggle) and "Export diagnostics" (a share-sheet button) — both
+//  described in that spec's §4 and both live here, not on the main
+//  Settings screen, because Diagnostics is already where this app
+//  explains what it does and does not know about itself.
+//
+import FireflyTelemetry
 import SwiftUI
 
 struct DiagnosticsScreen: View {
     @State var model: DiagnosticsViewModel
+    /// A04 — the files `exportDiagnosticsFiles()` most recently
+    /// produced, staged here because `ShareLink`'s `item:` needs a value
+    /// ready before the sheet presents, not an `async` call it can
+    /// await itself.
+    @State private var exportFiles: [URL] = []
+    @State private var isPreparingExport = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                shareDiagnosticsSection
                 row(label: "Link state", value: model.linkStateLabel, isLive: true)
                 row(label: "Link uptime", value: model.uptimeLabel, isLive: true)
                 // A03 §3.10 — one line that says what is actually true
@@ -57,6 +71,55 @@ struct DiagnosticsScreen: View {
         .navigationTitle("DIAGNOSTICS")
         .onAppear { model.observe() }
         .onDisappear { model.stopObserving() }
+    }
+
+    /// A04 — "Share diagnostics" (a toggle) and "Export diagnostics" (a
+    /// share sheet over whatever the local recorder currently holds).
+    /// Its own block, ahead of every live value, since it is a setting
+    /// and an action rather than a reading.
+    private var shareDiagnosticsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle("Share diagnostics", isOn: Binding(
+                    get: { model.shareDiagnosticsEnabled },
+                    set: { model.setShareDiagnostics($0) }))
+                Text("Sends connection diagnostics when the phone has signal. " +
+                     "Never your messages or exact location.")
+                    .font(.caption2)
+                    .foregroundStyle(Color.ffMuted.opacity(0.7))
+            }
+            .frame(minHeight: 44)
+
+            if model.canExportDiagnostics {
+                Button {
+                    isPreparingExport = true
+                    Task {
+                        exportFiles = await model.exportDiagnosticsFiles()
+                        isPreparingExport = false
+                    }
+                } label: {
+                    HStack {
+                        Text("Export diagnostics")
+                        if isPreparingExport { ProgressView().controlSize(.small) }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .tint(.ffAmber)
+                .frame(minHeight: 44)
+                // Populated by the button tap above — `ShareLink` needs
+                // the file list ready before presenting, not an `async`
+                // call of its own, so this button always fires the
+                // fetch first and lets a non-empty `exportFiles`
+                // trigger the share sheet.
+                if !exportFiles.isEmpty {
+                    ShareLink(items: exportFiles) {
+                        Text("Share \(exportFiles.count) file\(exportFiles.count == 1 ? "" : "s")")
+                    }
+                    .buttonStyle(.bordered)
+                    .frame(minHeight: 44)
+                }
+            }
+        }
     }
 
     /// The §3.10 status line. Full width and unmonospaced — it is a

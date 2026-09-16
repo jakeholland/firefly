@@ -73,6 +73,11 @@ final class SettingsViewModel {
     var shareGPSWithNode: Bool
     var locationIntervalSeconds: Double
     var stayConnectedInBackground: Bool
+    /// A04 (docs/specs/A04-telemetry.md) — "Share diagnostics", read/
+    /// written through the SAME `store` every other toggle here uses,
+    /// same three-state default shape as `stayConnectedInBackground`
+    /// (`SettingsStore.shareDiagnosticsEnabled`'s own doc comment).
+    var shareDiagnostics: Bool
     var colorblindPalette: Bool
     /// M2: `.system` (the default) follows the phone's own locale —
     /// see `UnitsPreference.resolvedImperial(locale:)` — until this row
@@ -139,6 +144,7 @@ final class SettingsViewModel {
         shareGPSWithNode = store.bool(.locationSharingEnabled)
         locationIntervalSeconds = store.double(.locationSharingIntervalSeconds) ?? 30
         stayConnectedInBackground = store.backgroundConnectEnabled
+        shareDiagnostics = store.shareDiagnosticsEnabled
         colorblindPalette = store.colorblindPaletteEnabled
         unitsPreference = store.unitsPreference()
         isConnected = client.connectedNodeNum != nil
@@ -314,6 +320,18 @@ final class SettingsViewModel {
     func setStayConnectedInBackground(_ value: Bool) {
         stayConnectedInBackground = value
         store.backgroundConnectEnabled = value
+    }
+
+    /// A04 — OFF takes effect on the NEXT batch flush, not
+    /// retroactively: nothing this app has already written to the local
+    /// JSONL is deleted or un-uploaded by flipping this off (that log is
+    /// the offline-first guarantee itself), and nothing already queued
+    /// for upload is recalled. It only decides whether the NEXT
+    /// `TelemetryBatchPolicy` flush is allowed to leave this phone —
+    /// `FirebaseSink`'s own doc comment.
+    func setShareDiagnostics(_ value: Bool) {
+        shareDiagnostics = value
+        store.shareDiagnosticsEnabled = value
     }
 
     func setColorblindPalette(_ value: Bool) {

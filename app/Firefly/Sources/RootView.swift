@@ -16,6 +16,7 @@
 //
 import FireflyMesh
 import FireflyModel
+import FireflyTelemetry
 import SwiftUI
 
 enum Destination: String, CaseIterable, Identifiable {
@@ -155,6 +156,10 @@ struct RootView: View {
     /// "Background connection" line can say whether Firefly is actually
     /// allowed to alert anyone.
     let notifications: (any NotificationSending)?
+    /// A04 (docs/specs/A04-telemetry.md) — "Export diagnostics"'s own
+    /// seam, handed down to `MoreScreen`/`SettingsScreen`/
+    /// `DiagnosticsViewModel` exactly like `notifications` above it.
+    var telemetryExporting: (any TelemetryExporting)?
     /// "app: Try the demo" — `true` exactly when `demoRunner != nil`
     /// (`AppRuntimeBundle.isDemoMode`'s own doc comment: the same test,
     /// handed down rather than re-derived here, so there is exactly one
@@ -498,6 +503,7 @@ struct RootView: View {
                                 notifications: notifications, pairing: pairing,
                                 crew: crew, membership: membership,
                                 colorblind: settings.colorblindPalette,
+                                telemetryExporting: telemetryExporting,
                                 autoOpenDiagnosticsInSettings: initialDemoScreen == "diagnostics",
                                 autoOpen: moreAutoOpen,
                                 onAutoOpenHandled: { moreAutoOpen = nil },

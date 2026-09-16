@@ -26,6 +26,7 @@
 //  buildable (and testable) without a notification centre at all.
 //
 import FireflyModel
+import FireflyTelemetry
 import Foundation
 #if canImport(UserNotifications)
 import UserNotifications
@@ -90,6 +91,12 @@ final class NotificationTapRouter: NSObject, UNUserNotificationCenterDelegate {
     /// graph reference, so this type knows nothing about the composition
     /// root it is wired into.
     var onDeepLink: (@MainActor (URL) -> Void)?
+    /// A04 (docs/specs/A04-telemetry.md) — `notif.tapped {kind}`. Set
+    /// alongside `onDeepLink`, same "closure/value, not a graph
+    /// reference" convention this type's own header describes — this
+    /// router knows nothing about the composition root it is wired
+    /// into, only that it can record an event.
+    var telemetry: any TelemetryRecording = NoopTelemetryRecorder()
 
     /// `UNUserNotificationCenter.current()` traps outside a real `.app`
     /// bundle (`UNNotificationSending`'s own doc comment has the full
@@ -169,6 +176,13 @@ final class NotificationTapRouter: NSObject, UNUserNotificationCenterDelegate {
         // itself.
         let link = response.notification.request.content.userInfo[NotificationUserInfoKey.deepLink] as? String
         let handler = onDeepLink
+        // A04 — `notif.tapped {kind}`, extracted here for the same
+        // Sendable-safety reason `link` is: `categoryIdentifier` is a
+        // plain `String` (flare/rally/message — `NotificationCategory`'s
+        // own constants, the SAME vocabulary `notif.posted`'s `kind`
+        // uses), never the notification object itself.
+        let kind = response.notification.request.content.categoryIdentifier
+        let telemetry = self.telemetry
         Self.runOnMainActor {
             defer { completionHandler() }
             guard let link, let url = URL(string: link) else { return }
@@ -178,6 +192,8 @@ final class NotificationTapRouter: NSObject, UNUserNotificationCenterDelegate {
             // destination is one thing to get right.
             handler?(url)
         }
+        Task { await telemetry.record(TelemetryEvent(name: TelemetryEventName.notifTapped,
+                                                       attributes: [TelemetryAttributeKey.kind: .string(kind)])) }
     }
 }
 #endif

@@ -25,6 +25,17 @@ options:
 packages:
   FireflyKit:
     path: FireflyKit
+  # A04 (docs/specs/A04-telemetry.md) — Crashlytics breadcrumbs/custom
+  # keys + Firestore batched uploads + Anonymous Auth for identity, APP
+  # TARGET ONLY (the Firefly target's own `dependencies:` above; no
+  # FireflyKit target depends on this). Pinned to an exact release, not
+  # a floating `from:` range — same "never a floating tag" rule
+  # AGENTS.md states for `firmware/third_party/`'s vendored deps,
+  # applied here to the one place this repo resolves a THIRD-PARTY
+  # SwiftPM package rather than vendoring source.
+  FirebaseSDK:
+    url: https://github.com/firebase/firebase-ios-sdk
+    exactVersion: 11.6.0
 
 settings:
   base:
@@ -74,6 +85,16 @@ targets:
       # Info.plist/entitlements, which are wired via their own settings
       # keys below rather than compiled as sources.
       - path: Firefly/Resources/Assets.xcassets
+      # A04 (docs/specs/A04-telemetry.md) — the owner's real Firebase
+      # config for project `firefly-36297` (bundle
+      # com.jakeholland.Firefly). Not a secret (a client-side Firebase
+      # config identifies the PROJECT, not a credential — access is
+      # enforced by `firebase/firestore.rules`, not by this file being
+      # unreadable), and committed for that reason, same as every other
+      # resource in this list. `FirebaseSink.swift`'s own header
+      # explains why `FirebaseApp.configure()` still checks for this
+      # file at runtime rather than assuming it is always present.
+      - path: Firefly/Resources/GoogleService-Info.plist
       # "app: Lineup by-stage grid, day pills, My picks" — `AlmanacFestpackProvider`'s
       # bundled fallback (`lost-lands-2026.festpack.json`, "bundled
       # copy") and `DemoFestpackProvider`'s scripted world
@@ -119,6 +140,22 @@ targets:
         product: FireflyMesh
       - package: FireflyKit
         product: FireflyModel
+      # A04 (docs/specs/A04-telemetry.md) — appended last, same
+      # convention as every product above it.
+      - package: FireflyKit
+        product: FireflyTelemetry
+      # A04 — Firebase, APP TARGET ONLY: neither FireflyKit's
+      # Package.swift nor any FireflyKit target depends on these.
+      # `FirebaseSink`/`FirebaseApp.configure()` live under
+      # `Firefly/Sources/Telemetry`, guarded `#if canImport(FirebaseCore)`
+      # so the file still compiles (as a no-op) if these ever fail to
+      # resolve — see that file's own header.
+      - package: FirebaseSDK
+        product: FirebaseCrashlytics
+      - package: FirebaseSDK
+        product: FirebaseFirestore
+      - package: FirebaseSDK
+        product: FirebaseAuth
     # Config/Firefly.xcconfig is committed and carries the signing
     # DEFAULTS (CODE_SIGNING_ALLOWED/REQUIRED = NO), then `#include?`s
     # (optional — no error if absent) a git-ignored Config/Local.xcconfig
@@ -156,6 +193,47 @@ targets:
           # Release keeps the plain Firefly.entitlements: a release build
           # hosts no tests and has no business talking to a test daemon.
           CODE_SIGN_ENTITLEMENTS: Firefly/Resources/Firefly.Debug.entitlements
+    # A04 (docs/specs/A04-telemetry.md) — Crashlytics dSYM upload.
+    # SPM-distributed Crashlytics ships its `upload-symbols`-equivalent
+    # script inside the resolved package checkout rather than a CocoaPods
+    # `Pods/` tree, so the path is the one Firebase's own SPM docs give
+    # (`${BUILD_DIR%/Build/*}/SourcePackages/checkouts/...`), not the
+    # `${PODS_ROOT}` path older Firebase-via-CocoaPods guides use. Runs
+    # ONLY when the plist actually exists (this script's own `test -f`
+    # guard) — a build with none configures nothing and uploads nothing,
+    # the same "must still tolerate its absence" rule
+    # `FirebaseTelemetryBootstrap.swift` states for the code path.
+    postbuildScripts:
+      # `app/tools/check_project.sh` rejects any literal `${` anywhere in
+      # the committed project.pbxproj (that script's own comment: a real,
+      # RESOLVED build setting is never spelled `${VAR}` in a checked-in
+      # file — only an unresolved xcodegen template placeholder is). This
+      # script therefore spells every Xcode build-setting reference in
+      # the PLAIN `$VAR` form rather than `${VAR}`, and computes the
+      # SourcePackages checkout directory with two `dirname` calls
+      # instead of `${BUILD_DIR%/Build/*}`'s brace-form suffix removal —
+      # `BUILD_DIR` is `<DerivedData>/Build/Products`, so
+      # `dirname "$(dirname "$BUILD_DIR")"` is `<DerivedData>`, the exact
+      # same directory that expression strips down to.
+      - name: "A04: Crashlytics dSYM upload"
+        script: |
+          if [ "$CONFIGURATION" = "Debug" ]; then
+            echo "Crashlytics dSYM upload: skipped (Debug build)"
+            exit 0
+          fi
+          PLIST="$SRCROOT/Firefly/Resources/GoogleService-Info.plist"
+          if [ ! -f "$PLIST" ]; then
+            echo "Crashlytics dSYM upload: skipped (no GoogleService-Info.plist)"
+            exit 0
+          fi
+          DERIVED_DATA_DIR="$(dirname "$(dirname "$BUILD_DIR")")"
+          RUN_SCRIPT="$DERIVED_DATA_DIR/SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/run"
+          if [ ! -f "$RUN_SCRIPT" ]; then
+            echo "Crashlytics dSYM upload: skipped (run script not found at $RUN_SCRIPT — package not resolved?)"
+            exit 0
+          fi
+          "$RUN_SCRIPT"
+        basedOnDependencyAnalysis: false
 
   # App-hosted BLE hardware tests (docs/specs/A01-companion-app.md, B1).
   # macOS aborts (__TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__) any
@@ -328,6 +406,14 @@ targets:
       # actual path points (normalized geometry, notch position, width
       # ratio) without dragging in SwiftUI/Theme.
       - path: Firefly/Sources/Radar/ArrowGeometry.swift
+      # A04 review gap-close — `FirebaseTelemetryBootstrap.shouldAttachSink(...)`,
+      # the pure "never touch the network from an XCTest process" gate,
+      # tested by `FirebaseTelemetryBootstrapGateTests.swift` (pulled in
+      # by `Firefly/Tests` below). Compiles with no Firebase SDK linked:
+      # everything Firebase-specific in this file sits behind `#if
+      # canImport(FirebaseCore)`, which this target does not satisfy —
+      # same reasoning as every other file in this list.
+      - path: Firefly/Sources/Telemetry/FirebaseTelemetryBootstrap.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit
@@ -338,6 +424,16 @@ targets:
         product: FireflyMesh
       - package: FireflyKit
         product: FireflyModel
+      # A04 — `SettingsViewModel`/`DiagnosticsViewModel`/`CrewController`/
+      # `NotificationTapRouter` (all four already listed under `sources:`
+      # above) now `import FireflyTelemetry`. No Firebase dependency
+      # here on purpose: `FirebaseSink` lives under `Firefly/Sources/
+      # Telemetry`, which is deliberately NOT in this target's `sources:`
+      # list (same reasoning as every SwiftUI screen this list already
+      # excludes) — this suite proves the wiring, `xcodebuild build` on
+      # the Firefly target proves Firebase links.
+      - package: FireflyKit
+        product: FireflyTelemetry
     configFiles:
       Debug: Config/Firefly.xcconfig
       Release: Config/Firefly.xcconfig

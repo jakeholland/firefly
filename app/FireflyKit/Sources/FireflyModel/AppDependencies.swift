@@ -9,6 +9,7 @@
 //  as specified.
 //
 import FireflyMesh
+import FireflyTelemetry
 import Foundation
 
 public struct AppDependencies: Sendable {
@@ -45,12 +46,23 @@ public struct AppDependencies: Sendable {
     /// same append-only convention, with the same in-memory default, so
     /// every existing `AppDependencies(...)` call site keeps compiling.
     public var crewLocalStateStore: any CrewLocalStateStoring
+    /// A04 (docs/specs/A04-telemetry.md) — the field-test telemetry
+    /// seam, appended after `crewLocalStateStore` under the same
+    /// append-only convention as every field above it: every existing
+    /// `AppDependencies(...)` call site keeps compiling unchanged.
+    /// `.stub()` gets `InMemoryTelemetryRecorder()` (records to memory,
+    /// nothing touches disk); `.live()` gets a real, durable
+    /// `TelemetryRecorder`. `Telemetry.shared`-free by design — this is
+    /// the ONE place a call site gets one, exactly like `client`/
+    /// `location`/`store` above it.
+    public var telemetry: any TelemetryRecording
 
     public init(client: any MeshtasticClientProtocol, location: any LocationProviding,
                 heading: any HeadingProviding, store: any FireflyExtraSettingsStoring,
                 scanner: (any NodeScanning)? = nil,
                 crewPairingStore: any CrewPairingStoring = InMemoryCrewPairingStore(),
-                crewLocalStateStore: any CrewLocalStateStoring = InMemoryCrewLocalStateStore()) {
+                crewLocalStateStore: any CrewLocalStateStoring = InMemoryCrewLocalStateStore(),
+                telemetry: any TelemetryRecording = InMemoryTelemetryRecorder()) {
         self.client = client
         self.location = location
         self.heading = heading
@@ -58,6 +70,7 @@ public struct AppDependencies: Sendable {
         self.scanner = scanner
         self.crewPairingStore = crewPairingStore
         self.crewLocalStateStore = crewLocalStateStore
+        self.telemetry = telemetry
     }
 
     /// The stub stack: `StubMeshtasticClient` over `LoopbackTransport`,
@@ -99,6 +112,19 @@ public struct AppDependencies: Sendable {
     /// appears merely from existing.
     public static func live() -> AppDependencies {
         let store = SettingsStore()
+        // A04 — ONE recorder, held by `BLETransport`, `MeshtasticClient`
+        // AND `AppDependencies.telemetry` itself: the same "one instance,
+        // several holders" rule `transport` (below) follows for the
+        // identical reason — two recorders would mean two `seq`
+        // counters and two session ids disagreeing about the same
+        // process. `Self.telemetryDirectory()` is Application Support,
+        // never Documents/tmp (that directory is exposed to iCloud
+        // backup and Files.app; telemetry is diagnostic, not user data,
+        // and does not belong there). Firebase sinks (app-target-only,
+        // behind `#if canImport(FirebaseCore)`) are attached AFTER this
+        // returns, via `TelemetrySinkAttaching` — `FireflyModel` cannot
+        // depend on the app target's Firebase wiring.
+        let telemetry = TelemetryRecorder(directory: Self.telemetryDirectory())
         // M2 — "remembering the last connected peripheral identifier"
         // (docs/specs/A01-companion-app.md): loaded once here, at
         // construction, and kept current afterward by the two closures
@@ -122,15 +148,27 @@ public struct AppDependencies: Sendable {
                 var ids = Self.parsePeripheralIDs(store.string(.bondedPeripheralIDs))
                 ids.insert(id)
                 store.setString(ids.map(\.uuidString).joined(separator: ","), .bondedPeripheralIDs)
-            })
+            },
+            telemetry: telemetry)
         return AppDependencies(
-            client: MeshtasticClient(transport: transport),
+            client: MeshtasticClient(transport: transport, telemetry: telemetry),
             location: LocationProvider(),
             heading: HeadingProvider(),
             store: store,
             scanner: transport,
             crewPairingStore: CrewPairingStore(),
-            crewLocalStateStore: CrewLocalStateStore())
+            crewLocalStateStore: CrewLocalStateStore(),
+            telemetry: telemetry)
+    }
+
+    /// Application Support/Firefly/Telemetry — sibling to `HistoryStore
+    /// .storeURL`'s Application Support/Firefly (that method's own doc
+    /// comment), its own subdirectory so `TelemetryRecorder`'s rotated
+    /// `.jsonl` files never mix with `History.sqlite`.
+    private static func telemetryDirectory() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appending(path: "Firefly/Telemetry", directoryHint: .isDirectory)
     }
 
     /// `SettingsKey.bondedPeripheralIDs`'s on-disk shape: a comma-joined
