@@ -10,16 +10,22 @@
  * exactly as it was: it is the floor NOTHING may go under, on every face,
  * including the ones this file does not name.
  *
- * This file adds the SECOND, higher bar the owner asked for, and only on
+ * This file adds the SECOND, higher bar the owner asked for. It started on
  * the four faces a raver actually operates one-handed in the dark:
- * launcher, radar, compose, inbox/signals. The two bars are deliberately
- * separate files rather than one raised constant, because they answer
- * different questions:
+ * launcher, radar, compose, inbox/signals. Usability-review slice 3
+ * (docs/reviews/puck-ux-usability-2026-09-15.md finding 5 — "the 80px
+ * primary floor is enforced on 4 of 12 faces") added four more: power
+ * menu, the plain Settings list, SHOW CODE, and the crew-op confirm/
+ * status pages — the faces that same finding named as guarded only by
+ * the 44px absolute floor. The two bars (this file's 80px and
+ * test_face_hit_targets.c's 44px) are deliberately separate files rather
+ * than one raised constant, because they answer different questions:
  *
  *   - 44px  = "is this a tap target at all" (every face, every control).
  *   - 80px  = "can a gloved, sweaty, four-drinks-in thumb hit THIS
- *             control, on THIS face, while walking" (the four faces
- *             below, primary actions and list rows).
+ *             control, on THIS face, while walking" (the faces named in
+ *             SIZING_RULES below, at each one's own measured ceiling —
+ *             primary actions and list rows).
  *
  * ## The rules, and why each is shaped the way it is
  *
@@ -185,6 +191,61 @@ static const sizing_rule_t SIZING_RULES[] = {
     {"banner_on_launcher", FF_THEME_MIN_HIT_PX, 48},
     {"banner_on_radar", FF_THEME_MIN_HIT_PX, 48},
     {"banner_on_thread", FF_THEME_MIN_HIT_PX, 48},
+
+    /* ---------------------------------------------------------------------
+     * Usability-review slice 3 (docs/reviews/puck-ux-usability-2026-09-15.md
+     * finding 5 — "the 80px primary floor is enforced on 4 of 12 faces").
+     * The four faces below are the ones this slice actually raised to the
+     * ceiling this ownership pass reached; each entry is that MEASURED
+     * ceiling, so — same discipline as the launcher/radar/compose/inbox
+     * rules above — a regression fails here, not an aspiration nobody
+     * meets. ------------------------------------------------------- */
+
+    /* Power menu: three buttons, all >=150px wide (FF_TAP_PRIMARY_W_PX),
+     * so R2 alone would catch a regression, but the short-side floor is
+     * set to the same 80px since nothing on this face is legitimately
+     * narrower — see scr_power_menu.c's own containment derivation. */
+    {"power_menu", FF_THEME_HIT_PRIMARY_PX, FF_THEME_HIT_PRIMARY_PX},
+
+    /* Settings (the plain scrolling list only — NOT crew_*, crew_op_* or
+     * crew_show_code*, each covered by their own entry below because they
+     * are different sub-faces with different ceilings). Most rows
+     * (CALIBRATE TOUCH, DIAGNOSTICS, the CREW/NAME rows) are >=150px wide
+     * and R2 catches FF_SETTINGS_ROW_H there; the short-side floor stays
+     * at the universal 44px because several controls are deliberately
+     * narrower than 150px and always have been (the toggle-pair pills,
+     * 48-76px wide) — same shape as the "compose"/"inbox" rules above, and
+     * for the same reason: a face that legitimately mixes narrow and wide
+     * controls needs R1 permissive and R2 doing the real work. This ALSO
+     * covers settings_name_edit (the name editor's own T9 keypad, 44px
+     * keys, untouched by this pass — nothing on that face is >=150px wide
+     * either, so it passes on the same permissive floor without being a
+     * false promise about keys this slice never grew). */
+    {"settings", FF_THEME_MIN_HIT_PX, FF_THEME_HIT_PRIMARY_PX},
+
+    /* SHOW CODE's BACK — the only control on the face, 120px wide (under
+     * the R2 classifier), so the SHORT-side floor is what actually holds
+     * FF_CREWCODE_BTN_H at its new 80px ceiling. */
+    {"crew_show_code", FF_THEME_HIT_PRIMARY_PX, FF_THEME_HIT_PRIMARY_PX},
+
+    /* Crew-op confirm/status pages — every pill is 124px wide (also under
+     * R2's classifier), so each sub-face's floor is entirely carried by
+     * R1. Three of the four sub-faces (the CONFIRM pages, the FAILED
+     * page, and READY-leaving's single DONE) are wholly at the new 80px
+     * ceiling. "crew_op_ready" (leaving=false) is the one exception: it
+     * ALSO shows the READY page's un-grown SHOW CODE shortcut
+     * (scr_settings.c's FF_CREWOP_BTN2_H, deliberately still 48 — see
+     * that constant's own comment for why), so ITS OWN floor has to stay
+     * at 48 to avoid a false positive on that one control. A regression
+     * of the shared FF_CREWOP_BTN_H is still caught here (via DONE on
+     * this same fixture) and independently by the three entries below.
+     * Longest-prefix-wins gives "crew_op_ready_leave" its own, stricter
+     * entry over the more permissive "crew_op_ready" it would otherwise
+     * fall through to. */
+    {"crew_op_confirm", FF_THEME_HIT_PRIMARY_PX, FF_THEME_HIT_PRIMARY_PX},
+    {"crew_op_failed", FF_THEME_HIT_PRIMARY_PX, FF_THEME_HIT_PRIMARY_PX},
+    {"crew_op_ready_leave", FF_THEME_HIT_PRIMARY_PX, FF_THEME_HIT_PRIMARY_PX},
+    {"crew_op_ready", 48, 48},
 };
 
 #define SIZING_N_RULES ((int)(sizeof(SIZING_RULES) / sizeof(SIZING_RULES[0])))
@@ -560,19 +621,37 @@ static void S_TAP_launcher_radar_compose_inbox_clear_the_outdoor_floors(void)
                                   "lines above");
 }
 
-/* The rule table must actually MATCH each of the four named faces — a
+/* The rule table must actually MATCH each of the named faces — a
  * typo'd prefix would silently reduce this whole file to a no-op for
  * that face while still passing (the exact vacuous-pass failure mode
- * AGENTS.md's proxy check exists to catch). */
+ * AGENTS.md's proxy check exists to catch). Originally named for the
+ * first four faces this file covered; usability-review slice 3 added
+ * four more (docs/reviews/puck-ux-usability-2026-09-15.md finding 5),
+ * so the assertions below grew with it rather than the name — a rename
+ * mid-file would just be churn for reviewers tracking this PR. */
 static void S_TAP_rule_table_covers_all_four_named_faces(void)
 {
     TEST_ASSERT_NOT_NULL_MESSAGE(sizing_rule_for("launcher.json"), "launcher fixtures are not covered by any rule");
     TEST_ASSERT_NOT_NULL_MESSAGE(sizing_rule_for("radar_live.json"), "radar fixtures are not covered by any rule");
     TEST_ASSERT_NOT_NULL_MESSAGE(sizing_rule_for("compose_123.json"), "compose fixtures are not covered by any rule");
     TEST_ASSERT_NOT_NULL_MESSAGE(sizing_rule_for("inbox_inbox.json"), "inbox fixtures are not covered by any rule");
-    /* And must NOT quietly claim faces it makes no promises about. */
+    /* Slice 3's four additions. */
+    TEST_ASSERT_NOT_NULL_MESSAGE(sizing_rule_for("power_menu.json"), "power_menu is not covered by any rule");
+    TEST_ASSERT_NOT_NULL_MESSAGE(sizing_rule_for("settings_default.json"),
+                                 "settings fixtures are not covered by any rule");
+    TEST_ASSERT_NOT_NULL_MESSAGE(sizing_rule_for("crew_show_code.json"),
+                                 "crew_show_code fixtures are not covered by any rule");
+    TEST_ASSERT_NOT_NULL_MESSAGE(sizing_rule_for("crew_op_confirm_leave.json"),
+                                 "crew_op_confirm fixtures are not covered by any rule");
+    /* And must NOT quietly claim faces it makes no promises about — the
+     * CREW sub-page's own rows (HIDE/UNHIDE/ADD, the member list) are
+     * deliberately out of this slice's scope (FF_CREW_PAGE_ROW_H, kept
+     * at 48 — see scr_settings.c's own comment) and must stay covered
+     * only by the universal 44px sweep, not a promise this file never
+     * measured. */
     TEST_ASSERT_NULL_MESSAGE(sizing_rule_for("map_nofix.json"), "map must not be claimed by this pass's rules");
-    TEST_ASSERT_NULL_MESSAGE(sizing_rule_for("settings_default.json"), "settings must not be claimed by this pass");
+    TEST_ASSERT_NULL_MESSAGE(sizing_rule_for("crew_default.json"),
+                             "the CREW sub-page's own rows are out of this slice's scope and must not be claimed");
     /* Longest-prefix wins: "banner_on_radar.json" matches BOTH the
      * "radar"-less short entries it could fall through to and its own
      * long one, so this is the entry the lookup must return.
@@ -604,6 +683,31 @@ static void S_TAP_rule_table_covers_all_four_named_faces(void)
                                   "through to the shorter, more permissive 'radar' entry");
     TEST_ASSERT_EQUAL_PTR_MESSAGE(radar_rule, sizing_rule_for("radar_live.json"),
                                   "a plain radar fixture must still take the radar rule");
+
+    /* Same longest-prefix-wins property, for the crew-op READY pair:
+     * "crew_op_ready_leave.json" must take its OWN (stricter, 80px)
+     * entry rather than falling through to "crew_op_ready"'s more
+     * permissive 48px one — the two entries exist specifically because
+     * they are NOT interchangeable (see the rule table's own comment). */
+    sizing_rule_t const *ready_rule = NULL;
+    sizing_rule_t const *ready_leave_rule = NULL;
+    for (int i = 0; i < SIZING_N_RULES; i++) {
+        if (strcmp(SIZING_RULES[i].prefix, "crew_op_ready") == 0) {
+            ready_rule = &SIZING_RULES[i];
+        }
+        if (strcmp(SIZING_RULES[i].prefix, "crew_op_ready_leave") == 0) {
+            ready_leave_rule = &SIZING_RULES[i];
+        }
+    }
+    TEST_ASSERT_NOT_NULL_MESSAGE(ready_rule, "the rule table must still carry a crew_op_ready entry");
+    TEST_ASSERT_NOT_NULL_MESSAGE(ready_leave_rule, "the rule table must still carry a crew_op_ready_leave entry");
+    TEST_ASSERT_TRUE_MESSAGE(ready_rule->short_min_px != ready_leave_rule->short_min_px,
+                             "test is vacuous unless the two candidate rules actually differ");
+    TEST_ASSERT_EQUAL_PTR_MESSAGE(ready_leave_rule, sizing_rule_for("crew_op_ready_leave.json"),
+                                  "longest prefix must win: crew_op_ready_leave must take its OWN rule, not fall "
+                                  "through to the shorter, more permissive 'crew_op_ready' entry");
+    TEST_ASSERT_EQUAL_PTR_MESSAGE(ready_rule, sizing_rule_for("crew_op_ready.json"),
+                                  "a plain crew_op_ready fixture must still take the crew_op_ready rule");
 }
 
 int main(void)

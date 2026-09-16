@@ -386,18 +386,32 @@ static void S26_finger_down_on_a_settings_row_survives_a_mid_press_dirty_tick(vo
     TEST_ASSERT_EQUAL(FF_SETTINGS_SUB_LIST, ctx.state.settings.subview);
 
     /* The CLOCK row's "24H" pill (settings_build_toggle_row, scr_settings.c
-     * — DISPLAY's second row, close enough to the top of the list to sit
-     * in the viewport with no scroll needed) — a genuine
-     * `ff_scr_pill_create` button, unlike the COMPASS row's caption half
-     * (a plain clickable `lv_obj_t`, find_button_with_label's
-     * lv_button_class check would never match it) or CALIBRATE TOUCH/
-     * DIAGNOSTICS (real buttons, but their own intents are device-only
-     * no-ops in the sim — nothing observable to assert a delivered
-     * CLICKED against). Tapping it flips `settings.clock_24h`, a plain
-     * bool this test can assert on release. */
+     * — DISPLAY's second row) — a genuine `ff_scr_pill_create` button,
+     * unlike the COMPASS row's caption half (a plain clickable
+     * `lv_obj_t`, find_button_with_label's lv_button_class check would
+     * never match it) or CALIBRATE TOUCH/DIAGNOSTICS (real buttons, but
+     * their own intents are device-only no-ops in the sim — nothing
+     * observable to assert a delivered CLICKED against). Tapping it
+     * flips `settings.clock_24h`, a plain bool this test can assert on
+     * release.
+     *
+     * Usability-review slice 3 (docs/reviews/puck-ux-usability-2026-09-15.md
+     * finding 9) promoted CREW to the top of the list, ahead of DISPLAY —
+     * CLOCK is no longer close enough to the top to sit in the viewport
+     * with no scroll needed, so this scrolls it into view first. The
+     * RECURSIVE form is required, not the plain one: the pill's immediate
+     * parent is its own row container (settings_make_row), which is not
+     * itself SCROLLABLE — only `list`, two levels up, is — and the plain
+     * `lv_obj_scroll_to_view` only checks the object's DIRECT parent
+     * (lv_obj_scroll.c's `scroll_area_into_view`), so it silently does
+     * nothing here. `_recursive` walks every ancestor and scrolls each
+     * SCROLLABLE one it finds, which is what actually brings a
+     * doubly-nested row into view. */
     bool const clock_24h_before = ctx.state.settings.clock_24h;
     lv_obj_t *clock_24h_btn = find_button_with_label(lv_screen_active(), "24H");
     TEST_ASSERT_NOT_NULL_MESSAGE(clock_24h_btn, "Settings CLOCK row's 24H pill not found");
+    lv_obj_scroll_to_view_recursive(clock_24h_btn, LV_ANIM_OFF);
+    lv_obj_update_layout(clock_24h_btn);
 
     lv_area_t area;
     lv_obj_get_click_area(clock_24h_btn, &area);

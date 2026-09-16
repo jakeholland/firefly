@@ -543,6 +543,26 @@ static inline int32_t ff_theme_glass_cy(bool flip)
  * can't false-positive this sweep. */
 #define FF_HIT_MIN_GAP_PX 8
 
+/**
+ * FF_HIT_MIN_GAP_DESTRUCTIVE_PX -- the usability-review slice-3 finding
+ * (docs/reviews/puck-ux-usability-2026-09-15.md finding 10): the plain
+ * 8px floor above is the minimum that avoids an ambiguous double-hit, but
+ * it says nothing about which of the two controls a mis-hit lands on --
+ * and when one side of the pair is destructive (LEAVE CREW, tearing down
+ * a crew) and the other is the safe default (NOT NOW), an ambiguous hit
+ * is not a coin flip, it is a coin flip where one face costs more. The
+ * flare takeover already spends 16px separating GO (drops a live radar
+ * lock) from DISMISS for exactly this reason (PR #20's review); this
+ * constant names that same 16px so every DESTRUCTIVE-vs-CANCEL pair in
+ * the codebase can be held to it explicitly instead of each one
+ * re-deriving "match the takeover" by eye. Today: the crew-op confirm's
+ * NOT NOW / LEAVE (and NOT NOW / START) row (scr_settings.c). Deliberately
+ * a SEPARATE constant from FF_HIT_MIN_GAP_PX rather than raising that one
+ * -- the plain 8px floor is still the right number for two ordinary,
+ * equally-costed controls (a settings row's label vs. its own value
+ * pill, say), and doubling it everywhere would cost real geometry on
+ * faces that were never the finding. */
+#define FF_HIT_MIN_GAP_DESTRUCTIVE_PX 16
 #ifdef __cplusplus
 }
 #endif

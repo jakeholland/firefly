@@ -431,12 +431,166 @@ so it wrapped, leaving "eight" alone on a second line. The band's own
 line again, and its far corner sits √(148² + 122²) = 191.8 px from the
 glass centre.
 
-Settings list rows are 48 px (4.2 mm). They are list rows and by the
-owner's own rule they should be 80, and the face can afford it (the list
-scrolls). They were left alone deliberately: a concurrent branch
-(`feat/puck-auto-crew`) is editing the same file's CREW page, and
+Settings list rows were 48 px (4.2 mm) as of this pass. They are list rows
+and by the owner's own rule they should be 80, and the face can afford it
+(the list scrolls). They were left alone deliberately here: a concurrent
+branch (`feat/puck-auto-crew`) was editing the same file's CREW page, and
 `FF_SETTINGS_ROW_H` is shared with the compass-calibration buttons, whose
-placement would have to be re-derived at the same time. **Follow-up.**
+placement would have to be re-derived at the same time. **Follow-up done
+below (usability-review slice 3).**
+
+## Usability-review slice 3 — "the faces the sizing pass didn't reach"
+
+`docs/reviews/puck-ux-usability-2026-09-15.md` findings 5, 9, 10. Four
+more faces raised to the 80 px (7.0 mm) primary floor, and the Settings
+row promotion this section's own follow-up note above named. Measured the
+same way as every table above — `FF_TAP_INVENTORY=1
+./targets/sim/test_tap_target_sizing`, not hand arithmetic — and now
+enforced by that same test rather than only documented (see "Extending
+`SIZING_RULES`" below).
+
+### Power menu
+
+| element | before | after | mm after | |
+|---|---|---|---:|---|
+| POWER OFF / REBOOT / CANCEL | 190×56 | 190×**80** | 16.6 × 7.0 | ★ |
+
+`POWER_MENU_BTN_H` 56 → 80 (`FF_THEME_HIT_PRIMARY_PX`); `OFF_DY` −40 →
+**−66**, `REBOOT_DY` 40 → **30**, `CANCEL_DY` 120 → **126** — the same
+349 px band (glass y 31…381) this pass's own review derived, now filled
+by three 80 px buttons and two 16 px gaps (272 px) instead of three 56 px
+buttons. The file's containment check was rewritten from a comment
+claiming `FF_THEME_PUCK_RADIUS_PX` (206, the framebuffer) onto a real
+`_Static_assert` against `FF_THEME_GLASS_CX/CY/R` (208, 206, 200) —
+CANCEL's farthest corner (the LEFT one: the button is centred on the
+framebuffer's x = 206, itself 2 px left of the glass centre's 208) sits
+192.3 px from the glass centre, 7.7 px inside.
+
+### SHOW CODE
+
+| element | before | after | mm after | |
+|---|---|---|---:|---|
+| BACK (the only control on the face) | 120×48 | 120×**80** | 10.5 × 7.0 | ★ |
+
+`FF_CREWCODE_BTN_H` 48 → 80 (tied to `FF_SETTINGS_ROW_H`); `FF_CREWCODE_
+BTN_Y` 326 → **314**. At 120 px wide the button's farther (LEFT) corner
+sits 62 px from the glass centre, so `FF_THEME_GLASS_R` (200) caps the
+bottom at 396 px from centre-top; at y = 314 + 80 = 394 the button is
+comfortably inside, checked by a `_Static_assert` rewritten the same
+framebuffer→glass way as the power menu's. Freeing the room cost 6 px
+between the QR and the code line (`FF_CREWCODE_CODE_Y`'s trailing gap
+14 → 8) rather than the caption or PRECISION line's own spacing — both of
+which wrap or stack and were the tighter budgets to cut from. The code,
+caption and PRECISION line all still render clear of BACK, on every
+`crew_show_code*` fixture including the two-line "positions coarse —
+start the crew again" case.
+
+### Crew-op confirm / status pages
+
+| element | before | after | mm after | |
+|---|---|---|---:|---|
+| NOT NOW ‖ LEAVE / START | 132×48, 12 px gap | **124×80**, **16 px** gap | 10.8 × 7.0 | ★ |
+| BACK / DONE (single-pill rows) | 132×48 | 124×**80** | 10.8 × 7.0 | ★ |
+| READY's SHOW CODE (stacked, secondary) | 132×48 | **unchanged** | 10.8 × 4.2 | not in this slice — see below |
+
+`FF_CREWOP_BTN_W` 132 → **124**, `FF_CREWOP_BTN_GAP` 12 →
+`FF_HIT_MIN_GAP_DESTRUCTIVE_PX` (**16**, matching the flare takeover's own
+GO/DISMISS separation — finding 10). The destructive confirm row (NOT
+NOW / LEAVE, NOT NOW / START) needed its own, higher Y
+(`FF_CREWOP_CONFIRM_BTN_Y`, **274**) rather than sharing the single-pill
+rows' `FF_CREWOP_BTN_Y` (300, unmoved): at the new width and gap the
+row's farthest (bottom-LEFT) corner is 199.65 px from the glass centre at
+y = 274 — inside `FF_THEME_GLASS_R` by 0.35 px, the same "at its measured
+ceiling" margin the flare takeover's own GO/DISMISS derivation runs at.
+(An earlier candidate Y of 279, derived by checking only the row's RIGHT
+corner, does not clear the LEFT one — the same asymmetric-bezel trap
+`FF_THEME_GLASS_CX` being 2 px right of the framebuffer's own centre
+always sets for a row centred on the array. Caught by re-deriving both
+corners, not by trusting the first one.) The single-pill rows (BACK,
+DONE) never needed to move — a lone 124 px pill at y = 300, 80 px tall,
+is nowhere near the glass edge.
+
+**READY's SHOW CODE, deliberately not grown.** The one crew-op sub-face
+this slice does NOT raise: `crew_op_ready` (leaving = false) stacks a
+SHOW CODE shortcut above DONE, and the code label + "Show this to your
+crew." text above it leave only the pre-pass 48 px for SHOW CODE without
+colliding with either — growing it to 80 needs the content above to move,
+which nothing in this slice's ask named. `FF_CREWOP_BTN2_H` (48) and
+`FF_CREWOP_BTN2_Y` (242, a plain literal now, not derived from
+`FF_CREWOP_BTN_H`) keep this one pill exactly where it was; DONE below it
+still grows to 80, with the same 10 px gap the two have always kept.
+Same call as the flare takeover's own un-grown GO/DISMISS, for the same
+reason — a real design trade the review named for Jake to pick, not
+grown by default.
+
+### Settings — rows to 80 px, CREW promoted to the top
+
+| element | before | after | mm after | |
+|---|---|---|---:|---|
+| every plain-list row (toggle pills, value pills, CALIBRATE TOUCH, DIAGNOSTICS, NAME, CREW) | 48 tall | **80** tall | 7.0 | ★ |
+| brightness −/+ stepper | 58×48 | 58×**80** | 5.1 × 7.0 | ★ |
+| CREW's position in the list | ~830 px down (last) | **top** (0 px, zero scroll) | — | ★ |
+
+`FF_SETTINGS_ROW_H` 48 → `FF_THEME_HIT_PRIMARY_PX` (80) — the constant
+every plain-list row, the brightness stepper, `FF_CREWCODE_BTN_H` and
+`FF_CREWOP_BTN_H` all derive from, so this one change is what raises SHOW
+CODE's BACK and the crew-op confirms above too. `FF_SETTINGS_SLIDER_H`
+(the brightness row's control-area height) grows with it
+(`FF_SETTINGS_ROW_H + 8`, preserving the 8 px breathing room the pre-pass
+56-vs-48 relationship had) rather than staying a separate hand-picked
+number.
+
+Finding 9 shipped in the **same** change, not a follow-up: `ff_scr_
+settings_build`'s CREW section (header + full-width action pill) now
+builds FIRST, before DISPLAY — `S21_AC1_settings_is_one_scrolling_list_
+every_row_reachable` asserts CREW's rect lands inside the list's own
+viewport at the list's default, unscrolled position. The review's own
+math is why both had to land together: raising every row to 80 px without
+moving CREW would have made its ~830 px scroll *worse* (fewer rows visible
+per screen), not better.
+
+**Two faces this slice deliberately leaves at their pre-pass height**,
+both for the same reason SHOW CODE's stacked pill above stayed put — the
+content around them has no room to give without a redesign this slice
+was not asked to make:
+
+- **The CREW sub-page's own rows** (HIDE / UNHIDE / ADD / FULL(8), the
+  member list, and the SHOW CODE / START CREW / LEAVE CREW pills *inside*
+  that page) — `FF_CREW_PAGE_ROW_H` (48), a new, independent constant.
+  Growing these to 80 inside their own `FF_CREW_ROW_H` (56)-tall member
+  rows would overflow into neighbouring rows; the full-width action pills
+  would need their own re-flow. `crew_default.png`, `crew_full.png` and
+  every other `crew_*` (not `crew_op_*`/`crew_show_code*`) golden is
+  byte-identical before and after this slice.
+- **Compass calibration's CANCEL/DONE** — `FF_CALCAL_BTN_H`, likewise
+  decoupled to its own independent 48. This face's buttons already sit
+  flush under the samples-count text at 48 px; growing to 80 at the
+  current width pushes the band past `FF_THEME_GLASS_R`, and narrowing
+  the buttons to compensate is this face's own version of the flare
+  takeover's "costs the starburst" trade — not free, and not named by
+  this slice. `compass_cal_ritual*.png` is unchanged.
+
+### Extending `SIZING_RULES`
+
+`targets/sim/tests/test_tap_target_sizing.c`'s per-face floor table now
+covers eight faces, not four: `power_menu`, `settings` (the plain list —
+NOT `crew_*`/`crew_op_*`/`crew_show_code*`, each its own entry), `crew_
+show_code`, and four `crew_op_*` sub-entries (`crew_op_confirm`, `crew_op_
+failed`, `crew_op_ready_leave` all at 80; `crew_op_ready` at 48, because
+that ONE fixture also renders the still-48px SHOW CODE pill alongside its
+80px DONE — the shared `FF_CREWOP_BTN_H`'s own regression is still caught
+via DONE on that fixture and independently via the other three entries).
+Deliberately NOT covered: `crew_*` member-page fixtures and `compass_cal_
+ritual*` — out of scope, see above; a rule claiming them would either
+false-positive on their un-grown controls or promise a ceiling this slice
+never reached.
+
+**Mutation, run for this PR**: `FF_SETTINGS_ROW_H` reverted to 48 (a
+plain literal, not the `FF_THEME_HIT_PRIMARY_PX` alias) reproduces 37
+violations across every `settings_*`, `crew_show_code*` and most `crew_
+op_*` fixtures and fails `S_TAP_launcher_radar_compose_inbox_clear_the_
+outdoor_floors` — confirming the new rules actually gate a regression of
+the shared constant, not merely describe the current geometry.
 
 ## S28 rim zones vs. edge buttons
 
@@ -559,11 +713,22 @@ Ranked by how much finger is missing, for whoever picks up the follow-up:
 | face · element | now | gap to 7 mm | blocked by |
 |---|---:|---|---|
 | compose T9 keys | 4.4 mm | −2.6 mm | the circle (proved above); needs a different input method |
-| Settings list rows | 4.2 mm | −2.8 mm | nothing — deferred for branch conflict, should be done |
 | inbox sub-screen BACK | 3.85 mm | −3.1 mm | the centred title sharing its row |
 | takeover DISMISS | 4.9 mm | −2.1 mm | the 16 px safety gap, which is worth more than the millimetres |
 | Radar FLARE | 5.1 mm | −1.9 mm | CLOSE mode's own stack |
 | Radar crew dots | 3.0 mm | −4.0 mm | not interactive; see above |
+| CREW page's own rows (HIDE/UNHIDE/ADD, member list) | 4.2 mm | −2.8 mm | needs its own re-flow; out of usability-review slice 3's scope, see that section |
+| Compass cal CANCEL/DONE | 4.2 mm | −2.8 mm | flush against the samples-count text; needs narrower buttons or moved content |
+| Crew-op READY's stacked SHOW CODE | 4.2 mm | −2.8 mm | flush against the code/body text above and DONE below; a real design trade like the flare takeover's |
+
+**Settings list rows, SHOW CODE's BACK and the crew-op confirm/status
+pills — resolved.** Usability-review slice 3 (see that section, above)
+raised all three to 80 px / 7.0 mm and promoted CREW to the top of the
+Settings list in the same change. What remains above is genuinely
+different geometry: T9/compose is circle-bound, the inbox BACK shares a
+row with a centred title, the takeover's gap is a deliberate safety
+trade, the Radar dots are non-interactive, and the three new rows above
+are secondary controls this slice's own ask did not name.
 
 ## What this PR's review changed
 
