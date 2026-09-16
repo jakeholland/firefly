@@ -58,7 +58,11 @@
       "mic_running": true,
       "has_mic_level": true,
       "mic_envelope_dbfs": -42.3,
-      "mic_on_s": 23878
+      "mic_on_s": 23878,
+
+      "boot_reset_reason": "task watchdog",
+      "last_crash": "Last crash: ff_shell_tick @0x420187ac",
+      "last_session": "Last time: stopped unexpectedly after 2h13m - battery 3.62 V"
     }
   }
 }

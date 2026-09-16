@@ -83,6 +83,22 @@ static void dbgcmd_diag_with_extra_arg_rejected(void)
     TEST_ASSERT_EQUAL(FF_DBGCMD_NONE, cmd.kind);
 }
 
+/* S25 latch-hold amendment — "diag clear" follows `cal`'s exact
+ * sub-verb shape (bare verb, or one recognized sub-verb). */
+static void dbgcmd_diag_clear_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("diag clear", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_DIAG_CLEAR, cmd.kind);
+}
+
+static void dbgcmd_diag_bad_subverb_rejected(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("diag bogus", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_NONE, cmd.kind);
+}
+
 /* 2026-09-08 QA hardening — `perf` is zero-arg, same shape as `diag`. */
 static void dbgcmd_perf_parses(void)
 {
@@ -819,6 +835,8 @@ int main(void)
     RUN_TEST(dbgcmd_i2c_parses);
     RUN_TEST(dbgcmd_diag_parses);
     RUN_TEST(dbgcmd_diag_with_extra_arg_rejected);
+    RUN_TEST(dbgcmd_diag_clear_parses);
+    RUN_TEST(dbgcmd_diag_bad_subverb_rejected);
     RUN_TEST(dbgcmd_perf_parses);
     RUN_TEST(dbgcmd_perf_with_extra_arg_rejected);
     RUN_TEST(dbgcmd_send_parses_with_text);

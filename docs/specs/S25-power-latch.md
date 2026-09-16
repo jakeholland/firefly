@@ -341,3 +341,167 @@ matching the other `targets/esp32s3` HAL code (`ff_display`), is:
     step is only to confirm the real ADC path reaches the same low reading
     honestly when the pack is actually low, not to re-prove the color
     logic itself.
+
+- **2026-09-16, puck/latch-hold-and-crash-evidence — the pad-hold fix
+  (owner's field report) + crash/last-session evidence.**
+
+  **The owner's report.** On battery at Lost Lands bring-up, the puck
+  "went black; tapping didn't wake it; I held the PWR button a couple of
+  seconds and saw the Firefly logo" — the boot splash, meaning the puck
+  had gone fully OFF (the SYS_EN latch had opened and the rail had
+  collapsed), not asleep. The next boot reported `ESP_RST_POWERON`,
+  which is simply true of *that* boot (a real PWR press re-started a
+  dead rail) and says nothing about what caused the ORIGINAL drop.
+
+  **Mechanism.** Slice (a)'s `ff_power_latch_on()` (above) drove GPIO7
+  high but never called `gpio_hold_en()`. On any digital-core reset —
+  `CONFIG_ESP_TASK_WDT_EN=y`'s watchdog trip, a panic
+  (`CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT`), or a plain `esp_restart()` —
+  every GPIO returns to its power-on-reset state for the moment between
+  the old image releasing the pin and the new image's `app_main` calling
+  `ff_power_latch_on()` again. On USB the rail is fed externally and
+  simply reboots (this has never been observed on the bench, which had
+  no way to catch it). On battery, nothing else holds SYS_EN during that
+  window, so the rail collapses — the chip loses power before its own
+  next boot can re-assert the latch, and that next boot is a real
+  power-on, indistinguishable in `esp_reset_reason()` from a deliberate
+  PWR press. The ORIGINAL reset reason (WDT trip vs. panic vs.
+  `esp_restart()` vs. an actual brownout) is lost with it.
+
+  **The fix — pad hold survives the reset (verified: host; expected:
+  battery bench).** `ff_power_latch_on()` now calls `gpio_hold_en(GPIO7)`
+  immediately after driving it high (`ff_power_latch_seq_on`,
+  `targets/esp32s3/components/ff_power/include/ff_power_latch_seq.h`);
+  `ff_power_off()` now calls `gpio_hold_dis(GPIO7)` *before* driving it
+  low (`ff_power_latch_seq_off`) — reversing that order would make
+  power-off return `ESP_OK` while silently not actually happening
+  (ESP-IDF's own `gpio_hold_dis()` doc note: a write while still held
+  does not reach the pad). Cited from ESP-IDF's `gpio_hold_en()` doc
+  comment (`esp-idf/components/esp_driver_gpio` — fetched against this
+  project's pinned v5.3.5): *"This function can be used to retain the
+  state of GPIOs when the power domain of where GPIO/IOMUX belongs to
+  becomes off. For example, chip or system is reset (e.g. watchdog
+  time-out, Deep-sleep events are triggered), or peripheral power-down
+  in Light-sleep."* That sentence names a watchdog reset explicitly; a
+  panic reboot and `esp_restart()` take the same digital-core-reset path
+  (the RTC/IO_MUX domain the hold state lives in is not powered off by
+  any of the three), so GPIO7 is expected to stay high through all
+  three. **Brown-out**: `CONFIG_SOC_BROWNOUT_RESET_SUPPORTED=y`'s BOD
+  circuit also triggers a chip/system reset (not a full RTC-domain power
+  cycle) on this SoC, so the same citation is expected to cover it too —
+  this project has not found ESP-IDF documentation that says so in as
+  many words for brownout specifically, so treat it as expected, not
+  verified, same as the WDT/panic/`esp_restart` cases below. **What pad
+  hold does NOT cover**: an actual loss of chip power (battery physically
+  disconnected, or the rail collapsing before `ff_power_latch_on` ever
+  runs on a cold boot) — a pad latch inside a chip that has lost power
+  cannot preserve anything; this fix narrows the failure to "digital-core
+  resets while already latched," it does not make every dark-puck report
+  impossible. **Deep sleep**: this codebase does not use
+  `esp_deep_sleep` anywhere today (only light sleep, in the BOOT-edge ISR
+  interaction, `ff_power.h`'s `ff_power_boot_isr_suspend_for_sleep` doc
+  comment) — `gpio_deep_sleep_hold_en()` is NOT called, and per ESP-IDF's
+  own docs the per-pin `gpio_hold_en()` alone is not sufficient to
+  survive actual Deep-sleep on this chip family; if deep sleep is ever
+  added (the deferred slice (d) above), `gpio_deep_sleep_hold_en()` must
+  be added alongside it.
+
+  **Verified**: `firmware/targets/sim/tests/test_power_latch_seq.c`
+  (host, `ctest`, both AppleClang and `gcc-14`) pins the ON sequence
+  (set-high then hold-en, short-circuiting if set-high fails) and the
+  OFF sequence (hold-dis then set-low, short-circuiting if hold-dis
+  fails) against a recording mock HAL — this is a pure ordering test, not
+  a hardware test; it cannot observe whether the real
+  `gpio_hold_en`/`gpio_hold_dis` calls behave as ESP-IDF's docs describe
+  on this specific board.
+
+  **Still expected, not verified — the owner's own bench test**: on
+  battery, Settings → POWER → REBOOT must show the Firefly splash and
+  come back on its own, with no PWR press. This has not been run (no
+  device build was available in the environment this fix was written
+  in — see the PR body); it is the test that would have caught the
+  original bug and is the one that should gate merging this.
+
+  **Crash/last-session evidence (same incident, a second, independent
+  mitigation)**: because a digital-core reset that beats this fix
+  entirely (a true power loss before the hold is in place, or any
+  reset type ESP-IDF's hold docs don't cover) still destroys the
+  original reset reason, this same branch adds two independent ways to
+  reconstruct what happened after the fact — an ESP-IDF core dump to
+  flash (`CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH`) surfaced as one line in
+  `diag` and the Diagnostics face, and a `core/include/ff_session_log.h`
+  NVS heartbeat + `clean_shutdown` flag (written every 60 s, and set
+  just before the POWER OFF/REBOOT paths run) that reconstructs "the
+  last session stopped unexpectedly, N hours in, at M mV" even when no
+  panic/coredump fired at all (a silent brownout, e.g.). See those
+  modules' own doc comments and the PR body for what's verified (host
+  tests) vs. expected (needs the owner's device to confirm the on-glass
+  summary lines actually render against a real crash/unclean stop).
+
+  **Completing the wiring (same PR, finished after the environment's
+  network outage).** The above landed as a WIP with the core `ff_power`
+  latch-hold sequence and the `ff_session_log` module built and
+  unit-tested, but not yet wired to a device build, a console command,
+  or a screen. This pass closes those gaps:
+  - `sdkconfig.defaults` — `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y` +
+    `_DATA_FORMAT_ELF=y` + `_CHECKSUM_CRC32=y`. No custom
+    `partitions.csv`: this repo's existing
+    `CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y` plus the coredump choice
+    together resolve (ESP-IDF's own `partition_table/Kconfig.projbuild`
+    default rule) to the SDK's built-in
+    `partitions_singleapp_large_coredump.csv`. Layout confirmed by
+    actually generating the table (`gen_esp32part.py`), not assumed:
+    `nvs` 0x9000/24K, `phy_init` 0xf000/4K, `factory` 0x10000/1500K
+    (**unchanged** from today), `coredump` 0x187000/64K — table ends at
+    0x197000, ~14 MB of the 16 MB flash still free. See the PR body for
+    the owner's local-sdkconfig drift-rule lines (S15's own rule: a
+    generated `sdkconfig` that already has these keys decided will not
+    pick up the new default from `idf.py reconfigure` alone).
+  - `app_main.c` — `esp_reset_reason()` translated to
+    `ff_reset_reason_t` and logged every boot; `esp_core_dump_image_
+    check`/`get_summary`/`get_panic_reason` build the one-line "Last
+    crash: ..." when a valid dump exists; `ff_session_log_load` reads
+    the previous session's record before this session's first
+    heartbeat overwrites it, formatting "Last time: ..." via
+    `ff_session_log_format_last_time`. All three reach `ff_shell_diag_
+    debug`/DIAGNOSTICS via one new push call, `ff_shell_set_boot_
+    evidence` (called once, right after `ff_shell_init`). The 60 s
+    heartbeat and the two `clean_shutdown` save sites
+    (`ff_power_off_cb`, and immediately before the render loop's own
+    `esp_restart()` call) are also new in this pass.
+  - `diag`/DIAGNOSTICS — `ff_app_diag_t` gained an eighth section, "Boot
+    evidence": `boot_reset_reason` (always known), `last_crash`/
+    `last_session` (each "none" until there is something honest to
+    report). Rendered as three new DEVICE rows in `scr_settings.c`
+    (RESET REASON / LAST CRASH / LAST TIME, after MIC ON-TIME) and one
+    new reply line in `dbgconsole_diag`. A new bench command, `diag
+    clear` (`FF_DBGCMD_DIAG_CLEAR`), erases the crash evidence — the
+    device core dump (`esp_core_dump_image_erase()`, via a new
+    `ff_shell_cfg_t.diag_clear_crash` hook, NULL/no-op on the sim) and
+    the live `last_crash` line (`ff_shell_diag_clear_crash`) — so a
+    read crash does not keep reporting itself forever.
+  - Interpretation call: `ff_session_log.h`'s own top comment originally
+    scoped `ff_reset_reason_name` to "the boot-time startup LOG line...
+    and nowhere else", deliberately excluding it from the Diagnostics/
+    `diag` "last time" line (which describes the PREVIOUS session's
+    stop, not this boot's own start). The owner's brief asked for THIS
+    boot's reset reason to also appear in `diag`/Diagnostics — done as
+    a SEPARATE field (`boot_reset_reason`) alongside, never folded into
+    `ff_session_log_format_last_time`'s own string, so that module's
+    "describes the previous session only" contract still holds; only
+    the caller-facing scope note was wrong, not the module design.
+  - Brown-out level (item 4 of the owner's brief) — **no change**. The
+    owner's local `sdkconfig` has `CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y`
+    (`CONFIG_ESP_BROWNOUT_DET_LVL=7`, ~2.44 V) — read directly from that
+    file, not assumed. That is ESP-IDF's own stock default
+    (`default ESP_BROWNOUT_DET_LVL_SEL_7`,
+    `esp_system/port/soc/esp32s3/Kconfig.system`), and `sdkconfig.
+    defaults` in this repo has never overridden it, so there is no
+    drift to report and nothing to change here — a brownout-level
+    change is exactly the kind of physical-margin tradeoff this repo's
+    "no change unless clearly safe" rule reserves for the owner's own
+    call, and there is no evidence in this incident (a >=10 min runtime
+    on a full battery, per the owner's own report) that the detector
+    threshold itself was the problem.
+  - Still not run: the owner's own on-glass bench test (Settings ->
+    POWER -> REBOOT on battery). See the PR body.

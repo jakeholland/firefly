@@ -67,9 +67,12 @@
  *   crew | crew start | crew leave
  *                           — A02 slice D2: crew status / start a crew /
  *                             leave one (the puck-initiated crew)
- *   diag                    — DIAGNOSTICS: link/position/mesh/time/compass/
+ *   diag | diag clear       — DIAGNOSTICS: link/position/mesh/time/compass/
  *                             device facts, the same ones the Settings
- *                             DIAGNOSTICS page shows
+ *                             DIAGNOSTICS page shows; "diag clear" erases
+ *                             the crash/last-session evidence (S25
+ *                             latch-hold amendment) so the "Last crash"/
+ *                             "Last time" lines go back to absent
  *   ping <node_hex>         — S29 PR2: one immediate bench PING, outside
  *                             the 10s/5min FIND session machinery
  *   find <node_hex>         — S29 PR2: start an ordinary FIND session on
@@ -299,6 +302,7 @@ typedef enum {
     FF_DBGCMD_NAME,         /* "name" bare — stored/mesh/confirmed status */
     FF_DBGCMD_NAME_SET,     /* "name <text>": u.text — commit + mesh push */
     FF_DBGCMD_DIAG,         /* DIAGNOSTICS: link/position/mesh/time/compass/device dump */
+    FF_DBGCMD_DIAG_CLEAR,   /* S25 latch-hold amendment: "diag clear" — erase the crash/last-session evidence */
     FF_DBGCMD_PERF,         /* 2026-09-08 QA hardening — frame/flush timing, heap, stack high-water dump */
     FF_DBGCMD_PING,         /* S29 PR2: "ping <node_hex>" — u.node: one immediate bench PING */
     FF_DBGCMD_FIND,         /* S29 PR2: "find <node_hex>" — u.node: start a FIND session */

@@ -42,6 +42,18 @@ extern "C" {
  * to be asserted before the user's finger lifts (i.e. before the tens of ms
  * the display bring-up spends in reset pulses).
  *
+ * S25 latch-hold amendment (2026-09-16 field report): also enables the
+ * pad's `gpio_hold_en()` after driving it high, so the HIGH level
+ * survives a panic reboot, a task-watchdog trip, or `esp_restart()` —
+ * all digital-core resets that previously released this software latch
+ * and dropped the rail on battery before the reset's own re-boot could
+ * re-assert it (the puck going fully dark and needing a PWR press to
+ * come back, reporting `ESP_RST_POWERON` on the next boot with no trace
+ * of what actually reset it). See `ff_power_latch_seq.h` for the exact
+ * ordering and its ESP-IDF citation, and docs/specs/S25-power-latch.md's
+ * Amendments for what is verified vs. still expected. A true loss of
+ * chip power is NOT preserved by this — see `ff_power_off`'s own note.
+ *
  * Returns ESP_OK on success; on failure returns the underlying gpio error
  * (already logged). A failure is non-fatal to boot — the caller should log and
  * continue, not park.
@@ -56,6 +68,13 @@ esp_err_t ff_power_latch_on(void);
  * describe for the opposite direction). Deliberately does NOT touch the
  * backlight — see this header's top comment; the caller (app_main) calls
  * `ff_display_set_brightness(0)` itself, in the same place it calls this.
+ *
+ * S25 latch-hold amendment (2026-09-16): releases the pad hold
+ * (`gpio_hold_dis()`) BEFORE driving the pin low — a write while the pin
+ * is still held is silently ignored (ESP-IDF's own doc note on
+ * `gpio_hold_dis()`), so calling this in the wrong order would make
+ * power-off appear to succeed (`ESP_OK`) while the rail never actually
+ * drops. See `ff_power_latch_seq.h` for the exact ordering.
  *
  * Returns ESP_OK on success; the underlying gpio error (already logged)
  * on failure. Safe to call even if `ff_power_latch_on` was never called

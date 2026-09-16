@@ -135,6 +135,10 @@ typedef struct {
     void *power_off_user;
     void (*power_reboot)(void *user);
     void *power_reboot_user;
+    /* S25 latch-hold amendment — "diag clear" device hook (erase the
+     * core dump from flash). NULL on the sim, same no-op posture. */
+    void (*diag_clear_crash)(void *user);
+    void *diag_clear_crash_user;
     /* S27 sounds — device HAL hook. NULL on both targets as of this PR
      * (see ff_shell.h's doc comment on ff_shell_cfg_t.play_sound). */
     void (*play_sound)(void *user, ff_sound_event_t ev);
@@ -700,6 +704,19 @@ typedef struct {
      * catch a stuck-awake regression like this PR's own bug from the
      * DIAGNOSTICS page alone, without needing an overnight bench log. */
     uint32_t mic_total_on_ms;
+
+    /* S25 latch-hold amendment (2026-09-16) — boot evidence pushed ONCE
+     * by ff_shell_set_boot_evidence, right after ff_shell_init, from
+     * app_main's own esp_reset_reason()/core-dump-check/ff_session_log
+     * read. Never written on the sim (no target build there — DIAGNOSTICS'
+     * honest "none"/"unknown" for all three). `last_crash` can later be
+     * blanked in place by ff_shell_diag_clear_crash ("diag clear"); the
+     * other two are boot-time facts and never change mid-session. */
+    char boot_reset_reason[24];
+    bool has_last_crash;
+    char last_crash[96];
+    bool has_last_session;
+    char last_session[128];
 
     /* fix/s31-music-idle-drain (2026-09-09) — true while the S26 idle
      * FSM reads ACTIVE (never DIM/OFF/SLEEP), pushed every tick by
@@ -4233,6 +4250,16 @@ static void shell_compute_diag(shell_t const *sh, uint32_t now_ms, ff_app_diag_t
      * the very next DIAGNOSTICS visit instead of resetting to 0 the
      * moment the mic itself stops. */
     d->mic_on_s = sh->mic_total_on_ms / 1000u;
+
+    /* 8. Boot evidence (S25 latch-hold amendment) — pushed once by
+     * ff_shell_set_boot_evidence; see that function's own doc comment
+     * and shell_t's own field comments for why this is a snapshot, not
+     * a live computation. */
+    shell_copy_str(d->boot_reset_reason, sizeof(d->boot_reset_reason), sh->boot_reset_reason);
+    d->has_last_crash = sh->has_last_crash;
+    shell_copy_str(d->last_crash, sizeof(d->last_crash), sh->last_crash);
+    d->has_last_session = sh->has_last_session;
+    shell_copy_str(d->last_session, sizeof(d->last_session), sh->last_session);
 }
 
 /**
@@ -5364,6 +5391,8 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     sh->power_off_user = cfg->power_off_user;
     sh->power_reboot = cfg->power_reboot;
     sh->power_reboot_user = cfg->power_reboot_user;
+    sh->diag_clear_crash = cfg->diag_clear_crash;
+    sh->diag_clear_crash_user = cfg->diag_clear_crash_user;
     sh->play_sound = cfg->play_sound;
     sh->play_sound_user = cfg->play_sound_user;
     sh->batt_was_low = false;
@@ -8437,6 +8466,29 @@ void ff_shell_set_mic_total_on_ms(ff_shell_t *sh_pub, uint32_t total_on_ms)
 {
     if (sh_pub == NULL) return;
     shell_of(sh_pub)->mic_total_on_ms = total_on_ms;
+}
+
+void ff_shell_set_boot_evidence(ff_shell_t *sh_pub, char const *reset_reason, char const *last_crash,
+                                 char const *last_session)
+{
+    if (sh_pub == NULL) return;
+    shell_t *sh = shell_of(sh_pub);
+    shell_copy_str(sh->boot_reset_reason, sizeof(sh->boot_reset_reason), (reset_reason != NULL) ? reset_reason : "");
+    sh->has_last_crash = (last_crash != NULL) && (last_crash[0] != '\0');
+    shell_copy_str(sh->last_crash, sizeof(sh->last_crash), sh->has_last_crash ? last_crash : "");
+    sh->has_last_session = (last_session != NULL) && (last_session[0] != '\0');
+    shell_copy_str(sh->last_session, sizeof(sh->last_session), sh->has_last_session ? last_session : "");
+}
+
+void ff_shell_diag_clear_crash(ff_shell_t *sh_pub)
+{
+    if (sh_pub == NULL) return;
+    shell_t *sh = shell_of(sh_pub);
+    if (sh->diag_clear_crash != NULL) {
+        sh->diag_clear_crash(sh->diag_clear_crash_user);
+    }
+    sh->has_last_crash = false;
+    sh->last_crash[0] = '\0';
 }
 
 void ff_shell_set_screen_awake(ff_shell_t *sh_pub, bool awake)

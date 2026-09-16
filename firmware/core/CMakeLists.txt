@@ -50,6 +50,17 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_settings COMMAND test_settings)
 
+    # S25 latch-hold amendment (2026-09-16) — NVS heartbeat + clean_shutdown
+    # flag (ff_session_log.h/.c), the pure "last session ended unexpectedly"
+    # reconstruction.
+    add_executable(test_session_log
+        tests/test_session_log.c
+    )
+    target_link_libraries(test_session_log PRIVATE ff-core unity)
+    ff_apply_warnings(test_session_log)
+
+    add_test(NAME test_session_log COMMAND test_session_log)
+
     # S15d — touch calibration (per-axis affine solve/apply; pure core).
     add_executable(test_touchcal
         tests/test_touchcal.c

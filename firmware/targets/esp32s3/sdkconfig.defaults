@@ -293,3 +293,39 @@ CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 # maintainer's file) from the board's sdkconfig, or `idf.py fullclean` +
 # reconfigure it entirely, for this new default to actually take effect.
 CONFIG_COMPILER_STACK_CHECK_MODE_NORM=y
+
+# --- Core dump to flash, S25 latch-hold amendment (2026-09-16) -------------
+# ELF format + CRC32 integrity check, per docs/specs/S25-power-latch.md's
+# Amendments ("Crash/last-session evidence"). This choice ALSO decides
+# which built-in partition table CSV `CONFIG_PARTITION_TABLE_SINGLE_APP_
+# LARGE=y` (above) resolves to: ESP-IDF's own partition_table/
+# Kconfig.projbuild picks "partitions_singleapp_large_coredump.csv"
+# instead of "partitions_singleapp_large.csv" whenever
+# CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y — no custom partitions.csv needed
+# in this repo. That coredump CSV adds ONE new partition (`coredump`,
+# type data/coredump, 64K) after the existing three; the `factory` app
+# partition stays 1500K, UNCHANGED — confirmed by reading both CSVs
+# (esp-idf/components/partition_table/partitions_singleapp_large.csv vs.
+# _large_coredump.csv) rather than assumed, since a shrunk app partition
+# would be a silent, much worse failure than a missing core dump. Full
+# layout (offsets computed by actually running `gen_esp32part.py`
+# against both CSVs and reading the generated binary table back, not
+# assumed): nvs (0x9000, 24K) / phy_init (0xf000, 4K) / factory
+# (0x10000, 1500K = 0x177000 bytes) / coredump (0x187000, 64K) — table
+# ends at 0x197000 (~1.59 MB), comfortably inside this board's 16 MB
+# flash (CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y, above) with over 14 MB left
+# unused.
+#
+# DRIFT-RULE WARNING (this file's own header): the maintainer's real
+# board sdkconfig already has the coredump CHOICE explicitly decided
+# (`CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y` is present — confirmed by
+# reading that file, not assumed) and `CONFIG_PARTITION_TABLE_FILENAME`
+# already baked in as a literal string
+# ("partitions_singleapp_large.csv") — BOTH must be changed by hand on
+# that board for this default to actually take effect; `idf.py
+# reconfigure` alone will not touch either (an explicitly-decided choice
+# member, and an already-present string key). The PR body lists the
+# exact lines.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
