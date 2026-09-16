@@ -12,6 +12,7 @@
 		072A762C4D8AC543D68CC9D3 /* NotificationTapUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F84F0BF7FA9F0A3B2EAC7B8 /* NotificationTapUITests.swift */; };
 		0985E28E3385EBA26AD6DE65 /* ImportPicksSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E88E40B311FEE9B2F1B4382 /* ImportPicksSheet.swift */; };
 		0A0FE73B4B20EF35D02343E3 /* ArrowGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4B7B0C17B4977917E3BE539 /* ArrowGeometry.swift */; };
+		0CDB1DD5229C01D0660355E3 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = C0E90E40C2987FF26EEEE386 /* GoogleService-Info.plist */; };
 		0D10D7712B65AE2955677DBC /* FireflyDebugStartDestinationLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = F05346761183CE52D605D57C /* FireflyDebugStartDestinationLaunch.swift */; };
 		10DBF8753F52575ADF311027 /* FireflyDebugCrewLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A420E1157BEDCF0AC2A6F67 /* FireflyDebugCrewLaunch.swift */; };
 		124E5B4431C5B0C9509B4C85 /* FlareTakeoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1B310432CF46CE542A152E9 /* FlareTakeoverView.swift */; };
@@ -81,6 +82,7 @@
 		8205769443841156A848715C /* MeshtasticProto in Frameworks */ = {isa = PBXBuildFile; productRef = 1302957B4A2DCE64A8D5EC14 /* MeshtasticProto */; };
 		89BC05B316F355E479A3633D /* fest-almanac-index.json in Resources */ = {isa = PBXBuildFile; fileRef = 5F7A5628340F712EE61F598C /* fest-almanac-index.json */; };
 		8E6EA5E5E4CEFF2B320671B4 /* NotificationTapRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE6C12AD5DA49E6EDD60B3B7 /* NotificationTapRouter.swift */; };
+		8FDE1CDB7261BFA4CC310638 /* FirebaseTelemetryBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = F832F5263CB55AD90FCFE525 /* FirebaseTelemetryBootstrap.swift */; };
 		9097B73639F1D372A217DB5C /* MoreScreenNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C195EF4E6C11A4F328A8A7A2 /* MoreScreenNavigationTests.swift */; };
 		90A113F46964F486C0FA20CF /* BackgroundConnectionDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7514ADBDE19E177A62D1A1D5 /* BackgroundConnectionDiagnosticsTests.swift */; };
 		924A1E5F5BB64A7CBC361118 /* LineupScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 686F2EF2441AE3FF6FC88B41 /* LineupScreen.swift */; };
@@ -89,6 +91,7 @@
 		9CEECC7E8F408FEDB03E85E8 /* RadarColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E99266CE9867C281FAC9513 /* RadarColors.swift */; };
 		9D5C223B210A1F4B9644D6AB /* FireflyDebugStartDestinationLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = F05346761183CE52D605D57C /* FireflyDebugStartDestinationLaunch.swift */; };
 		A17AFA6D2194A215E8B2C3F7 /* RadarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 378BC076CD59300BFAE0D0AD /* RadarView.swift */; };
+		A1F37E2F70FB65C71EF5C143 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = BA53BF756744A577A2C98AE3 /* FirebaseFirestore */; };
 		A35426F809A6D6D012537946 /* CrewQRCode.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8FD9AA7E89FE6F3A0483784 /* CrewQRCode.swift */; };
 		A799FEADA8E9F7CFA215EDEF /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 688226395F6C22BD0D86BEB5 /* Assets.xcassets */; };
 		A8CDC048A56ED86102FC6CA6 /* CrewHeardListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B67D0C47CDDCC54FEB1EBAD2 /* CrewHeardListViewModel.swift */; };
@@ -101,6 +104,7 @@
 		B2639233B58A452B9EFBF791 /* CrewStoreSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3196A97CA992ED4DD8B0F6A0 /* CrewStoreSelection.swift */; };
 		B770F947CF8B1EDB0E8FDBD5 /* FireflyMesh in Frameworks */ = {isa = PBXBuildFile; productRef = B4C3D1CEE6287442EA267E68 /* FireflyMesh */; };
 		BD2120937E1168EB260D1750 /* SetDetailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45B28DBCD5175DF8DA45C5B9 /* SetDetailSheet.swift */; };
+		BD2B9367367D7C1BC71117DF /* FirebaseCrashlytics in Frameworks */ = {isa = PBXBuildFile; productRef = D37E2C4B9AA4B50FC121647C /* FirebaseCrashlytics */; };
 		C03641377EDB721D4C81DE9D /* BLEHardwareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F4D9B842D1796F6CCE66940 /* BLEHardwareTests.swift */; };
 		C27E9C110B680BB3354CACEA /* FireflyDebugStartDestinationLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2D8BB1DDD87FDEF33348C1D /* FireflyDebugStartDestinationLaunchTests.swift */; };
 		C5FFEAC1D2C0AAD3CFD6094C /* CrewSettingsViewModelRowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C69F2315E7F057CD81E80206 /* CrewSettingsViewModelRowTests.swift */; };
@@ -114,6 +118,7 @@
 		D4FFFB246033E2F15FCAFCE4 /* FireflyDebugHideBadgeLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E25DE1202B1E8E314EC5D64 /* FireflyDebugHideBadgeLaunch.swift */; };
 		D5118B2DB6E068EEF814A41A /* CrewStartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43F5FF18C3C2F286FC110777 /* CrewStartView.swift */; };
 		D522B932FDB66C4408BDC063 /* FireflyDebugCrewLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12B5A7320C985BF6762AADD9 /* FireflyDebugCrewLaunchTests.swift */; };
+		D60C0389100682F7D4DFD554 /* FireflyTelemetry in Frameworks */ = {isa = PBXBuildFile; productRef = E03BBD99A8D763260FDE6828 /* FireflyTelemetry */; };
 		D6F9051146581172F73C2725 /* FindLifecycleWiringGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD4FD3C330F61C78D0968513 /* FindLifecycleWiringGuardTests.swift */; };
 		D7A2904C961D1D75584D0142 /* AdminWriteConfirmationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3880392EA1B2900967B5EF4F /* AdminWriteConfirmationSheet.swift */; };
 		D7A6BDAFEAE4556C2D49508D /* FireflyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 52CE41AF9EE8F2A1C1595D75 /* FireflyCore */; };
@@ -123,6 +128,7 @@
 		E44CA6E04D280A087AAB74CB /* GPSMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08332227D4D2BE1B28323FD5 /* GPSMapView.swift */; };
 		E466917345D124C8F9F6B557 /* FireflyAutoConnectLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 829910F027AC2FD85E4A6B4A /* FireflyAutoConnectLaunch.swift */; };
 		E6551196CD37E34092E3B5D8 /* DemoBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657F1057B225B7D58F60D158 /* DemoBadge.swift */; };
+		EBBD5DCFB023948F72D401BA /* FireflyTelemetry in Frameworks */ = {isa = PBXBuildFile; productRef = 612498C04E6FF38A46B9C74D /* FireflyTelemetry */; };
 		EBE7033561E014B40A656D0B /* InboxListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 918AE027165FB4634094A385 /* InboxListView.swift */; };
 		ECAFEC388F35AB448C46EFD3 /* CrewHeardListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B67D0C47CDDCC54FEB1EBAD2 /* CrewHeardListViewModel.swift */; };
 		ED49F9A90BE23101EA414808 /* FireflyDebugNotifyLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 285775E4DDD7BDBD602191A8 /* FireflyDebugNotifyLaunch.swift */; };
@@ -134,7 +140,9 @@
 		F6C0D0DF3F349E930AD52E4C /* ChannelImportViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36054428E7138397E791F1DD /* ChannelImportViewModel.swift */; };
 		F743AE393385BA397AC457C9 /* NearbyNodesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2301DF37B6AD522F861CEA82 /* NearbyNodesViewModel.swift */; };
 		F85E04509A4B7C2775E81711 /* FindSegment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E80926151F96810841565F7 /* FindSegment.swift */; };
+		F872A1C14BE4F16EFC2B58D3 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = A61867A50CE6FC30D368958C /* FirebaseAuth */; };
 		FB71020F3A2D6764FDD8FE64 /* FireflyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C40E6DFE5C85637929993F5 /* FireflyApp.swift */; };
+		FC48E48B7695C392C2561781 /* FirebaseSink.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE70AA7BFDBF24E567D86565 /* FirebaseSink.swift */; };
 		FD21930D76CBFA7577361C74 /* CrewScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 701B9039C20B2BE20F035D30 /* CrewScreen.swift */; };
 		FD497E731EE22B6647C64FC1 /* MoreScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF57DA895520BCFCFEAE8099 /* MoreScreen.swift */; };
 		FDA4D7E8A140B83CAEBB792F /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 762DC72795E0A06B3D6FDE88 /* SettingsViewModel.swift */; };
@@ -234,6 +242,7 @@
 		B67D0C47CDDCC54FEB1EBAD2 /* CrewHeardListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewHeardListViewModel.swift; sourceTree = "<group>"; };
 		B726C9DB8EA6DA10A760203D /* FireflyAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FireflyAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BC1FCAC4BC801A7048189B34 /* AppRuntimeBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRuntimeBundle.swift; sourceTree = "<group>"; };
+		C0E90E40C2987FF26EEEE386 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
 		C112F9DE33A6ACBB2C90BA69 /* Firefly.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Firefly.xcconfig; sourceTree = "<group>"; };
 		C195EF4E6C11A4F328A8A7A2 /* MoreScreenNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreScreenNavigationTests.swift; sourceTree = "<group>"; };
 		C1B310432CF46CE542A152E9 /* FlareTakeoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlareTakeoverView.swift; sourceTree = "<group>"; };
@@ -261,9 +270,11 @@
 		F1F42EB3578D2B85C360FF91 /* FieldMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FieldMapView.swift; sourceTree = "<group>"; };
 		F78EC23800DF35BDE1C1D0E9 /* QRScannerCameraConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerCameraConfig.swift; sourceTree = "<group>"; };
 		F7CF15579506E65D391E2A50 /* CrewCopy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewCopy.swift; sourceTree = "<group>"; };
+		F832F5263CB55AD90FCFE525 /* FirebaseTelemetryBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseTelemetryBootstrap.swift; sourceTree = "<group>"; };
 		F924983B16F5985E124BBBC2 /* RootLaunchPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootLaunchPlan.swift; sourceTree = "<group>"; };
 		FE6C12AD5DA49E6EDD60B3B7 /* NotificationTapRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationTapRouter.swift; sourceTree = "<group>"; };
 		FE6F9A5AF9F0435F34FF4D17 /* CrewJoinView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewJoinView.swift; sourceTree = "<group>"; };
+		FE70AA7BFDBF24E567D86565 /* FirebaseSink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseSink.swift; sourceTree = "<group>"; };
 		FEAE3E2DCB691E1E510ACF57 /* FindPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindPanel.swift; sourceTree = "<group>"; };
 		FF2B70A0AD5BD84CDC921F8A /* CrewOnboardingContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrewOnboardingContainer.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -277,6 +288,7 @@
 				8205769443841156A848715C /* MeshtasticProto in Frameworks */,
 				B770F947CF8B1EDB0E8FDBD5 /* FireflyMesh in Frameworks */,
 				3B69F83116726CF8C396257C /* FireflyModel in Frameworks */,
+				EBBD5DCFB023948F72D401BA /* FireflyTelemetry in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -288,6 +300,10 @@
 				7BA796CE1A065E6D5A96DCDB /* MeshtasticProto in Frameworks */,
 				04CD563093000516B80C6D62 /* FireflyMesh in Frameworks */,
 				71D8EF04CB8A979CD7738201 /* FireflyModel in Frameworks */,
+				D60C0389100682F7D4DFD554 /* FireflyTelemetry in Frameworks */,
+				BD2B9367367D7C1BC71117DF /* FirebaseCrashlytics in Frameworks */,
+				A1F37E2F70FB65C71EF5C143 /* FirebaseFirestore in Frameworks */,
+				F872A1C14BE4F16EFC2B58D3 /* FirebaseAuth in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -393,10 +409,20 @@
 			path = Settings;
 			sourceTree = "<group>";
 		};
+		4DFF15BB97A3F6F2371169D3 /* Telemetry */ = {
+			isa = PBXGroup;
+			children = (
+				FE70AA7BFDBF24E567D86565 /* FirebaseSink.swift */,
+				F832F5263CB55AD90FCFE525 /* FirebaseTelemetryBootstrap.swift */,
+			);
+			path = Telemetry;
+			sourceTree = "<group>";
+		};
 		5BBE56D5FAE4762AD36380E3 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
 				688226395F6C22BD0D86BEB5 /* Assets.xcassets */,
+				C0E90E40C2987FF26EEEE386 /* GoogleService-Info.plist */,
 				9574E2BC49B8298D4A1C3EF1 /* Festpacks */,
 			);
 			path = Resources;
@@ -535,6 +561,7 @@
 				70564F5A3BB71C0F2C5E508E /* Map */,
 				04298E47A0AEA46AE6AC544E /* Radar */,
 				30C10335F64F3BEB0DDD3F59 /* Settings */,
+				4DFF15BB97A3F6F2371169D3 /* Telemetry */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -589,6 +616,7 @@
 				1302957B4A2DCE64A8D5EC14 /* MeshtasticProto */,
 				B4C3D1CEE6287442EA267E68 /* FireflyMesh */,
 				9011CC84111BB0A130A3D3C7 /* FireflyModel */,
+				612498C04E6FF38A46B9C74D /* FireflyTelemetry */,
 			);
 			productName = FireflyAppTests;
 			productReference = B726C9DB8EA6DA10A760203D /* FireflyAppTests.xctest */;
@@ -619,6 +647,7 @@
 				BBBA8791B6AEDDD2FBC4F69A /* Sources */,
 				D78603FD53305253B59CDF55 /* Resources */,
 				CA3A2D75976D151ED86A005C /* Frameworks */,
+				62C4E63E7509BC185B8B9FF0 /* A04: Crashlytics dSYM upload */,
 			);
 			buildRules = (
 			);
@@ -630,6 +659,10 @@
 				6C4B001C31CDD7B9E82BE94A /* MeshtasticProto */,
 				6D80661B0E11F75CD5DBFD53 /* FireflyMesh */,
 				4982066A256926406E7325EB /* FireflyModel */,
+				E03BBD99A8D763260FDE6828 /* FireflyTelemetry */,
+				D37E2C4B9AA4B50FC121647C /* FirebaseCrashlytics */,
+				BA53BF756744A577A2C98AE3 /* FirebaseFirestore */,
+				A61867A50CE6FC30D368958C /* FirebaseAuth */,
 			);
 			productName = Firefly;
 			productReference = 668B4901B03CB440509CA401 /* Firefly.app */;
@@ -669,6 +702,7 @@
 			mainGroup = 09E7A41B35847DF880B89F6C;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				ECDEA1F20BD8893D0457CD43 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
 				15FD0D890FACBF26732B1DA6 /* XCLocalSwiftPackageReference "FireflyKit" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -690,6 +724,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A799FEADA8E9F7CFA215EDEF /* Assets.xcassets in Resources */,
+				0CDB1DD5229C01D0660355E3 /* GoogleService-Info.plist in Resources */,
 				89BC05B316F355E479A3633D /* fest-almanac-index.json in Resources */,
 				EE39AFFD0C1416E122228CFC /* firefly-fields.festpack.json in Resources */,
 				DA080D82BF09C603E6CCA622 /* lost-lands-2026.festpack.json in Resources */,
@@ -697,6 +732,28 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		62C4E63E7509BC185B8B9FF0 /* A04: Crashlytics dSYM upload */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "A04: Crashlytics dSYM upload";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"$CONFIGURATION\" = \"Debug\" ]; then\n  echo \"Crashlytics dSYM upload: skipped (Debug build)\"\n  exit 0\nfi\nPLIST=\"$SRCROOT/Firefly/Resources/GoogleService-Info.plist\"\nif [ ! -f \"$PLIST\" ]; then\n  echo \"Crashlytics dSYM upload: skipped (no GoogleService-Info.plist)\"\n  exit 0\nfi\nDERIVED_DATA_DIR=\"$(dirname \"$(dirname \"$BUILD_DIR\")\")\"\nRUN_SCRIPT=\"$DERIVED_DATA_DIR/SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/run\"\nif [ ! -f \"$RUN_SCRIPT\" ]; then\n  echo \"Crashlytics dSYM upload: skipped (run script not found at $RUN_SCRIPT — package not resolved?)\"\n  exit 0\nfi\n\"$RUN_SCRIPT\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		1D66D99D68B8543D5B706035 /* Sources */ = {
@@ -799,6 +856,8 @@
 				AFD1E54EF5873B6717B88291 /* FindPanel.swift in Sources */,
 				F091814D8FA9D4CD85624E71 /* FindScreen.swift in Sources */,
 				F85E04509A4B7C2775E81711 /* FindSegment.swift in Sources */,
+				FC48E48B7695C392C2561781 /* FirebaseSink.swift in Sources */,
+				8FDE1CDB7261BFA4CC310638 /* FirebaseTelemetryBootstrap.swift in Sources */,
 				FB71020F3A2D6764FDD8FE64 /* FireflyApp.swift in Sources */,
 				E466917345D124C8F9F6B557 /* FireflyAutoConnectLaunch.swift in Sources */,
 				10DBF8753F52575ADF311027 /* FireflyDebugCrewLaunch.swift in Sources */,
@@ -1212,6 +1271,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		ECDEA1F20BD8893D0457CD43 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
+			requirement = {
+				kind = exactVersion;
+				version = 11.6.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		1302957B4A2DCE64A8D5EC14 /* MeshtasticProto */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -1229,6 +1299,10 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = FireflyCore;
 		};
+		612498C04E6FF38A46B9C74D /* FireflyTelemetry */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FireflyTelemetry;
+		};
 		6C4B001C31CDD7B9E82BE94A /* MeshtasticProto */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MeshtasticProto;
@@ -1241,9 +1315,28 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = FireflyModel;
 		};
+		A61867A50CE6FC30D368958C /* FirebaseAuth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ECDEA1F20BD8893D0457CD43 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAuth;
+		};
 		B4C3D1CEE6287442EA267E68 /* FireflyMesh */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = FireflyMesh;
+		};
+		BA53BF756744A577A2C98AE3 /* FirebaseFirestore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ECDEA1F20BD8893D0457CD43 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseFirestore;
+		};
+		D37E2C4B9AA4B50FC121647C /* FirebaseCrashlytics */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ECDEA1F20BD8893D0457CD43 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseCrashlytics;
+		};
+		E03BBD99A8D763260FDE6828 /* FireflyTelemetry */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FireflyTelemetry;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

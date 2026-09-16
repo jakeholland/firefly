@@ -15,6 +15,7 @@
 //
 import FireflyMesh
 import FireflyModel
+import FireflyTelemetry
 import Foundation
 import MeshtasticProto
 import Observation
@@ -232,19 +233,26 @@ final class CrewController {
     /// wrong for a value this file PERSISTS as `CrewProfile.createdAtMs`
     /// and expects to still mean something after a relaunch days later).
     private let clock: () -> UInt64
+    /// A04 (docs/specs/A04-telemetry.md) — `crew.join`/`crew.leave`/
+    /// `crew.start {outcome, ms}` and `admin.write {kind, ms, outcome}`.
+    /// Appended last, defaulted to `NoopTelemetryRecorder()`, same
+    /// convention as every dependency above it.
+    private let telemetry: any TelemetryRecording
 
     init(client: any MeshtasticClientProtocol,
          importer: ChannelImportViewModel? = nil,
          profileStore: any CrewProfileStoring = InMemoryCrewProfileStore(),
          snapshotStore: any CrewSnapshotStoring = InMemoryCrewSnapshotStore(),
          hiddenStore: any CrewHiddenStoring = InMemoryCrewHiddenStore(),
-         clock: @escaping () -> UInt64 = { UInt64((Date().timeIntervalSince1970 * 1000).rounded()) }) {
+         clock: @escaping () -> UInt64 = { UInt64((Date().timeIntervalSince1970 * 1000).rounded()) },
+         telemetry: any TelemetryRecording = NoopTelemetryRecorder()) {
         self.client = client
         self.importer = importer ?? ChannelImportViewModel(client: client)
         self.profileStore = profileStore
         self.snapshotStore = snapshotStore
         self.hiddenStore = hiddenStore
         self.clock = clock
+        self.telemetry = telemetry
         self.profile = profileStore.load()
         self.regionSelection = Self.suggestedRegion()
         observeRadioLink()
@@ -607,8 +615,31 @@ final class CrewController {
         pendingVerification = nil
         verificationGeneration &+= 1
         defer { isApplying = false }
+        // A04 — `admin.write`/`crew.start`/`crew.join`, both timed from
+        // right here: the ONE place this file calls `importer
+        // .confirmApply()` (this method's own doc comment), so every
+        // Start/Join commit — success, honest failure, or the
+        // committed-but-not-verified straggler — is measured once, not
+        // duplicated across `beginStart`/`beginJoin`.
+        let attemptStartedAt = clock()
+        let eventName = { () -> String in
+            switch pending {
+            case .start: return TelemetryEventName.crewStart
+            case .join: return TelemetryEventName.crewJoin
+            }
+        }()
         let ok = await importer.confirmApply()
+        let elapsedMs = Int(clock()) - Int(attemptStartedAt)
+        await telemetry.record(TelemetryEvent(name: TelemetryEventName.adminWrite, attributes: [
+            TelemetryAttributeKey.kind: .string("crew_channel"),
+            TelemetryAttributeKey.ms: .int(elapsedMs),
+            TelemetryAttributeKey.outcome: .string(ok ? "applied" : "failed"),
+        ]))
         guard ok else {
+            await telemetry.record(TelemetryEvent(name: eventName, attributes: [
+                TelemetryAttributeKey.outcome: .string("failed"),
+                TelemetryAttributeKey.ms: .int(elapsedMs),
+            ]))
             // Every honest `AdminWriteError` — a radio that disconnected
             // mid-write, a NAK/partial apply, a timeout, a read-back
             // mismatch, an UNSET region — already has its own sentence
@@ -640,6 +671,10 @@ final class CrewController {
                 "Nothing is certain until it does — try again."
             errorMessage = message
             phase = .failed(message)
+            await telemetry.record(TelemetryEvent(name: eventName, attributes: [
+                TelemetryAttributeKey.outcome: .string("unverified"),
+                TelemetryAttributeKey.ms: .int(elapsedMs),
+            ]))
             return false
         }
         switch pending {
@@ -650,6 +685,10 @@ final class CrewController {
         }
         self.pending = nil
         phase = .joined
+        await telemetry.record(TelemetryEvent(name: eventName, attributes: [
+            TelemetryAttributeKey.outcome: .string("joined"),
+            TelemetryAttributeKey.ms: .int(elapsedMs),
+        ]))
         return true
     }
 
@@ -778,19 +817,32 @@ final class CrewController {
         let channelSet = ChannelSet(settings: [settings], loraConfig: nil)
         let url = ChannelURL.encode(channelSet, addMode: false)
 
+        let attemptStartedAt = clock()
         importer.importURL(url)
         guard await importer.preparePlan() else {
             leaveErrorMessage = importer.planErrorMessage ?? "Couldn't prepare leaving this crew."
+            await telemetry.record(TelemetryEvent(name: TelemetryEventName.crewLeave, attributes: [
+                TelemetryAttributeKey.outcome: .string("failed"),
+                TelemetryAttributeKey.ms: .int(Int(clock()) - Int(attemptStartedAt)),
+            ]))
             return false
         }
         guard await importer.confirmApply() else {
             leaveErrorMessage = importer.applyErrorMessage ?? "Couldn't leave this crew."
+            await telemetry.record(TelemetryEvent(name: TelemetryEventName.crewLeave, attributes: [
+                TelemetryAttributeKey.outcome: .string("failed"),
+                TelemetryAttributeKey.ms: .int(Int(clock()) - Int(attemptStartedAt)),
+            ]))
             return false
         }
         profileStore.rememberRecentCrew(RecentCrew(code: profile.code, humanName: profile.humanName))
         profileStore.clear()
         self.profile = nil
         onProfileChanged?()
+        await telemetry.record(TelemetryEvent(name: TelemetryEventName.crewLeave, attributes: [
+            TelemetryAttributeKey.outcome: .string("left"),
+            TelemetryAttributeKey.ms: .int(Int(clock()) - Int(attemptStartedAt)),
+        ]))
         return true
     }
 

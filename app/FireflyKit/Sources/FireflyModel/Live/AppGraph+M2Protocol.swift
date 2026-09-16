@@ -10,6 +10,7 @@
 //
 import FireflyCore
 import FireflyMesh
+import FireflyTelemetry
 import Foundation
 
 extension AppGraph {
@@ -307,7 +308,15 @@ extension AppGraph {
     /// while the task is scheduled.
     func post(_ event: NotificationEvent) {
         let plan = NotificationPlan.plan(for: event)
-        Task { [notifications] in await notifications.post(plan) }
+        // A04 — `notif.posted {kind}`. `plan.categoryIdentifier` (flare/
+        // rally/message — `NotificationCategory`'s own constants) is
+        // already the plain-word "kind" the catalogue asks for; never
+        // the plan's `title`/`body`, which can carry crew message text.
+        Task { [notifications, telemetry = dependencies.telemetry] in
+            await notifications.post(plan)
+            await telemetry.record(TelemetryEvent(name: TelemetryEventName.notifPosted,
+                                                    attributes: [TelemetryAttributeKey.kind: .string(plan.categoryIdentifier)]))
+        }
     }
 
     func stopObservingIncomingTextsForNotifications() {

@@ -25,6 +25,10 @@ public enum FireflyExtraSettingsKey: String, Sendable, CaseIterable {
     case backgroundConnectEnabled
     case nodeLongNamePreference
     case nodeShortNamePreference
+    /// A04 (docs/specs/A04-telemetry.md) — "Share diagnostics" on the
+    /// Diagnostics screen. Appended last, same append-only convention
+    /// as every case above it.
+    case shareDiagnosticsEnabled
 }
 
 /// `SettingsStoring` plus the four Settings/Diagnostics-only
@@ -45,6 +49,13 @@ public protocol FireflyExtraSettingsStoring: SettingsStoring {
     /// A LOCAL DRAFT only — see `SettingsStore`'s own doc comment.
     var nodeLongNamePreference: String? { get set }
     var nodeShortNamePreference: String? { get set }
+    /// A04 — "Share diagnostics". Default ON in DEBUG/TestFlight (a
+    /// build only the field-test crew and Jake ever run), unset (and
+    /// therefore OFF) in a plain App Store build — see
+    /// `SettingsStore.shareDiagnosticsEnabled`'s own doc comment for the
+    /// three-state read this follows, same shape as
+    /// `backgroundConnectEnabled`.
+    var shareDiagnosticsEnabled: Bool { get set }
 }
 
 /// Real backing store for `SettingsStoring`. `UserDefaults`-backed,
@@ -152,6 +163,44 @@ public final class SettingsStore: FireflyExtraSettingsStoring, @unchecked Sendab
     public var nodeShortNamePreference: String? {
         get { rawString(.nodeShortNamePreference) }
         set { setRawString(newValue, .nodeShortNamePreference) }
+    }
+
+    /// A04 — same three-state read as `backgroundConnectEnabled` right
+    /// above: nothing persisted -> `Self.defaultShareDiagnosticsEnabled()`;
+    /// an explicit write -> exactly that value, forever, whichever way
+    /// the build-config default later moves. "Share diagnostics" sends
+    /// connection diagnostics — never message text, never exact
+    /// location (`TelemetryAttributeAllowlist`) — when this phone has
+    /// signal; OFF means record locally only, no upload, ever.
+    public var shareDiagnosticsEnabled: Bool {
+        get { rawBool(.shareDiagnosticsEnabled, default: Self.defaultShareDiagnosticsEnabled()) }
+        set { setRawBool(newValue, .shareDiagnosticsEnabled) }
+    }
+
+    /// `true` in a DEBUG build, or a TestFlight build (an
+    /// `.app-store-sandboxed` receipt — Apple's own signal for "this
+    /// build came through TestFlight, not the App Store"); `false`
+    /// otherwise. The field-test crew and Jake are the only people who
+    /// ever run either of those; a plain App Store install defaults to
+    /// OFF and asks nobody's phone to upload anything without an
+    /// explicit tap.
+    static func defaultShareDiagnosticsEnabled(bundle: Bundle = .main) -> Bool {
+        #if DEBUG
+        return true
+        #else
+        return isTestFlightReceipt(bundle: bundle)
+        #endif
+    }
+
+    /// Apple's own documented TestFlight signal: the receipt URL's last
+    /// path component is `"sandboxReceipt"` for a build installed via
+    /// TestFlight, `"receipt"` for one installed from the App Store, and
+    /// `nil` for a build with no receipt at all (a plain `xcodebuild`
+    /// debug run, which `#if DEBUG` already covers above — this helper
+    /// exists for the non-DEBUG branch only, but is unconditional and
+    /// pure so `SettingsStoreTests` can pin it directly).
+    static func isTestFlightReceipt(bundle: Bundle) -> Bool {
+        bundle.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
     }
 
     /// `default:` is what makes "never set" distinguishable from "set to

@@ -12,6 +12,7 @@
 //
 import FireflyMesh
 import FireflyModel
+import FireflyTelemetry
 import Foundation
 import Observation
 
@@ -58,6 +59,19 @@ final class DiagnosticsViewModel {
     /// A03 §3.11.5 — whether Firefly may actually alert anyone. The
     /// status line must not claim background coverage it does not have.
     private let notifications: (any NotificationSending)?
+    /// A04 (docs/specs/A04-telemetry.md) — read/write through the SAME
+    /// `SettingsViewModel` the Settings screen's own toggle writes,
+    /// exactly like `backgroundConnectEnabled` just above: this screen
+    /// and the CONNECTIVITY block can never disagree about the switch's
+    /// position.
+    private let shareDiagnosticsEnabledRead: () -> Bool
+    private let setShareDiagnosticsEnabled: (Bool) -> Void
+    /// A04 — "Export diagnostics"'s own seam: `TelemetryRecorder` itself
+    /// (`AppDependencies.telemetry as? any TelemetryExporting`), `nil`
+    /// on any composition with no real recorder (`.stub()`'s
+    /// `InMemoryTelemetryRecorder` is not `TelemetryExporting` — there
+    /// is no file to export). The row hides itself when this is `nil`.
+    private let telemetryExporting: (any TelemetryExporting)?
 
     private(set) var diagnostics = BLELinkDiagnostics()
     private(set) var notificationAuthorization: NotificationAuthorization = .notDetermined
@@ -65,12 +79,45 @@ final class DiagnosticsViewModel {
     init(client: any MeshtasticClientProtocol, now: @escaping () -> Date = Date.init,
          linkDiagnostics: (any BLELinkDiagnosticsProviding)? = nil,
          notifications: (any NotificationSending)? = nil,
-         backgroundConnectEnabled: @escaping () -> Bool = { false }) {
+         backgroundConnectEnabled: @escaping () -> Bool = { false },
+         shareDiagnosticsEnabled: @escaping () -> Bool = { false },
+         setShareDiagnosticsEnabled: @escaping (Bool) -> Void = { _ in },
+         telemetryExporting: (any TelemetryExporting)? = nil) {
         self.client = client
         self.now = now
         self.linkDiagnostics = linkDiagnostics
         self.notifications = notifications
         self.backgroundConnectEnabled = backgroundConnectEnabled
+        self.shareDiagnosticsEnabledRead = shareDiagnosticsEnabled
+        self.setShareDiagnosticsEnabled = setShareDiagnosticsEnabled
+        self.telemetryExporting = telemetryExporting
+    }
+
+    // MARK: - A04: Share diagnostics / Export diagnostics
+
+    /// Read fresh on every access, same convention
+    /// `backgroundConnectionStatus` documents for `backgroundConnectEnabled()`
+    /// just below it — the toggle can move while this screen is open.
+    var shareDiagnosticsEnabled: Bool {
+        shareDiagnosticsEnabledRead()
+    }
+
+    func setShareDiagnostics(_ value: Bool) {
+        setShareDiagnosticsEnabled(value)
+    }
+
+    /// Whether the "Export diagnostics" row has anything to export —
+    /// `false` on any composition with no real, file-backed recorder
+    /// (`.stub()`, most unit tests).
+    var canExportDiagnostics: Bool { telemetryExporting != nil }
+
+    /// Every JSON-lines file the local recorder currently holds, oldest
+    /// first — exactly what the share sheet hands off. An empty array on
+    /// a fresh install that has not recorded an event yet, never a
+    /// placeholder file.
+    func exportDiagnosticsFiles() async -> [URL] {
+        guard let telemetryExporting else { return [] }
+        return await telemetryExporting.exportFiles()
     }
 
     func observe() {

@@ -10,6 +10,7 @@
 //      `AsyncStream`s and publishes plain values.
 //
 import FireflyMesh
+import FireflyTelemetry
 import Foundation
 import Observation
 
@@ -178,12 +179,22 @@ public final class ConnectViewModel {
     /// testable without a real wall-clock wait — same convention
     /// `MeshtasticClient.renderedDeliveryState(...)` uses.
     private let now: () -> Date
+    /// A04 (docs/specs/A04-telemetry.md) — this is the ONE call site
+    /// that can honestly say "Bailey tapped CONNECT": `MeshtasticClient
+    /// .connect()` itself cannot tell a manual tap apart from
+    /// `AppGraph.autoConnectToLastKnownPeripheral()`'s own call to the
+    /// same method (that type's own A04 comment). Appended last,
+    /// defaulted to `NoopTelemetryRecorder()`, so every existing
+    /// `ConnectViewModel(client:)` call site keeps compiling unchanged.
+    private let telemetry: any TelemetryRecording
 
     public init(client: any MeshtasticClientProtocol, store: (any SettingsStoring)? = nil,
-                now: @escaping () -> Date = Date.init) {
+                now: @escaping () -> Date = Date.init,
+                telemetry: any TelemetryRecording = NoopTelemetryRecorder()) {
         self.client = client
         self.store = store
         self.now = now
+        self.telemetry = telemetry
     }
 
     /// Stop mirroring. Not a `deinit`: this type is `@MainActor`, and
@@ -236,6 +247,10 @@ public final class ConnectViewModel {
         Self.log("connect() called — current link=\(link)")
         lastError = nil
         lastTrouble = nil
+        await telemetry.record(TelemetryEvent(name: TelemetryEventName.bleConnectAttempt, attributes: [
+            TelemetryAttributeKey.trigger: .string(TelemetryTrigger.manual.rawValue),
+            TelemetryAttributeKey.attempt: .int(1),
+        ]))
         do {
             try await client.connect()
             Self.log("connect(): client.connect() returned successfully (link=\(link))")

@@ -170,6 +170,26 @@ struct AppRuntimeBundle {
                               historyStore: historyStore)
         graph.prepareForRestoration()
 
+        // A04 (docs/specs/A04-telemetry.md) — attach `FirebaseSink` to
+        // THIS bundle's own `dependencies.telemetry`, fired off as its
+        // own `Task` (anonymous sign-in is a network round trip on a
+        // fresh install, and nothing here should block the rest of this
+        // function's synchronous composition on it). A no-op for the
+        // demo stack, and for any build with no plist —
+        // `FirebaseTelemetryBootstrap.attachSink(to:buildString:deviceString:)`'s
+        // own doc comment says exactly which conditions make it one.
+        let buildString = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        #if os(iOS)
+        let deviceString = "iPhone"
+        #else
+        let deviceString = "Mac"
+        #endif
+        Task {
+            await FirebaseTelemetryBootstrap.attachSink(to: dependencies, buildString: buildString,
+                                                          deviceString: deviceString)
+        }
+        FirebaseTelemetryBootstrap.setInitialCrashlyticsKeys(buildString: buildString)
+
         let connectVM = graph.makeConnectViewModel()
         let importVM = ChannelImportViewModel(client: graph.dependencies.client)
         // REVIEW FIX (PR #331 independent review, BLOCKING) —
@@ -181,7 +201,8 @@ struct AppRuntimeBundle {
             client: graph.dependencies.client,
             profileStore: graph.crewProfileStore,
             snapshotStore: CrewStoreSelection.snapshotStore(for: dependencies),
-            hiddenStore: CrewStoreSelection.hiddenStore(for: dependencies))
+            hiddenStore: CrewStoreSelection.hiddenStore(for: dependencies),
+            telemetry: graph.dependencies.telemetry)
         crewVM.onProfileChanged = { [graph] in graph.syncCrewMembershipWithProfile() }
 
         let lineupVM = graph.makeLineupViewModel()

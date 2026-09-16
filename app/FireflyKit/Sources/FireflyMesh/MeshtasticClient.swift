@@ -13,6 +13,7 @@
 //  reboot handling — is re-derived against the same spec so the two
 //  clients stay honest against each other.
 //
+import FireflyTelemetry
 import Foundation
 import MeshtasticProto
 
@@ -234,6 +235,36 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     /// triggers fires it.
     private var reconnectTask: Task<Void, Never>?
 
+    /// A04 (docs/specs/A04-telemetry.md) — the connectivity event log.
+    /// `NoopTelemetryRecorder()` by default (every test), the process's
+    /// one shared `TelemetryRecorder` in `.live()` — same instance
+    /// `BLETransport` and `AppDependencies.telemetry` itself hold (see
+    /// `AppDependencies.live()`'s own comment).
+    private let telemetry: any TelemetryRecording
+    /// A04 — when the CURRENT attempt (`connect()` or a
+    /// `handleTransportReconnected()` retry loop iteration) started;
+    /// what `ble.ready {ms_since_attempt}` measures against. Reset at
+    /// the top of `connect()` and at each new attempt inside the retry
+    /// loop.
+    private var currentAttemptStartedAt: Date?
+    /// A04 — when the link last reached `.ready`; what
+    /// `ble.disconnected {session_s}` measures against. `nil` until the
+    /// first `.ready`.
+    private var readyAt: Date?
+    /// A04 — set immediately before the ONE call to `publish(.disconnected)`
+    /// that follows a user-initiated `disconnect()`, consumed by
+    /// `publish(_:)` itself so `ble.disconnected {expected}` can tell that
+    /// case apart from `consumeTransportEvents`'s `.disconnected` branch
+    /// (an unasked-for loss), the only other caller of `publish(.disconnected)`.
+    /// Reset to `false` every time it is read.
+    private var nextDisconnectIsExpected = false
+    /// A04 — the `reason` `ble.disconnected` records: `"user"` for the
+    /// `disconnect()` path, the transport's own reason string for
+    /// `consumeTransportEvents`'s `.disconnected` branch. Set immediately
+    /// before `publish(.disconnected)`, consumed (and reset to `nil`) by
+    /// `publish(_:)` itself.
+    private var nextDisconnectReason: String?
+
     /// Which want_config phase is currently outstanding, if any —
     /// diagnostic only (a future Diagnostics screen); no longer load-bearing
     /// for correctness (see `configCompleteHub`, below).
@@ -402,7 +433,12 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         adminResponseTimeout: Duration = .seconds(30),
         postCommitReadyTimeout: Duration = MeshtasticClient.defaultPostCommitReadyTimeout,
         postCommitDisconnectGrace: Duration = .seconds(5),
-        beginEditSettingsRetryDelay: Duration = .milliseconds(150)
+        beginEditSettingsRetryDelay: Duration = .milliseconds(150),
+        // A04 — appended last, defaulted to the harmless
+        // `NoopTelemetryRecorder()`, same convention as every parameter
+        // above it: every existing `MeshtasticClient(...)` call site
+        // keeps compiling unchanged.
+        telemetry: any TelemetryRecording = NoopTelemetryRecorder()
     ) {
         self.transport = transport
         self.configPhaseTimeout = configPhaseTimeout
@@ -417,6 +453,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         self.postCommitReadyTimeout = postCommitReadyTimeout
         self.postCommitDisconnectGrace = postCommitDisconnectGrace
         self.beginEditSettingsRetryDelay = beginEditSettingsRetryDelay
+        self.telemetry = telemetry
         // Seeded, not started at 1: two client lifetimes that both start
         // packet ids at 1 collide on every id until the higher session's
         // send count is exceeded, against Meshtastic's short per-(from,
@@ -466,6 +503,42 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     private func publish(_ state: LinkState) {
         Self.log("linkState -> \(state)")
         linkHub.yield(state)
+        // A04 — the one place every transition is published is also the
+        // one place `ble.ready`/`ble.disconnected` are recorded, so no
+        // transition can reach a screen without also reaching the log.
+        switch state {
+        case .ready:
+            let startedAt = currentAttemptStartedAt
+            readyAt = Date()
+            Task { [telemetry] in
+                var attributes: [String: TelemetryValue] = [:]
+                if let startedAt {
+                    attributes[TelemetryAttributeKey.msSinceAttempt] =
+                        .int(Int(Date().timeIntervalSince(startedAt) * 1000))
+                }
+                await telemetry.record(TelemetryEvent(name: TelemetryEventName.bleReady, attributes: attributes))
+            }
+        case .disconnected:
+            let sessionStart = readyAt
+            readyAt = nil
+            let expected = nextDisconnectIsExpected
+            nextDisconnectIsExpected = false
+            let reason = nextDisconnectReason ?? "unknown"
+            nextDisconnectReason = nil
+            Task { [telemetry] in
+                var attributes: [String: TelemetryValue] = [
+                    TelemetryAttributeKey.expected: .bool(expected),
+                    TelemetryAttributeKey.reason: .string(reason),
+                ]
+                if let sessionStart {
+                    attributes[TelemetryAttributeKey.sessionS] =
+                        .double(Date().timeIntervalSince(sessionStart))
+                }
+                await telemetry.record(TelemetryEvent(name: TelemetryEventName.bleDisconnected, attributes: attributes))
+            }
+        default:
+            break
+        }
     }
 
     /// A03 §3.1 — **`[api]`, S1b.** Attach to the transport: subscribe
@@ -518,6 +591,15 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         }
         isConnectAttemptInFlight = true
         defer { isConnectAttemptInFlight = false }
+        currentAttemptStartedAt = Date()
+        // A04 — trigger is decided by the CALLER (`ConnectViewModel` for
+        // a manual tap, `AppGraph.autoConnectToLastKnownPeripheral()` for
+        // launch auto-connect), which records its own `ble.connect.attempt`
+        // right before calling this — see those types' own A04 comments.
+        // This method has no way to distinguish "Bailey tapped CONNECT"
+        // from "launch auto-connect fired" on its own, so it does not
+        // duplicate that event; it owns everything from `ble.connected`
+        // on, once the transport is actually up.
 
         resetSessionState()
 
@@ -547,6 +629,7 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             Self.log("connect(): awaiting transport.connect()")
             try await transport.connect()
             Self.log("connect(): transport.connect() returned successfully")
+            Task { [telemetry] in await telemetry.record(TelemetryEvent(name: TelemetryEventName.bleConnected)) }
         } catch {
             Self.log("connect(): transport.connect() threw \(error)")
             // No `.ready` is coming for this attempt — release the claim
@@ -592,6 +675,8 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         // real, not theoretical.
         myNodeNum = nil
         await transport.disconnect()
+        nextDisconnectIsExpected = true
+        nextDisconnectReason = "user"
         publish(.disconnected)
     }
 
@@ -1452,6 +1537,26 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
     private func requestConfig(nonce: UInt32, timeout: Duration) async throws {
         pendingConfigPhase = nonce
         defer { if pendingConfigPhase == nonce { pendingConfigPhase = nil } }
+        // A04 — `ble.handshake.phase {phase, ms}`. `phase` names the two
+        // want_config sentinels in plain words rather than the raw
+        // nonce, matching the catalogue's own convention (a diagnostics
+        // reader should not need `MeshtasticConfigNonce` open to parse
+        // this). Recorded once the phase actually finishes (success OR
+        // failure both take a measurable amount of time worth logging;
+        // a phase that throws is already visible via `error` from the
+        // caller, so this event's own `ms` is the interesting number
+        // either way).
+        let phaseName = nonce == MeshtasticConfigNonce.onlyConfig ? "config" : "nodeDB"
+        let phaseStartedAt = Date()
+        defer {
+            let elapsedMs = Int(Date().timeIntervalSince(phaseStartedAt) * 1000)
+            Task { [telemetry] in
+                await telemetry.record(TelemetryEvent(name: TelemetryEventName.bleHandshakePhase, attributes: [
+                    TelemetryAttributeKey.phase: .string(phaseName),
+                    TelemetryAttributeKey.ms: .int(elapsedMs),
+                ]))
+            }
+        }
 
         // Subscribe BEFORE writing want_config — see `configCompleteHub`'s
         // doc comment for why this ordering is load-bearing, not
@@ -1618,6 +1723,13 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             // declaring victory (never publish a stale success).
             guard !Task.isCancelled else { return }
             attempt += 1
+            currentAttemptStartedAt = Date()
+            Task { [telemetry, attempt] in
+                await telemetry.record(TelemetryEvent(name: TelemetryEventName.bleConnectAttempt, attributes: [
+                    TelemetryAttributeKey.trigger: .string(TelemetryTrigger.auto.rawValue),
+                    TelemetryAttributeKey.attempt: .int(attempt),
+                ]))
+            }
             publish(attempt == 1 ? .handshaking : .reconnecting(attempt: attempt))
             do {
                 try await performHandshake()
@@ -1798,6 +1910,8 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
                 Self.log("consumeTransportEvents: .disconnected(reason: \(reason ?? "nil")) — publishing .disconnected")
                 heartbeatTask?.cancel(); heartbeatTask = nil
                 reconnectTask?.cancel(); reconnectTask = nil
+                nextDisconnectIsExpected = false
+                nextDisconnectReason = reason ?? "unknown"
                 publish(.disconnected)
                 // ROOT CAUSE FIX (2026-09-11, real power-cycle on the
                 // bench — see `LinkState.reconnecting`'s own doc

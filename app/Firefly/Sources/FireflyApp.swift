@@ -9,6 +9,7 @@
 //
 import FireflyMesh
 import FireflyModel
+import FireflyTelemetry
 import Foundation
 import SwiftUI
 #if os(iOS)
@@ -144,6 +145,13 @@ struct FireflyApp: App {
     #endif
 
     init() {
+        // A04 (docs/specs/A04-telemetry.md) — exactly once per process,
+        // before `AppRuntimeBundle.build` (below) ever tries to attach a
+        // sink to it. A no-op with no `GoogleService-Info.plist` in the
+        // bundle (`FirebaseTelemetryBootstrap.configureIfNeeded()`'s own
+        // doc comment) and a no-op entirely on a build where Firebase
+        // failed to resolve/link (`#if canImport(FirebaseCore)`).
+        FirebaseTelemetryBootstrap.configureIfNeeded()
         // `skipLaunchAutoConnectUnderXCTest: true` — this IS the live
         // process (`AppGraph()`'s own default `dependencies: .current()`,
         // the real composition root), the one `AppGraph.init`'s own doc
@@ -235,6 +243,7 @@ struct FireflyApp: App {
         #if canImport(UserNotifications)
         let taps = NotificationTapRouter()
         taps.onDeepLink = { [graph = runtime.graph] url in graph.deepLinks.handle(url) }
+        taps.telemetry = runtime.graph.dependencies.telemetry
         taps.install()
         _notificationTaps = State(initialValue: taps)
         #endif
@@ -300,6 +309,7 @@ struct FireflyApp: App {
         #endif
         #if canImport(UserNotifications)
         notificationTaps.onDeepLink = { [graph = incoming.graph] url in graph.deepLinks.handle(url) }
+        notificationTaps.telemetry = incoming.graph.dependencies.telemetry
         #endif
         runtime = incoming
     }
@@ -359,6 +369,11 @@ struct FireflyApp: App {
                 // A03 §3.10 — the graph's ONE notification seam, read by
                 // Diagnostics for its authorization state.
                 notifications: runtime.graph.notifications,
+                // A04 — "Export diagnostics"'s own seam: the graph's ONE
+                // shared `TelemetryRecorder`, when it is one (`.stub()`
+                // gets `InMemoryTelemetryRecorder`, not
+                // `TelemetryExporting` — nothing to export there).
+                telemetryExporting: runtime.graph.dependencies.telemetry as? any TelemetryExporting,
                 // "app: Try the demo" — the connect-step button
                 // (`CrewConnectPuckView`) and Settings' demo row both
                 // read/act through these two rather than reaching

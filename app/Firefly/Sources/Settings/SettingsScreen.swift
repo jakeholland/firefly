@@ -4,6 +4,7 @@
 //
 import FireflyMesh
 import FireflyModel
+import FireflyTelemetry
 import MeshtasticProto
 import SwiftUI
 
@@ -55,7 +56,11 @@ struct SettingsScreen: View {
          // convention: every existing call site keeps compiling.
          isDemoMode: Bool = false,
          onTryDemo: @escaping () -> Void = {},
-         onLeaveDemo: @escaping () -> Void = {}) {
+         onLeaveDemo: @escaping () -> Void = {},
+         // A04 — appended last, same convention: "Export diagnostics"'s
+         // own seam, `nil` on any composition with no real, file-backed
+         // recorder.
+         telemetryExporting: (any TelemetryExporting)? = nil) {
         self.model = model
         self.client = client
         self.lineup = lineup
@@ -66,6 +71,7 @@ struct SettingsScreen: View {
         self.isDemoMode = isDemoMode
         self.onTryDemo = onTryDemo
         self.onLeaveDemo = onLeaveDemo
+        self.telemetryExporting = telemetryExporting
         _crewSettings = State(initialValue: CrewSettingsViewModel(pairing: pairing))
         _festpackURLDraft = State(initialValue: model.festpackSourceURLOverride ?? "")
     }
@@ -77,6 +83,9 @@ struct SettingsScreen: View {
     /// rather than zeros.
     var linkDiagnostics: (any BLELinkDiagnosticsProviding)?
     var notifications: (any NotificationSending)?
+    /// A04 — "Export diagnostics"'s own seam. See this file's own
+    /// `init`'s doc comment.
+    var telemetryExporting: (any TelemetryExporting)?
     /// "app: Try the demo" — `demoSection`'s own row, below.
     var isDemoMode: Bool
     var onTryDemo: () -> Void
@@ -116,7 +125,10 @@ struct SettingsScreen: View {
                 // Read through the SAME view model the toggle writes, so
                 // the status line can never disagree with the switch
                 // three rows above it.
-                backgroundConnectEnabled: { model.stayConnectedInBackground }))
+                backgroundConnectEnabled: { model.stayConnectedInBackground },
+                shareDiagnosticsEnabled: { model.shareDiagnostics },
+                setShareDiagnosticsEnabled: { model.setShareDiagnostics($0) },
+                telemetryExporting: telemetryExporting))
         }
         .task {
             if autoOpenDiagnostics { showDiagnostics = true }

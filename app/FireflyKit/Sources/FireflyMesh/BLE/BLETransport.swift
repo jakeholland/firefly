@@ -20,6 +20,7 @@
 //  never plain `swift test`). See docs/specs/A01-companion-app.md, "B1".
 //
 import Foundation
+import FireflyTelemetry
 @preconcurrency import CoreBluetooth
 
 /// A Meshtastic peripheral seen while scanning — for a future node
@@ -459,6 +460,8 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
             isFallbackScanning = true
             diagnostics.scanStarts += 1
             central.scanForPeripherals(withServices: [Self.serviceUUID], options: nil)
+            recordTelemetry(TelemetryEvent(name: TelemetryEventName.bleLadderFired,
+                                            attributes: [TelemetryAttributeKey.step: .int(attempt)]))
         case .endScan(let reason):
             BLETransport.log("reconnect ladder: closing the scan window (\(reason)) — " +
                               "next window in \(Int(ReconnectLadder.ladderDelaySeconds(forAttempt: ladder.attempt)))s (±20%)")
@@ -478,6 +481,10 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         reconnectFallbackTask = nil
         guard let deadline = ladder.nextDeadline() else { return }
         let seconds = max(0.1, deadline.timeIntervalSince(now()))
+        recordTelemetry(TelemetryEvent(name: TelemetryEventName.bleLadderScheduled, attributes: [
+            TelemetryAttributeKey.delayS: .double(seconds),
+            TelemetryAttributeKey.step: .int(ladder.attempt),
+        ]))
         reconnectFallbackTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
             guard !Task.isCancelled else { return }
@@ -536,6 +543,35 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
     /// Fired from `markBonded(_:)` — same reasoning, for
     /// `SettingsKey.bondedPeripheralIDs`.
     private let onBonded: (@Sendable (UUID) -> Void)?
+    /// A04 — the connectivity event log. `NoopTelemetryRecorder()` by
+    /// default (every test), the process's one shared `TelemetryRecorder`
+    /// in `.live()` (`AppDependencies.live()`'s own comment on why it is
+    /// held here AND by `MeshtasticClient` AND by `AppDependencies`
+    /// itself, all three the SAME instance).
+    private let telemetry: any TelemetryRecording
+
+    /// Fire-and-forget: records `event` without making the caller
+    /// `async`. Every CoreBluetooth callback this actor handles is a
+    /// plain, synchronous delegate hop (`BLEDelegateBridge`'s own
+    /// header) — making each one `async` just to `await
+    /// telemetry.record(_:)` would ripple `async`/`await` through this
+    /// whole file's call graph for no behavioural change, so this spins
+    /// a `Task` instead. `TelemetryRecording.record(_:)` is itself
+    /// ordered per recorder (an actor, or `InMemoryTelemetryRecorder`,
+    /// both serialize their own `record` calls), so events recorded
+    /// this way still land in the order these synchronous call sites
+    /// issued them, even though none of them AWAITS its own event being
+    /// durably written before returning.
+    private func recordTelemetry(_ event: TelemetryEvent) {
+        let telemetry = self.telemetry
+        Task { await telemetry.record(event) }
+    }
+    /// A04 — `ble.scan.start`'s own scan-generation counter's worth of
+    /// state: `didDiscover` needs to know it is inside an open scan
+    /// window to emit `ble.discovered`, and `disconnectedAt` (already on
+    /// this actor) is not that signal — a ladder-opened window and a
+    /// node-picker `scan()` both set this.
+    private var isScanning = false
 
     private static let serviceUUID = CBUUID(string: MeshtasticBLE.serviceUUIDString)
     private static let toRadioUUID = CBUUID(string: MeshtasticBLE.toRadioUUIDString)
@@ -583,7 +619,13 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         onBonded: (@Sendable (UUID) -> Void)? = nil,
         // A03 §3.6 — the ladder is a clock, not a sleeping task, so the
         // clock is injectable. Same convention as `ConnectViewModel.now`.
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        // A04 (docs/specs/A04-telemetry.md) — appended last, defaulted
+        // to the harmless `NoopTelemetryRecorder()`, same convention as
+        // every parameter above it: every existing `BLETransport(...)`
+        // call site (every test in `BLEReconnectLadderTests` included)
+        // keeps compiling unchanged.
+        telemetry: any TelemetryRecording = NoopTelemetryRecorder()
     ) {
         self.now = now
         self.preferredPeripheralID = preferredPeripheralID
@@ -594,6 +636,7 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         self.reconnectFallbackDelay = reconnectFallbackDelay
         self.onPreferredPeripheralChanged = onPreferredPeripheralChanged
         self.onBonded = onBonded
+        self.telemetry = telemetry
     }
 
     public func setPreferredPeripheral(_ id: UUID?) {
@@ -952,6 +995,8 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
             try await waitForPoweredOn()
             BLETransport.log("scan(): powered on, starting scanForPeripherals")
             central?.scanForPeripherals(withServices: [Self.serviceUUID], options: nil)
+            isScanning = true
+            await telemetry.record(TelemetryEvent(name: TelemetryEventName.bleScanStart))
         } catch {
             BLETransport.log("scan(): waitForPoweredOn threw \(error)")
             // Bluetooth not ready (permission denied, off, unsupported):
@@ -966,6 +1011,10 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
 
     public func stopScanning() {
         central?.stopScan()
+        if isScanning {
+            isScanning = false
+            recordTelemetry(TelemetryEvent(name: TelemetryEventName.bleScanStop))
+        }
     }
 
     // MARK: - Setup
@@ -1174,6 +1223,21 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
 
     // MARK: - Delegate callbacks (forwarded from BLEDelegateBridge)
 
+    /// A04 — `ble.power {state}`'s plain-word spelling of `CBManagerState`,
+    /// so a diagnostics export reads "poweredOff" rather than a raw
+    /// `rawValue` integer nobody can interpret without the SDK open.
+    private static func describe(_ state: CBManagerState) -> String {
+        switch state {
+        case .unknown: return "unknown"
+        case .resetting: return "resetting"
+        case .unsupported: return "unsupported"
+        case .unauthorized: return "unauthorized"
+        case .poweredOff: return "poweredOff"
+        case .poweredOn: return "poweredOn"
+        @unknown default: return "unknown"
+        }
+    }
+
     func handleCentralStateUpdate(_ state: CBManagerState) {
         // A03 §3.1 — READ AND CONSUME, in that order, and before
         // anything else in this method. `willRestoreState` raised this
@@ -1185,6 +1249,8 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         let restorePending = delivery.consumeRestorePending()
         BLETransport.log("centralManagerDidUpdateState \(state.rawValue) " +
                           "(waiters=\(poweredOnContinuations.count), restorePending=\(restorePending))")
+        recordTelemetry(TelemetryEvent(name: TelemetryEventName.blePower,
+                                        attributes: [TelemetryAttributeKey.state: .string(Self.describe(state))]))
 
         // A03 §3.6 — the ladder's share of this callback. Suppressed
         // entirely while a restore is being adopted, for the same reason
@@ -1453,6 +1519,10 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
         // and that is no information, not evidence).
         defer { evaluateReconnectLadder() }
         discoveryHub.yield(BLEDiscoveredPeripheral(id: peripheral.identifier, name: name, rssi: rssi))
+        recordTelemetry(TelemetryEvent(name: TelemetryEventName.bleDiscovered, attributes: [
+            TelemetryAttributeKey.name: .string(name ?? "unknown"),
+            TelemetryAttributeKey.rssi: .int(rssi),
+        ]))
 
         // M2 follow-up (`armReconnectFallback(for:)`'s own doc comment):
         // the fallback scan's own sighting of the SAME peripheral it was
@@ -1824,11 +1894,15 @@ public actor BLETransport: MeshTransport, NodeScanning, BLELinkDiagnosticsProvid
             // protect: clear it rather than let it suppress the
             // `.poweredOn` that is about to arrive (§3.5's recovery).
             delivery.clearRestorePending()
+            recordTelemetry(TelemetryEvent(name: TelemetryEventName.bleRestore,
+                                            attributes: [TelemetryAttributeKey.action: .string("none")]))
             return
         }
         let action = BLERestoreAction.action(forPeripheralState: restored.state)
         BLETransport.log("willRestoreState: restoring \(restored.identifier), " +
                           "CBPeripheralState=\(restored.state.rawValue) -> \(action)")
+        recordTelemetry(TelemetryEvent(name: TelemetryEventName.bleRestore,
+                                        attributes: [TelemetryAttributeKey.action: .string(String(describing: action))]))
         // A03 S1b diagnostics — an OBSERVATION, counted at the one place
         // a restore actually happens, with the state it restored INTO
         // (§3.10/S3: "restore events, and the `CBPeripheralState` each

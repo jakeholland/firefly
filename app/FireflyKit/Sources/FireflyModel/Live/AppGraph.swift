@@ -18,6 +18,7 @@
 //  below this line may call `.current()` for itself.
 //
 import FireflyMesh
+import FireflyTelemetry
 import Foundation
 
 /// The live graph. `@MainActor` because it owns the `ff_*` contexts
@@ -101,6 +102,15 @@ public final class AppGraph {
     /// the 2026-09-14 bench FLARE drop).
     private var inboundObservation: Task<Void, Never>?
     private var tickLoop: Task<Void, Never>?
+    /// A04 — `radio.snapshot {batt_pct, rssi_last, node_count}`, fired
+    /// every 5 minutes while `.ready`. See `observeRadioSnapshot()`.
+    private var radioSnapshotTask: Task<Void, Never>?
+    /// A04 — `radio.snapshot`'s own `node_count` tally: distinct node
+    /// numbers seen via `observeInboundPackets()`'s `.node` case (the
+    /// ONE ordered pipeline `client.inboundPackets()` already is — see
+    /// that method's own A04 comment for why this is not a second
+    /// `nodeUpdates()` subscription).
+    private var seenNodeNums: Set<UInt32> = []
     /// M3 — flushes `historyStore`'s persisted WAITING items on the
     /// link's next not-ready -> ready edge. See
     /// `observeHistoryOutboxFlush()`'s own doc comment for why this has
@@ -293,7 +303,8 @@ public final class AppGraph {
             // Read per fix, never captured once: before the handshake
             // there is no node to address, and a fix arriving then is
             // dropped rather than sent to a guessed destination.
-            destinationNodeNum: { client.connectedNodeNum })
+            destinationNodeNum: { client.connectedNodeNum },
+            telemetry: dependencies.telemetry)
         // Only safe now: every stored property above is set, so `self`
         // may finally be captured (`setCurrentFix`'s own doc comment).
         self.flareTakeover.setCurrentFix { [weak self] in self?.myFix }
@@ -437,6 +448,39 @@ public final class AppGraph {
     /// and the crew Start/Join work is in that file concurrently. What
     /// ships here is the TIMING fix, which is the half that decides
     /// whether an alert is ever delivered at all.
+    /// A04 — `radio.snapshot`, every 5 minutes WHILE CONNECTED (never on
+    /// a fixed wall-clock timer regardless of link state: a snapshot of
+    /// a radio that is not there would not be a snapshot at all). Own
+    /// `AsyncStream` subscriptions (`linkState()`/`nodeUpdates()`), same
+    /// "each consumer gets its own stream" rule as
+    /// `observeLinkForNotificationPermission()` just above — this task
+    /// never competes with `core`'s own subscriptions for either event.
+    ///
+    /// `node_count` is the one fact this graph can state honestly —
+    /// `seenNodeNums`, a running tally of distinct node numbers seen via
+    /// the ordered inbound pipeline (`observeInboundPackets()`'s own
+    /// A04 comment), never a second subscription of its own.
+    /// `batt_pct`/`rssi_last` are omitted rather than invented:
+    /// `MeshtasticClientProtocol` does not currently surface this
+    /// device's own battery level or last RSSI anywhere this graph can
+    /// read (see docs/specs/A04-telemetry.md, "Known gaps") — an absent
+    /// attribute is the honest statement of "not measured", not a zero
+    /// standing in for it.
+    private func observeRadioSnapshot() {
+        guard radioSnapshotTask == nil else { return }
+        let telemetry = dependencies.telemetry
+        radioSnapshotTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5 * 60))
+                if Task.isCancelled { return }
+                guard let self, self.dependencies.client.currentLinkState == .ready else { continue }
+                await telemetry.record(TelemetryEvent(name: TelemetryEventName.radioSnapshot, attributes: [
+                    TelemetryAttributeKey.nodeCount: .int(self.seenNodeNums.count),
+                ]))
+            }
+        }
+    }
+
     func observeLinkForNotificationPermission() {
         guard notificationPermissionObservation == nil else { return }
         let states = dependencies.client.linkState()
@@ -461,7 +505,16 @@ public final class AppGraph {
         guard !hasRequestedNotificationAuthorization else { return }
         guard Self.shouldRequestNotificationAuthorization(isDemoStack: isDemoStack) else { return }
         hasRequestedNotificationAuthorization = true
-        await notifications.requestAuthorization()
+        _ = await notifications.requestAuthorization()
+        // A04 — `notif.authorization {status}`, recorded for the actual
+        // POST-PROMPT status rather than the plain `Bool` `requestAuthorization()`
+        // returns: `.provisional` (never requested — `NotificationSending`'s
+        // own doc comment — but the user's own Settings can still
+        // produce it) is a real, distinct outcome this call can observe
+        // and `granted`/`denied` alone would collapse.
+        let status = await notifications.authorization()
+        await dependencies.telemetry.record(TelemetryEvent(name: TelemetryEventName.notifAuthorization,
+                                                             attributes: [TelemetryAttributeKey.status: .string(status.rawValue)]))
     }
 
     /// REVIEW FIX (PR #310) — **never in the demo stack.**
@@ -563,6 +616,7 @@ public final class AppGraph {
         // because it is this graph that owns the payload gate those
         // node updates have to precede. See `InboundPacketEvent`.
         core.observe(client: dependencies.client, routeDeliveriesToInbox: false, routeNodeUpdates: false)
+        observeRadioSnapshot()
         // A02 AC14 — re-resolve the crew's channel index on every
         // reconnect. Subscribed here, alongside every other stream this
         // graph owns, rather than inside the engine's init: a
@@ -805,6 +859,13 @@ public final class AppGraph {
         }
         Self.log("autoConnectToLastKnownPeripheral(): firing client.connect() as its own Task")
         Task { [dependencies] in
+            // A04 — this IS the "auto" trigger (`ConnectViewModel
+            // .connect()`'s own doc comment is the "manual" half): the
+            // only other caller of `client.connect()` in the live graph.
+            await dependencies.telemetry.record(TelemetryEvent(name: TelemetryEventName.bleConnectAttempt, attributes: [
+                TelemetryAttributeKey.trigger: .string(TelemetryTrigger.auto.rawValue),
+                TelemetryAttributeKey.attempt: .int(1),
+            ]))
             do {
                 try await dependencies.client.connect()
                 Self.log("autoConnectToLastKnownPeripheral(): client.connect() returned successfully")
@@ -875,7 +936,36 @@ public final class AppGraph {
         Self.log("handleDidFinishLaunching(isForegrounded: \(isForegrounded))")
         prepareForRestoration()
         setForegrounded(isForegrounded)
+        // A04 — `app.launch {build, device, os}`. Plain, public facts
+        // about the install, never a device identifier: `build` is the
+        // bundle's own short version string, `device` its hardware model
+        // name (e.g. "iPhone", "Mac" — `ProcessInfo`'s own kind, not a
+        // serial or UDID), `os` the OS version string.
+        Task { [telemetry = dependencies.telemetry] in
+            await telemetry.record(TelemetryEvent(name: TelemetryEventName.appLaunch, attributes: [
+                TelemetryAttributeKey.build: .string(Self.appBuildString()),
+                TelemetryAttributeKey.device: .string(Self.deviceModelString()),
+                TelemetryAttributeKey.os: .string(ProcessInfo.processInfo.operatingSystemVersionString),
+            ]))
+        }
         Task { await start(attemptLaunchAutoConnect: isForegrounded) }
+    }
+
+    /// A04 — `CFBundleShortVersionString` (falls back to `"unknown"` for
+    /// a host, like `xcodebuild test`, that has no real Firefly bundle).
+    private static func appBuildString() -> String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+    }
+
+    /// A04 — the hardware family, never a serial number or identifierForVendor.
+    private static func deviceModelString() -> String {
+        #if os(iOS)
+        return "iPhone"
+        #elseif os(macOS)
+        return "Mac"
+        #else
+        return "unknown"
+        #endif
     }
 
     /// The same gate `autoConnectToLastKnownPeripheral()` applies, for
@@ -898,6 +988,20 @@ public final class AppGraph {
     public enum LifecyclePhase: Sendable { case foreground, background }
 
     public func handleScenePhaseChange(_ phase: LifecyclePhase) async {
+        // A04 — `app.foreground`/`app.background`, recorded for the
+        // transition itself, unconditionally: whether `stop()` below
+        // actually runs depends on `backgroundConnectEnabled`, but the
+        // scene transition happened either way and is the honest thing
+        // being logged here, not the connectivity decision it triggers.
+        await dependencies.telemetry.record(TelemetryEvent(
+            name: phase == .foreground ? TelemetryEventName.appForeground : TelemetryEventName.appBackground))
+        if phase == .background {
+            // A04 — "…and on background": the one flush trigger
+            // `TelemetryBatchPolicy` cannot notice on its own. A no-op
+            // whenever `telemetry` is not the real `TelemetryRecorder`
+            // (`.stub()`'s `InMemoryTelemetryRecorder`, every test).
+            await (dependencies.telemetry as? TelemetryRecorder)?.notifyBackground()
+        }
         switch phase {
         case .background:
             // ON: do nothing — BLETransport's own reconnect-on-loss plus
@@ -961,6 +1065,7 @@ public final class AppGraph {
         notificationPermissionObservation?.cancel(); notificationPermissionObservation = nil
         historyOutboxFlushObservation?.cancel(); historyOutboxFlushObservation = nil
         tickLoop?.cancel(); tickLoop = nil
+        radioSnapshotTask?.cancel(); radioSnapshotTask = nil
         // Hardening QA pass: `stop()` used to cancel only the graph's
         // OWN subscriptions, leaving every view-model loop this graph
         // started in `makeRadarViewModel()`/`makeInboxViewModel()`/
@@ -1032,6 +1137,16 @@ public final class AppGraph {
                 guard let self else { return }
                 switch event {
                 case .node(let snapshot):
+                    // A04 — `radio.snapshot {node_count}`'s own tally.
+                    // Updated HERE rather than a second `nodeUpdates()`
+                    // subscription: `testStartSubscribesEachClientStream
+                    // ExactlyOnceAndIsIdempotent` pins `subscriptionCount
+                    // ("node") == 0` for exactly the reason above this
+                    // comment — a second independent reader is the
+                    // 2026-09-14 bench race this pipeline exists to
+                    // prevent, and `radio.snapshot` does not get to
+                    // reopen it.
+                    self.seenNodeNums.insert(snapshot.num)
                     // ADMISSION. `CoreStore.apply(nodeUpdate:)` runs the
                     // A02 §4.1 gate (`CrewMembershipEngine.admits`) and,
                     // when it admits, pairs the sender through
@@ -1310,7 +1425,8 @@ public final class AppGraph {
         // persisted (`autoConnectToLastKnownPeripheral()`'s own doc
         // comment), so FORGET is harmlessly disabled there too
         // (`canForgetNode`).
-        let model = ConnectViewModel(client: dependencies.client, store: dependencies.store)
+        let model = ConnectViewModel(client: dependencies.client, store: dependencies.store,
+                                      telemetry: dependencies.telemetry)
         // BUGFIX (app: fix live connect path never reaching CONNECTED on
         // macOS) — `observe()` started HERE, once, for the life of the
         // graph, exactly like `core.observe(client:...)`'s own client

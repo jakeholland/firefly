@@ -16,6 +16,7 @@
 //
 import CoreLocation
 import FireflyMesh
+import FireflyTelemetry
 import Foundation
 
 // MARK: - LocationProvider (real CoreLocation)
@@ -336,6 +337,11 @@ public actor PhoneGPSUplink {
     private let destinationNodeNum: @Sendable () -> UInt32?
     private let policy: PhoneGPSUplinkPolicy
     private let now: @Sendable () -> Date
+    /// A04 (docs/specs/A04-telemetry.md) — `gps.fix {accuracy_bucket,
+    /// source}` and `gps.uplink {outcome}`. Appended last, defaulted to
+    /// `NoopTelemetryRecorder()`, same convention as every dependency
+    /// above it.
+    private let telemetry: any TelemetryRecording
 
     private var previous: (fix: LocationFix, pushedAt: Date)?
     private var runningTask: Task<Void, Never>?
@@ -346,7 +352,8 @@ public actor PhoneGPSUplink {
         sink: any PositionPushSending,
         destinationNodeNum: @escaping @Sendable () -> UInt32?,
         policy: PhoneGPSUplinkPolicy = PhoneGPSUplinkPolicy(),
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        telemetry: any TelemetryRecording = NoopTelemetryRecorder()
     ) {
         self.location = location
         self.settings = settings
@@ -354,6 +361,7 @@ public actor PhoneGPSUplink {
         self.destinationNodeNum = destinationNodeNum
         self.policy = policy
         self.now = now
+        self.telemetry = telemetry
     }
 
     /// Idempotent, same convention as the view-model `observe()`
@@ -387,6 +395,17 @@ public actor PhoneGPSUplink {
     }
 
     private func handle(fix: LocationFix) async {
+        // A04 — `gps.fix {accuracy_bucket, source}`. Recorded for every
+        // fix this uplink sees, whether or not the cadence policy below
+        // decides to push it — "how good was GPS here" is a separate
+        // question from "did we uplink", and the bucket (never the raw
+        // `fix.latitude`/`fix.longitude`) is the only thing that ever
+        // leaves this method for telemetry's sake.
+        await telemetry.record(TelemetryEvent(name: TelemetryEventName.gpsFix, attributes: [
+            TelemetryAttributeKey.accuracyBucket: .string(
+                fix.horizontalAccuracyMeters.map(Self.accuracyBucket) ?? "unknown"),
+            TelemetryAttributeKey.source: .string("core-location"),
+        ]))
         guard let destination = destinationNodeNum() else { return } // not connected to anything yet
         let enabled = settings.bool(.locationSharingEnabled)
         let interval = settings.double(.locationSharingIntervalSeconds) ?? PhoneGPSUplinkPolicy.defaultIntervalSeconds
@@ -397,10 +416,29 @@ public actor PhoneGPSUplink {
         do {
             try await sink.sendPosition(fix, to: destination)
             previous = (fix, moment)
+            await telemetry.record(TelemetryEvent(name: TelemetryEventName.gpsUplink,
+                                                    attributes: [TelemetryAttributeKey.outcome: .string("sent")]))
         } catch {
             // A failed push does not update `previous` — the next fix
             // (or the next cadence tick) retries rather than silently
             // giving up for the rest of the session.
+            await telemetry.record(TelemetryEvent(name: TelemetryEventName.gpsUplink,
+                                                    attributes: [TelemetryAttributeKey.outcome: .string("failed")]))
+        }
+    }
+
+    /// A04 — coarse buckets ONLY, never a raw accuracy figure fine
+    /// enough to help triangulate a real position from repeated
+    /// samples. Matches CoreLocation's own desired-accuracy tiers in
+    /// spirit (`kCLLocationAccuracyBest`..`kCLLocationAccuracyKilometer`)
+    /// without importing them — this stays a pure function over a
+    /// `Double` so it is testable with no `CLLocationManager`.
+    static func accuracyBucket(_ meters: Double) -> String {
+        switch meters {
+        case ..<10: return "fine" // <10m — GPS/GNSS with a good sky view
+        case ..<50: return "medium" // 10-50m — typical outdoor fix
+        case ..<500: return "coarse" // 50-500m — degraded / assisted
+        default: return "very_coarse" // 500m+ — Wi-Fi/cell-only or worse
         }
     }
 }

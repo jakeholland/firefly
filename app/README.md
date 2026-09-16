@@ -592,3 +592,58 @@ plain `1` default) so no upload ever repeats a build number. See
 App Store Connect setup (app record, API key, adding a tester) and the
 full walkthrough, and `app/tools/testflight.sh`'s own header comment
 for exactly what each step does.
+
+## Field telemetry (A04)
+
+`docs/specs/A04-telemetry.md` is the full spec — event catalogue,
+privacy rules, wiring discipline, known gaps. This section is the
+operational side: how to actually look at what a phone recorded.
+
+**Owner setup already done** — nothing here needs to be created:
+
+- Firebase project `firefly-36297` exists, with the Firestore and
+  Crashlytics APIs enabled.
+- `app/Firefly/Resources/GoogleService-Info.plist` (bundle
+  `com.jakeholland.Firefly`) is committed — not a secret; it identifies
+  the project, and Firestore access is enforced by
+  [`firebase/firestore.rules`](../firebase/README.md), not by this file
+  being unreadable.
+- Anonymous Authentication is enabled on the project (Firebase console >
+  Authentication > Sign-in method > Anonymous) — required for
+  `firebase/firestore.rules`' `request.auth.uid` check to ever pass.
+
+**Reading the data — two ways:**
+
+1. **Firestore console** (needs signal, or a synced phone that has since
+   gotten some): [console.firebase.google.com](https://console.firebase.google.com)
+   > project `firefly-36297` > Firestore Database. Each phone that has
+   ever shared diagnostics is a document under `devices/{installId}`
+   (`installId` is that install's own anonymous-auth uid — see
+   `FirebaseTelemetryBootstrap.swift`), carrying `build`/`device`/
+   `last_seen`; its events are the `sessions/{sessionId}/events/{seq}`
+   subcollection underneath. There is no admin UI in the app itself for
+   this — it is read-only, console-side, by design
+   (`firebase/firestore.rules` refuses every client read).
+2. **Local export, no signal needed at all**: Settings > DIAGNOSTICS >
+   "Export diagnostics" on the phone itself hands over the raw
+   `telemetry*.jsonl` files (one JSON object per line, oldest file
+   first) via the share sheet — AirDrop, Files, email, whatever is
+   available in the field. Every line is exactly what
+   `TelemetryEvent`/`TelemetryValue` encode to
+   (`TelemetryRecorder.swift`'s own header has the exact file-rotation
+   shape), so `jq` or a text editor reads it directly with no tooling
+   beyond that.
+
+**Crashlytics** (Firebase console > Crashlytics, same project): crash
+reports carry the `build`/`link_state` custom keys and a breadcrumb
+trail of recent events (`FirebaseSink.recordCrashlyticsBreadcrumb(_:)`)
+— useful for "what was happening right before this crashed" even when
+Firestore never got a live connection at all.
+
+**"Share diagnostics" is opt-out, not opt-in, in DEBUG/TestFlight
+builds** (`SettingsStore.defaultShareDiagnosticsEnabled()`) — every
+build the field-test crew and Jake actually run defaults ON; a plain App
+Store install defaults OFF. Turning it off never deletes or un-uploads
+anything already sent — it only stops the next upload; the local JSONL
+keeps recording either way (`TelemetryRecorder.record(_:)` always writes
+locally first, unconditionally — see A04-telemetry.md §5).
