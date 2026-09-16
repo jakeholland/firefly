@@ -89,6 +89,74 @@ extern "C" {
 #define RADAR_LAYOUT_ARROW_LEN_PX (0.45f * RADAR_LAYOUT_RING_RADIUS_PX) /* == 83.25f: tip's reach from centre */
 #define RADAR_LAYOUT_ARROW_MIN_LEN_PX 20.0f  /* never shorten past this (tip reach) — a nub, not nothing */
 
+/* 2026-09-15, raise-the-pivot (owner, Jake, code review of PR #333):
+ * the app keeps its rotation pivot at the ring centre — it has no fixed
+ * chrome the dart can collide with (docs/design/compass-arrow.md). The
+ * puck does: centring the dart on the ring centre (this same PR) put the
+ * BASE and NOTCH behind the tip, where they now reach into the LIVE/
+ * STALE/PLACE name-distance-chip stack that sits just below centre. The
+ * review's own measured worst case (`radar_layout_resolve_arrow` swept at
+ * every tenth of a degree against the real registry) was a reach of only
+ * 35.25px — a dart barely a fifth of its nominal 166.5px length.
+ *
+ * Fix: raise the WHOLE dart's rotation pivot — tip, both base corners,
+ * and the notch — by a fixed offset above the ring centre, so there is
+ * more headroom before the base/notch reach the stack. This is a
+ * puck-only constant: the app has no such collision system and its own
+ * pivot is untouched (docs/design/compass-arrow.md's "the rotation pivot
+ * is the ring/compass centre" invariant still holds for the APP; this
+ * constant is the puck's own documented divergence from it, not a
+ * contradiction of it).
+ *
+ * Value: -25px (negative == up in this file's screen-space convention,
+ * matching deg_to_offset's own sign). Chosen from the review's own
+ * empirical sweep of candidate shifts against the real registries:
+ *
+ *   shift    worst-case reach   locked FLARE-chip margin
+ *   0 (was)  35.25px            68.75px
+ *   20       55.25px            28.75px
+ *   25       63.25px            19.75px   <- chosen
+ *   30       67.25px            10.75px
+ *   31       67.25px             9.75px  (last value >= the 8px floor)
+ *   32+      67-83px            <8px — violates S10's guard
+ *
+ * 25px very nearly maximizes the worst-case reach recovery (63.25px vs.
+ * the ceiling's ~67-83px) while keeping a full 19.75px of margin above
+ * the 8px floor `S10_locked_arrow_head_clears_the_lock_chip` enforces —
+ * comfortable headroom rather than riding the limit at 31-32px. Re-
+ * verified after the shift (radar_layout.c's resolver, not hand algebra):
+ * worst-case reach is now 63.25px at bearing 0 (the raised pivot moves
+ * the true worst bearing from ~6.3deg back to exactly due north — the
+ * off-axis base-corner effect the un-raised dart had is now dominated by
+ * the base itself), a +79% recovery of reach, still well short of the
+ * app's own fixed 77.9pt but no longer "a fifth of the shape." The due-
+ * north shortening rule from this same PR still fires (63.25px <
+ * 83.25px, `test_arrow_due_north_now_shortens_because_base_hits_the_
+ * stack`, updated expectation) — raising the pivot recovers length, it
+ * does not eliminate the collision the centred dart introduced.
+ *
+ * Applied inside `radar_layout_resolve_arrow` as a constant Y offset
+ * added to every one of the dart's four points AFTER the bearing
+ * rotation (the pivot's screen position doesn't rotate with the
+ * bearing — only the dart drawn around it does), so every existing
+ * `scr_radar.c` call site needs no change: the resolved tip/left/right/
+ * notch fields already carry this offset, same as they already carry
+ * the ring-centre origin. The collision search tests these offset
+ * points directly, since that is the actual on-screen position being
+ * checked against the (also centre-relative, un-shifted) registry
+ * rectangles.
+ *
+ * Invariant update: the tip no longer lies on the bearing ray from the
+ * TRUE centre (it lies on the ray from centre + this offset) —
+ * `test_radar_layout.c`'s `sweep_arrow_never_overlaps_registry_or_
+ * changes_bearing` is updated to check the tip against the PIVOT
+ * (centre + `RADAR_LAYOUT_ARROW_PIVOT_DY_PX`), not the true centre. The
+ * property CLAUDE.md's honesty rule actually cares about — the dart's
+ * pointing axis (tip through base) is exactly bearing-aligned, and
+ * shortening only ever gives up length, never moves off that axis — is
+ * unchanged and still what this offset-aware check verifies. */
+#define RADAR_LAYOUT_ARROW_PIVOT_DY_PX (-25.0f)
+
 /* W / L — "a tad fatter" (owner, 2026-09-15). Shared with the app's
  * `ArrowGeometry.widthRatio`. Replaces the old fixed-px
  * ARROW_HEAD_LEN_PX (46) / ARROW_HEAD_WIDTH_PX (34) pair: the old shape
@@ -477,11 +545,11 @@ void radar_layout_build_registry(radar_mode_t mode, bool never_fixed, radar_layo
  * (the two wide corners) since nothing about what they MEAN changed,
  * only where they sit relative to the tip. */
 typedef struct {
-    float tip_dx, tip_dy;     /* +0.5*L along the bearing */
-    float left_dx, left_dy;   /* -0.5*L along the bearing, -0.5*W perpendicular */
-    float right_dx, right_dy; /* -0.5*L along the bearing, +0.5*W perpendicular */
-    float notch_dx, notch_dy; /* -0.25*L along the bearing, on-axis (the concave point) */
-    float len_px;    /* the (possibly-shortened) tip's reach from centre actually used */
+    float tip_dx, tip_dy;     /* +0.5*L along the bearing, THEN raised by RADAR_LAYOUT_ARROW_PIVOT_DY_PX */
+    float left_dx, left_dy;   /* -0.5*L along the bearing, -0.5*W perpendicular, then raised */
+    float right_dx, right_dy; /* -0.5*L along the bearing, +0.5*W perpendicular, then raised */
+    float notch_dx, notch_dy; /* -0.25*L along the bearing, on-axis (the concave point), then raised */
+    float len_px;    /* the (possibly-shortened) tip's reach from the PIVOT actually used */
     bool shortened;  /* true if it had to give up length to clear the registry */
 } radar_layout_arrow_t;
 
@@ -509,6 +577,22 @@ typedef struct {
  * `max_len_px` is expected `<= RADAR_LAYOUT_ARROW_LEN_PX`; passing a
  * larger value is not defended against; every caller in this codebase
  * passes one of the two named constants above.
+ *
+ * 2026-09-15, raise-the-pivot: every output point (tip, both base
+ * corners, notch) is computed about a pivot raised
+ * `RADAR_LAYOUT_ARROW_PIVOT_DY_PX` above the true centre passed in via
+ * `reg` (see that constant's own comment for the full derivation) — the
+ * bearing rotation happens first, then the fixed pivot offset is added,
+ * so the offset does not rotate with the bearing. Collision testing uses
+ * these same offset (true-centre-relative, on-screen) points, since that
+ * is what will actually be drawn against the (also true-centre-relative)
+ * registry rectangles. The dart's pointing AXIS (tip through base) is
+ * still exactly bearing-aligned — only its draw origin moved — so
+ * CLAUDE.md's "never point somewhere it doesn't mean" still holds; what
+ * changed is that the tip's position vector *from the true centre* is no
+ * longer purely `length * (sinθ,-cosθ)` — it now has this constant
+ * vertical component mixed in. `len_px` is the reach from the PIVOT, not
+ * the true centre.
  */
 void radar_layout_resolve_arrow(radar_layout_registry_t const *reg, float arrow_deg, float max_len_px,
                                  radar_layout_arrow_t *out);

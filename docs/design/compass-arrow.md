@@ -15,8 +15,10 @@ this change widens it and gives the puck the identical shape instead of its
 own separate outward-pointing triangle-on-a-stick.
 
 Let **L** = total length, tip to base line. The rotation pivot is the ring
-centre. With the bearing as the forward axis (0° = "up"/ahead) and
-"perpendicular" as 90° from it:
+centre **on the app**; the puck raises its own pivot — see "Pivot rule"
+below for why and by how much. With the bearing as the forward axis (0° =
+"up"/ahead) and "perpendicular" as 90° from it, all of the following are
+measured from whichever pivot that surface uses:
 
 - **Tip**: `+0.5·L` along the bearing.
 - **Base corners** (2 points): `-0.5·L` along the bearing, offset `±0.5·W`
@@ -69,6 +71,79 @@ what the app does today — only `W`'s ratio to `L` changes.
   (half-width `≈ 19.15`), notch reach `= -0.25 * 166.5 = -41.625` (`41.625`
   behind centre, `124.875` behind the tip = `0.75 * 166.5`).
 
+## Pivot rule
+
+**The app keeps its rotation pivot at the ring centre.** It has no fixed
+chrome the dart can collide with — `RadarRingView.swift`'s dart is drawn
+over an otherwise-empty ring, so there is nothing for a centred dart's
+base or notch to run into, and no reason to move the pivot away from the
+centre this whole doc otherwise assumes.
+
+**The puck raises its pivot 25 px above the ring centre** (owner, Jake,
+2026-09-15, code review of PR #333 — `RADAR_LAYOUT_ARROW_PIVOT_DY_PX =
+-25` in `radar_layout.h`, negative = up in that file's screen-space
+convention). This is a puck-only divergence, not a change to the shared
+shape: the dart is still the identical notched dart defined above, with
+the identical `L`, `W`, and per-vertex offsets from *its own* pivot — only
+where that pivot sits relative to the ring centre differs by surface.
+
+**Why**: centring the dart on the ring centre (this doc's own change) put
+the dart's BASE and NOTCH behind the tip for the first time — on the app
+that's harmless (nothing back there to hit), but the puck has a fixed
+name/distance/chip text stack sitting just below its ring centre for
+LIVE/STALE/PLACE/LOST-with-a-fix, and a narrower version of the same stack
+for SIGNAL's ghost variant. `radar_layout_resolve_arrow`'s collision search
+already shortens the dart along its bearing to clear that stack, but with
+the pivot AT the centre, the code review's own tenth-of-a-degree sweep
+measured a worst-case resolved reach of just **35.25 px** — a dart
+one-fifth of its own nominal 166.5 px length, for a shape whose entire
+purpose is "come find me."
+
+**The numbers.** The review swept candidate pivot shifts against the real
+registries before recommending one:
+
+| shift | worst-case reach | locked FLARE-chip margin |
+|---|---|---|
+| 0 (pre-fix) | 35.25 px | 68.75 px |
+| 20 px | 55.25 px | 28.75 px |
+| **25 px (chosen)** | **63.25 px** | **19.75 px** |
+| 30 px | 67.25 px | 10.75 px |
+| 31 px | 67.25 px | 9.75 px (last value ≥ the 8 px floor) |
+| 32 px+ | 67–83 px | < 8 px — violates S10's guard |
+
+25 px was chosen because it recovers nearly all of the reach the ceiling
+allows (63.25 px vs. ~67–83 px beyond the guard) while leaving the locked
+FLARE lock chip a full 19.75 px of margin above the 8 px floor
+`S10_locked_arrow_head_clears_the_lock_chip` enforces — comfortable
+headroom rather than riding the 31–32 px cliff edge. Re-measured after
+raising the pivot (radar_layout.c's real resolver, not hand algebra): the
+worst bearing moves from ~6.3° off-axis (unraised, where an off-axis base
+*corner* pokes furthest into the stack) back to exactly due north (raised,
+where the base midpoint dominates again), and the SIGNAL-ghost registry's
+own locked-chip margin improves alongside the main stack's, from 84.75 px
+to 35.75 px — both still comfortably clear of the 8 px floor.
+
+**What doesn't change**: the collision-shortening rule itself
+("never move off-axis, only ever give up length") and the shortening
+search's mechanics (a single scale factor applied to the whole dart) are
+untouched — raising the pivot only changes where the shortened dart's
+points are measured FROM, not how shortening works. `radar_layout.h`'s own
+comment on `RADAR_LAYOUT_ARROW_PIVOT_DY_PX` has the full derivation and is
+the canonical source if these numbers and the code ever drift.
+
+**The tested invariant moved with it.** Before this fix,
+`test_radar_layout.c`'s sweep test pinned "the tip lies on the bearing ray
+from the ring centre" as this codebase's concrete encoding of CLAUDE.md's
+"an arrow may go short, it must never point somewhere it doesn't mean."
+Raising the puck's pivot means the tip's position *from the true centre*
+is no longer purely `length · (sinθ, -cosθ)` — it now carries the pivot's
+fixed vertical offset too. The test is updated to check "the tip lies on
+the bearing ray from the PIVOT (centre + pivot offset)" instead — the
+dart's pointing AXIS (tip through base) is still exactly bearing-aligned
+either way, which is the property the honesty rule actually cares about;
+only the point the ray is measured from changed, and that point is itself
+a named, reviewed constant rather than a silent drift.
+
 ## Before / after (puck)
 
 | | before | after |
@@ -83,28 +158,42 @@ what the app does today — only `W`'s ratio to `L` changes.
 
 The original `ARROW_REACH_LOCKED_PX` fix existed to stop the arrow's
 *head* — "come find me," the product's whole point — from being painted
-under the FLARE lock chip for a narrow bearing cone around due north. With
-the centred dart's much shorter ordinary reach (83.25px vs the old 140px),
-the tip's worst-case excursion toward the chip (bearing 0, the same
-worst-case bearing the original derivation used) is `-83.25`, and the
-chip's bottom edge is at `-108` — a 24.75px gap, already past the 8px floor
-`S10_locked_arrow_head_clears_the_lock_chip` checks for, with no special
-casing. So: **locked and unlocked now resolve to the identical starting
-reach.** `radar_layout_resolve_arrow`'s `locked` parameter at every
-`scr_radar.c` call site is unchanged (still passed through, still selects
-between the two named constants), so no call site needed editing — only
-the two constants' *values* converged. This is a simplification, not a
-regression: the invariant the original fix guaranteed ("a locked arrow's
-head can never reach the chip's band, at any bearing") now holds by
-construction rather than by a separate shorter search bound, and the test
-that pins it is unchanged and still green.
+under the FLARE lock chip for a narrow bearing cone around due north.
+`RADAR_LAYOUT_ARROW_REACH_LOCKED_PX` is still numerically equal to
+`RADAR_LAYOUT_ARROW_LEN_PX` (locked and unlocked share the same starting
+search reach) — that part is unchanged by the pivot raise. What the raised
+pivot changes is the *margin* by which the resolved dart clears the chip,
+since raising the pivot both recovers reach (the dart's whole point of
+existing) and moves the dart's points closer to the chip's own band — both
+effects measured, not assumed, by re-running the search:
 
-If the ARROW_REACH_LOCKED_PX/ARROW_LEN_PX values are ever revisited such
-that locked reach would again come within the 8px floor of the chip's
-band, `radar_layout_resolve_arrow`'s ordinary registry search is still the
-backstop — it always shortens further if the resolved dart's tip, base
-corners, or notch land inside *any* reserved rectangle, the chip included
-were it ever registered.
+- **LIVE/STALE/PLACE/LOST-real-fix registry**, locked, bearing 0 (the same
+  worst-case bearing the original fix's derivation used): resolved reach
+  is now `63.25 px` (was `39.25 px` pre-raise), tip at `y = -88.25` — the
+  chip's bottom edge is at `y = -108`, a **19.75 px** margin (was
+  `68.75 px` pre-raise).
+- **SIGNAL-ghost registry** (narrower stack, `y ∈ [26, 176]`), same
+  bearing: resolved reach `47.25 px` (was `23.25 px`), tip at
+  `y = -72.25`, a **35.75 px** margin (was `84.75 px` pre-raise).
+
+Both margins shrank versus the pre-raise numbers — recovering reach
+necessarily trades away some of that slack — but both stay comfortably
+above the `8 px` floor `S10_locked_arrow_head_clears_the_lock_chip`
+enforces, with no special casing needed. So: **locked and unlocked still
+resolve to the identical starting reach**, and the FLARE lock chip is
+still provably clear at the new pivot, just with a smaller (and now
+precisely re-measured) margin than the pivot-at-centre version had.
+`radar_layout_resolve_arrow`'s `locked` parameter at every `scr_radar.c`
+call site is unchanged (still passed through, still selects between the
+two named constants) — this fix touched only the pivot the whole dart is
+computed about, not the locked/unlocked branching.
+
+If the ARROW_REACH_LOCKED_PX/ARROW_LEN_PX values, the pivot offset, or the
+chip's position are ever revisited such that locked reach would again come
+within the 8px floor of the chip's band, `radar_layout_resolve_arrow`'s
+ordinary registry search is still the backstop — it always shortens
+further if the resolved dart's tip, base corners, or notch land inside
+*any* reserved rectangle, the chip included were it ever registered.
 
 ## Collision-shortening rule (S06 update)
 

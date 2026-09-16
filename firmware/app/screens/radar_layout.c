@@ -172,20 +172,30 @@ void radar_layout_resolve_arrow(radar_layout_registry_t const *reg, float arrow_
     float tip_x = 0.0f, tip_y = 0.0f, left_x = 0.0f, left_y = 0.0f, right_x = 0.0f, right_y = 0.0f, notch_x = 0.0f,
           notch_y = 0.0f;
 
+    /* 2026-09-15, raise-the-pivot (radar_layout.h's own comment on
+     * RADAR_LAYOUT_ARROW_PIVOT_DY_PX has the full derivation): a fixed
+     * screen-space Y offset, added to every point AFTER the bearing
+     * rotation below (it does not itself rotate with the bearing — the
+     * pivot's on-screen position is the same regardless of which way the
+     * dart points). Collision testing below uses these offset points,
+     * since that is the actual on-screen position that will be drawn
+     * against the true-centre-relative registry rectangles. */
+    float const pivot_dy = RADAR_LAYOUT_ARROW_PIVOT_DY_PX;
+
     for (int step = 0; step <= MAX_STEPS; step++) {
         float base_r = -tip_r;         /* base line: -0.5*L == -tip_r, opposite the tip */
         float notch_r = -0.5f * tip_r; /* -0.25*L == 0.5*base_r, on-axis */
         float half_w = RADAR_LAYOUT_ARROW_WIDTH_RATIO * tip_r; /* 0.5*W == ratio*(2*tip_r)*0.5 == ratio*tip_r */
 
         tip_x = fx * tip_r;
-        tip_y = fy * tip_r;
-        float base_x = fx * base_r, base_y = fy * base_r;
+        tip_y = fy * tip_r + pivot_dy;
+        float base_x = fx * base_r, base_y = fy * base_r + pivot_dy;
         left_x = base_x - px * half_w;
         left_y = base_y - py * half_w;
         right_x = base_x + px * half_w;
         right_y = base_y + py * half_w;
         notch_x = fx * notch_r;
-        notch_y = fy * notch_r;
+        notch_y = fy * notch_r + pivot_dy;
 
         bool hit = point_in_registry(reg, tip_x, tip_y, 0.0f) || point_in_registry(reg, left_x, left_y, 0.0f) ||
                    point_in_registry(reg, right_x, right_y, 0.0f) ||
