@@ -18,16 +18,45 @@
 //  closer. `configureSession()` below now (1) prefers a virtual
 //  multi-lens back camera and lets it switch to its ultra-wide
 //  constituent for close subjects, (2) restricts autofocus to the near
-//  range, (3) applies a modest default zoom **only on a plain
+//  range, and (3) applies a modest default zoom **only on a plain
 //  single-lens device** (a virtual device is left at its own minimum
 //  zoom instead, so `.auto` constituent switching stays free to engage
-//  — see `QRScannerCameraConfig.targetZoomFactor`), and (4) narrows the
-//  decode region to the on-screen guide box. See `QRScannerCameraConfig
-//  .swift` for the pure selection/zoom logic and its own reasoning
-//  comments, and the PR body for what a device is needed to verify.
+//  — see `QRScannerCameraConfig.targetZoomFactor`). See
+//  `QRScannerCameraConfig.swift` for the pure selection/zoom logic and
+//  its own reasoning comments, and the PR body for what a device is
+//  needed to verify.
+//
+//  Empty-`rectOfInterest` fix (owner report, iPhone 17 Pro Max,
+//  TestFlight 347, 2026-09-16): the macro fix above ALSO added a (4)
+//  that narrowed `AVCaptureMetadataOutput.rectOfInterest` to the
+//  on-screen guide box, via `updateRectOfInterest()` called from
+//  `viewDidLayoutSubviews()`. That runs from `viewDidLoad()`'s initial
+//  layout pass — BEFORE `viewDidAppear()` kicks off
+//  `session.startRunning()` (on a background queue, below).
+//  `AVCaptureVideoPreviewLayer.metadataOutputRectConverted(fromLayerRect:)`
+//  converts through the preview layer's `AVCaptureConnection`, which
+//  does not exist until the session is running — so every call before
+//  that point (including the one at first layout, well before
+//  `viewDidAppear`, and every rotation before the user has scrolled to
+//  this screen) produced an empty or degenerate rect. `rectOfInterest`
+//  latched to that; nothing ever recomputed it once the session
+//  actually started, because layout doesn't fire again on its own. A
+//  QR dead center in a crisp, correctly focused frame was silently
+//  outside the decode region and every `AVMetadataObject` was
+//  discarded before `metadataOutput(_:didOutput:from:)` ever saw it —
+//  no error, no signal, nothing to diagnose short of reading this
+//  exact call chain. The `rectOfInterest` restriction is removed
+//  entirely below: the guide box is now a purely visual hint, and the
+//  output decodes the full frame (`rectOfInterest`'s documented
+//  default), which is strictly more robust for a single code on a
+//  puck screen than a narrowed region that can go stale or come out
+//  empty. `#if DEBUG` diagnostics were added at the points this bug
+//  had none, so a future version of this failure logs instead of
+//  scanning in silence — see `log(_:)` below.
 //
 #if os(iOS)
 import AVFoundation
+import Foundation
 import SwiftUI
 
 struct QRScannerSheet: View {
@@ -89,11 +118,17 @@ final class QRScannerViewController: UIViewController, @preconcurrency AVCapture
     private var lastScan: (payload: String, at: Date)?
     private static let rescanDelay: TimeInterval = 1.5
     private var previewLayer: AVCaptureVideoPreviewLayer?
-    /// The visible square the user is told to hold the code inside.
-    /// Doubles as the source rect for `rectOfInterest` (below) so the
-    /// decode region always matches what's drawn on screen.
+    /// The visible square the user is told to hold the code inside —
+    /// purely a visual hint since the `rectOfInterest` fix above; the
+    /// decoder itself reads the full frame regardless of where this is
+    /// drawn.
     private var guideBoxLayer: CAShapeLayer?
-    private var metadataOutput: AVCaptureMetadataOutput?
+    #if DEBUG
+    /// Kept only for `logSessionStartDiagnostics()` below — nothing in
+    /// the non-debug path needs the device again once
+    /// `configureSession()` has used it.
+    private var debugCaptureDevice: AVCaptureDevice?
+    #endif
 
     init(onScanned: @escaping (String) -> Void) {
         self.onScanned = onScanned
@@ -112,8 +147,14 @@ final class QRScannerViewController: UIViewController, @preconcurrency AVCapture
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         if !session.isRunning {
+            #if DEBUG
+            logSessionStartDiagnostics()
+            #endif
             DispatchQueue.global(qos: .userInitiated).async { [session] in
                 session.startRunning()
+                #if DEBUG
+                Self.log("session.startRunning() completed, isRunning=\(session.isRunning)")
+                #endif
             }
         }
     }
@@ -134,13 +175,24 @@ final class QRScannerViewController: UIViewController, @preconcurrency AVCapture
         }
         Self.applyMacroFocusConfiguration(to: device)
         session.addInput(input)
+        #if DEBUG
+        debugCaptureDevice = device
+        #endif
 
         let output = AVCaptureMetadataOutput()
         guard session.canAddOutput(output) else { return }
         session.addOutput(output)
         output.setMetadataObjectsDelegate(self, queue: .main)
         output.metadataObjectTypes = [.qr]
-        metadataOutput = output
+        // No `rectOfInterest` assignment — see this file's header
+        // comment ("Empty-`rectOfInterest` fix"). Left at its
+        // documented default (the full frame): the conversion this
+        // used to compute is only valid once the session's capture
+        // connection exists, i.e. after `startRunning()`, and this
+        // layout pass runs before that. A full-frame decode with a
+        // purely visual guide box is strictly more robust for a single
+        // code on a puck screen than a narrowed region that can come
+        // out empty and silently discard every detection.
 
         let preview = AVCaptureVideoPreviewLayer(session: session)
         preview.videoGravity = .resizeAspectFill
@@ -275,44 +327,98 @@ final class QRScannerViewController: UIViewController, @preconcurrency AVCapture
         guideBoxLayer.frame = boxFrame
         guideBoxLayer.path = UIBezierPath(roundedRect: CGRect(origin: .zero, size: boxFrame.size),
                                            cornerRadius: 12).cgPath
-        updateRectOfInterest()
     }
 
     /// A centered square, 62% of the shorter side — big enough that a
     /// hand holding a phone steady doesn't clip the puck's QR out of
-    /// it, small enough to visibly narrow the decode region for (4)
-    /// below.
+    /// it. Purely a visual hint (see this file's header comment,
+    /// "Empty-`rectOfInterest` fix") — it no longer narrows what the
+    /// decoder reads.
     private static func guideBoxFrame(in bounds: CGRect) -> CGRect {
         let side = min(bounds.width, bounds.height) * 0.62
         return CGRect(x: bounds.midX - side / 2, y: bounds.midY - side / 2, width: side, height: side)
     }
 
-    /// (4) Centers the decode region on the visible guide box.
-    /// `AVCaptureMetadataOutput.rectOfInterest` uses a rotated,
-    /// normalized coordinate space that does not match the preview
-    /// layer's own view coordinates —
-    /// `metadataOutputRectConverted(fromLayerRect:)` is the
-    /// AVFoundation-provided conversion Apple documents for exactly
-    /// this, used here instead of re-deriving that rotation math by
-    /// hand.
-    private func updateRectOfInterest() {
-        guard let previewLayer, let metadataOutput, let guideBoxLayer,
-              guideBoxLayer.frame.width > 0, guideBoxLayer.frame.height > 0 else { return }
-        metadataOutput.rectOfInterest = previewLayer.metadataOutputRectConverted(fromLayerRect: guideBoxLayer.frame)
-    }
-
     func metadataOutput(_ output: AVCaptureMetadataOutput,
                          didOutput metadataObjects: [AVMetadataObject],
                          from connection: AVCaptureConnection) {
+        #if DEBUG
+        Self.logMetadataOutputCall(metadataObjects)
+        #endif
         guard let object = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
               object.type == .qr,
               let payload = object.stringValue else { return }
         let now = Date()
         if let lastScan, lastScan.payload == payload, now.timeIntervalSince(lastScan.at) < Self.rescanDelay {
+            #if DEBUG
+            Self.log("throttled: same payload (\(payload.count) chars) within \(Self.rescanDelay)s")
+            #endif
             return
         }
         lastScan = (payload, now)
+        #if DEBUG
+        Self.log("delivered: payload (\(payload.count) chars)")
+        #endif
         onScanned(payload)
     }
+
+    #if DEBUG
+    // MARK: - `[QRScanner]` diagnostics (DEBUG only)
+    //
+    // Added chasing the "focus and framing both look right but it
+    // never decodes" owner report (see this file's header comment) —
+    // that bug had NO signal anywhere: `rectOfInterest` silently
+    // discarded every `AVMetadataObject` before `metadataOutput
+    // (_:didOutput:from:)` was ever called, so there was nothing to
+    // read short of tracing this exact call chain by hand. Every line
+    // here exists to make the next version of "decodes nothing" a few
+    // seconds of `stderr` instead of a repeat of that. Never logs a
+    // scanned payload's contents, only its length — this is a
+    // diagnostics channel, not a place a QR's actual data (which can
+    // carry a crew code or anything else a puck chooses to display)
+    // should end up.
+    //
+    /// Same shape as `MeshtasticClient.log(_:)`: a raw
+    /// `FileHandle.standardError.write`, never `print()`, so a line is
+    /// never lost to stdout's full block-buffering.
+    private static func log(_ message: String) {
+        let line = "[QRScanner] \(message)\n"
+        FileHandle.standardError.write(Data(line.utf8))
+    }
+
+    /// Logged right before `session.startRunning()` is dispatched —
+    /// everything here reflects `configureSession()`'s choices, so
+    /// this is the one place to see, on a real device, exactly what
+    /// camera and settings the macro fix (this file's own earlier
+    /// header section) actually landed on.
+    private func logSessionStartDiagnostics() {
+        guard let device = debugCaptureDevice else {
+            Self.log("session start: no capture device (no camera, or permission denied)")
+            return
+        }
+        let focusRange = device.isAutoFocusRangeRestrictionSupported
+            ? "\(device.autoFocusRangeRestriction.rawValue)" : "unsupported"
+        let primaryConstituent = device.activePrimaryConstituent?.localizedName ?? "none"
+        // `AVCaptureMetadataOutput.rectOfInterest` defaults to the full
+        // frame (`{{0, 0}, {1, 1}}`) and this file never assigns it —
+        // logged anyway so a future regression that DOES reassign it is
+        // visible here rather than rediscovered the hard way again.
+        let effectiveRectOfInterest = session.outputs
+            .compactMap { $0 as? AVCaptureMetadataOutput }
+            .first.map { "\($0.rectOfInterest)" } ?? "n/a"
+        Self.log("session start: device=\(device.localizedName) isVirtualDevice=\(device.isVirtualDevice) "
+                 + "videoZoomFactor=\(device.videoZoomFactor) activePrimaryConstituent=\(primaryConstituent) "
+                 + "focusRangeRestriction=\(focusRange) rectOfInterest=\(effectiveRectOfInterest)")
+    }
+
+    private static func logMetadataOutputCall(_ metadataObjects: [AVMetadataObject]) {
+        let types = metadataObjects.map { $0.type.rawValue }
+        let hasQRString = metadataObjects.contains {
+            ($0 as? AVMetadataMachineReadableCodeObject)?.type == .qr
+                && ($0 as? AVMetadataMachineReadableCodeObject)?.stringValue != nil
+        }
+        log("metadataOutput: count=\(metadataObjects.count) types=\(types) hasQRString=\(hasQRString)")
+    }
+    #endif
 }
 #endif
