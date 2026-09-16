@@ -127,6 +127,15 @@ struct RadarRingView: View {
             // outline-only, never a dimmer copy of STALE's dashed-fill.
             let ghost = snapshot.mode == .lost || snapshot.mode == .signal
             let dashed = snapshot.mode == .stale
+            // L (tip to base line) = 0.9 * ringRadius, same as always;
+            // the shape itself lives in a local rect of width W, height L
+            // (see ArrowShape's own doc comment for how the rect maps to
+            // tip/base/notch). 2026-09-15, one-compass-arrow: W/L was a
+            // fixed 28pt (~0.19 of a typical L) — now a fixed RATIO of L,
+            // 0.23 ("a tad fatter"), matching docs/design/compass-arrow.md
+            // and the puck's identical ratio.
+            let arrowLength = radius * 0.9
+            let arrowWidth = ArrowGeometry.widthRatio * arrowLength
             Group {
                 if ghost {
                     ArrowShape().stroke(Color.ffMuted.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: [4, 4]))
@@ -137,7 +146,7 @@ struct RadarRingView: View {
                     ArrowShape().fill(Color.ffAmber)
                 }
             }
-            .frame(width: 28, height: radius * 0.9)
+            .frame(width: arrowWidth, height: arrowLength)
             .rotationEffect(.degrees(snapshot.arrowDegrees))
             .position(center)
         }
@@ -147,13 +156,24 @@ struct RadarRingView: View {
 /// A simple, honest arrow glyph — filled for a real bearing, or drawn by
 /// the caller with a dashed/reduced-opacity stroke and no fill for the
 /// STALE/ghost treatments above.
-private struct ArrowShape: Shape {
+///
+/// A notched dart, not a plain triangle: tip at top-centre, base corners
+/// at bottom-left/right, and a NOTCH on the vertical centre-line at 0.75
+/// of the height (i.e. 0.75*L back from the tip, matching
+/// docs/design/compass-arrow.md's shared geometry — the puck's
+/// `radar_layout_resolve_arrow` draws the identical shape). The caller
+/// sizes the enclosing frame to `width: widthRatio * height` so the
+/// drawn shape's width/length ratio is exactly `widthRatio` regardless of
+/// screen size. The actual points come from `ArrowGeometry` (CoreGraphics-
+/// only, no SwiftUI) so `FireflyAppTests` can pin them directly.
+struct ArrowShape: Shape {
     func path(in rect: CGRect) -> Path {
+        let pts = ArrowGeometry.points(in: rect)
         var p = Path()
-        p.move(to: CGPoint(x: rect.midX, y: rect.minY))
-        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        p.addLine(to: CGPoint(x: rect.midX, y: rect.maxY * 0.75))
-        p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        p.move(to: pts.tip)
+        p.addLine(to: pts.right)
+        p.addLine(to: pts.notch)
+        p.addLine(to: pts.left)
         p.closeSubpath()
         return p
     }
