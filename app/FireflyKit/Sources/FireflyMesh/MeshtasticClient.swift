@@ -637,6 +637,16 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
             // correctly read as unawaited.
             awaitedTransportReady = false
             publish(.failed(String(describing: error)))
+            // A04 — `error {domain, code, where}`, at the caught-error
+            // site itself, alongside the existing `publish(.failed(...))`
+            // — a second, structured channel, not a replacement.
+            Task { [telemetry] in
+                await telemetry.record(TelemetryEvent(name: TelemetryEventName.error, attributes: [
+                    TelemetryAttributeKey.domain: .string("ble"),
+                    TelemetryAttributeKey.errorCode: .string(String(describing: error)),
+                    TelemetryAttributeKey.whereKey: .string("MeshtasticClient.connect.transport"),
+                ]))
+            }
             throw error
         }
 
@@ -648,6 +658,16 @@ public actor MeshtasticClient: MeshtasticClientProtocol {
         } catch {
             Self.log("connect(): performHandshake() threw \(error)")
             publish(.failed(String(describing: error)))
+            // A04 — `error {domain, code, where}` for a handshake that
+            // never completed (a timeout past its retry budget, most
+            // often — `MeshtasticClientError.handshakeTimeout`).
+            Task { [telemetry] in
+                await telemetry.record(TelemetryEvent(name: TelemetryEventName.error, attributes: [
+                    TelemetryAttributeKey.domain: .string("ble"),
+                    TelemetryAttributeKey.errorCode: .string(String(describing: error)),
+                    TelemetryAttributeKey.whereKey: .string("MeshtasticClient.connect.handshake"),
+                ]))
+            }
             throw error
         }
 

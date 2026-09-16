@@ -640,6 +640,19 @@ final class CrewController {
                 TelemetryAttributeKey.outcome: .string("failed"),
                 TelemetryAttributeKey.ms: .int(elapsedMs),
             ]))
+            // A04 — `error {domain, code, where}`, at the caught-error
+            // site: `importer.applyError` is set by `ChannelImportViewModel`'s
+            // own `catch` around the write, and this is the ONE place
+            // that reads it back. Omitted (never a fabricated code) when
+            // the write failed some other way `AdminWriteError` does not
+            // cover.
+            if let applyError = importer.applyError {
+                await telemetry.record(TelemetryEvent(name: TelemetryEventName.error, attributes: [
+                    TelemetryAttributeKey.domain: .string("admin"),
+                    TelemetryAttributeKey.errorCode: .string(String(describing: applyError)),
+                    TelemetryAttributeKey.whereKey: .string("CrewController.confirmApply"),
+                ]))
+            }
             // Every honest `AdminWriteError` — a radio that disconnected
             // mid-write, a NAK/partial apply, a timeout, a read-back
             // mismatch, an UNSET region — already has its own sentence

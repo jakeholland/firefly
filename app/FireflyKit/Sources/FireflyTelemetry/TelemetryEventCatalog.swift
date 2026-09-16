@@ -133,7 +133,16 @@ public enum TelemetryAttributeKey {
 
     // error
     public static let domain = "domain"
-    public static let code = "code"
+    /// NOT `"code"` — deliberately. `TelemetryAttributeAllowlist
+    /// .forbiddenKeys` forbids exactly that key (it is the crew CODE's
+    /// own would-be key, `code`/`crew_code`/`join_code`/`invite_code`),
+    /// so an `error` event that used the plain word would have its own
+    /// diagnostic code silently stripped by the SAME guard that exists
+    /// to protect it — found wiring the first real `error` call site
+    /// (this key previously existed in the catalogue with no call site
+    /// to expose the collision). `error_code` says the same thing and
+    /// collides with nothing.
+    public static let errorCode = "error_code"
     public static let whereKey = "where"
 }
 

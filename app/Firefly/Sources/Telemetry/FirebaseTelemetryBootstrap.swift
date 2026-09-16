@@ -21,16 +21,52 @@
 //    check that could drift from the composition root's own rule.
 //
 import FireflyModel
+import Foundation
 #if canImport(FirebaseCore)
 import FirebaseAuth
 import FirebaseCore
 import FirebaseCrashlytics
 import FirebaseFirestore
 import FireflyTelemetry
-import Foundation
 #endif
 
 enum FirebaseTelemetryBootstrap {
+    /// A04 review gap-close: `attachSink(to:buildString:deviceString:)`
+    /// must never touch the network from an XCTest process, whatever
+    /// `dependencies.telemetry` happened to be typed as — belt and
+    /// braces alongside the existing TYPE-based gate (`.stub()`/
+    /// `.demo()`'s `InMemoryTelemetryRecorder` does not conform to
+    /// `TelemetrySinkAttaching` at all, so the cast in `attachSink`
+    /// already fails for them). That type gate does not cover every
+    /// platform: `AppDependencies.current()`'s own `#if
+    /// targetEnvironment(simulator)` guard means `-FireflyDemo` is
+    /// silently ignored on macOS (`DemoLaunch.isRequested()` is never
+    /// even consulted there) and `.live()` — a REAL, attaching
+    /// `TelemetryRecorder` — is used regardless of any launch argument,
+    /// which is exactly the composition an app-hosted macOS UI test
+    /// would run under.
+    ///
+    /// Deliberately does NOT gate on a bare `-FireflyDemo` argument on
+    /// its own — only on actually running under XCTest, or on a
+    /// `-FireflyDebug*` flag. The A04 review's own live-Firebase
+    /// verification step launches the macOS build with exactly
+    /// `-FireflyDemo` and nothing else, specifically so the demo stack
+    /// can prove the sink reaches Firestore end to end with no radio
+    /// required; gating on that argument alone would make that
+    /// verification impossible to ever run again. A Simulator UI test
+    /// launched with `-FireflyDemo` was already safe via the type-based
+    /// gate above (`AppDependencies.demo()`'s `InMemoryTelemetryRecorder`);
+    /// what this closes is the one case that gate does not reach.
+    static func shouldAttachSink(arguments: [String] = CommandLine.arguments,
+                                  isXCTestRuntimeLoaded: Bool = NSClassFromString("XCTestCase") != nil,
+                                  isRunningUnderXCTest: Bool =
+                                      ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil)
+        -> Bool {
+        guard !isXCTestRuntimeLoaded, !isRunningUnderXCTest else { return false }
+        guard !arguments.contains(where: { $0.hasPrefix("-FireflyDebug") }) else { return false }
+        return true
+    }
+
     #if canImport(FirebaseCore)
     /// `FirebaseApp.configure()` reads `GoogleService-Info.plist` from
     /// the main bundle on its own — but calling it with NO plist present
@@ -77,9 +113,14 @@ enum FirebaseTelemetryBootstrap {
     /// construction — there is no second id that could ever drift from
     /// the uid the rules actually check.
     static func attachSink(to dependencies: AppDependencies, buildString: String, deviceString: String) async {
+        guard shouldAttachSink() else {
+            TelemetryDebugLog.log("attachSink skipped — running under XCTest or a -FireflyDebug* launch argument")
+            return
+        }
         guard let sinkAttaching = dependencies.telemetry as? any TelemetrySinkAttaching else { return }
         guard FirebaseApp.app() != nil else { return }
         guard let uid = await signInAnonymouslyIfNeeded() else { return }
+        TelemetryDebugLog.log("anonymous sign-in succeeded — uid=\(uid)")
         let sessionId = UUID().uuidString
         let store = dependencies.store
         let sink = FirebaseSink(installId: uid, sessionId: sessionId, buildString: buildString,

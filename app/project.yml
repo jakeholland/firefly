@@ -406,6 +406,14 @@ targets:
       # actual path points (normalized geometry, notch position, width
       # ratio) without dragging in SwiftUI/Theme.
       - path: Firefly/Sources/Radar/ArrowGeometry.swift
+      # A04 review gap-close — `FirebaseTelemetryBootstrap.shouldAttachSink(...)`,
+      # the pure "never touch the network from an XCTest process" gate,
+      # tested by `FirebaseTelemetryBootstrapGateTests.swift` (pulled in
+      # by `Firefly/Tests` below). Compiles with no Firebase SDK linked:
+      # everything Firebase-specific in this file sits behind `#if
+      # canImport(FirebaseCore)`, which this target does not satisfy —
+      # same reasoning as every other file in this list.
+      - path: Firefly/Sources/Telemetry/FirebaseTelemetryBootstrap.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit

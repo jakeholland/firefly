@@ -32,6 +32,18 @@ final class TelemetryAttributeAllowlistTests: XCTestCase {
         }
     }
 
+    /// `error {domain, code, where}`'s catalogue key is `error_code`,
+    /// deliberately NOT the bare word `code` — that key is forbidden
+    /// (the crew CODE's own would-be key), and a same-named `error`
+    /// attribute would have been silently stripped by the very guard
+    /// meant to protect it. `TelemetryAttributeKey.errorCode`'s own doc
+    /// comment tells the story; this pins the outcome.
+    func testErrorEventsOwnCodeKeyDoesNotCollideWithTheForbiddenCrewCodeKey() {
+        XCTAssertTrue(TelemetryAttributeAllowlist.isClean([TelemetryAttributeKey.errorCode: .string("timeout")]))
+        XCTAssertEqual(TelemetryAttributeAllowlist.strip([TelemetryAttributeKey.errorCode: .string("timeout")]),
+                       [TelemetryAttributeKey.errorCode: .string("timeout")])
+    }
+
     func testForbidsRawNodeIdentifierKeys() {
         for key in ["node_id", "node_num", "from", "to"] {
             XCTAssertFalse(TelemetryAttributeAllowlist.isClean([key: .int(123456)]), "\(key) must be forbidden")

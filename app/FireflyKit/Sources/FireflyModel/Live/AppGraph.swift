@@ -111,6 +111,23 @@ public final class AppGraph {
     /// that method's own A04 comment for why this is not a second
     /// `nodeUpdates()` subscription).
     private var seenNodeNums: Set<UInt32> = []
+    /// A04 — `radio.snapshot`'s `rssi_last`: the RSSI of the most
+    /// recent DIRECT packet this radio has reported, updated from the
+    /// same `.node` case above (`snapshot.rssiDbm`, already
+    /// plausibility-gated and already `nil` for anything not directly
+    /// received — see `MeshRxMeta.rssiDbm`'s own doc comment). `nil`
+    /// until a direct packet has actually arrived this session; never
+    /// backfilled from a relayed packet's reading, which measures the
+    /// relay, not this radio's own link.
+    private var lastDirectRssiDbm: Int16?
+    /// A04 — `crew.member.seen`/`crew.member.lost`'s own transition
+    /// table: the last `HeardPresence` this graph observed for each
+    /// paired member, so a presence CHANGE (not a presence READ) is
+    /// what fires an event. See `checkCrewPresenceTransitions(...)`.
+    private var lastKnownCrewPresence: [UInt32: HeardPresence] = [:]
+    /// A04 — polls `crewMembership.currentMembers()` for presence
+    /// transitions. See `observeCrewPresenceForTelemetry()`.
+    private var crewPresenceTelemetryTask: Task<Void, Never>?
     /// M3 — flushes `historyStore`'s persisted WAITING items on the
     /// link's next not-ready -> ready edge. See
     /// `observeHistoryOutboxFlush()`'s own doc comment for why this has
@@ -460,12 +477,15 @@ public final class AppGraph {
     /// `seenNodeNums`, a running tally of distinct node numbers seen via
     /// the ordered inbound pipeline (`observeInboundPackets()`'s own
     /// A04 comment), never a second subscription of its own.
-    /// `batt_pct`/`rssi_last` are omitted rather than invented:
-    /// `MeshtasticClientProtocol` does not currently surface this
-    /// device's own battery level or last RSSI anywhere this graph can
-    /// read (see docs/specs/A04-telemetry.md, "Known gaps") — an absent
-    /// attribute is the honest statement of "not measured", not a zero
-    /// standing in for it.
+    /// `rssi_last` is `lastDirectRssiDbm` — updated from that SAME
+    /// pipeline's `.node` case whenever a packet arrives with a direct
+    /// RSSI reading — the most recent reading this radio has actually
+    /// reported, `nil` (and so omitted) until one has. `batt_pct` stays
+    /// omitted rather than invented: `MeshtasticClientProtocol` does not
+    /// currently surface this device's own battery level anywhere this
+    /// graph can read (see docs/specs/A04-telemetry.md, "Known gaps") —
+    /// an absent attribute is the honest statement of "not measured",
+    /// not a zero standing in for it.
     private func observeRadioSnapshot() {
         guard radioSnapshotTask == nil else { return }
         let telemetry = dependencies.telemetry
@@ -474,9 +494,84 @@ public final class AppGraph {
                 try? await Task.sleep(for: .seconds(5 * 60))
                 if Task.isCancelled { return }
                 guard let self, self.dependencies.client.currentLinkState == .ready else { continue }
-                await telemetry.record(TelemetryEvent(name: TelemetryEventName.radioSnapshot, attributes: [
+                var attributes: [String: TelemetryValue] = [
                     TelemetryAttributeKey.nodeCount: .int(self.seenNodeNums.count),
-                ]))
+                ]
+                if let rssi = self.lastDirectRssiDbm {
+                    attributes[TelemetryAttributeKey.rssiLast] = .int(Int(rssi))
+                }
+                await telemetry.record(TelemetryEvent(name: TelemetryEventName.radioSnapshot, attributes: attributes))
+            }
+        }
+    }
+
+    /// A04 — `crew.member.seen {id_hash, age_s, rssi}` /
+    /// `crew.member.lost {id_hash, age_s}`, off `crewMembership`'s own
+    /// HEARD axis (`HeardPresence`/`ff_crew_presence`, the same S24
+    /// "No signal" vocabulary `PresenceTag`/`InboxViewModel` already
+    /// render — NOT a second admission decision). Polled, on the same
+    /// cadence for BOTH directions, because `.lost` has no packet to
+    /// hang off at all: it is purely "enough time passed with nothing
+    /// heard" (`PresenceTag.heardLostMS`), so there is no event to
+    /// trigger it. `seen` COULD be event-driven (a packet just arrived)
+    /// but is polled here too, off the identical transition table
+    /// (`lastKnownCrewPresence`), so the two can never disagree about
+    /// which one fires for a given state change — see
+    /// `checkCrewPresenceTransitions(freshRssi:from:)` for the one place
+    /// a live packet's RSSI gets attached to a `seen` fired from THAT
+    /// packet's own admission, immediately, from `observeInboundPackets()`.
+    private func observeCrewPresenceForTelemetry() {
+        guard crewPresenceTelemetryTask == nil else { return }
+        crewPresenceTelemetryTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.checkCrewPresenceTransitions(freshRssi: nil, from: nil)
+                try? await Task.sleep(for: .seconds(30))
+                if Task.isCancelled { return }
+            }
+        }
+    }
+
+    /// The one place `crew.member.seen`/`crew.member.lost` are actually
+    /// decided and recorded. `freshRssi`/`from` are non-`nil` only when
+    /// called right after a live packet's own admission
+    /// (`observeInboundPackets()`'s `.node` case) — the ONE moment this
+    /// graph can honestly attach an `rssi` to a `seen` event, because it
+    /// is the RSSI of the very packet that caused the transition. The
+    /// periodic poll (`observeCrewPresenceForTelemetry()`) calls this
+    /// with both `nil`, because a `.lost` transition (and a `.seen`
+    /// transition the poll — not a packet — happens to notice first)
+    /// has no packet to honestly attach an RSSI to at all.
+    ///
+    /// `seen` fires the first time a member's presence reads `.heard`
+    /// since this graph started watching it (a genuine first sighting)
+    /// OR immediately after it most recently read `.lost` (a genuine
+    /// re-appearance) — never for every single node-info replay, which
+    /// leaves an already-`.heard` member's presence unchanged and so
+    /// triggers no transition at all. `lost` fires the first time a
+    /// member's presence crosses INTO `.lost` from anything else.
+    private func checkCrewPresenceTransitions(freshRssi: Int16?, from freshRssiNode: UInt32?) async {
+        let telemetry = dependencies.telemetry
+        for member in crewMembership.currentMembers() {
+            let previous = lastKnownCrewPresence[member.id]
+            let current = member.heardPresence
+            lastKnownCrewPresence[member.id] = current
+            guard let transition = CrewPresenceTelemetryTransition.decide(previous: previous, current: current) else {
+                continue
+            }
+            let idHash = TelemetryHash.nodeID(member.id)
+            var attributes: [String: TelemetryValue] = [TelemetryAttributeKey.idHash: .string(idHash)]
+            if let ageMs = member.heardAgeMs {
+                attributes[TelemetryAttributeKey.ageS] = .double(Double(ageMs) / 1000.0)
+            }
+            switch transition {
+            case .seen:
+                if let freshRssi, freshRssiNode == member.id {
+                    attributes[TelemetryAttributeKey.rssi] = .int(Int(freshRssi))
+                }
+                await telemetry.record(TelemetryEvent(name: TelemetryEventName.crewMemberSeen, attributes: attributes))
+            case .lost:
+                await telemetry.record(TelemetryEvent(name: TelemetryEventName.crewMemberLost, attributes: attributes))
             }
         }
     }
@@ -617,6 +712,7 @@ public final class AppGraph {
         // node updates have to precede. See `InboundPacketEvent`.
         core.observe(client: dependencies.client, routeDeliveriesToInbox: false, routeNodeUpdates: false)
         observeRadioSnapshot()
+        observeCrewPresenceForTelemetry()
         // A02 AC14 — re-resolve the crew's channel index on every
         // reconnect. Subscribed here, alongside every other stream this
         // graph owns, rather than inside the engine's init: a
@@ -1066,6 +1162,7 @@ public final class AppGraph {
         historyOutboxFlushObservation?.cancel(); historyOutboxFlushObservation = nil
         tickLoop?.cancel(); tickLoop = nil
         radioSnapshotTask?.cancel(); radioSnapshotTask = nil
+        crewPresenceTelemetryTask?.cancel(); crewPresenceTelemetryTask = nil
         // Hardening QA pass: `stop()` used to cancel only the graph's
         // OWN subscriptions, leaving every view-model loop this graph
         // started in `makeRadarViewModel()`/`makeInboxViewModel()`/
@@ -1147,6 +1244,14 @@ public final class AppGraph {
                     // prevent, and `radio.snapshot` does not get to
                     // reopen it.
                     self.seenNodeNums.insert(snapshot.num)
+                    // A04 — `radio.snapshot`'s own `rssi_last`: only
+                    // ever updated from a DIRECT reading (`snapshot
+                    // .rssiDbm`'s own doc comment — `NodeDB.applyRxMeta`
+                    // never populates it for a relayed packet), never
+                    // backfilled or invented for one that carries none.
+                    if let rssi = snapshot.rssiDbm {
+                        self.lastDirectRssiDbm = rssi
+                    }
                     // ADMISSION. `CoreStore.apply(nodeUpdate:)` runs the
                     // A02 §4.1 gate (`CrewMembershipEngine.admits`) and,
                     // when it admits, pairs the sender through
@@ -1163,6 +1268,12 @@ public final class AppGraph {
                     // same call, on the same facts, just serialized
                     // against the gate that reads its result.
                     self.core.apply(nodeUpdate: snapshot)
+                    // A04 — `crew.member.seen`/`crew.member.lost`,
+                    // checked immediately after admission so a genuine
+                    // first sighting (or a re-appearance after `.lost`)
+                    // is recorded with THIS packet's own RSSI, not
+                    // whatever the next 30-second poll happens to see.
+                    await self.checkCrewPresenceTransitions(freshRssi: snapshot.rssiDbm, from: snapshot.num)
                 case .privateFrame(let packet):
                     // THE GATE. Reached only after every `.node` event
                     // this client published before it — including this

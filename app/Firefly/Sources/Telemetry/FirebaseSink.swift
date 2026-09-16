@@ -167,6 +167,12 @@ public actor FirebaseSink: TelemetrySink {
 
         do {
             try await batch.commit()
+            // A04 review gap-close — the owner's own verification ask:
+            // one line per flush, count and outcome, readable from a
+            // `open --stderr LOG` capture with no Firebase console open
+            // at all.
+            TelemetryDebugLog.log("batch ACKNOWLEDGED (\(events.count) events) installId=\(installId) " +
+                                  "sessionId=\(sessionId)")
         } catch {
             // The local JSONL already has every one of these events
             // durably — a failed Firestore write loses nothing but the
@@ -178,6 +184,7 @@ public actor FirebaseSink: TelemetrySink {
             // network that may not come back for the rest of the
             // festival.
             Self.log("batch commit failed (\(events.count) events): \(error) — kept locally, not retried")
+            TelemetryDebugLog.log("batch FAILED (\(events.count) events): \(error)")
         }
     }
 

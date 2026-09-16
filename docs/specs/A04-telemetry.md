@@ -158,14 +158,14 @@ code cannot quietly drift apart.
 | `crew.join` | `outcome` (`joined`\|`failed`\|`unverified`), `ms` (int) | `CrewController.confirmApply()`, when `pending` is `.join` |
 | `crew.leave` | `outcome` (`left`\|`failed`), `ms` (int) | `CrewController.leaveCrew()` |
 | `crew.start` | `outcome` (`joined`\|`failed`\|`unverified`), `ms` (int) | `CrewController.confirmApply()`, when `pending` is `.start` |
-| `crew.member.seen` | `id_hash` (string), `age_s` (double) | **Known gap — see §6.** |
-| `crew.member.lost` | `id_hash` (string), `age_s` (double) | **Known gap — see §6.** |
+| `crew.member.seen` | `id_hash` (string), `age_s` (double), `rssi` (int, optional) | `AppGraph.checkCrewPresenceTransitions(freshRssi:from:)` — `crewMembership.currentMembers()`'s HEARD-axis transition into `.heard` from `.never`(unobserved)/`.lost`, checked immediately after every admitted packet AND polled every 30 s (`observeCrewPresenceForTelemetry()`) so a `.lost` transition, which has no packet to hang off, is caught on the same cadence. `rssi` is present only when this SPECIFIC transition was noticed from a live packet's own direct RSSI reading — never backfilled from the poll. |
+| `crew.member.lost` | `id_hash` (string), `age_s` (double) | `AppGraph.checkCrewPresenceTransitions(freshRssi:from:)` — the same transition table, firing when a member's presence crosses INTO `.lost` ("No signal", `PresenceTag.heardLostMS`) from a KNOWN prior `.heard`/`.stale` reading. Deliberately never fires from an unobserved (`nil`) prior reading — see `CrewPresenceTelemetryTransition`'s own doc comment for why "already lost when this graph started watching" is not a crossing this graph actually witnessed. |
 
 ### Radio
 
 | event | attributes | where it fires |
 |---|---|---|
-| `radio.snapshot` | `node_count` (int); `batt_pct`/`rssi_last` omitted, never fabricated — see §6 | `AppGraph.observeRadioSnapshot()`, every 5 minutes while `currentLinkState == .ready` |
+| `radio.snapshot` | `node_count` (int), `rssi_last` (int, optional — the most recent DIRECT packet RSSI this radio has reported this session); `batt_pct` still omitted, never fabricated — see §6 | `AppGraph.observeRadioSnapshot()`, every 5 minutes while `currentLinkState == .ready` |
 
 ### Position
 
@@ -178,7 +178,7 @@ code cannot quietly drift apart.
 
 | event | attributes | where it fires |
 |---|---|---|
-| `error` | `domain` (string), `code` (string), `where` (string) | Reserved for future connectivity-path error wiring — see §6. |
+| `error` | `domain` (string), `error_code` (string — NOT `code`; see that key's own doc comment on `TelemetryAttributeKey.errorCode` for the collision with the forbidden crew-code key it avoids), `where` (string) | `MeshtasticClient.connect()`'s two catch sites (`where`: `"MeshtasticClient.connect.transport"` / `"MeshtasticClient.connect.handshake"`, `domain`: `"ble"`), and `CrewController.confirmApply()`'s failure branch (`where`: `"CrewController.confirmApply"`, `domain`: `"admin"`, from `importer.applyError`, when set). |
 
 ## 3. Wiring discipline
 
@@ -260,30 +260,58 @@ Per this repo's own rule ("anything cut is cut out loud"):
   but it would only ever fire for a small minority of terminations (a
   user swipe-kill almost never runs it) and is left undone here rather
   than shipped as a false sense of coverage.
-- **`crew.member.seen`/`crew.member.lost`** — the presence-tracking logic
-  these two events would hook into (`CrewMembershipEngine`/the "heard"
-  vocabulary `CrewCopy.swift` renders) lives deep enough in the crew
-  roster machinery that wiring it correctly — without double-counting a
-  member across a reconnect, and without recording a `seen` for every
-  single node-info replay rather than a genuine new sighting — needs its
-  own pass. Not wired in this PR.
-- **`radio.snapshot`'s `batt_pct`/`rssi_last`** — `MeshtasticClientProtocol`
-  does not currently surface this device's own connected-radio battery
-  level or last RSSI anywhere `AppGraph` can read. Rather than fabricate
-  a number, this PR ships `radio.snapshot` with `node_count` only (a real
-  tally of distinct node numbers seen via the existing ordered
-  `inboundPackets()` pipeline — deliberately NOT a second `nodeUpdates()`
-  subscription, which would reopen the 2026-09-14 bench race
-  `testStartSubscribesEachClientStreamExactlyOnceAndIsIdempotent` exists
-  to prevent). Both attributes are reserved in the catalogue for when
-  that data becomes available.
-- **`error {domain, code, where}`** — the catalogue reserves this name
-  and its three attributes, but no call site emits it yet in this PR.
-  The connectivity paths that would want it (a caught `AdminWriteError`,
-  a handshake timeout past its retry budget) already log to stderr at
-  today's existing log points; routing those same catches through
-  `telemetry.record(TelemetryEvent(name: .error, ...))` is
-  straightforward follow-up work, not a design gap.
+- **`crew.member.seen`/`crew.member.lost`** — CLOSED in review. Wired off
+  `CrewMembershipEngine.currentMembers()`'s own HEARD axis
+  (`HeardPresence`/`ff_crew_presence`, the S24 "No signal" vocabulary
+  `PresenceTag`/`InboxViewModel` already render) via a small pure
+  decision type, `CrewPresenceTelemetryTransition.decide(previous:current:)`
+  (`FireflyModel/Live/CrewPresenceTelemetryTransition.swift`), called
+  from `AppGraph.checkCrewPresenceTransitions(freshRssi:from:)`: once
+  immediately after every admitted packet (so a genuine `seen` can carry
+  that packet's own direct RSSI), and on a 30-second poll
+  (`observeCrewPresenceForTelemetry()`) so a `.lost` transition — pure
+  elapsed time, no packet to hang off — is caught on the same table. No
+  double-count across a node-info replay (`.heard` -> `.heard` is not a
+  transition) and no false `.lost` for a member already lost before this
+  graph started watching (`previous == nil` never fires `.lost` — see
+  that type's own doc comment). Tested by
+  `CrewPresenceTelemetryTransitionTests` (the pure table, every edge, no
+  radio and no real elapsed time) and
+  `CrewPresenceTelemetryWiringTests` (a real `MeshtasticClient` over
+  `LoopbackTransport`, a real `AppGraph`, real admission — the
+  `AdmissionBeforePayloadGateTests` pattern).
+- **`radio.snapshot`'s `batt_pct`/`rssi_last`** — `rssi_last` CLOSED:
+  `AppGraph` now tracks `lastDirectRssiDbm`, updated from the SAME
+  ordered `inboundPackets()` `.node` case `node_count`'s own
+  `seenNodeNums` tally already reads (never a second subscription — the
+  2026-09-14 bench race `testStartSubscribesEachClientStreamExactlyOnceAndIsIdempotent`
+  exists to prevent stays prevented), gated on `MeshNodeSnapshot
+  .rssiDbm` already being `nil` for anything not directly received.
+  `batt_pct` remains a genuine gap: `MeshtasticClientProtocol` still
+  does not surface this device's own connected-radio battery level
+  anywhere `AppGraph` can read (no `DeviceMetrics`/battery parsing
+  exists anywhere in `FireflyMesh` as of this review) — omitted rather
+  than fabricated, reserved in the catalogue for when that data becomes
+  available.
+- **`error {domain, code, where}`** — CLOSED in review, with one
+  interpretation call worth stating explicitly (AGENTS.md: "note the
+  interpretation... do not silently invent behavior"): the catalogue's
+  attribute is spelled `error_code` in the actual implementation, not
+  the `code` this file originally documented — see
+  `TelemetryAttributeKey.errorCode`'s own doc comment. The bare word
+  `code` is one of `TelemetryAttributeAllowlist.forbiddenKeys` (the crew
+  CODE's own would-be key), so an `error` event that used it would have
+  had its own diagnostic code silently stripped by the very guard that
+  exists to protect this catalogue — a real collision the original
+  catalogue entry could not have caught, because nothing called
+  `telemetry.record(TelemetryEvent(name: .error, ...))` yet to expose
+  it. Wired at three caught-error sites: `MeshtasticClient.connect()`'s
+  two catches (`transport.connect()` and `performHandshake()`,
+  `domain: "ble"`), and `CrewController.confirmApply()`'s failure branch
+  (`domain: "admin"`, from `importer.applyError` when `AdminWriteError`
+  set one). Every site's existing stderr log line / `publish(.failed(...))`
+  is unchanged — this is a second, structured channel alongside it, per
+  §3's own wiring discipline.
 
 ## 7. Tests
 
@@ -304,7 +332,23 @@ Per this repo's own rule ("anything cut is cut out loud"):
 - **Attribute allowlist guard** — `TelemetryAttributeAllowlistTests`
   (forbidden keys stripped case-insensitively; `TelemetryRecorder`
   actually calls `strip(_:)` before persisting; the predicate is right
-  independent of the wiring).
+  independent of the wiring; `error_code` does NOT collide with the
+  forbidden `code` key the way a literal `code` attribute would).
+- **Crew presence transitions** — `CrewPresenceTelemetryTransitionTests`
+  (the pure `CrewPresenceTelemetryTransition.decide(previous:current:)`
+  table: first-ever heard, re-heard after lost, crossing into lost from
+  heard/stale, no double-fire while already heard/lost, no false `lost`
+  from an unobserved prior reading) and
+  `CrewPresenceTelemetryWiringTests` (a real `MeshtasticClient` over
+  `LoopbackTransport`, real `AppGraph` admission — the
+  `AdmissionBeforePayloadGateTests` pattern — proving a real admitted
+  packet fires `crew.member.seen` with the hashed id and that a second
+  packet from an already-heard member does not double-fire it).
+- **Caught-error wiring** — `ErrorTelemetryWiringTests`
+  (`MeshtasticClient.connect()`'s transport-failure catch records
+  `error {domain: "ble", error_code, where}`, and the resulting event
+  survives the allowlist — the regression guard for the `error_code`
+  rename above).
 - **Settings toggle persistence** — `SettingsStoreTests`
   (`testShareDiagnosticsDefaultsTrueInDebugAndRoundTrips`,
   `testShareDiagnosticsExplicitFalseSurvivesAFreshInstance`,
