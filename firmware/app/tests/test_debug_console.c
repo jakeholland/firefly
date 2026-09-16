@@ -138,6 +138,9 @@ static ff_dbgconsole_i2c_health_fn s_i2c_health_hook;
 static ff_dbgconsole_perf_fn s_perf_hook;
 static ff_dbgconsole_mic_fn s_mic_hook;
 static ff_dbgconsole_music_frame_fn s_music_frame_hook;
+static ff_dbgconsole_sleep_fn s_sleep_hook;
+static ff_dbgconsole_tpint_fn s_tpint_hook;
+static ff_dbgconsole_wake_log_fn s_wake_log_hook;
 
 #define MY_ID 0x00001000u
 #define DANA 0x0000DA1Au
@@ -152,6 +155,9 @@ static void harness_init(uint32_t t0_ms)
     s_perf_hook = NULL;
     s_mic_hook = NULL;
     s_music_frame_hook = NULL;
+    s_sleep_hook = NULL;
+    s_tpint_hook = NULL;
+    s_wake_log_hook = NULL;
     H.clk.t = t0_ms;
     H.clock.now_ms = fake_now;
     H.clock.user = &H.clk;
@@ -295,7 +301,7 @@ static void dispatch(char const *line, capture_t *out)
     capture_reset(out);
     ff_dbgconsole_handle_line(&H.shell, line, strlen(line), ff_shell_now_ms(&H.shell), capture_reply, out,
                                s_i2c_hook, s_compass_hook, s_i2c_health_hook, s_perf_hook, s_mic_hook,
-                               s_music_frame_hook);
+                               s_music_frame_hook, s_sleep_hook, s_tpint_hook, s_wake_log_hook);
 }
 
 /* ------------------------------------------------------------------- */
@@ -849,6 +855,131 @@ static void dbgconsole_perf_with_extra_arg_rejected_end_to_end(void)
     capture_t cap;
     dispatch("perf now", &cap);
 
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: ? try help", cap.lines[0]);
+}
+
+/* ------------------------------------------------------------------- */
+/* 2026-09-16 S26f field fix — `sleep`/`sleep <ms>`/`tpint`               */
+/* ------------------------------------------------------------------- */
+
+static bool s_sleep_last_has_ms;
+static uint32_t s_sleep_last_ms;
+static int s_sleep_call_count;
+
+static void fake_sleep_ok(void *user, bool has_ms, uint32_t ms, ff_dbgconsole_reply_fn reply, void *reply_user)
+{
+    (void)user;
+    s_sleep_call_count++;
+    s_sleep_last_has_ms = has_ms;
+    s_sleep_last_ms = ms;
+    reply(reply_user, "dbg: sleep cause=TIMER touch_int_pre=1 touch_int_post=1 elapsed_ms=1503");
+}
+
+static int s_tpint_call_count;
+
+static void fake_tpint_ok(void *user, ff_dbgconsole_reply_fn reply, void *reply_user)
+{
+    (void)user;
+    s_tpint_call_count++;
+    reply(reply_user, "dbg: tpint idle=1 transitions=0 window_ms=5000");
+}
+
+static void dbgconsole_sleep_unavailable_without_a_hook(void)
+{
+    /* No hook (the sim target's own reality: no light sleep at all) —
+     * exactly one honest reply, same "unavailable on this target"
+     * convention perf/mic already use. */
+    harness_init(1000);
+
+    capture_t cap;
+    dispatch("sleep", &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: sleep unavailable on this target", cap.lines[0]);
+
+    dispatch("sleep 500", &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: sleep unavailable on this target", cap.lines[0]);
+}
+
+static void dbgconsole_sleep_bare_forwards_no_ms_to_the_hook(void)
+{
+    harness_init(1000);
+    s_sleep_hook = fake_sleep_ok;
+    s_sleep_call_count = 0;
+
+    capture_t cap;
+    dispatch("sleep", &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, s_sleep_call_count);
+    TEST_ASSERT_FALSE(s_sleep_last_has_ms);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: sleep cause=TIMER touch_int_pre=1 touch_int_post=1 elapsed_ms=1503", cap.lines[0]);
+}
+
+static void dbgconsole_sleep_with_ms_forwards_the_value(void)
+{
+    harness_init(1000);
+    s_sleep_hook = fake_sleep_ok;
+    s_sleep_call_count = 0;
+
+    capture_t cap;
+    dispatch("sleep 5000", &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, s_sleep_call_count);
+    TEST_ASSERT_TRUE(s_sleep_last_has_ms);
+    TEST_ASSERT_EQUAL_UINT32(5000u, s_sleep_last_ms);
+}
+
+static void dbgconsole_sleep_out_of_range_never_reaches_the_hook(void)
+{
+    harness_init(1000);
+    s_sleep_hook = fake_sleep_ok;
+    s_sleep_call_count = 0;
+
+    capture_t cap;
+    dispatch("sleep 60001", &cap);
+
+    TEST_ASSERT_EQUAL_INT(0, s_sleep_call_count);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: ? try help", cap.lines[0]);
+}
+
+static void dbgconsole_tpint_unavailable_without_a_hook(void)
+{
+    harness_init(1000);
+
+    capture_t cap;
+    dispatch("tpint", &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: tpint unavailable on this target", cap.lines[0]);
+}
+
+static void dbgconsole_tpint_routes_to_the_hook(void)
+{
+    harness_init(1000);
+    s_tpint_hook = fake_tpint_ok;
+    s_tpint_call_count = 0;
+
+    capture_t cap;
+    dispatch("tpint", &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, s_tpint_call_count);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: tpint idle=1 transitions=0 window_ms=5000", cap.lines[0]);
+}
+
+static void dbgconsole_tpint_with_extra_arg_rejected_end_to_end(void)
+{
+    harness_init(1000);
+    s_tpint_hook = fake_tpint_ok;
+    s_tpint_call_count = 0;
+
+    capture_t cap;
+    dispatch("tpint now", &cap);
+
+    TEST_ASSERT_EQUAL_INT(0, s_tpint_call_count);
     TEST_ASSERT_EQUAL_INT(1, cap.n);
     TEST_ASSERT_EQUAL_STRING("dbg: ? try help", cap.lines[0]);
 }
@@ -1544,6 +1675,42 @@ static void dbgconsole_diag_reports_observed_facts(void)
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag mesh crew=1 heard=1 rssi_dbm=-61"));
 }
 
+/* 2026-09-16 S26f field fix — `diag`'s optional wake-log fragment.
+ * NULL (every test above, the sim's own reality) omits it entirely —
+ * `dbgconsole_diag_reports_unknowns_when_nothing_known`'s exact `cap.n
+ * == 8` already pins that. With a hook present, its line is forwarded
+ * verbatim behind "dbg: diag ", the same forwarding contract
+ * `i2c_health`/`compass_status` already establish for their own optional
+ * fragments. */
+static int fake_wake_log_ok(void *user, char *out, size_t cap)
+{
+    (void)user;
+    snprintf(out, cap, "wakes cause=TIMER touch_int=1/1 elapsed_ms=1503; cause=TIMER touch_int=1/1 elapsed_ms=1502");
+    return 0;
+}
+
+static void dbgconsole_diag_omits_wake_log_without_a_hook(void)
+{
+    harness_init(1000);
+    capture_t cap;
+    dispatch("diag", &cap);
+    TEST_ASSERT_EQUAL_INT(8, cap.n); /* same count as dbgconsole_diag_reports_unknowns_when_nothing_known */
+}
+
+static void dbgconsole_diag_reports_wake_log_when_the_hook_is_present(void)
+{
+    harness_init(1000);
+    s_wake_log_hook = fake_wake_log_ok;
+
+    capture_t cap;
+    dispatch("diag", &cap);
+
+    TEST_ASSERT_EQUAL_INT(9, cap.n);
+    TEST_ASSERT_EQUAL_STRING(
+        "dbg: diag wakes cause=TIMER touch_int=1/1 elapsed_ms=1503; cause=TIMER touch_int=1/1 elapsed_ms=1502",
+        cap.lines[8]);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1586,6 +1753,14 @@ int main(void)
     RUN_TEST(dbgconsole_perf_forwards_the_hooks_own_lines_verbatim);
     RUN_TEST(dbgconsole_perf_with_extra_arg_rejected_end_to_end);
 
+    RUN_TEST(dbgconsole_sleep_unavailable_without_a_hook);
+    RUN_TEST(dbgconsole_sleep_bare_forwards_no_ms_to_the_hook);
+    RUN_TEST(dbgconsole_sleep_with_ms_forwards_the_value);
+    RUN_TEST(dbgconsole_sleep_out_of_range_never_reaches_the_hook);
+    RUN_TEST(dbgconsole_tpint_unavailable_without_a_hook);
+    RUN_TEST(dbgconsole_tpint_routes_to_the_hook);
+    RUN_TEST(dbgconsole_tpint_with_extra_arg_rejected_end_to_end);
+
     RUN_TEST(dbgconsole_mic_unavailable_without_a_hook);
     RUN_TEST(dbgconsole_mic_status_routes_to_the_hook);
     RUN_TEST(dbgconsole_mic_on_routes_to_the_hook);
@@ -1626,6 +1801,8 @@ int main(void)
 
     RUN_TEST(dbgconsole_diag_reports_unknowns_when_nothing_known);
     RUN_TEST(dbgconsole_diag_reports_observed_facts);
+    RUN_TEST(dbgconsole_diag_omits_wake_log_without_a_hook);
+    RUN_TEST(dbgconsole_diag_reports_wake_log_when_the_hook_is_present);
 
     return UNITY_END();
 }

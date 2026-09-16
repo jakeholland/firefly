@@ -661,10 +661,14 @@ static ff_idle_t s_idle;
  *     every wake, per the spec: "each timer wake services the link and
  *     returns to sleep unless input arrived") even with the puck sitting
  *     untouched in a pocket.
- *   - GPIO: PWR (GPIO6), BOOT (GPIO0), and the SPD2010 touch INT line
- *     (GPIO4) — `esp_sleep_enable_gpio_wakeup()` is light sleep's own
- *     wake mechanism (distinct from deep sleep's ext0/ext1), driven by
- *     `gpio_wakeup_enable()` per pin.
+ *   - GPIO: PWR (GPIO6) and BOOT (GPIO0) always; the SPD2010 touch INT
+ *     line (GPIO4) only when `CONFIG_FF_TOUCH_INT_WAKE` is on (default
+ *     OFF as of the 2026-09-16 independent review — see that Kconfig
+ *     option's own help and `ff_run_light_sleep_cycle`'s doc comment
+ *     below for the bench evidence and the bench `sleep` command's own
+ *     unconditional override) — `esp_sleep_enable_gpio_wakeup()` is
+ *     light sleep's own wake mechanism (distinct from deep sleep's
+ *     ext0/ext1), driven by `gpio_wakeup_enable()` per pin.
  *   - NOT UART: this spec slice is explicit that a UART wake is wrong for
  *     this board — the XIAO comms brain runs STOCK Meshtastic with no
  *     wake preamble, so RX bytes that arrive mid-sleep and trigger a wake
@@ -682,21 +686,34 @@ static ff_idle_t s_idle;
  * touch is polled instead of interrupt-driven at runtime. That is direct
  * prior evidence this specific board's INT line may never assert on a
  * touch at all, not merely "unverified" — arming it as a light-sleep
- * wake source here is a free, best-effort addition (`gpio_wakeup_enable`
+ * wake source would be a free, best-effort addition (`gpio_wakeup_enable`
  * costs nothing to configure) that may simply never fire in practice.
  * `FF_PIN_TOUCH_INT`'s active-level (open-drain, active-LOW, the common
  * touch-controller convention, matching the runtime polarity assumption
  * elsewhere on this board) is unverified either way, same posture as
  * ff_power.c's `FF_POWER_PWR_ACTIVE_LOW` flag; an internal pull-up is
  * enabled here so the line reads a clean idle HIGH regardless of the
- * board's own pull-up. None of this matters for correctness: the 1500 ms
- * TIMER wake above is the guaranteed path regardless of whether INT ever
- * asserts, so a touch arriving while asleep costs AT MOST one timer
- * period (1.5 s) of latency before the next scheduled wake notices it —
- * never a missed wake. S26f AC1 (on-glass) will show which: if the log's
- * wake-cause line ever reads GPIO on a touch, this line works on this
- * unit after all; if every wake during a touch test reads TIMER, it
- * doesn't, and the timer alone is still carrying the AC. */
+ * board's own pull-up. None of this matters for correctness: the S26f
+ * fast-window TIMER wake (300ms for 5 minutes after SLEEP, 1500ms after —
+ * see `ff_idle_light_sleep_timer_ms`) is the guaranteed path regardless
+ * of whether INT ever asserts, so a touch arriving while asleep costs AT
+ * MOST one fast-window timer period of latency before the next scheduled
+ * wake notices it — never a missed wake.
+ *
+ * **2026-09-16 independent review update**: the "free" framing above no
+ * longer holds. Bench evidence gathered for the S26f field fix (this
+ * file's own `ff_run_light_sleep_cycle` doc comment;
+ * docs/specs/S26-device-lifecycle.md slice (f)'s dated amendment) found
+ * GPIO4 does NOT idle cleanly HIGH on the unit tested — most forced
+ * cycles woke on a GPIO cause well before the configured timer, with no
+ * finger near the glass. If that holds on battery too, arming this as a
+ * wake source is not free: it costs an unbounded spurious-wake storm
+ * instead of the intended schedule. `CONFIG_FF_TOUCH_INT_WAKE` (default
+ * OFF; see that Kconfig option's own help) now gates whether this line
+ * is armed on the ordinary SCHEDULED sleep path; the bench `sleep`
+ * command still arms it unconditionally for its own forced cycles, so
+ * the on-glass/battery verification this comment's last sentence
+ * describes remains possible without a rebuild. */
 #define FF_PIN_TOUCH_INT GPIO_NUM_4 /* matches ff_display.c's FF_PIN_TP_INT (4) — SPD2010 touch INT, normally unused/polled */
 
 /* Timer wake period. Spec range is 1-2 s; 1500 ms is the midpoint —
@@ -879,7 +896,19 @@ static void ff_configure_light_sleep_wake(void)
 
     /* Touch INT (GPIO4) — see this block's top comment for the
      * active-LOW interpretation call. Not otherwise configured anywhere
-     * in this codebase (ff_display.c polls the controller instead). */
+     * in this codebase (ff_display.c polls the controller instead).
+     * Pin config (input + pull-up) always happens here regardless of
+     * CONFIG_FF_TOUCH_INT_WAKE below — `ff_run_light_sleep_cycle` samples
+     * this pin's LEVEL every cycle (touch_int_pre/post, always recorded
+     * into the wake-log ring buffer for bench diagnosis) independent of
+     * whether it is armed as an actual WAKE source, so the pin must
+     * always be a valid input. What varies by Kconfig is only whether
+     * `gpio_wakeup_enable` is called on it — see `ff_run_light_sleep_cycle`,
+     * which re-applies that decision fresh on every cycle (same
+     * idempotent-reconfigure pattern as its own timer-wake period), NOT
+     * this one-time boot config, so a bench `sleep` command can force it
+     * on for one forced cycle without this function needing to know
+     * about that override. */
     const gpio_config_t touch_int_io = {
         .pin_bit_mask = 1ULL << FF_PIN_TOUCH_INT,
         .mode = GPIO_MODE_INPUT,
@@ -887,9 +916,8 @@ static void ff_configure_light_sleep_wake(void)
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
-    if ((err = gpio_config(&touch_int_io)) != ESP_OK ||
-        (err = gpio_wakeup_enable(FF_PIN_TOUCH_INT, GPIO_INTR_LOW_LEVEL)) != ESP_OK) {
-        ESP_LOGE(TAG, "touch-INT (GPIO%d) light-sleep wake config failed: %s — timer wake still covers it",
+    if ((err = gpio_config(&touch_int_io)) != ESP_OK) {
+        ESP_LOGE(TAG, "touch-INT (GPIO%d) pin config failed: %s — timer wake still covers it",
                  (int)FF_PIN_TOUCH_INT, esp_err_to_name(err));
     }
 
@@ -919,9 +947,204 @@ static void ff_configure_light_sleep_wake(void)
                  esp_err_to_name(err));
     }
 
-    ESP_LOGI(TAG, "S26f light-sleep wake sources armed: timer=%dms, GPIO wake on PWR(6)/BOOT(0)/touch-INT(%d), VDD_SDIO forced ON",
-             (int)(FF_LIGHT_SLEEP_TIMER_WAKE_US / 1000), (int)FF_PIN_TOUCH_INT);
+    ESP_LOGI(TAG,
+             "S26f light-sleep wake sources armed: timer=%dms, GPIO wake on PWR(6)/BOOT(0), touch-INT(%d) "
+             "scheduled-wake=%s (CONFIG_FF_TOUCH_INT_WAKE; bench `sleep` can still force it per cycle), VDD_SDIO "
+             "forced ON",
+             (int)(FF_LIGHT_SLEEP_TIMER_WAKE_US / 1000), (int)FF_PIN_TOUCH_INT,
+#if CONFIG_FF_TOUCH_INT_WAKE
+             "ON"
+#else
+             "OFF"
+#endif
+    );
 }
+
+/* ---------------------------------------------------------------------
+ * 2026-09-16 S26f FIELD FIX — owner report "on battery the screen went
+ * black and tapping didn't wake it; had to use PWR". See ff_idle.h's own
+ * doc comment on `FF_IDLE_LIGHT_SLEEP_*` for the root-cause analysis this
+ * implements (short taps missed between 1.5s timer wakes).
+ *
+ * `ff_run_light_sleep_cycle` factors the ONE light-sleep cycle body out
+ * of the render loop's own SLEEP branch below so the SAME code path — the
+ * exact wake-source config, the exact BOOT-ISR suspend/rearm ordering
+ * (see the render loop's own doc comment on why rearm must be the very
+ * next call after `esp_light_sleep_start()` returns, before any logging
+ * or GPIO/wake-cause read) — is exercised by the bench `sleep [ms]`
+ * console command below AND by ordinary scheduled sleep, never two
+ * hand-copied implementations that could drift. It also records every
+ * cycle (scheduled or forced) into a small ring buffer
+ * (`s_wake_log`/`ff_wake_log_push`, FF_WAKE_LOG_CAPACITY entries) that
+ * `diag` reads back (`ff_wake_log_format`, wired to `dbgconsole_wake_log`
+ * below) — this is what lets the owner put the puck to sleep on battery,
+ * tap the glass, plug back into USB, and read `diag` to see what actually
+ * happened, since the S26f amendment's own USB power-down during light
+ * sleep already makes holding a live console session open ACROSS a sleep
+ * impossible (reconnect after, then read `diag`). Always compiled (not
+ * gated behind CONFIG_FF_DEBUG_CONSOLE) — same "recording a few words of
+ * state every cycle is cheap regardless of whether anything reads them
+ * this boot" rationale `s_frame_perf`/`s_face_rebuild_count` above
+ * already use for the identical reason. */
+#define FF_WAKE_LOG_CAPACITY 8u
+
+typedef struct {
+    esp_sleep_wakeup_cause_t cause;
+    bool touch_int_pre;  /* FF_PIN_TOUCH_INT level sampled immediately before esp_light_sleep_start() */
+    bool touch_int_post; /* FF_PIN_TOUCH_INT level sampled immediately after wake */
+    bool forced;         /* true: the bench `sleep`/`sleep <ms>` console command, not the normal schedule */
+    uint32_t elapsed_ms; /* wall time actually spent asleep (esp_timer_get_time() delta) */
+    uint32_t timer_wake_ms; /* the timer-wake period armed for THIS cycle */
+} ff_wake_log_entry_t;
+
+static ff_wake_log_entry_t s_wake_log[FF_WAKE_LOG_CAPACITY];
+static uint8_t s_wake_log_count; /* valid entries, saturates at FF_WAKE_LOG_CAPACITY */
+static uint8_t s_wake_log_next;  /* ring index the NEXT push writes to */
+
+static void ff_wake_log_push(ff_wake_log_entry_t const *e)
+{
+    s_wake_log[s_wake_log_next] = *e;
+    s_wake_log_next = (uint8_t)((s_wake_log_next + 1u) % FF_WAKE_LOG_CAPACITY);
+    if (s_wake_log_count < FF_WAKE_LOG_CAPACITY) {
+        s_wake_log_count++;
+    }
+}
+
+/* Newest-first summary of the ring buffer into `out`/`cap` (no "dbg: "
+ * prefix — same single-line-fragment contract `ff_dbgconsole_i2c_health_fn`
+ * already establishes). Stops appending (rather than truncating a partial
+ * entry) the moment the next one would not fit — never a garbled trailing
+ * fragment. Always succeeds (returns 0, "n=0" when the ring is empty —
+ * an honest fact, not an error) so callers never need a failure path.
+ *
+ * Gated behind CONFIG_FF_DEBUG_CONSOLE (independent review fix,
+ * 2026-09-16): its own only caller is `dbgconsole_wake_log`
+ * (`diag`'s wake-log fragment, below), which is itself inside this same
+ * `#if` — the RECORDING side (`s_wake_log`/`ff_wake_log_push`, just
+ * above) stays always-compiled (cheap, and future consumers may want it
+ * with the console off), but this READ-BACK formatter has no other
+ * caller, so leaving it unguarded produced a real `-Wunused-function`
+ * warning (device build, console off — CLAUDE.md's own "0 warnings"
+ * gate) the very first field-configuration build would have hit. */
+#if CONFIG_FF_DEBUG_CONSOLE
+static int ff_wake_log_format(char *out, size_t cap)
+{
+    if (out == NULL || cap == 0u) return -1;
+    int const header = snprintf(out, cap, "wakes n=%u", (unsigned)s_wake_log_count);
+    size_t used = (header < 0) ? 0u : (size_t)header;
+    if (used >= cap) return 0;
+
+    for (uint8_t i = 0; i < s_wake_log_count; i++) {
+        uint8_t const idx = (uint8_t)((s_wake_log_next + FF_WAKE_LOG_CAPACITY - 1u - i) % FF_WAKE_LOG_CAPACITY);
+        ff_wake_log_entry_t const *e = &s_wake_log[idx];
+        char cause_scratch[16];
+        int const n = snprintf(out + used, cap - used, "; %scause=%s touch_int=%d/%d elapsed_ms=%u timer_ms=%u",
+                                e->forced ? "forced " : "", ff_wakeup_cause_str(e->cause, cause_scratch, sizeof(cause_scratch)),
+                                e->touch_int_pre ? 1 : 0, e->touch_int_post ? 1 : 0, (unsigned)e->elapsed_ms,
+                                (unsigned)e->timer_wake_ms);
+        if (n < 0 || (size_t)n >= cap - used) {
+            /* Didn't fit — snprintf still wrote (and NUL-terminated) a
+             * TRUNCATED entry into out+used before reporting that; reset
+             * the terminator back to the last fully-written entry so the
+             * caller never sees a garbled trailing fragment, matching
+             * this function's own doc comment. */
+            out[used] = '\0';
+            break;
+        }
+        used += (size_t)n;
+    }
+    return 0;
+}
+#endif /* CONFIG_FF_DEBUG_CONSOLE */
+
+typedef struct {
+    esp_sleep_wakeup_cause_t cause;
+    bool touch_int_pre;
+    bool touch_int_post;
+    bool boot_caused_wake;
+    uint32_t elapsed_ms;
+} ff_light_sleep_result_t;
+
+/* Run exactly ONE light-sleep cycle: sample touch-INT, suspend the BOOT
+ * edge-ISR, sleep, rearm it (FIRST, before any other post-wake work — see
+ * this section's own top comment), read the wake cause + post-wake
+ * touch-INT level, synthesize a BOOT wake edge if warranted, and record
+ * the whole cycle into the ring buffer above. `timer_wake_ms` is armed
+ * fresh via `esp_sleep_enable_timer_wakeup` on every call (idempotent —
+ * same "re-configuring an already-configured wake source is a no-op
+ * re-apply, not an error" precedent `ff_configure_light_sleep_wake`
+ * itself already establishes), so a caller never needs to reset it back
+ * afterward: the next cycle (whether the normal schedule or another
+ * forced one) always states its own period explicitly. `forced` is
+ * recorded into the ring buffer for `diag`'s own readback, AND (2026-09-16
+ * independent review finding — see CONFIG_FF_TOUCH_INT_WAKE's own Kconfig
+ * help for the bench evidence this responds to) decides whether
+ * touch-INT (GPIO4) is armed as a WAKE source for THIS cycle: a forced
+ * (bench `sleep`) cycle always arms it, regardless of the Kconfig
+ * default, so an owner can keep exercising/testing the line without a
+ * rebuild; an ordinary SCHEDULED cycle (forced == false, the field/
+ * battery path) arms it only if CONFIG_FF_TOUCH_INT_WAKE is on — default
+ * off, since this fix's own bench evidence found GPIO4 does not idle
+ * cleanly HIGH on the unit tested, and TIMER/PWR/BOOT alone already
+ * guarantee a wake. PWR and BOOT's own GPIO wakes (armed once, at boot,
+ * in `ff_configure_light_sleep_wake`) are entirely unaffected either
+ * way. */
+static ff_light_sleep_result_t ff_run_light_sleep_cycle(uint32_t timer_wake_ms, bool forced)
+{
+    ff_light_sleep_result_t r = {0};
+
+    esp_err_t const terr = esp_sleep_enable_timer_wakeup((uint64_t)timer_wake_ms * 1000u);
+    if (terr != ESP_OK) {
+        ESP_LOGE(TAG, "esp_sleep_enable_timer_wakeup(%u ms) failed: %s — light sleep would never wake on its own",
+                 (unsigned)timer_wake_ms, esp_err_to_name(terr));
+    }
+
+#if CONFIG_FF_TOUCH_INT_WAKE
+    bool const touch_int_wake_this_cycle = true;
+#else
+    bool const touch_int_wake_this_cycle = forced;
+#endif
+    esp_err_t const twerr = touch_int_wake_this_cycle ? gpio_wakeup_enable(FF_PIN_TOUCH_INT, GPIO_INTR_LOW_LEVEL)
+                                                       : gpio_wakeup_disable(FF_PIN_TOUCH_INT);
+    if (twerr != ESP_OK) {
+        ESP_LOGE(TAG, "touch-INT (GPIO%d) wake %s failed: %s — %s", (int)FF_PIN_TOUCH_INT,
+                 touch_int_wake_this_cycle ? "enable" : "disable", esp_err_to_name(twerr),
+                 touch_int_wake_this_cycle ? "this cycle may not see a touch-INT wake"
+                                            : "timer wake still covers it");
+    }
+
+    r.touch_int_pre = gpio_get_level(FF_PIN_TOUCH_INT) != 0;
+
+    ff_power_boot_isr_suspend_for_sleep();
+    int64_t const t0 = esp_timer_get_time();
+    esp_light_sleep_start();
+    ff_power_boot_isr_rearm_after_sleep(); /* FIRST — see this section's top comment */
+    int64_t const t1 = esp_timer_get_time();
+
+    r.elapsed_ms = (uint32_t)((t1 - t0) / 1000);
+    r.cause = esp_sleep_get_wakeup_cause();
+    r.touch_int_post = gpio_get_level(FF_PIN_TOUCH_INT) != 0;
+    /* Same WHICH-GPIO-woke-us interpretation call the original inline
+     * code used (esp_sleep_get_gpio_wakeup_status is unavailable on this
+     * chip's light-sleep path — SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP is not
+     * defined for ESP32-S3 — see this file's git history for the
+     * confirming device-build error). */
+    r.boot_caused_wake = (r.cause == ESP_SLEEP_WAKEUP_GPIO) && ff_power_boot_pressed();
+    ff_power_boot_isr_synthesize_wake_edge(r.boot_caused_wake);
+
+    ff_wake_log_entry_t const e = {
+        .cause = r.cause,
+        .touch_int_pre = r.touch_int_pre,
+        .touch_int_post = r.touch_int_post,
+        .forced = forced,
+        .elapsed_ms = r.elapsed_ms,
+        .timer_wake_ms = timer_wake_ms,
+    };
+    ff_wake_log_push(&e);
+
+    return r;
+}
+/* S26f field fix (END) ------------------------------------------------ */
 
 /* ---------------------------------------------------------------------
  * 2026-09-08 QA hardening — task watchdog (TWDT) coverage for the render
@@ -1679,6 +1902,87 @@ static int dbgconsole_music_frame(void *hook_user, char *out, size_t cap)
     return 0;
 }
 
+/* ---------------------------------------------------------------------
+ * 2026-09-16 S26f field fix — `sleep`/`sleep <ms>`/`tpint`/`diag`'s wake
+ * fragment. See `ff_run_light_sleep_cycle`/`ff_wake_log_*` above (this
+ * file, before the task-watchdog section) for the shared machinery these
+ * three hooks wrap; `ff_dbgconsole_sleep_fn`/`ff_dbgconsole_tpint_fn`/
+ * `ff_dbgconsole_wake_log_fn` (ff_debug_console.h) for the contract.
+ */
+
+/* `sleep`/`sleep <ms>` — forces ONE light-sleep cycle right now via the
+ * SAME `ff_run_light_sleep_cycle` the ordinary schedule uses, ignoring
+ * the S26f USB-inhibit amendment on purpose (that is the entire point of
+ * a bench command: testing the cycle while tethered). `has_ms == false`
+ * (bare "sleep") uses `FF_LIGHT_SLEEP_TIMER_WAKE_US` (the original spec's
+ * steady-state period) as a sane default; `has_ms == true` uses the
+ * caller's own value (already bounds-checked by the parser,
+ * ff_dbgcmd.h's `FF_DBGCMD_SLEEP_MIN_MS`/`_MAX_MS`). See
+ * `ff_dbgconsole_sleep_fn`'s own doc comment for the USB-drops-during-
+ * sleep caveat this reply may race — the ring buffer (`diag`) is the
+ * reliable readback either way. */
+static void dbgconsole_sleep(void *hook_user, bool has_ms, uint32_t ms, ff_dbgconsole_reply_fn reply,
+                              void *reply_user)
+{
+    (void)hook_user;
+    uint32_t const timer_wake_ms = has_ms ? ms : (uint32_t)(FF_LIGHT_SLEEP_TIMER_WAKE_US / 1000);
+    ff_light_sleep_result_t const res = ff_run_light_sleep_cycle(timer_wake_ms, /*forced=*/true);
+
+    char cause_scratch[16];
+    char line[128];
+    snprintf(line, sizeof(line), "dbg: sleep cause=%s touch_int_pre=%d touch_int_post=%d elapsed_ms=%u timer_ms=%u",
+             ff_wakeup_cause_str(res.cause, cause_scratch, sizeof(cause_scratch)), res.touch_int_pre ? 1 : 0,
+             res.touch_int_post ? 1 : 0, (unsigned)res.elapsed_ms, (unsigned)timer_wake_ms);
+    reply(reply_user, line);
+}
+
+/* `tpint` — poll the touch-INT GPIO level for a fixed 5s window so a
+ * bench operator can tap the glass during that window and see whether
+ * the line ever moves (the direct experiment for "does the SPD2010
+ * assert INT on this board at all, and which polarity" —
+ * `FF_PIN_TOUCH_INT`'s own S26f doc comment above has the "unverified,
+ * prior evidence it never asserts" background). Blocks the calling
+ * (render-loop) task for the whole window, the same bench-only tradeoff
+ * `dbgconsole_mic_watch` already documents; feeds this task's own TWDT
+ * subscription every iteration for the identical reason. */
+static void dbgconsole_tpint(void *hook_user, ff_dbgconsole_reply_fn reply, void *reply_user)
+{
+    (void)hook_user;
+    enum { FF_TPINT_WINDOW_MS = 5000u, FF_TPINT_POLL_MS = 25u };
+
+    bool const idle_level_high = gpio_get_level(FF_PIN_TOUCH_INT) != 0;
+    bool last_level = idle_level_high;
+    uint32_t transitions = 0u;
+    bool ever_low = false;
+
+    uint32_t const n_polls = FF_TPINT_WINDOW_MS / FF_TPINT_POLL_MS;
+    for (uint32_t i = 0; i < n_polls; i++) {
+        esp_task_wdt_reset();
+        vTaskDelay(ff_ticks_at_least_one(FF_TPINT_POLL_MS));
+        bool const level = gpio_get_level(FF_PIN_TOUCH_INT) != 0;
+        if (level != last_level) {
+            transitions++;
+            last_level = level;
+        }
+        if (!level) ever_low = true;
+    }
+    esp_task_wdt_reset();
+
+    char line[112];
+    snprintf(line, sizeof(line), "dbg: tpint idle_level=%d transitions=%u ever_low=%d window_ms=%u",
+             idle_level_high ? 1 : 0, (unsigned)transitions, ever_low ? 1 : 0, (unsigned)FF_TPINT_WINDOW_MS);
+    reply(reply_user, line);
+}
+
+/* `diag`'s wake-log fragment — a thin passthrough onto `ff_wake_log_format`
+ * (this file, above), the SAME ring buffer `sleep` and the ordinary
+ * schedule both push into. */
+static int dbgconsole_wake_log(void *hook_user, char *out, size_t cap)
+{
+    (void)hook_user;
+    return ff_wake_log_format(out, cap);
+}
+
 /* Drain whatever the USB host has sent since the last frame (non-
  * blocking: ticks_to_wait=0) into the line accumulator, dispatching on
  * every '\n' and tolerating a preceding '\r' (ff_dbgcmd_parse's own CRLF
@@ -1706,7 +2010,8 @@ static void dbgconsole_poll(ff_shell_t *sh, uint32_t now_ms)
                     ff_dbgconsole_handle_line(sh, s_dbgconsole_line, s_dbgconsole_line_len, now_ms,
                                                dbgconsole_reply_write, NULL, dbgconsole_i2c_scan,
                                                dbgconsole_compass_status, dbgconsole_i2c_health, dbgconsole_perf,
-                                               dbgconsole_mic, dbgconsole_music_frame);
+                                               dbgconsole_mic, dbgconsole_music_frame, dbgconsole_sleep,
+                                               dbgconsole_tpint, dbgconsole_wake_log);
                 }
                 s_dbgconsole_line_len = 0u;
                 s_dbgconsole_discarding = false;
@@ -3274,78 +3579,38 @@ void app_main(void)
          * that a bare timer wake stays SLEEP already happened in core, not
          * here. */
         if (idle_state == FF_IDLE_STATE_SLEEP) {
-            ESP_LOGI(TAG, "S26f: entering light sleep");
-            /* fix/quick-flare-detection (2026-09-03; ordering fixed
-             * 2026-09-04, review round 2) — see
-             * ff_power_boot_isr_suspend_for_sleep's own doc comment for
-             * the exact race this closes: GPIO0's hardware intr-type
-             * register cannot hold both the edge ISR's NEGEDGE and the
-             * light-sleep wake config's LOW_LEVEL at once, and a
-             * still-held BOOT could re-trigger our own edge-ISR handler
-             * on the level condition if its interrupt were left enabled
-             * across this boundary — suspend_for_sleep disables it
-             * before (re-)arming the level wake. */
-            ff_power_boot_isr_suspend_for_sleep();
-            esp_light_sleep_start();
-            /* fix/quick-flare-detection (2026-09-04, review round 2) —
-             * THE ordering fix: re-arm the edge ISR (NEGEDGE +
-             * gpio_intr_enable) FIRST, before any logging or wake-cause
-             * read — every instruction between esp_light_sleep_start()
-             * returning and this call is a window where a genuine SECOND
-             * press could land with the edge interrupt still disabled
-             * (see ff_power_boot_isr_rearm_after_sleep's own doc comment
-             * for why nothing runs ahead of it). */
-            ff_power_boot_isr_rearm_after_sleep();
+            /* 2026-09-16 S26f field fix — the timer-wake period now
+             * varies: FF_IDLE_LIGHT_SLEEP_FAST_TIMER_MS for the first
+             * FF_IDLE_LIGHT_SLEEP_FAST_WINDOW_MS after SLEEP was entered
+             * (short taps land within a much tighter worst-case window),
+             * then FF_IDLE_LIGHT_SLEEP_SLOW_TIMER_MS (the original spec
+             * value) — see ff_idle.h's own doc comment on
+             * `ff_idle_light_sleep_timer_ms` for the field-bug this fixes
+             * and the deterministic host tests
+             * (core/tests/test_idle.c, `S26f_fix_timer_ms_*`).
+             * `s_idle.ref_ms` is this FSM's own idle reference (the
+             * struct is fully-defined, not opaque — ff_idle.h's top
+             * comment): SLEEP is entered at `ref_ms + FF_IDLE_T_OFF_MS +
+             * FF_IDLE_T_SLEEP_MS` (that header's own "idle" definition),
+             * so subtracting that instant from `now_ms` gives "how long
+             * has the device actually been asleep" — clamped to 0
+             * rather than underflowed for the one frame SLEEP is first
+             * reported (now_ms can equal that instant exactly). */
+            uint32_t const sleep_entered_ms = s_idle.ref_ms + FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS;
+            uint32_t const ms_since_sleep_entered = (now_ms >= sleep_entered_ms) ? (now_ms - sleep_entered_ms) : 0u;
+            uint32_t const timer_wake_ms = ff_idle_light_sleep_timer_ms(ms_since_sleep_entered);
 
-            esp_sleep_wakeup_cause_t const wake_cause = esp_sleep_get_wakeup_cause();
+            ESP_LOGI(TAG, "S26f: entering light sleep (timer=%ums, %ums since SLEEP entered)",
+                     (unsigned)timer_wake_ms, (unsigned)ms_since_sleep_entered);
+            ff_light_sleep_result_t const res = ff_run_light_sleep_cycle(timer_wake_ms, /*forced=*/false);
+
             char cause_scratch[16];
-            ESP_LOGI(TAG, "S26f: light sleep wake, cause=%s",
-                     ff_wakeup_cause_str(wake_cause, cause_scratch, sizeof(cause_scratch)));
-
-            /* fix/quick-flare-detection (2026-09-03) — if THIS wake
-             * looks like it was caused by BOOT specifically, synthesize
-             * the multitap edge the ISR may not have seen (see
-             * ff_power_boot_isr_synthesize_wake_edge's own doc comment
-             * for the full reasoning, including the dedup against an
-             * edge the just-re-armed ISR may ALSO have already captured
-             * for this same press — a level trigger, not an edge, is
-             * what light sleep's GPIO wake uses, so the wake press must
-             * be reconstructed rather than reliably captured, and the
-             * ISR racing this reconstruction is exactly why that
-             * function dedupes internally rather than this file trying
-             * to reason about it here).
-             *
-             * WHICH-GPIO-woke-us interpretation call: ESP-IDF's
-             * per-pin GPIO wake status readback
-             * (`esp_sleep_get_gpio_wakeup_status`) is gated behind
-             * `SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP`, which this chip
-             * (ESP32-S3) does not define for the light-sleep GPIO wake
-             * path this file uses (confirmed: the device build fails
-             * with an undeclared-function error without this fallback,
-             * `esp_sleep.h`'s own `#if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP`
-             * guard) — so there is no hardware status register to ask
-             * "was it GPIO0" the way deep-sleep's ext1 wake can. Instead:
-             * a GPIO-caused wake (`wake_cause == ESP_SLEEP_WAKEUP_GPIO`)
-             * whose BOOT pin STILL reads pressed the instant we resume is
-             * treated as a BOOT-caused wake — sound because the wake
-             * trigger armed on GPIO0 is LEVEL, not edge
-             * (`GPIO_INTR_LOW_LEVEL`, `ff_configure_light_sleep_wake`):
-             * the CPU only wakes while the level condition holds, so a
-             * BOOT-caused wake's pin is, by construction, still low at
-             * the moment execution resumes (the two other armed GPIO
-             * wake sources, PWR/GPIO6 and touch-INT/GPIO4, do not affect
-             * this read). A false negative (BOOT released between the
-             * wake firing and this read — a few instructions) simply
-             * costs this ONE edge back to the debounced-tick path's
-             * accuracy, not a crash or a stuck state; a false positive
-             * (something else woke us while BOOT happened to already be
-             * held) synthesizes one harmless extra edge, deduplicated by
-             * `ff_power_boot_isr_synthesize_wake_edge`'s own device-side
-             * dedup if it lands within 30ms of one the ISR already
-             * pushed, and by `ff_multitap_press`'s own bounce-reject
-             * rule downstream either way. */
-            bool const boot_caused_wake = (wake_cause == ESP_SLEEP_WAKEUP_GPIO) && ff_power_boot_pressed();
-            ff_power_boot_isr_synthesize_wake_edge(boot_caused_wake);
+            ESP_LOGI(TAG, "S26f: light sleep wake, cause=%s elapsed_ms=%u touch_int=%d/%d",
+                     ff_wakeup_cause_str(res.cause, cause_scratch, sizeof(cause_scratch)), (unsigned)res.elapsed_ms,
+                     res.touch_int_pre ? 1 : 0, res.touch_int_post ? 1 : 0);
+            /* BOOT-wake edge synthesis and the ring-buffer push both
+             * already happened inside ff_run_light_sleep_cycle — see
+             * that function's own doc comment. */
         } else {
             /* 2026-09-08 QA hardening item 2 — close out this iteration's
              * frame-time sample right before the pacing delay, so the

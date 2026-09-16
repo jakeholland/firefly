@@ -8,6 +8,12 @@
 #include "ff_clock.h"    /* ff_time_reached — wraparound-safe deadline check */
 #include "ff_settings.h" /* FF_BRIGHTNESS_MIN_PCT — ff_idle_brightness_pct's DIM value */
 
+uint32_t ff_idle_light_sleep_timer_ms(uint32_t ms_since_sleep_entered)
+{
+    return (ms_since_sleep_entered < FF_IDLE_LIGHT_SLEEP_FAST_WINDOW_MS) ? FF_IDLE_LIGHT_SLEEP_FAST_TIMER_MS
+                                                                          : FF_IDLE_LIGHT_SLEEP_SLOW_TIMER_MS;
+}
+
 void ff_idle_init(ff_idle_t *idle)
 {
     if (idle == NULL) {

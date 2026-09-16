@@ -74,6 +74,28 @@ static bool parse_u32_dec(char const *tok, size_t tok_len, uint32_t *out)
     return true;
 }
 
+/* 2026-09-16 S26f field fix — "sleep <ms>"'s own argument shape: same
+ * rules as `parse_u32_dec` above (no sign, no leading '+', nothing else)
+ * but up to 5 digits, wide enough for `FF_DBGCMD_SLEEP_MAX_MS` (60000)
+ * where `parse_u32_dec`'s 3-digit cap is too narrow. A separate helper
+ * rather than widening `parse_u32_dec` itself: that function's own 3-digit
+ * cap is deliberately tight for `mic watch`/`mic dump`/`music seed`'s
+ * genuinely-small ranges (ff_dbgcmd.h's own doc comment on `mic`), and
+ * loosening it there would let a 4-5 digit garbage token parse as a
+ * number for those commands instead of failing fast. */
+static bool parse_u32_dec5(char const *tok, size_t tok_len, uint32_t *out)
+{
+    if (tok_len == 0u || tok_len > 5u) return false;
+    uint32_t v = 0u;
+    for (size_t i = 0; i < tok_len; ++i) {
+        char const c = tok[i];
+        if (c < '0' || c > '9') return false;
+        v = v * 10u + (uint32_t)(c - '0');
+    }
+    *out = v;
+    return true;
+}
+
 /* Find the end of the first whitespace-delimited token starting at
  * `start` (which must already be non-whitespace or == `end`). Returns
  * the index of the first whitespace char at/after `start`, or `end` if
@@ -394,6 +416,40 @@ ff_dbgcmd_status_t ff_dbgcmd_parse(char const *line, size_t line_len, ff_dbgcmd_
         return FF_DBGCMD_ERR_BAD_ARGS;
     }
 
+    /* 2026-09-16 S26f field fix — "sleep" bare, "sleep <ms>". Same
+     * optional-argument shape `flare`/`cal` use for their bare-verb case,
+     * but (unlike those) the argument here is a bounded decimal, not a
+     * fixed sub-verb — matching `mic watch <secs>`'s own decimal-argument
+     * parsing, just with `parse_u32_dec5` (5 digits) instead of 3. */
+    if (tok_eq(buf, start, cmd_end, "sleep")) {
+        if (arg_start >= end) {
+            out->u.sleep.has_ms = false;
+            out->kind = FF_DBGCMD_SLEEP;
+            return FF_DBGCMD_ERR_OK;
+        }
+        size_t const ms_end = token_end(buf, arg_start, end);
+        uint32_t ms = 0u;
+        if (!parse_u32_dec5(buf + arg_start, ms_end - arg_start, &ms)) {
+            return FF_DBGCMD_ERR_BAD_ARGS;
+        }
+        if (skip_space(buf, ms_end, end) < end) return FF_DBGCMD_ERR_BAD_ARGS; /* trailing garbage */
+        if (ms < FF_DBGCMD_SLEEP_MIN_MS || ms > FF_DBGCMD_SLEEP_MAX_MS) {
+            return FF_DBGCMD_ERR_BAD_ARGS;
+        }
+        out->u.sleep.has_ms = true;
+        out->u.sleep.ms = ms;
+        out->kind = FF_DBGCMD_SLEEP;
+        return FF_DBGCMD_ERR_OK;
+    }
+
+    /* 2026-09-16 S26f field fix — "tpint": zero-arg, same shape as
+     * `i2c`/`diag`/`wall` above. */
+    if (tok_eq(buf, start, cmd_end, "tpint")) {
+        if (arg_start < end) return FF_DBGCMD_ERR_BAD_ARGS;
+        out->kind = FF_DBGCMD_TPINT;
+        return FF_DBGCMD_ERR_OK;
+    }
+
     return FF_DBGCMD_ERR_UNKNOWN_CMD;
 }
 
@@ -433,6 +489,8 @@ char const *ff_dbgcmd_kind_name(ff_dbgcmd_kind_t kind)
     case FF_DBGCMD_CREW: return "CREW";
     case FF_DBGCMD_CREW_START: return "CREW_START";
     case FF_DBGCMD_CREW_LEAVE: return "CREW_LEAVE";
+    case FF_DBGCMD_SLEEP: return "SLEEP";
+    case FF_DBGCMD_TPINT: return "TPINT";
     }
     return "?";
 }

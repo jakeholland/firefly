@@ -136,6 +136,65 @@ extern "C" {
  * symbolically would still pass if the macro's value silently changed. */
 #define FF_IDLE_T_SLEEP_MS ((uint32_t)120000u)
 
+/**
+ * S26f FIELD FIX (2026-09-16, owner report — "on battery the screen went
+ * black and tapping didn't wake it; had to use PWR") — see this repo's PR
+ * body for the full bench evidence. Root cause: the SPD2010 touch driver
+ * is POLLED, not interrupt-driven (targets/esp32s3/components/ff_display/
+ * ff_display.c's own S15b comment — wiring the controller's INT line as a
+ * real interrupt source starved the reader on this board), so the ONLY
+ * way a tap can wake the device from light sleep is the periodic TIMER
+ * wake sampling the controller right after each wake. At the spec's
+ * steady-state 1500ms period (`FF_LIGHT_SLEEP_TIMER_WAKE_US`,
+ * targets/esp32s3/main/app_main.c), an ordinary short tap (well under a
+ * second) can land entirely BETWEEN two timer wakes and never be sampled
+ * at all — only a HELD press (>= one full period) is guaranteed to still
+ * be down at the next wake's poll. The touch-INT GPIO wake
+ * (`FF_PIN_TOUCH_INT`) is armed as a best-effort second path (see that
+ * file's own doc comment), but is not proven to ever fire on this board.
+ *
+ * The fix here is independent of whether touch-INT ever fires: shorten
+ * the timer-wake period for a bounded window right after the device
+ * enters SLEEP (when a wearer who just set the puck down is statistically
+ * most likely to still be interacting with it — picking it back up,
+ * settling it in a pocket), then back off to the normal, battery-
+ * friendlier period. This is a pure function of "how long has the device
+ * been asleep" so it can be unit-tested deterministically (short window,
+ * then long) without any hardware — see `S26f_fix_*` in
+ * core/tests/test_idle.c. The esp32s3 target (app_main.c) is the only
+ * caller: it computes "ms since SLEEP was entered" from `ff_idle_t.ref_ms`
+ * (this struct is fully-defined, not opaque — see this header's own top
+ * comment) and reprograms `esp_sleep_enable_timer_wakeup()` with the
+ * result before every light-sleep cycle, including the bench `sleep [ms]`
+ * debug-console command's forced cycles.
+ *
+ * This does NOT change touch delivery or the wake-only rule at all — it
+ * only changes how OFTEN the existing timer-wake+poll mechanism samples
+ * the controller. A tap that is missed by even the fast 300ms cadence is
+ * still, at most, one fast period late — never silently dropped forever,
+ * same "timer wake is the guaranteed path" property the original design
+ * already relied on, just with a much tighter worst case for the first
+ * five minutes, when it matters most. */
+#define FF_IDLE_LIGHT_SLEEP_FAST_TIMER_MS ((uint32_t)300u)
+#define FF_IDLE_LIGHT_SLEEP_SLOW_TIMER_MS ((uint32_t)1500u) /* matches app_main.c's pre-fix FF_LIGHT_SLEEP_TIMER_WAKE_US */
+#define FF_IDLE_LIGHT_SLEEP_FAST_WINDOW_MS ((uint32_t)(5u * 60u * 1000u)) /* 5 minutes */
+
+/**
+ * ff_idle_light_sleep_timer_ms — the light-sleep timer-wake period to
+ * program for THIS cycle, given how long the device has been in SLEEP
+ * (`ms_since_sleep_entered`, wraparound-safe elapsed time the caller
+ * already computed — this function does no clock math of its own, same
+ * "pure function of the caller's own elapsed-time arithmetic" shape as
+ * `ff_idle_brightness_pct`). Deterministic and total: every input maps to
+ * exactly one of the two named constants above, no other value.
+ *
+ *  - `< FF_IDLE_LIGHT_SLEEP_FAST_WINDOW_MS`: `FF_IDLE_LIGHT_SLEEP_FAST_TIMER_MS`
+ *    — the bounded fast window right after SLEEP is entered.
+ *  - `>= FF_IDLE_LIGHT_SLEEP_FAST_WINDOW_MS`: `FF_IDLE_LIGHT_SLEEP_SLOW_TIMER_MS`
+ *    — steady state, unchanged from the original spec value.
+ */
+uint32_t ff_idle_light_sleep_timer_ms(uint32_t ms_since_sleep_entered);
+
 typedef enum {
     FF_IDLE_STATE_ACTIVE = 0,
     FF_IDLE_STATE_DIM,

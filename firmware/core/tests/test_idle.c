@@ -494,6 +494,55 @@ static void S26f_AC1_brightness_sleep_returns_true_zero(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* S26f FIELD FIX (2026-09-16) — ff_idle_light_sleep_timer_ms: short      */
+/* timer-wake period for a bounded window after SLEEP is entered, then    */
+/* back off. Deterministic, pure — no clock/hardware needed. See          */
+/* ff_idle.h's own doc comment on the constants for the field-bug this    */
+/* fixes (a short tap missed between 1.5s timer wakes on battery).        */
+/* ------------------------------------------------------------------- */
+
+/* THE PROXY (AGENTS.md item 6): checking only ms_since_sleep_entered==0
+ * would pass a version that returns the fast period for every input.
+ * Exercise "short" at 0 AND just under the window boundary, "long" at
+ * exactly the boundary AND well past it — the schedule this brief asks
+ * for is "short THEN long", so both ends of both legs matter. */
+static void S26f_fix_timer_ms_fast_at_zero(void)
+{
+    TEST_ASSERT_EQUAL_UINT32(FF_IDLE_LIGHT_SLEEP_FAST_TIMER_MS, ff_idle_light_sleep_timer_ms(0));
+}
+
+static void S26f_fix_timer_ms_fast_just_under_window(void)
+{
+    TEST_ASSERT_EQUAL_UINT32(FF_IDLE_LIGHT_SLEEP_FAST_TIMER_MS,
+                              ff_idle_light_sleep_timer_ms(FF_IDLE_LIGHT_SLEEP_FAST_WINDOW_MS - 1u));
+}
+
+static void S26f_fix_timer_ms_slow_exactly_at_window(void)
+{
+    TEST_ASSERT_EQUAL_UINT32(FF_IDLE_LIGHT_SLEEP_SLOW_TIMER_MS,
+                              ff_idle_light_sleep_timer_ms(FF_IDLE_LIGHT_SLEEP_FAST_WINDOW_MS));
+}
+
+static void S26f_fix_timer_ms_slow_well_past_window(void)
+{
+    TEST_ASSERT_EQUAL_UINT32(FF_IDLE_LIGHT_SLEEP_SLOW_TIMER_MS,
+                              ff_idle_light_sleep_timer_ms(FF_IDLE_LIGHT_SLEEP_FAST_WINDOW_MS + 3600000u));
+}
+
+/* Literal-pinned per this repo's proxy-check failure mode (AGENTS.md item
+ * 6, same discipline S26f_AC1_thresholds_pinned_to_spec_literals already
+ * applies to FF_IDLE_T_SLEEP_MS): a test that only ever compares
+ * symbolically would still pass if these values silently changed. The PR
+ * body states the reasoning for each literal (300ms fast / 1500ms slow /
+ * 5min window). */
+static void S26f_fix_timer_constants_pinned_to_chosen_literals(void)
+{
+    TEST_ASSERT_EQUAL_UINT32(300u, FF_IDLE_LIGHT_SLEEP_FAST_TIMER_MS);
+    TEST_ASSERT_EQUAL_UINT32(1500u, FF_IDLE_LIGHT_SLEEP_SLOW_TIMER_MS);
+    TEST_ASSERT_EQUAL_UINT32(300000u, FF_IDLE_LIGHT_SLEEP_FAST_WINDOW_MS);
+}
+
+/* ------------------------------------------------------------------- */
 /* S26 slice (f) AMENDMENT (2026-09-02) — sleep_inhibit (don't enter     */
 /* light sleep while USB is connected)                                  */
 /* ------------------------------------------------------------------- */
@@ -824,6 +873,12 @@ int main(void)
     RUN_TEST(S26f_AC2_no_sleep_while_keep_awake_holds);
     RUN_TEST(S26f_AC2_keep_awake_reactivates_from_sleep);
     RUN_TEST(S26f_AC1_brightness_sleep_returns_true_zero);
+
+    RUN_TEST(S26f_fix_timer_ms_fast_at_zero);
+    RUN_TEST(S26f_fix_timer_ms_fast_just_under_window);
+    RUN_TEST(S26f_fix_timer_ms_slow_exactly_at_window);
+    RUN_TEST(S26f_fix_timer_ms_slow_well_past_window);
+    RUN_TEST(S26f_fix_timer_constants_pinned_to_chosen_literals);
 
     RUN_TEST(S26f_amendment_sleep_inhibit_holds_off_well_past_sleep_threshold);
     RUN_TEST(S26f_amendment_sleep_inhibit_release_after_elapsed_sleeps_next_tick);
