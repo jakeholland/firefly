@@ -1199,6 +1199,38 @@ static void settings_build_diag_open_row(lv_obj_t *list, int32_t rel_y, int32_t 
 }
 
 /* ---------------------------------------------------------------------
+ * POWER — field-hardening ahead of Lost Lands (S26 slice b amendment,
+ * docs/specs/S26-device-lifecycle.md "(b) Power button -> power menu ->
+ * soft power-off"): the printed case's physical PWR button does not
+ * actuate reliably, so the power menu (Power off / Reboot / Cancel)
+ * needs a second, on-glass way in. A full-width action pill, same shape
+ * as CALIBRATE TOUCH/CREW/DIAGNOSTICS above, that emits the exact same
+ * `FF_INTENT_POWER_MENU_OPEN` the esp32s3 target's PWR long-press
+ * already dispatches (ff_intent.h's own doc comment on that intent is
+ * amended alongside this row) — it lands on the identical
+ * `ff_route_push_modal(&sh->route, FF_APP_FACE_POWER_MENU)` call, so
+ * this REUSES the existing modal (`ff_scr_power_menu_build`) and its
+ * handlers verbatim rather than building a second power menu. Tapping
+ * this row only OPENS the menu; Power off still needs its own
+ * confirming tap inside it, same as a PWR long-press today — no new way
+ * to actually power off exists here. An ACTION, not a stored value. */
+static void settings_power_open_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_POWER_MENU_OPEN, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_build_power_open_row(lv_obj_t *list, int32_t rel_y, int32_t row_w)
+{
+    lv_obj_t *pill = settings_make_pill(list, "POWER", 0, rel_y, row_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
+                                        FF_THEME_COLOR_AMBER, 2, settings_power_open_cb, NULL);
+    lv_obj_set_style_border_width(pill, 2, 0);
+    lv_obj_set_style_border_color(pill, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_border_opa(pill, LV_OPA_40 + LV_OPA_10 / 2 /* ~45% */, 0);
+}
+
+/* ---------------------------------------------------------------------
  * NAME — the puck's own identity, tap-to-edit. A value row
  * (settings_build_value_row's "label + status pill, both tappable"
  * shape), NOT reused verbatim: unlike every other row's label (a fixed
@@ -3810,6 +3842,18 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
     settings_build_value_row(list, y, row_w, "WATER NUDGE", water_buf, s_settings.water_min == 0, settings_water_cb);
     y += FF_SETTINGS_ROW_H;
 #endif
+
+    /* POWER — field-hardening ahead of Lost Lands (S26 slice b amendment;
+     * see settings_build_power_open_row's own doc comment). Unconditionally
+     * the LAST section, after the hidden #if rows above (whether or not any
+     * of those are flipped on) — task brief: "placed at the bottom of the
+     * list (CREW stays on top per #337)". Its own section header, same
+     * "the header repeats the one row's own name" shape UNITS/NAME already
+     * use for a single-item category. */
+    y = settings_build_section_header(list, y, row_w, "POWER", /*first=*/false);
+    settings_build_power_open_row(list, y, row_w);
+    y += FF_SETTINGS_ROW_H; /* last (only) row of POWER */
+
     (void)y; /* the final cursor value is only informative once every #if above resolves */
 
     /* #bug4 — restore the scroll offset the previous build left (0 on a fresh

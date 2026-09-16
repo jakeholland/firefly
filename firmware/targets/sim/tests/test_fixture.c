@@ -1324,7 +1324,16 @@ static void bug5a_ui_settings_scroll_y_parses_and_round_trips(void)
     ff_app_state_t scrolled;
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK,
                           ff_fixture_load_file(fixture_path("settings_scrolled_bottom.json"), &scrolled));
-    TEST_ASSERT_EQUAL_INT32(1000, scrolled.ui_settings_scroll_y);
+    /* 5000 (not 1000) — bumped alongside the S26 slice b amendment's new
+     * "POWER" row (bottom of the Settings list): once that row extended
+     * the list, 1000 no longer clamped to the true bottom (LVGL's own
+     * clamp only kicks in past the real scrollable max), so
+     * settings_scrolled_bottom.json's own hint was raised to a value
+     * safely past ANY plausible list height, matching
+     * ff_scr_settings_apply_scroll_hint's documented "LVGL clamps to the
+     * scrollable range" contract rather than a number that has to be
+     * re-derived by hand every time a row is added or removed. */
+    TEST_ASSERT_EQUAL_INT32(5000, scrolled.ui_settings_scroll_y);
 
     char json[FF_FIXTURE_DUMP_MAX];
     int n = ff_fixture_dump_json(&scrolled, json, sizeof(json));
@@ -1332,7 +1341,7 @@ static void bug5a_ui_settings_scroll_y_parses_and_round_trips(void)
 
     ff_app_state_t reloaded;
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
-    TEST_ASSERT_EQUAL_INT32(1000, reloaded.ui_settings_scroll_y);
+    TEST_ASSERT_EQUAL_INT32(5000, reloaded.ui_settings_scroll_y); /* round-trips unchanged */
     TEST_ASSERT_EQUAL_MEMORY(&scrolled, &reloaded, sizeof(scrolled));
 }
 

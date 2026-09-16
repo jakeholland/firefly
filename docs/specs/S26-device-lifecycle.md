@@ -266,6 +266,10 @@ BOOT / timeout 10 s → back. SHORT_PRESS while ACTIVE = no-op this slice
 - **AC4** Reboot never enters download mode (BOOT-release guard; unit-testable
   in the FSM as a "reboot pending until GPIO0 high" state).
 
+**AMENDED 2026-09-16, field-hardening ahead of Lost Lands** (the printed
+case's physical PWR button does not actuate reliably): the power menu is
+also reachable from Settings → POWER, at the bottom of the list.
+
 ### (c) Inactivity → dim → screen off
 Core `ff_idle`: `(now_ms, input_event)` → ACTIVE · DIM · OFF with
 `t_dim = 15 s`, `t_off = 30 s` (constants in core, later a setting). ANY
