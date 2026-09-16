@@ -1156,6 +1156,22 @@ typedef struct {
      * of silently resetting to 0. Same "%us" formatting as UPTIME just
      * above (scr_settings.c's MIC ON-TIME row). */
     uint32_t mic_on_s;
+
+    /* --- 8. Boot evidence (S25 latch-hold amendment, 2026-09-16) ---
+     * The device caller (app_main.c) computes these once at boot, from
+     * `esp_reset_reason()`, an ESP-IDF core-dump check
+     * (`esp_core_dump_image_check`/`esp_core_dump_get_summary`), and the
+     * NVS `ff_session_log` heartbeat (core/include/ff_session_log.h) —
+     * they do not change again during the session except when "diag
+     * clear" (FF_DBGCMD_DIAG_CLEAR) blanks `last_crash`. Plain lowercase
+     * words, canonical vocabulary (this repo's house style for honest
+     * facts), never fabricated: an absent flag means genuinely nothing
+     * is known, not "still loading". */
+    char boot_reset_reason[24]; /* THIS boot's esp_reset_reason(), e.g. "power-on"/"task watchdog" — always known */
+    bool has_last_crash;
+    char last_crash[96];   /* "Last crash: <task> @0x<pc>" (+ panic reason if the core dump has one) */
+    bool has_last_session; /* the PREVIOUS session stopped without going through POWER OFF/REBOOT */
+    char last_session[128]; /* ff_session_log_format_last_time's own line, verbatim */
 } ff_app_diag_t;
 
 /* -------------------------------------------------------------------

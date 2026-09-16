@@ -3564,6 +3564,21 @@ static void settings_build_diag_page(lv_obj_t *parent, ff_app_diag_t const *d)
      * stays visible even after the mic itself has since gone quiet. */
     snprintf(buf, sizeof(buf), "%us", (unsigned)d->mic_on_s);
     y = settings_diag_line(list, y, row_w, "MIC ON-TIME", buf);
+
+    /* S25 latch-hold amendment (2026-09-16) — one more DEVICE row, same
+     * "append a new fact to the existing section" precedent MIC/MIC
+     * ON-TIME above already followed. RESET REASON is always known
+     * (this boot's own fact); LAST CRASH/LAST TIME each read "none"
+     * until app_main has something honest to report (a real core dump,
+     * or a previous session that stopped without going through POWER
+     * OFF/REBOOT) — "none" rather than "--"/"unknown", the same word
+     * choice `dbgconsole_diag` (ff_debug_console.c) makes for the exact
+     * same fact, so the touchscreen and the bench console never
+     * disagree on vocabulary for one another's absence. */
+    y = settings_diag_line(list, y, row_w, "RESET REASON",
+                            (d->boot_reset_reason[0] != '\0') ? d->boot_reset_reason : "unknown");
+    y = settings_diag_line(list, y, row_w, "LAST CRASH", d->has_last_crash ? d->last_crash : "none");
+    y = settings_diag_line(list, y, row_w, "LAST TIME", d->has_last_session ? d->last_session : "none");
     (void)y; /* the final cursor value is only informative */
 
     /* fix/diag-scroll-persist — restore the offset the previous build left

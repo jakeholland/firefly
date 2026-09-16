@@ -1612,6 +1612,26 @@ static ff_fixture_result_t fx_parse_diag(fx_ctx_t const *c, int obj_i, ff_app_di
      * zero-init default" convention every other line here uses. */
     if (fx_obj_get(c, obj_i, "mic_on_s", &t)) d->mic_on_s = (uint32_t)fx_num(c, t, 0.0);
 
+    /* 8. Boot evidence (S25 latch-hold amendment) — never written by the
+     * sim's own runtime (no target build to compute an esp_reset_
+     * reason()/core-dump/session-log from), so a fixture that wants to
+     * exercise these DIAGNOSTICS rows sets them explicitly. Omitted
+     * `boot_reset_reason` stays "" (renders "unknown", scr_settings.c);
+     * omitted `last_crash`/`last_session` stay absent (has_* false,
+     * renders "none") — the same flat, presence-derived convention every
+     * other optional fact in this function uses. */
+    if (fx_obj_get(c, obj_i, "boot_reset_reason", &t)) {
+        fx_copy_str(c, t, d->boot_reset_reason, sizeof(d->boot_reset_reason));
+    }
+    if (fx_obj_get(c, obj_i, "last_crash", &t)) {
+        d->has_last_crash = true;
+        fx_copy_str(c, t, d->last_crash, sizeof(d->last_crash));
+    }
+    if (fx_obj_get(c, obj_i, "last_session", &t)) {
+        d->has_last_session = true;
+        fx_copy_str(c, t, d->last_session, sizeof(d->last_session));
+    }
+
     return FF_FIXTURE_OK;
 }
 

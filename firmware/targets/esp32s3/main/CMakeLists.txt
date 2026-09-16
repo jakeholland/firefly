@@ -46,7 +46,10 @@ idf_component_register(
     # `-u usb_serial_jtag_connection_monitor_include` in
     # esp_driver_usb_serial_jtag/CMakeLists.txt) — no driver_install() call,
     # no sdkconfig change needed here.
-    PRIV_REQUIRES esp_timer freertos nvs_flash esp_system esp_driver_usb_serial_jtag
+    # espcoredump: S25 latch-hold amendment — esp_core_dump_image_check/
+    # get_summary/get_panic_reason/image_erase, the crash-evidence half
+    # (docs/specs/S25-power-latch.md's Amendments).
+    PRIV_REQUIRES esp_timer freertos nvs_flash esp_system esp_driver_usb_serial_jtag espcoredump
     EMBED_FILES "${FF_DEMO_EMBED}" "${FF_FIELD_EMBED}"
 )
 

@@ -478,6 +478,23 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_batt_pack_mv)
 
     add_test(NAME test_batt_pack_mv COMMAND test_batt_pack_mv)
+
+    # S25 latch-hold amendment (2026-09-16 field report): pins the pure
+    # latch-ON / power-OFF gpio-hold ordering (ff_power_latch_seq.h,
+    # hoisted out of the esp32s3-only ff_power.c the same way
+    # ff_power_batt_conv.h's math is above) by recording-mock assertion,
+    # on the host. No ESP/LVGL/shell dependency — the header is
+    # header-only with no includes beyond its own guard.
+    add_executable(test_power_latch_seq
+        tests/test_power_latch_seq.c
+    )
+    target_include_directories(test_power_latch_seq PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../esp32s3/components/ff_power/include
+    )
+    target_link_libraries(test_power_latch_seq PRIVATE unity)
+    ff_apply_warnings(test_power_latch_seq)
+
+    add_test(NAME test_power_latch_seq COMMAND test_power_latch_seq)
 endif()
 
 # Issue #3 — ff_screenshot_write now creates its output directory itself

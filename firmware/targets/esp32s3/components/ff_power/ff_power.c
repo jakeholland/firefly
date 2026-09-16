@@ -27,6 +27,7 @@
 #include "esp_timer.h" /* fix/quick-flare-detection — esp_timer_get_time(), the ISR edge timestamp source */
 
 #include "ff_power_batt_conv.h"
+#include "ff_power_latch_seq.h" /* S25 latch-hold amendment (2026-09-16) — see that header's top comment */
 
 /* SYS_EN / PWR_Control — the battery keep-alive latch. Drive HIGH to hold the
  * rail on; LOW is a soft power-off. Direct ESP32-S3 GPIO, NOT a TCA9554
@@ -84,6 +85,37 @@
 
 static const char *TAG = "ff_power";
 
+/* S25 latch-hold amendment (2026-09-16 field report — see
+ * docs/specs/S25-power-latch.md's Amendments and ff_power_latch_seq.h's
+ * top comment): the real ESP32-S3 binding of ff_power_latch_hal_t.
+ * `io` is unused (there is no per-call state beyond the pin number,
+ * closed over via FF_PIN_PWR_HOLD) — kept only to satisfy the vtable
+ * shape the HOST test substitutes a recording mock for. */
+static int ff_power_latch_hal_set_level(void *io, int level)
+{
+    (void)io;
+    return (int)gpio_set_level(FF_PIN_PWR_HOLD, (uint32_t)level);
+}
+
+static int ff_power_latch_hal_hold_en(void *io)
+{
+    (void)io;
+    return (int)gpio_hold_en(FF_PIN_PWR_HOLD);
+}
+
+static int ff_power_latch_hal_hold_dis(void *io)
+{
+    (void)io;
+    return (int)gpio_hold_dis(FF_PIN_PWR_HOLD);
+}
+
+static const ff_power_latch_hal_t ff_power_latch_hal = {
+    .io = NULL,
+    .set_level = ff_power_latch_hal_set_level,
+    .hold_en = ff_power_latch_hal_hold_en,
+    .hold_dis = ff_power_latch_hal_hold_dis,
+};
+
 esp_err_t ff_power_latch_on(void)
 {
     const gpio_config_t io = {
@@ -99,13 +131,29 @@ esp_err_t ff_power_latch_on(void)
         return err;
     }
 
-    err = gpio_set_level(FF_PIN_PWR_HOLD, 1);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "PWR-hold set high failed: %s", esp_err_to_name(err));
-        return err;
+    /* Set HIGH, then enable the pad hold (ff_power_latch_seq_on — see
+     * ff_power_latch_seq.h's top comment for why this order, and its
+     * own ESP-IDF citation for what the hold survives: "chip or system
+     * is reset (e.g. watchdog time-out, Deep-sleep events are
+     * triggered), or peripheral power-down in Light-sleep" — i.e. a
+     * panic reboot, a task-watchdog trip, and esp_restart() all take
+     * this same digital-core-reset path (none of them power off the
+     * RTC/IO_MUX domain the hold lives in), so GPIO7 now stays HIGH
+     * through all three instead of releasing the SYS_EN latch and
+     * dropping the rail on battery before the reset's own re-boot can
+     * re-assert it — see docs/specs/S25-power-latch.md's Amendments for
+     * the owner's field report this fixes and what is/isn't verified.
+     * A true power loss (the rail actually collapsing) cannot be
+     * preserved by a pad-hold feature inside the chip that lost power —
+     * this fix is about the digital-core-reset class of event only. */
+    int const seq_err = ff_power_latch_seq_on(&ff_power_latch_hal);
+    if (seq_err != 0) {
+        esp_err_t const seq_esp_err = (esp_err_t)seq_err;
+        ESP_LOGE(TAG, "PWR-hold set-high/hold-en failed: %s", esp_err_to_name(seq_esp_err));
+        return seq_esp_err;
     }
 
-    ESP_LOGI(TAG, "battery power latched on (SYS_EN GPIO%d high)", FF_PIN_PWR_HOLD);
+    ESP_LOGI(TAG, "battery power latched on (SYS_EN GPIO%d high, pad hold enabled — S25 amendment)", FF_PIN_PWR_HOLD);
     return ESP_OK;
 }
 
@@ -133,13 +181,28 @@ esp_err_t ff_power_off(void)
         return err;
     }
 
-    err = gpio_set_level(FF_PIN_PWR_HOLD, 0);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "PWR-hold set low failed: %s", esp_err_to_name(err));
-        return err;
+    /* S25 latch-hold amendment (2026-09-16): release the pad hold
+     * BEFORE driving the pin low (ff_power_latch_seq_off — see
+     * ff_power_latch_seq.h's top comment). Getting this backwards does
+     * NOT fail loudly: ESP-IDF's own gpio_hold_dis() doc note says "the
+     * gpio will output the default level if this function is called" —
+     * i.e. while the hold from ff_power_latch_on() is still enabled, the
+     * gpio_set_level(0) below would be silently ignored, so ff_power_off
+     * would return ESP_OK with no error logged while the rail never
+     * actually drops. Safe to call even when the hold was never enabled
+     * (a caller that reaches power-off without latch_on ever having run,
+     * e.g. a bench/unit harness) — see ff_power_latch_seq.h's own doc
+     * comment on ff_power_latch_seq_off for the (not yet hardware-
+     * verified on this board) expectation that gpio_hold_dis on an
+     * unheld pin is a no-op. */
+    int const seq_err = ff_power_latch_seq_off(&ff_power_latch_hal);
+    if (seq_err != 0) {
+        esp_err_t const seq_esp_err = (esp_err_t)seq_err;
+        ESP_LOGE(TAG, "PWR-hold hold-dis/set-low failed: %s", esp_err_to_name(seq_esp_err));
+        return seq_esp_err;
     }
 
-    ESP_LOGI(TAG, "soft power-off: SYS_EN GPIO%d low (battery: rail drops now; USB: board stays up)",
+    ESP_LOGI(TAG, "soft power-off: SYS_EN GPIO%d low, pad hold released (battery: rail drops now; USB: board stays up)",
              FF_PIN_PWR_HOLD);
     return ESP_OK;
 }
