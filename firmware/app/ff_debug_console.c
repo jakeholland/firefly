@@ -861,6 +861,38 @@ static void dbgconsole_diag(ff_shell_t *sh, ff_dbgconsole_wake_log_fn wake_log, 
             reply_line(reply, user, wake_line);
         }
     }
+
+    /* 8. Boot evidence (S25 latch-hold amendment) — THREE separate reply
+     * lines, not one: `last_session` alone (128-byte source buffer) is
+     * already GCC's own worst case close to DBGCONSOLE_LINE_BUF's 200
+     * bytes once the "dbg: diag boot last_time=" prefix is added, and
+     * `last_crash` (96 bytes) stacked onto the SAME line the way the
+     * Mesh/Link sections above combine several small fields would blow
+     * past it entirely — same -Wformat-truncation budget reasoning
+     * those splits document, just against one wide field instead of
+     * several narrow ones. reset_reason always prints (this boot's own
+     * fact, always known); last_crash/last_time print "none" when there
+     * is nothing honest to say — "?" (every OPTIONAL fact above's
+     * absent-marker) would misleadingly read as "unknown" here. */
+    snprintf(line, sizeof(line), "dbg: diag boot reset_reason=%s",
+             d.boot_reset_reason[0] != '\0' ? d.boot_reset_reason : "unknown");
+    reply_line(reply, user, line);
+    snprintf(line, sizeof(line), "dbg: diag boot last_crash=%s", d.has_last_crash ? d.last_crash : "none");
+    reply_line(reply, user, line);
+    snprintf(line, sizeof(line), "dbg: diag boot last_time=%s", d.has_last_session ? d.last_session : "none");
+    reply_line(reply, user, line);
+}
+
+/* "diag clear" (S25 latch-hold amendment) — erase the crash evidence
+ * (device: the flash core dump; both targets: the live `last_crash`
+ * line) via `ff_shell_diag_clear_crash`. Always succeeds from the
+ * console's point of view (matches `cal clear`'s own unconditional
+ * reply) — the device hook logs its own error, if any, to the serial
+ * log rather than failing this command. */
+static void dbgconsole_diag_clear(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+{
+    ff_shell_diag_clear_crash(sh);
+    reply_line(reply, user, "dbg: diag cleared");
 }
 
 static void dbgconsole_wall(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
@@ -1106,6 +1138,7 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
     case FF_DBGCMD_CREW_START: dbgconsole_crew_start(sh, reply, user); return;
     case FF_DBGCMD_CREW_LEAVE: dbgconsole_crew_leave(sh, reply, user); return;
     case FF_DBGCMD_DIAG: dbgconsole_diag(sh, wake_log, user, reply, user); return;
+    case FF_DBGCMD_DIAG_CLEAR: dbgconsole_diag_clear(sh, reply, user); return;
     case FF_DBGCMD_PERF: dbgconsole_perf(perf, user, reply, user); return;
     case FF_DBGCMD_PING: dbgconsole_ping(sh, cmd.u.node, reply, user); return;
     case FF_DBGCMD_FIND: dbgconsole_find(sh, cmd.u.node, reply, user); return;

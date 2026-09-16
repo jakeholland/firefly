@@ -40,6 +40,7 @@
 
 #include "driver/gpio.h" /* S26 slice f — GPIO wake source config (touch-INT/PWR/BOOT) for light sleep */
 #include "driver/usb_serial_jtag.h" /* S26 slice f amendment — usb_serial_jtag_is_connected(), sleep-inhibit sample */
+#include "esp_core_dump.h" /* S25 latch-hold amendment — crash evidence: image_check/get_summary/get_panic_reason/erase */
 #include "esp_err.h" /* esp_err_to_name() — S26 slice g's boot-splash failure log */
 #include "esp_log.h"
 #include "esp_random.h" /* fix/meshclient-packet-id-seed — esp_random() for the outgoing packet-id seed */
@@ -69,6 +70,7 @@
 #include "ff_nvs_store.h" /* S21 §4 — the real NVS-backed store */
 #include "ff_power.h"      /* S25 — battery keep-alive latch (must fire first) + S26b PWR/BOOT sampling */
 #include "ff_power_fsm.h"  /* S26 slice b — core: the press-timing FSM + reboot BOOT-release guard */
+#include "ff_session_log.h" /* S25 latch-hold amendment — NVS heartbeat + clean_shutdown flag */
 #include "ff_settings.h"
 #include "ff_shell.h"
 #include "ff_sound_emit.h" /* S27 sounds — the screens-level TAP seam (ff_shell_sound_sink's bind target) */
@@ -174,7 +176,7 @@ static uint32_t s_demo_clock_ms;
 static fp_pack_t *s_demo_pack;
 /* S26 slice (a) — the jsmn token scratch fp_parse tokenizes into while
  * parsing the demo festpack above. FP_MAX_TOKENS * sizeof(jsmntok_t) is
- * 128KB: PSRAM, never internal DIRAM — reclaiming THAT is the whole point
+ * 256KB (16384 tokens since 2026-09-16, was 128KB): PSRAM, never internal DIRAM — reclaiming THAT is the whole point
  * of this slice (docs/specs/S26-device-lifecycle.md). Intentionally
  * NEVER FREED: ff_shell_cfg_t.toks is stored by the shell and reused by
  * every ff_shell_load_pack call for the shell's whole lifetime (same
@@ -182,7 +184,7 @@ static fp_pack_t *s_demo_pack;
  * demo parse — ff_shell_load_pack is the shell's real production
  * pack-load path (already used off-device by the sim's --pack/--connect
  * flow), so a future on-device reload would parse into freed memory if
- * this were freed after ff_demo_seed. 128KB out of 8MB PSRAM is a
+ * this were freed after ff_demo_seed. 256KB out of 8MB PSRAM is a
  * trade worth making to keep that pointer valid for as long as the
  * shell might call ff_shell_load_pack again. */
 static jsmntok_t *s_demo_toks;
@@ -310,6 +312,14 @@ static ff_shell_t *s_shell_p; /* PSRAM since S24(c/d); internal DRAM stays for L
 static ff_clock_t s_clock;
 static ff_store_t s_store;
 static ff_nvs_store_t s_nvs; /* S21 §4 — backing state for the NVS store */
+
+/* S25 latch-hold amendment (2026-09-16) — the running session's own
+ * heartbeat record (core/include/ff_session_log.h) and the ms clock
+ * reading of its last write, so the render loop's periodic tick can
+ * gate on `ff_session_log_heartbeat_due` the same wraparound-safe way
+ * every other periodic sample in this file already does. */
+static ff_session_log_t s_session_log;
+static uint32_t s_session_log_last_write_ms;
 
 #if CONFIG_FF_LINK_UART
 /* S15c — the real mesh transport's `io` object. Held for the process
@@ -2065,9 +2075,23 @@ static char const *ff_link_state_name(ff_shell_link_t link)
  * names — GPIO7 low (ff_power.h; a pure two-pin HAL with no display
  * dependency) and the backlight to 0 (ff_display.h) — deliberately HERE,
  * in app_main, not inside ff_power. */
+/* S25 latch-hold amendment (2026-09-16) — mark THIS session's own
+ * heartbeat record clean and save it, right before a power-off/reboot
+ * actually happens. After this save, the puck stopping for ANY reason
+ * before the next 60s heartbeat reads as "clean" on the next boot —
+ * which is what actually happened: an intentional power-off/reboot was
+ * in flight. Shared by both POWER OFF/REBOOT paths so the mechanism
+ * cannot drift between them. */
+static void ff_session_log_mark_clean_and_save(void)
+{
+    ff_session_log_mark_clean(&s_session_log);
+    ff_session_log_save(&s_session_log, &s_store);
+}
+
 static void ff_power_off_cb(void *user)
 {
     (void)user;
+    ff_session_log_mark_clean_and_save();
     (void)ff_power_off();
     (void)ff_display_set_brightness(0);
 }
@@ -2083,6 +2107,70 @@ static void ff_power_reboot_cb(void *user)
 {
     (void)user;
     ff_power_fsm_request_reboot(&s_power_fsm);
+}
+
+/* S25 latch-hold amendment (2026-09-16) — ff_shell_cfg_t.diag_clear_crash:
+ * "diag clear" (FF_DBGCMD_DIAG_CLEAR) erases the ESP-IDF core dump from
+ * flash so a stale crash does not keep reporting itself after the
+ * maintainer has already read it. Logged either way — an erase failure
+ * (e.g. no core dump was present to begin with, ESP_ERR_NOT_FOUND) is
+ * expected and harmless, not a real error, but is logged at INFO rather
+ * than silently swallowed so a bench session can see what happened. */
+static void ff_diag_clear_crash_cb(void *user)
+{
+    (void)user;
+    esp_err_t const err = esp_core_dump_image_erase();
+    ESP_LOGI(TAG, "diag clear: core dump erase: %s", (err == ESP_OK) ? "ok" : esp_err_to_name(err));
+}
+
+/* S25 latch-hold amendment — translate esp_reset_reason_t (ESP-IDF) into
+ * the small, ESP-free vocabulary ff_session_log.h defines
+ * (ff_reset_reason_t), so core stays free of esp_system.h. Only as
+ * fine-grained as ff_reset_reason_name's own callers need — see that
+ * header's doc comment on ff_reset_reason_t for why this does not
+ * mirror esp_reset_reason_t member-for-member. */
+static ff_reset_reason_t ff_translate_reset_reason(esp_reset_reason_t r)
+{
+    switch (r) {
+    case ESP_RST_POWERON: return FF_RESET_REASON_POWERON;
+    case ESP_RST_SW: return FF_RESET_REASON_SW;
+    case ESP_RST_PANIC:
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT: return FF_RESET_REASON_TASK_WDT;
+    case ESP_RST_BROWNOUT: return FF_RESET_REASON_BROWNOUT;
+    case ESP_RST_UNKNOWN: return FF_RESET_REASON_UNKNOWN;
+    default: return FF_RESET_REASON_OTHER;
+    }
+}
+
+/* S25 latch-hold amendment — build the one-line "Last crash: ..." summary
+ * DIAGNOSTICS/`diag` show, from the ESP-IDF core dump's own summary +
+ * panic reason (both device-only APIs — this stays in app_main, the
+ * ESP-IDF boundary, not in core/app). Writes nothing and returns false
+ * when there is no valid core dump to report (the common case —
+ * `esp_core_dump_image_check` is the authority on "valid"; a corrupt or
+ * absent dump reads as honestly nothing, never a fabricated line). */
+static bool ff_build_last_crash_line(char *buf, size_t n)
+{
+    if (buf == NULL || n == 0) return false;
+    buf[0] = '\0';
+    if (esp_core_dump_image_check() != ESP_OK) return false;
+
+    esp_core_dump_summary_t summary;
+    if (esp_core_dump_get_summary(&summary) != ESP_OK) return false;
+
+    char reason[96] = "";
+    (void)esp_core_dump_get_panic_reason(reason, sizeof(reason)); /* best-effort; "" if absent */
+
+    if (reason[0] != '\0') {
+        snprintf(buf, n, "Last crash: %s @0x%08" PRIx32 " (%s)", summary.exc_task[0] != '\0' ? summary.exc_task : "?",
+                 (uint32_t)summary.exc_pc, reason);
+    } else {
+        snprintf(buf, n, "Last crash: %s @0x%08" PRIx32, summary.exc_task[0] != '\0' ? summary.exc_task : "?",
+                 (uint32_t)summary.exc_pc);
+    }
+    return true;
 }
 
 /* ff_shell_cfg_t.play_sound: S27 sounds (device half, docs/specs/
@@ -2309,6 +2397,9 @@ void app_main(void)
     cfg.power_off_user = NULL;
     cfg.power_reboot = ff_power_reboot_cb;
     cfg.power_reboot_user = NULL;
+    /* S25 latch-hold amendment — "diag clear" device hook. */
+    cfg.diag_clear_crash = ff_diag_clear_crash_cb;
+    cfg.diag_clear_crash_user = NULL;
     /* S27 sounds (device half) — set BEFORE ff_shell_init so the hook is
      * live the moment the shell exists. This USED to say the actual I2S
      * HAL bring-up (ff_audio_init) ran later, after display bring-up —
@@ -2456,6 +2547,56 @@ void app_main(void)
         ff_park("ff_shell_init failed");
         return;
     }
+
+    /* S25 latch-hold amendment (2026-09-16) — boot evidence, computed
+     * ONCE here and pushed via ff_shell_set_boot_evidence. Order:
+     * 1) this boot's reset reason (always known — logged unconditionally,
+     *    same as every other boot-log fact in this file);
+     * 2) the core dump, if a valid one is present (a real panic/WDT
+     *    crash — the ELF/CRC32 evidence CONFIG_ESP_COREDUMP_ENABLE_TO_
+     *    FLASH captures independently of whether the pad-hold fix above
+     *    kept the rail up through the reset);
+     * 3) the PREVIOUS session's own heartbeat record, loaded from NVS
+     *    BEFORE this session's first heartbeat overwrites it — if that
+     *    record says clean_shutdown == false, the previous session
+     *    stopped without going through POWER OFF/REBOOT (a silent
+     *    brownout is the case with no panic and no core dump — this is
+     *    the ONLY evidence that case leaves behind).
+     * `s_session_log`/`s_session_log_last_write_ms` are then left ready
+     * for the render loop's own periodic heartbeat below. */
+    esp_reset_reason_t const reset_reason = esp_reset_reason();
+    char const *const reset_reason_name = ff_reset_reason_name(ff_translate_reset_reason(reset_reason));
+    ESP_LOGI(TAG, "S25 boot evidence: reset reason = %s", reset_reason_name);
+
+    char last_crash_line[96];
+    bool const has_last_crash = ff_build_last_crash_line(last_crash_line, sizeof(last_crash_line));
+    if (has_last_crash) {
+        ESP_LOGW(TAG, "S25 boot evidence: %s", last_crash_line);
+    }
+
+    ff_session_log_t prev_session_log;
+    bool const prev_valid = ff_session_log_load(&prev_session_log, &s_store);
+    char last_session_line[128];
+    bool const has_last_session =
+        ff_session_log_format_last_time(last_session_line, sizeof(last_session_line), &prev_session_log, prev_valid);
+    if (has_last_session) {
+        ESP_LOGW(TAG, "S25 boot evidence: %s", last_session_line);
+    }
+
+    ff_shell_set_boot_evidence(&s_shell, reset_reason_name, has_last_crash ? last_crash_line : NULL,
+                                has_last_session ? last_session_line : NULL);
+
+    /* This session's own heartbeat starts here: clean_shutdown = false
+     * from the first write, same as every ordinary heartbeat — only the
+     * POWER OFF/REBOOT paths (ff_power_off_cb / the esp_restart() call
+     * site below) ever mark one clean before saving. Written once now
+     * (not deferred to the render loop's first periodic tick) so a puck
+     * that stops in the first 60s still leaves an honest, non-zero
+     * uptime/battery record rather than the boot-time zeros lingering as
+     * "the last known state" until the first heartbeat would have fired. */
+    ff_session_log_heartbeat(&s_session_log, 0u, ff_power_batt_mv(), FF_SESSION_LINK_NONE, 0u);
+    ff_session_log_save(&s_session_log, &s_store);
+    s_session_log_last_write_ms = ff_bringup_now_ms();
 
     /* A02 slice D (docs/specs/S02-core-crew.md's 2026-09-13 amendment
      * §A) — auto crew on the crew channel, the SHIPPED behaviour.
@@ -3072,6 +3213,11 @@ void app_main(void)
          * released, and esp_restart() is called from exactly ONE place: here. */
         if (ff_power_fsm_reboot_ready(&s_power_fsm, ff_power_boot_pressed())) {
             ESP_LOGI(TAG, "S26b reboot guard ready (BOOT released) — esp_restart()");
+            /* S25 latch-hold amendment — mark clean BEFORE esp_restart(),
+             * the same "clean save precedes the actual stop" rule
+             * ff_power_off_cb follows. This is the ONLY other place a
+             * clean_shutdown = true record is ever written. */
+            ff_session_log_mark_clean_and_save();
             esp_restart();
         }
 
@@ -3264,6 +3410,24 @@ void app_main(void)
         if (ff_time_reached(now_ms, last_batt_sample_ms + FF_BATT_SAMPLE_PERIOD_MS)) {
             last_batt_sample_ms = now_ms;
             ff_shell_set_batt_mv(&s_shell, ff_power_batt_mv(), now_ms);
+        }
+
+        /* S25 latch-hold amendment — the NVS heartbeat, every
+         * FF_SESSION_LOG_HEARTBEAT_MS (60s). Always writes
+         * clean_shutdown = false (ff_session_log_heartbeat's own
+         * contract) — the ONLY writes that ever set it true are the
+         * POWER OFF/REBOOT paths, via ff_session_log_mark_clean_and_save
+         * above. `link` is ff_shell_link_t translated to
+         * ff_session_link_t by NUMBER (the two enums are kept in
+         * lock-step by convention — ff_session_link_t's own doc
+         * comment); `face` is this boot's active_face, a small opaque
+         * id core does not interpret. */
+        if (ff_session_log_heartbeat_due(s_session_log_last_write_ms, now_ms)) {
+            s_session_log_last_write_ms = now_ms;
+            ff_session_log_heartbeat(&s_session_log, now_ms / 1000u, ff_power_batt_mv(),
+                                      (ff_session_link_t)(int)ff_shell_link(&s_shell),
+                                      (uint8_t)ff_shell_view(&s_shell)->active_face);
+            ff_session_log_save(&s_session_log, &s_store);
         }
 
 #if CONFIG_FF_COMPASS

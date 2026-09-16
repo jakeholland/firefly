@@ -367,6 +367,18 @@ typedef struct {
     void (*power_reboot)(void *user);
     void *power_reboot_user;
 
+    /** S25 latch-hold amendment (2026-09-16) — "diag clear"
+     *  (FF_DBGCMD_DIAG_CLEAR) hook: erase the ESP-IDF core dump from
+     *  flash (`esp_core_dump_image_erase()`) so a stale crash does not
+     *  keep reporting itself after the maintainer has already read it.
+     *  Same injected-device-IO shape as `power_off`/`power_reboot`: NULL
+     *  on the sim (no core dump partition there) is a safe no-op — the
+     *  shell still blanks its own in-memory `last_crash` line
+     *  (`ff_shell_clear_last_crash`) regardless, from
+     *  `ff_debug_console.c`'s dispatcher, not from in here. */
+    void (*diag_clear_crash)(void *user);
+    void *diag_clear_crash_user;
+
     /** S27 sounds (docs/specs/S27-sounds.md) — the device HAL hook that
      *  turns a `ff_sound_event_t` into actual audio on the PCM5101 I2S
      *  DAC. Same injected-device-IO shape as `haptic`/`power_off`: NULL
@@ -425,7 +437,7 @@ typedef struct {
      * S26 slice (a) — the jsmn token scratch `ff_shell_load_pack` hands
      * to `fp_parse` (fp_pack.h). Same "beside the shell, not inside it"
      * reasoning as `pack` above, for the same reason `fp_parse` stopped
-     * owning a static arena: this is ~128KB at FP_MAX_TOKENS, and the
+     * owning a static arena: this is ~256KB at FP_MAX_TOKENS (16384 since 2026-09-16), and the
      * target is the one that knows whether it can afford that in
      * internal RAM or should put it in PSRAM.
      *
@@ -681,8 +693,24 @@ typedef struct {
  * **344 B of headroom left**, not the ~1 KB the paragraph above
  * measured. The next slice that adds a struct to the shell should
  * expect to raise this number, and should say so.
+ *
+ * RAISED 44.5 KB -> 46 KB for the S25 latch-hold amendment's crash/
+ * last-session evidence (2026-09-16), deliberately, per this comment's
+ * own instruction. `ff_app_diag_t` (ff_app_state.h) gained an eighth
+ * section, "Boot evidence" — `boot_reset_reason[24]` +
+ * `last_crash[96]` + `last_session[128]` + two `bool`s, ~250 B — which
+ * lands in `ff_app_state_t` and so lands TWICE in `shell_t` (the view/
+ * prev_key render-key pair, same as every `ff_app_state_t` growth in
+ * this history), plus `shell_t`'s own new copy of the same three
+ * strings (`ff_shell_set_boot_evidence`'s backing storage) ANOTHER
+ * time — three logical copies of ~250 B is the arithmetic behind this
+ * raise, not two. Measured, not estimated: `sizeof(shell_t)` is
+ * 46,312 B against the old 45,568 B budget (a hard compile failure).
+ * 46 KB (47,104 B) clears it with 792 B headroom, this budget's usual
+ * ~600 B-1 KB range. Still comfortable in the S3's 512 KB SRAM; still a
+ * tripwire, not a hardware limit.
  */
-#define FF_SHELL_BYTES 45568u
+#define FF_SHELL_BYTES 47104u
 
 /** Alignment of the opaque payload. 8 covers every member the shell
  *  holds today (the widest are `double` inside `ff_latlon_t` and
@@ -1473,6 +1501,48 @@ void ff_shell_set_mic_status(ff_shell_t *sh, bool present, bool running, bool ha
  * bug needed an answer to and had none. NULL-safe (no-op).
  */
 void ff_shell_set_mic_total_on_ms(ff_shell_t *sh, uint32_t total_on_ms);
+
+/**
+ * ff_shell_set_boot_evidence — [api] S25 latch-hold amendment
+ * (2026-09-16): push THIS boot's crash/last-session evidence into the
+ * DIAGNOSTICS projection (`ff_app_diag_t`'s "8. Boot evidence" fields)
+ * and the bench console's `diag`. Call ONCE, right after `ff_shell_init`
+ * — this is a boot-time snapshot, not a live computation (unlike every
+ * other DIAGNOSTICS fact, which is read off live shell state on every
+ * `diag`/page render).
+ *
+ * `reset_reason` — THIS boot's `esp_reset_reason()`, already translated
+ *   to a short lowercase name (`ff_reset_reason_name`,
+ *   core/include/ff_session_log.h) by the caller (app_main.c stays the
+ *   ESP-IDF boundary; this header does not depend on esp_system.h).
+ *   Always present — copied verbatim, truncated to fit; NULL/empty is
+ *   never expected but degrades to an empty string, not a crash.
+ * `last_crash` — NULL or "" means no core dump is present (the common
+ *   case); otherwise the one-line "Last crash: ..." summary the caller
+ *   built from `esp_core_dump_get_summary`/`esp_core_dump_get_panic_
+ *   reason`. Sets `has_last_crash`.
+ * `last_session` — NULL or "" means the previous session shut down
+ *   cleanly (or there is no prior record at all); otherwise
+ *   `ff_session_log_format_last_time`'s own line, verbatim. Sets
+ *   `has_last_session`.
+ *
+ * NULL-safe (`sh == NULL` is a no-op). See `ff_shell_clear_last_crash`
+ * below for the ONLY thing that changes these again mid-session.
+ */
+void ff_shell_set_boot_evidence(ff_shell_t *sh, char const *reset_reason, char const *last_crash,
+                                 char const *last_session);
+
+/**
+ * ff_shell_diag_clear_crash — [api] S25 latch-hold amendment: the whole
+ * "diag clear" (FF_DBGCMD_DIAG_CLEAR) action. Invokes the device HAL
+ * hook (`ff_shell_cfg_t.diag_clear_crash`, e.g. `esp_core_dump_image_
+ * erase()` on device; NULL/no-op on the sim), THEN blanks the live
+ * `last_crash` line so DIAGNOSTICS/`diag` immediately stop reporting it
+ * even before the erase would otherwise be visible on the next boot.
+ * Does NOT touch `last_session`/`boot_reset_reason` — those describe
+ * facts this clear was never about. NULL-safe.
+ */
+void ff_shell_diag_clear_crash(ff_shell_t *sh);
 
 /**
  * ff_shell_set_screen_awake — [api] fix/s31-music-idle-drain

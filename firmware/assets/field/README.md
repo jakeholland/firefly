@@ -51,3 +51,20 @@ rejected by the wall-clock plausibility gate (S18) — the window opens exactly
 14 days before day-of-year 261 (Sep 18). That is fine for the actual field
 test (Sep 18–20) and for bench runs from Sep 4 onward, but keep it in mind if
 testing earlier.
+
+**2026-09-16 — refresh.** Straight `cp` (verified with `cmp`) of
+fest-almanac commit `7abcbbd` ("add the KandiWooks goodie bag side quest
+(87 events)", on the maintainer's `lost-lands-goodie-bag-quest` branch —
+one commit ahead of fest-almanac `main` at `7987ad8`, which differs only
+by that 87th event). What changed since the 2026-09-09 copy: the pack is
+now 91,403 bytes (was 33,734) — a top-level `events` array (87 meet &
+greets / side quests, each with its own source post; unknown to
+`fp_parse()`, tolerantly skipped), 9 landmarks (was 2; seven the hosts
+navigate by), 18 map features (was 13) with every on-grounds stage now a
+satellite-view pin, app-sourced set end times on 221 of 222 sets, and a
+long `meta.notes` provenance string. Still 222 sets, 55 after midnight,
+`utc_offset_min` -240. Because 91 KB is over the parser's old 64 KB input
+bound, this refresh ALSO raised `FP_MAX_JSON_LEN` to 256 KB and
+`FP_MAX_TOKENS` to 16384 — see `docs/specs/S05-festpack.md`'s dated
+amendment; without that, `fp_parse()` rejected the pack outright and the
+puck booted with no festival.

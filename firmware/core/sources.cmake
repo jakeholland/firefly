@@ -28,6 +28,7 @@
 set(FF_CORE_SOURCES
     src/ff_version.c
     src/ff_settings.c      # S11 — settings & persistence
+    src/ff_session_log.c   # S25 latch-hold amendment — NVS heartbeat + clean_shutdown flag
     src/ff_touchcal.c      # S15d — touch calibration (per-axis affine solve/apply)
     src/ff_geo.c            # S01 — bearing, distance, heading fusion
     src/ff_proto.c          # S04 — firefly protocol (flare/rally/status packets)

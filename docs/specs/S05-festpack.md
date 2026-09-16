@@ -271,3 +271,25 @@ already taken for unknown keys.
   FireflyModelTests/Festpack/`), asserts the identical facts through
   `FestpackParser.parse` — the Swift `Festpack.meta` value, never a
   second parser.
+
+- **2026-09-16 — parser budgets raised for the real field pack.** The
+  refreshed fest-almanac Lost Lands 2026 pack is 91,403 bytes: it now
+  carries an 87-entry top-level `events` array (meet & greets, side
+  quests — unknown to `fp_parse()` and tolerantly skipped, exactly as
+  the "schema will grow" rule above intends) plus a long `meta.notes`
+  provenance string. Skipped is not free: every byte still counts
+  against `FP_MAX_JSON_LEN` and every token against the caller's
+  `ntoks`. At the old 64 KB bound `fp_parse()` returned `FP_ERR_TOO_BIG`
+  for the whole document — the puck would have booted with no festival
+  (`ff_shell_load_pack` fails closed, honestly, to "no pack") and the
+  app's almanac refresh would have silently kept its bundled copy.
+  `test_field_pack.c` caught it, because it parses the embedded asset
+  itself. `FP_MAX_JSON_LEN` is now 256 KB and `FP_MAX_TOKENS` 16384
+  (256 KB of scratch: PSRAM on the device, heap in the app, `.bss` in
+  the sim/tests). Both bounds still exist — the fuzz contract needs a
+  finite input and a finite token walk — they are just sized to the real
+  pack with headroom (~2.8x bytes, ~2.2x tokens). `test_field_pack.c`
+  now also asserts the embedded pack is LARGER than the old 64 KB cap,
+  so a future "tidy" of the bound back down fails CI instead of
+  shipping a puck with no lineup; `test_festpack.c` proves a 70 KB
+  document with a large unknown member parses.

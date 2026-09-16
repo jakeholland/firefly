@@ -1641,8 +1641,10 @@ static void dbgconsole_diag_reports_unknowns_when_nothing_known(void)
     /* One line per section, with Mesh split across two (roster/RF +
      * airtime) and Link split across two (identity + counters,
      * debt/S15c-handshake-stall) — see dbgconsole_diag's own comment for
-     * the -Wformat-truncation budget those splits exist for. */
-    TEST_ASSERT_EQUAL_INT(8, cap.n);
+     * the -Wformat-truncation budget those splits exist for. S25
+     * latch-hold amendment adds THREE more lines, "8. Boot evidence"
+     * split one-field-per-line for the same reason. */
+    TEST_ASSERT_EQUAL_INT(11, cap.n);
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag link=NONE node=!00000000 name=?/?"));
     /* debt/S15c-handshake-stall — the counter that makes a stalled
      * handshake visible on the bench console. `reconnects` flat while
@@ -1654,6 +1656,12 @@ static void dbgconsole_diag_reports_unknowns_when_nothing_known(void)
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag time latched=0 trust=? src_node=? offset_min=?"));
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag compass mag=none present=0 imu=absent heading_deg=?"));
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag device batt_mv=? batt_pct=?"));
+    /* S25 latch-hold amendment — nothing computed on the sim (no target
+     * build behind it), so reset_reason stays "" (renders "unknown")
+     * and both evidence facts read "none". */
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag boot reset_reason=unknown"));
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag boot last_crash=none"));
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag boot last_time=none"));
 }
 
 static void dbgconsole_diag_reports_observed_facts(void)
@@ -1678,10 +1686,13 @@ static void dbgconsole_diag_reports_observed_facts(void)
 /* 2026-09-16 S26f field fix — `diag`'s optional wake-log fragment.
  * NULL (every test above, the sim's own reality) omits it entirely —
  * `dbgconsole_diag_reports_unknowns_when_nothing_known`'s exact `cap.n
- * == 8` already pins that. With a hook present, its line is forwarded
- * verbatim behind "dbg: diag ", the same forwarding contract
- * `i2c_health`/`compass_status` already establish for their own optional
- * fragments. */
+ * == 11` (8 section lines + the S25 latch-hold amendment's 3 boot-
+ * evidence lines, always present) already pins that. With a hook
+ * present, its line is forwarded verbatim behind "dbg: diag ", the same
+ * forwarding contract `i2c_health`/`compass_status` already establish
+ * for their own optional fragments — landing at index 8, right after
+ * section 6/Device and before the (always-present) boot-evidence lines,
+ * regardless of whether this hook fired. */
 static int fake_wake_log_ok(void *user, char *out, size_t cap)
 {
     (void)user;
@@ -1694,7 +1705,7 @@ static void dbgconsole_diag_omits_wake_log_without_a_hook(void)
     harness_init(1000);
     capture_t cap;
     dispatch("diag", &cap);
-    TEST_ASSERT_EQUAL_INT(8, cap.n); /* same count as dbgconsole_diag_reports_unknowns_when_nothing_known */
+    TEST_ASSERT_EQUAL_INT(11, cap.n); /* same count as dbgconsole_diag_reports_unknowns_when_nothing_known */
 }
 
 static void dbgconsole_diag_reports_wake_log_when_the_hook_is_present(void)
@@ -1705,10 +1716,48 @@ static void dbgconsole_diag_reports_wake_log_when_the_hook_is_present(void)
     capture_t cap;
     dispatch("diag", &cap);
 
-    TEST_ASSERT_EQUAL_INT(9, cap.n);
+    TEST_ASSERT_EQUAL_INT(12, cap.n);
     TEST_ASSERT_EQUAL_STRING(
         "dbg: diag wakes cause=TIMER touch_int=1/1 elapsed_ms=1503; cause=TIMER touch_int=1/1 elapsed_ms=1502",
         cap.lines[8]);
+}
+
+/* S25 latch-hold amendment — boot evidence shows once pushed, and
+ * "diag clear" blanks last_crash (only) back to "none", leaving
+ * reset_reason/last_session untouched. */
+static void dbgconsole_diag_shows_boot_evidence(void)
+{
+    harness_init(1000);
+    ff_shell_set_boot_evidence(&H.shell, "task watchdog", "Last crash: ff_shell_tick @0x420187ac",
+                                "Last time: stopped unexpectedly after 2h13m - battery 3.62 V");
+
+    capture_t cap;
+    dispatch("diag", &cap);
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag boot reset_reason=task watchdog"));
+    TEST_ASSERT_TRUE(
+        capture_has_line_containing(&cap, "dbg: diag boot last_crash=Last crash: ff_shell_tick @0x420187ac"));
+    TEST_ASSERT_TRUE(capture_has_line_containing(
+        &cap, "dbg: diag boot last_time=Last time: stopped unexpectedly after 2h13m - battery 3.62 V"));
+}
+
+static void dbgconsole_diag_clear_blanks_last_crash_only(void)
+{
+    harness_init(1000);
+    ff_shell_set_boot_evidence(&H.shell, "task watchdog", "Last crash: ff_shell_tick @0x420187ac",
+                                "Last time: stopped unexpectedly after 2h13m - battery 3.62 V");
+
+    capture_t clear_cap;
+    dispatch("diag clear", &clear_cap);
+    TEST_ASSERT_TRUE(capture_has_line_containing(&clear_cap, "dbg: diag cleared"));
+
+    capture_t cap;
+    dispatch("diag", &cap);
+    TEST_ASSERT_TRUE(
+        capture_has_line_containing(&cap, "dbg: diag boot reset_reason=task watchdog")); /* untouched */
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag boot last_crash=none")); /* cleared */
+    TEST_ASSERT_TRUE(capture_has_line_containing(
+        &cap, "dbg: diag boot last_time=Last time: stopped unexpectedly after 2h13m - battery 3.62 V"));
+    /* untouched */
 }
 
 int main(void)
@@ -1803,6 +1852,8 @@ int main(void)
     RUN_TEST(dbgconsole_diag_reports_observed_facts);
     RUN_TEST(dbgconsole_diag_omits_wake_log_without_a_hook);
     RUN_TEST(dbgconsole_diag_reports_wake_log_when_the_hook_is_present);
+    RUN_TEST(dbgconsole_diag_shows_boot_evidence);
+    RUN_TEST(dbgconsole_diag_clear_blanks_last_crash_only);
 
     return UNITY_END();
 }
