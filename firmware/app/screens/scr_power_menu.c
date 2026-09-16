@@ -24,30 +24,66 @@
 /* ---------------------------------------------------------------------
  * Layout constants.
  *
- * Three buttons, stacked and centered — verified to fit the round glass
- * (FF_THEME_PUCK_RADIUS_PX == 206) at their worst-case (farthest-from-
- * center) corner: at BTN3_DY=120, half-height 28, half-width 95, the
- * corner sits sqrt(95^2 + 148^2) ~= 176px from center, comfortably
- * inside the 206px radius with ~30px of margin — no dynamic chord
- * clamping needed the way `scr_flare.c`'s variable-length name chips
- * need (every label here is a short, fixed caption, never user text).
- * ------------------------------------------------------------------- */
+ * Three buttons, stacked and centered. Usability-review slice 3
+ * (docs/reviews/puck-ux-usability-2026-09-15.md finding 5 / §2.3) raised
+ * these from 56px (4.9mm — under the owner's 7mm FF_THEME_HIT_PRIMARY_PX
+ * floor) to 80px (7.0mm), which this face can afford: at 190px wide the
+ * farthest corner is |dx| = 97 from the GLASS centre (FF_THEME_GLASS_CX,
+ * 208 — NOT the framebuffer's 206; see the note below), so
+ * FF_THEME_GLASS_R (200) caps |dy| at sqrt(200^2 - 97^2) = 174.9 — a
+ * 349px band (glass y 31..381) for three 80px buttons plus two 16px gaps
+ * (272px), with the headline (dy -120) sitting clear above it. Farthest
+ * corner (CANCEL, the lowest button) sits ~10px inside the glass at the
+ * new offsets below — see the containment assert.
+ *
+ * Framed against the BEZEL, not the framebuffer. This file used to
+ * verify containment (in this same comment, before this pass) against
+ * `FF_THEME_PUCK_RADIUS_PX` (206, the inscribed circle of the 412x412
+ * FRAMEBUFFER) — the exact trap docs/hardware/tap-targets.md's "The
+ * second circle" section documents: the panel's round WINDOW sits ~5px
+ * right of the pixel array and the bezel lip eats the rest, so the
+ * circle that matters for "is this button actually reachable" is
+ * FF_THEME_GLASS_CX/CY/R (208, 206, 200), not (206, 206, 206). It cleared
+ * either way at the old, smaller geometry, which is exactly why nobody
+ * noticed; growing the buttons removes that slack, so the assert below
+ * is now written against the real bezel circle instead of restated as a
+ * comment. ------------------------------------------------------------- */
 
 #define POWER_MENU_HEADLINE_DY (-120.0f)
 
 #define POWER_MENU_BTN_W 190
-#define POWER_MENU_BTN_H 56 /* spec: ">= 56 px targets" */
-#define POWER_MENU_OFF_DY      (-40.0f)
-#define POWER_MENU_REBOOT_DY   (40.0f)
-#define POWER_MENU_CANCEL_DY   (120.0f)
+#define POWER_MENU_BTN_H FF_THEME_HIT_PRIMARY_PX /* 80 (was 56) — usability review slice 3, finding 5 */
+#define POWER_MENU_OFF_DY      (-66.0f)
+#define POWER_MENU_REBOOT_DY   (30.0f)
+#define POWER_MENU_CANCEL_DY   (126.0f)
 
 _Static_assert(POWER_MENU_BTN_H >= FF_THEME_MIN_HIT_PX, "power menu buttons must clear the 44px hit-target floor");
-/* Edge-to-edge gap between adjacent buttons (24px here) must clear the
- * shared adjacency floor test_face_hit_targets.c sweeps for. */
+/* Edge-to-edge gap between adjacent buttons must clear the shared
+ * adjacency floor test_face_hit_targets.c sweeps for. */
 _Static_assert((int32_t)(POWER_MENU_REBOOT_DY - POWER_MENU_OFF_DY) - POWER_MENU_BTN_H >= FF_HIT_MIN_GAP_PX,
                "power menu Power-off/Reboot gap must clear the adjacency floor");
 _Static_assert((int32_t)(POWER_MENU_CANCEL_DY - POWER_MENU_REBOOT_DY) - POWER_MENU_BTN_H >= FF_HIT_MIN_GAP_PX,
                "power menu Reboot/Cancel gap must clear the adjacency floor");
+
+/* Containment, against the GLASS (FF_THEME_GLASS_CX/CY/R) and not the
+ * framebuffer's own inscribed circle — see this file's header comment.
+ * CANCEL (the lowest button, dy=POWER_MENU_CANCEL_DY) is the worst case;
+ * the button is centred on the puck's own x-axis (framebuffer x=206),
+ * which is 2px LEFT of the glass centre (208), so the button's LEFT edge
+ * is the farther corner from the glass centre, not the right. Both
+ * corners are checked so this can't quietly rely on which one happens to
+ * bind today. */
+#define POWER_MENU_CANCEL_DX_L (FF_THEME_GLASS_CX - (FF_THEME_PUCK_PX / 2 - POWER_MENU_BTN_W / 2))
+#define POWER_MENU_CANCEL_DX_R ((FF_THEME_PUCK_PX / 2 + POWER_MENU_BTN_W / 2) - FF_THEME_GLASS_CX)
+#define POWER_MENU_CANCEL_DY_B \
+    ((int32_t)POWER_MENU_CANCEL_DY + FF_THEME_PUCK_PX / 2 + POWER_MENU_BTN_H / 2 - FF_THEME_GLASS_CY)
+
+_Static_assert(POWER_MENU_CANCEL_DX_L * POWER_MENU_CANCEL_DX_L + POWER_MENU_CANCEL_DY_B * POWER_MENU_CANCEL_DY_B <=
+                   FF_THEME_GLASS_R * FF_THEME_GLASS_R,
+               "power menu CANCEL's bottom-left corner must stay inside the round glass (bezel, not framebuffer)");
+_Static_assert(POWER_MENU_CANCEL_DX_R * POWER_MENU_CANCEL_DX_R + POWER_MENU_CANCEL_DY_B * POWER_MENU_CANCEL_DY_B <=
+                   FF_THEME_GLASS_R * FF_THEME_GLASS_R,
+               "power menu CANCEL's bottom-right corner must stay inside the round glass (bezel, not framebuffer)");
 
 /* ---------------------------------------------------------------------
  * Button helper — a thin adapter over the shared `ff_scr_pill_create`

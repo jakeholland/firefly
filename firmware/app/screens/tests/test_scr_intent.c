@@ -3568,28 +3568,51 @@ static void S21_AC1_settings_is_one_scrolling_list_every_row_reachable(void)
     TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "GLOW"));
     TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "WATER NUDGE"));
 
-    /* "Reachable by scrolling": scroll the ONE list all the way down
-     * (LVGL clamps to the real content range) and prove the LAST row,
-     * CREW (NAME in Settings' own section landed directly above it,
-     * ahead of this test's prior "CALIBRATE TOUCH" pick — CALIBRATE
-     * TOUCH stopped being the list's last row once COMPASS/CREW/NAME all
-     * landed after it; CREW is the current bottom), actually lands
-     * INSIDE the list's own viewport band at that scroll position — not
-     * merely present somewhere off-glass in the object tree. */
+    /* "Reachable with zero scrolling": usability-review slice 3
+     * (docs/reviews/puck-ux-usability-2026-09-15.md finding 9 / §4 task 4)
+     * promoted CREW to the TOP of the list — the whole point being that
+     * the #1 day-one task (SHOW CODE, behind CREW) no longer costs a
+     * scroll to reach. Proven the same way the old test proved CREW was
+     * reachable at the BOTTOM: find it in the object tree and check its
+     * rect lands inside the list's own viewport band at the list's
+     * DEFAULT (unscrolled) position — not merely present somewhere
+     * off-glass. */
     lv_obj_t *list = find_scrollable(lv_screen_active());
     TEST_ASSERT_NOT_NULL_MESSAGE(list, "no scrollable settings list container found");
     lv_obj_update_layout(list);
+
+    lv_obj_t *crew = find_button_with_label(lv_screen_active(), "CREW");
+    TEST_ASSERT_NOT_NULL(crew);
+    lv_area_t crew_area;
+    lv_obj_get_coords(crew, &crew_area);
+    lv_area_t list_area;
+    lv_obj_get_coords(list, &list_area);
+    TEST_ASSERT_TRUE_MESSAGE(crew_area.y1 >= list_area.y1 && crew_area.y2 <= list_area.y2,
+                             "CREW must be reachable with ZERO scrolling from the Settings root");
+
+    /* "Reachable by scrolling": scroll the ONE list all the way down
+     * (LVGL clamps to the real content range) and prove the new LAST
+     * row, NAME (CREW's promotion to the top left NAME as the bottom of
+     * the section run — the four hidden SHARE/HAPTICS/GLOW/WATER NUDGE
+     * rows stay compiled out, per the absence checks above), actually
+     * lands INSIDE the list's own viewport band at that scroll position —
+     * not merely present somewhere off-glass in the object tree. */
     lv_obj_scroll_to_y(list, LV_COORD_MAX, LV_ANIM_OFF);
     lv_obj_update_layout(list);
 
-    lv_obj_t *cal = find_button_with_label(lv_screen_active(), "CREW");
-    TEST_ASSERT_NOT_NULL(cal);
-    lv_area_t cal_area;
-    lv_obj_get_coords(cal, &cal_area);
-    lv_area_t list_area;
+    /* Scoped to `list`, not the whole screen: the pinned header (SETTINGS
+     * + the owner's name, built directly on the puck, never inside the
+     * scroll list) carries this SAME "(unset)" text when no name is set,
+     * and it is always on-glass regardless of scroll — searching the
+     * whole tree would find that one first and prove nothing about the
+     * list's own last row. */
+    lv_obj_t *name_row = find_label_exact(list, "(unset)");
+    TEST_ASSERT_NOT_NULL_MESSAGE(name_row, "the NAME row's own label must still be present");
+    lv_area_t name_area;
+    lv_obj_get_coords(name_row, &name_area);
     lv_obj_get_coords(list, &list_area);
-    TEST_ASSERT_TRUE_MESSAGE(cal_area.y1 >= list_area.y1 && cal_area.y2 <= list_area.y2,
-                             "CREW did not scroll into the list viewport");
+    TEST_ASSERT_TRUE_MESSAGE(name_area.y1 >= list_area.y1 && name_area.y2 <= list_area.y2,
+                             "NAME did not scroll into the list viewport");
 
     /* The header (SETTINGS + name) is built directly on the puck, never
      * inside the scroll list, so it is unaffected by scrolling the list

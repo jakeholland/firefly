@@ -187,11 +187,32 @@
 #define FF_SETTINGS_LIST_Y 100
 #define FF_SETTINGS_LIST_H 256 /* 100..356 */
 
-/* Rows — 48px tall clears the 44 floor with margin; 14px inter-row gap clears
- * the 8px adjacency floor with real slack. */
-#define FF_SETTINGS_ROW_H   48
+/* Rows — usability-review slice 3 (docs/reviews/puck-ux-usability-2026-09-15.md
+ * finding 5; docs/hardware/tap-targets.md's own "Settings list rows ...
+ * should be 80, and the face can afford it (the list scrolls)" follow-up)
+ * raises this from 48px (4.2mm, guarded only by the 44px absolute floor)
+ * to FF_THEME_HIT_PRIMARY_PX (80px, 7.0mm) — the owner's floor for list
+ * rows. The list scrolls, so the cost is a shorter visible page, not a
+ * clipped one; the CREW row promotion (see ff_scr_settings_build) ships
+ * in the SAME change specifically because raising this without it would
+ * have made CREW's ~830px scroll worse, not better (finding 9). 14px
+ * inter-row gap clears the 8px adjacency floor with real slack, unchanged.
+ *
+ * Shared with three sub-faces that used to tie their own button height to
+ * this constant (SHOW CODE's BACK, the crew-op confirms) — both of those
+ * are ALSO named by this slice and grow with it. Two more one-time users
+ * of the OLD 48px value did NOT get a slice-3 ask and would break their
+ * own (unrelated, untouched-goldens) geometry if left wired to this
+ * constant: the CREW sub-page's own action pills/rows
+ * (FF_CREW_PAGE_ROW_H, own constant below) and the compass-cal ritual's
+ * CANCEL/DONE (FF_CALCAL_BTN_H, own constant below) — both deliberately
+ * decoupled, same reasoning as the flare takeover's 80px buttons being
+ * "a real design trade, not a free win" in the review: growing either one
+ * here collides with content already pinned above it, and neither was
+ * asked for by this slice. */
+#define FF_SETTINGS_ROW_H   FF_THEME_HIT_PRIMARY_PX
 #define FF_SETTINGS_ROW_GAP 14
-#define FF_SETTINGS_ROW_STEP (FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP) /* 62 */
+#define FF_SETTINGS_ROW_STEP (FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP)
 /* Every pill this file builds (settings_make_pill) uses FF_SETTINGS_ROW_H as
  * its height, and every pill's width (TOGGLE/SCREEN/VALUE, all below) is
  * wider than that — so this one assert is the binding shorter-dimension
@@ -276,8 +297,16 @@ _Static_assert(FF_SETTINGS_ONOFF_PILL_W >= FF_THEME_MIN_HIT_PX,
 #define FF_SETTINGS_BRIGHT_CAP_H     22
 #define FF_SETTINGS_REL_SLIDER_Y     30
 /* Transparent hit strip. Raised from the 44 floor to 56 after field-test:
- * the minimum-size strip was hard to land a drag on. */
-#define FF_SETTINGS_SLIDER_H         56
+ * the minimum-size strip was hard to land a drag on. Usability-review
+ * slice 3 (docs/reviews/puck-ux-usability-2026-09-15.md, finding 5) grows
+ * the -/+ stepper pills to FF_SETTINGS_ROW_H (80) with the rest of the
+ * Settings pills, so this control-area height is DERIVED from that
+ * instead of restated as its own number — the old relationship (56 vs.
+ * the pre-pass 48px row) left 8px of breathing room above/below the
+ * pills, and this keeps that same ratio rather than either flush-fitting
+ * them or hand-picking a new constant that could silently drift from the
+ * row height again. */
+#define FF_SETTINGS_SLIDER_H         (FF_SETTINGS_ROW_H + 8)
 #define FF_SETTINGS_BRIGHT_BLOCK_H   (FF_SETTINGS_REL_SLIDER_Y + FF_SETTINGS_SLIDER_H)
 
 /* ---------------------------------------------------------------------
@@ -1420,6 +1449,31 @@ _Static_assert(FF_CREW_ACTION_PILL_W >= FF_THEME_MIN_HIT_PX,
                "the crew row's action pill must still clear the 44px hit floor");
 #define FF_CREW_ACTION_GAP    FF_SETTINGS_VALUE_GAP
 
+/* Usability-review slice 3 (docs/reviews/puck-ux-usability-2026-09-15.md)
+ * raised FF_SETTINGS_ROW_H to 80 for the plain Settings list. This CREW
+ * sub-page borrowed that same constant (pre-pass, when it was 48) for its
+ * own full-width action pills (SHOW CODE / START CREW / LEAVE CREW) and
+ * for the HIDE/UNHIDE/ADD/FULL(8) pills inside FF_CREW_ROW_H (56)-tall
+ * member rows — deliberately DECOUPLED here rather than following
+ * FF_SETTINGS_ROW_H up to 80, for two independent reasons: (1) this
+ * slice's own "Do" list names the plain Settings list, SHOW CODE's BACK
+ * and the crew-op confirms, not this page's rows — growing them was never
+ * asked for; (2) it does not fit without its own redesign anyway — an
+ * 80px pill centered in a 56px-tall FF_CREW_ROW_H row would overflow the
+ * row by 24px into its neighbours, and the SHOW CODE/START CREW/LEAVE
+ * CREW pills are full-width rows in their own right (not embedded in a
+ * taller row), so growing THEM would just re-flow this page's whole
+ * layout — a legitimate follow-up, but its own slice, the same call the
+ * flare takeover's 80px buttons got ("a real design trade, not a free
+ * win — state it and let Jake pick"). Kept at the pre-pass 48px so this
+ * page's own goldens (crew_default, crew_full, crew_hidden, crew_show_
+ * code's CALLER page, etc.) stay byte-identical; only the sub-faces this
+ * slice actually names (SHOW CODE's own BACK button, the crew-op
+ * confirm/status pages) grow. */
+#define FF_CREW_PAGE_ROW_H 48
+_Static_assert(FF_CREW_PAGE_ROW_H >= FF_THEME_MIN_HIT_PX,
+               "the crew page's own action pills must still clear the 44px hit floor");
+
 /* [api] A02 slice D — the PAIRED row's action is **HIDE**, and REMOVE is
  * gone from this row. Both halves of that are decisions, so both are
  * written down (AGENTS.md: note the interpretation).
@@ -1631,8 +1685,8 @@ static void settings_crew_build_paired_row(lv_obj_t *list, int32_t rel_y, int32_
     lv_obj_t *top_lbl = settings_crew_row_labels(row, label_w, top, status, color);
     lv_label_set_recolor(top_lbl, has_tag);
 
-    settings_make_pill(row, "HIDE", row_w - FF_CREW_ACTION_PILL_W, (FF_CREW_ROW_H - FF_SETTINGS_ROW_H) / 2,
-                       FF_CREW_ACTION_PILL_W, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
+    settings_make_pill(row, "HIDE", row_w - FF_CREW_ACTION_PILL_W, (FF_CREW_ROW_H - FF_CREW_PAGE_ROW_H) / 2,
+                       FF_CREW_ACTION_PILL_W, FF_CREW_PAGE_ROW_H, FF_THEME_COLOR_SURFACE,
                        FF_THEME_COLOR_STALE_AMBER, 0, settings_crew_hide_cb,
                        (void *)(uintptr_t)m->node_id);
 }
@@ -1665,8 +1719,8 @@ static void settings_crew_build_hidden_row(lv_obj_t *list, int32_t rel_y, int32_
 
     settings_crew_row_labels(row, label_w, top, "off your radar", FF_THEME_COLOR_DIM);
 
-    settings_make_pill(row, "UNHIDE", row_w - FF_CREW_ACTION_PILL_W, (FF_CREW_ROW_H - FF_SETTINGS_ROW_H) / 2,
-                       FF_CREW_ACTION_PILL_W, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_AMBER,
+    settings_make_pill(row, "UNHIDE", row_w - FF_CREW_ACTION_PILL_W, (FF_CREW_ROW_H - FF_CREW_PAGE_ROW_H) / 2,
+                       FF_CREW_ACTION_PILL_W, FF_CREW_PAGE_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_AMBER,
                        0, settings_crew_unhide_cb, (void *)(uintptr_t)h->node_id);
 }
 
@@ -1723,7 +1777,7 @@ static int32_t settings_crew_caption(lv_obj_t *list, int32_t y, int32_t row_w, c
     lv_obj_clear_flag(lbl, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_update_layout(lbl);
     int32_t const h = lv_obj_get_height(lbl);
-    return y + (h > 0 ? h : FF_SETTINGS_ROW_H) + FF_SETTINGS_ROW_GAP;
+    return y + (h > 0 ? h : FF_CREW_PAGE_ROW_H) + FF_SETTINGS_ROW_GAP;
 }
 
 static void settings_crew_build_heard_row(lv_obj_t *list, int32_t rel_y, int32_t row_w,
@@ -1761,12 +1815,13 @@ static void settings_crew_build_heard_row(lv_obj_t *list, int32_t rel_y, int32_t
     lv_obj_t *pill;
     if (roster_full) {
         pill = settings_make_pill(row, "FULL (8)", row_w - FF_CREW_ACTION_PILL_W,
-                                  (FF_CREW_ROW_H - FF_SETTINGS_ROW_H) / 2, FF_CREW_ACTION_PILL_W, FF_SETTINGS_ROW_H,
-                                  FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_DIM, 0, NULL, NULL);
+                                  (FF_CREW_ROW_H - FF_CREW_PAGE_ROW_H) / 2, FF_CREW_ACTION_PILL_W,
+                                  FF_CREW_PAGE_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_DIM, 0, NULL, NULL);
         lv_obj_clear_flag(pill, LV_OBJ_FLAG_CLICKABLE);
     } else {
-        pill = settings_make_pill(row, "ADD", row_w - FF_CREW_ACTION_PILL_W, (FF_CREW_ROW_H - FF_SETTINGS_ROW_H) / 2,
-                                  FF_CREW_ACTION_PILL_W, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
+        pill = settings_make_pill(row, "ADD", row_w - FF_CREW_ACTION_PILL_W,
+                                  (FF_CREW_ROW_H - FF_CREW_PAGE_ROW_H) / 2, FF_CREW_ACTION_PILL_W,
+                                  FF_CREW_PAGE_ROW_H, FF_THEME_COLOR_SURFACE,
                                   FF_THEME_COLOR_AMBER, 0, settings_crew_pair_cb, (void *)(uintptr_t)h->node_id);
     }
     (void)pill;
@@ -1861,9 +1916,9 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
      * present whether or not a code has resolved: the face it opens says
      * "no crew code yet" with the reason, which teaches more than a
      * control that silently does nothing. */
-    settings_make_pill(list, "SHOW CODE", 0, y, row_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
+    settings_make_pill(list, "SHOW CODE", 0, y, row_w, FF_CREW_PAGE_ROW_H, FF_THEME_COLOR_SURFACE,
                        FF_THEME_COLOR_AMBER, 2, settings_crew_show_code_cb, NULL);
-    y += FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP;
+    y += FF_CREW_PAGE_ROW_H + FF_SETTINGS_ROW_GAP;
 
     /* [api] A02 slice D2 — START CREW / LEAVE CREW.
      *
@@ -1879,13 +1934,13 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
      * Same full-width geometry as SHOW CODE above — no new sizes, and
      * clear of the 44 px hit floor by construction. */
     if (cw->can_start) {
-        settings_make_pill(list, "START CREW", 0, y, row_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
+        settings_make_pill(list, "START CREW", 0, y, row_w, FF_CREW_PAGE_ROW_H, FF_THEME_COLOR_SURFACE,
                            FF_THEME_COLOR_AMBER, 2, settings_crew_start_req_cb, NULL);
-        y += FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP;
+        y += FF_CREW_PAGE_ROW_H + FF_SETTINGS_ROW_GAP;
     } else if (cw->can_leave) {
-        settings_make_pill(list, "LEAVE CREW", 0, y, row_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
+        settings_make_pill(list, "LEAVE CREW", 0, y, row_w, FF_CREW_PAGE_ROW_H, FF_THEME_COLOR_SURFACE,
                            FF_THEME_COLOR_STALE_AMBER, 2, settings_crew_leave_req_cb, NULL);
-        y += FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP;
+        y += FF_CREW_PAGE_ROW_H + FF_SETTINGS_ROW_GAP;
     } else if (cw->region_unset) {
         /* S02's D2 amendment §A.1 requires this refusal be reported as
          * ITSELF, in these words. Without this branch the sentence below
@@ -1943,7 +1998,7 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
     y = settings_build_section_header(list, y, row_w, "HEARD", /*first=*/false);
     if (cw->heard_count == 0) {
         settings_crew_build_heard_empty(list, y, row_w, cw->link_connected);
-        y += FF_SETTINGS_ROW_H;
+        y += FF_CREW_PAGE_ROW_H;
     } else {
         for (uint8_t i = 0; i < cw->heard_count; i++) {
             settings_crew_build_heard_row(list, y, row_w, &cw->heard[i], cw->roster_full);
@@ -2062,14 +2117,30 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
 /* TOP_MID aligns on the pixel array's centre; this nudges to the glass's. */
 #define FF_CREWCODE_QR_DX     (FF_THEME_GLASS_CX - FF_THEME_PUCK_PX / 2)
 #define FF_CREWCODE_QR_Y      34
-#define FF_CREWCODE_CODE_Y    (FF_CREWCODE_QR_Y + FF_CREWCODE_QR_PX + 14)
+/* Usability-review slice 3 (docs/reviews/puck-ux-usability-2026-09-15.md
+ * §2.3 "SHOW CODE BACK") grows FF_CREWCODE_BTN_H to 80 (via
+ * FF_SETTINGS_ROW_H) and moves FF_CREWCODE_BTN_Y up to make room inside
+ * the glass — see that constant's own comment. That leaves 6 fewer
+ * pixels above the BACK button for the code/caption/precision stack, so
+ * this trailing gap after the QR (14 -> 8) gives them back: a code/
+ * caption/precision block whose own internal spacing is otherwise
+ * untouched, just started 6px earlier. */
+#define FF_CREWCODE_CODE_Y    (FF_CREWCODE_QR_Y + FF_CREWCODE_QR_PX + 8)
 #define FF_CREWCODE_CAPTION_Y (FF_CREWCODE_CODE_Y + 46)
 /* A02 slice D2 amendment (#47) — the one PRECISION line, below the
  * (up to two-line) caption. */
 #define FF_CREWCODE_PRECISION_Y (FF_CREWCODE_CAPTION_Y + 36)
 #define FF_CREWCODE_BTN_W     120
-#define FF_CREWCODE_BTN_H     FF_SETTINGS_ROW_H
-#define FF_CREWCODE_BTN_Y     326
+#define FF_CREWCODE_BTN_H     FF_SETTINGS_ROW_H /* 80 (was 48) — usability review slice 3, finding 5 */
+/* 326 -> 314: at 120px wide the BACK pill's farthest corner (its LEFT
+ * edge — the button is centred on the framebuffer's x=206, 2px left of
+ * the glass centre's 208) sits |dx|=62 from FF_THEME_GLASS_CX, so
+ * FF_THEME_GLASS_R (200) caps |dy| at sqrt(200^2 - 62^2) = 190.2 — the
+ * button's bottom can reach glass y <= 206 + 190.2 = 396.2. At BTN_Y=314,
+ * H=80, bottom=394, comfortably inside. See the containment assert below,
+ * which is the actual gate — this comment is the derivation, not the
+ * check. */
+#define FF_CREWCODE_BTN_Y     314
 
 _Static_assert(FF_CREWCODE_QR_PX <= 220, "A02 slice D: the QR must stay <= 220px to fit the round glass");
 /* 2026-09-15 amendment — this face's QR now encodes `cw->crew_code`
@@ -2103,14 +2174,24 @@ _Static_assert((FF_CREWCODE_QR_BOX / 2) * (FF_CREWCODE_QR_BOX / 2) +
 _Static_assert(FF_CREWCODE_PRECISION_Y + 20 <= FF_CREWCODE_BTN_Y,
                "SHOW CODE's PRECISION line must clear the BACK button above it");
 _Static_assert(FF_CREWCODE_BTN_H >= FF_THEME_MIN_HIT_PX, "SHOW CODE's BACK button must clear the 44px hit floor");
-/* The BACK pill's lowest corners have to stay inside the glass. At its
- * bottom edge the inscribed chord is
- * 2*sqrt(R^2 - (y - R)^2) = 2*sqrt(206^2 - 168^2) ~= 238 px, so 120 fits
- * with ~59 px of margin each side. Stated as arithmetic rather than
- * eyeballed off a render, because a render can be wrong by exactly the
- * amount nobody notices until the hardware's bezel eats it. */
-_Static_assert(FF_CREWCODE_BTN_Y + FF_CREWCODE_BTN_H <= 374,
-               "SHOW CODE's BACK button must stay inside the round glass");
+/* The BACK pill's lowest corners have to stay inside the GLASS, not the
+ * framebuffer — usability-review slice 3 rewrote this onto
+ * FF_THEME_GLASS_CX/CY/R for the same reason docs/hardware/tap-targets.md's
+ * crew-op assert was: an assert written against the framebuffer's own
+ * (206,206,206) circle can pass a layout whose corner is already under
+ * the bezel lip, because the bezel eats asymmetrically (2px off the
+ * LEFT). The button is centred on the framebuffer's x=206, so its LEFT
+ * edge (146) is the one farther from the glass centre (208) — both are
+ * checked so this can't quietly depend on which one happens to bind. */
+#define FF_CREWCODE_BTN_DX_L (FF_THEME_GLASS_CX - (FF_THEME_PUCK_PX - FF_CREWCODE_BTN_W) / 2)
+#define FF_CREWCODE_BTN_DX_R ((FF_THEME_PUCK_PX + FF_CREWCODE_BTN_W) / 2 - FF_THEME_GLASS_CX)
+#define FF_CREWCODE_BTN_DY_B (FF_CREWCODE_BTN_Y + FF_CREWCODE_BTN_H - FF_THEME_GLASS_CY)
+_Static_assert(FF_CREWCODE_BTN_DX_L * FF_CREWCODE_BTN_DX_L + FF_CREWCODE_BTN_DY_B * FF_CREWCODE_BTN_DY_B <=
+                   FF_THEME_GLASS_R * FF_THEME_GLASS_R,
+               "SHOW CODE's BACK button (left corner) must stay inside the round glass");
+_Static_assert(FF_CREWCODE_BTN_DX_R * FF_CREWCODE_BTN_DX_R + FF_CREWCODE_BTN_DY_B * FF_CREWCODE_BTN_DY_B <=
+                   FF_THEME_GLASS_R * FF_THEME_GLASS_R,
+               "SHOW CODE's BACK button (right corner) must stay inside the round glass");
 
 static void settings_crew_code_back_cb(lv_event_t *e)
 {
@@ -2258,13 +2339,56 @@ static void settings_build_crew_code_page(lv_obj_t *parent, ff_app_crew_page_t c
 #define FF_CREWOP_BODY_W    (FF_THEME_PUCK_PX - 150)
 #define FF_CREWOP_CODE_Y    168
 #define FF_CREWOP_CODE_BODY_Y 212
-#define FF_CREWOP_BTN_H     FF_SETTINGS_ROW_H
-#define FF_CREWOP_BTN_Y     300
-#define FF_CREWOP_BTN2_Y    (FF_CREWOP_BTN_Y - FF_SETTINGS_ROW_H - 10)
-#define FF_CREWOP_BTN_W     132
-#define FF_CREWOP_BTN_GAP   12
+/* Usability-review slice 3 (docs/reviews/puck-ux-usability-2026-09-15.md
+ * finding 5 / finding 10 / §2.3 "Crew-op confirm buttons") grows the
+ * confirm buttons to FF_SETTINGS_ROW_H (80) and the destructive-adjacent
+ * gap to FF_HIT_MIN_GAP_DESTRUCTIVE_PX (16, matching the flare takeover's
+ * own GO/DISMISS separation) — narrowing FF_CREWOP_BTN_W to 124 pays for
+ * both, same trade docs/hardware/tap-targets.md's Radar FLARE derivation
+ * made (narrower buys height/gap on a round face; see that file's
+ * "FLARE could not reach 80px tall" section for the same shape of trade).
+ *
+ * FF_CREWOP_BTN_Y (the single-pill BACK/DONE position — no-snapshot's
+ * BACK, FAILED's BACK, READY-leaving's DONE, READY-not-leaving's DONE)
+ * does NOT move: a single 124px pill at y=300, height 80, is nowhere near
+ * the glass edge (see the containment assert below) so it never needed
+ * to.
+ *
+ * The two-pill CONFIRM row (NOT NOW / LEAVE, NOT NOW / START — the one
+ * finding 10 actually names) gets its OWN, higher Y instead of sharing
+ * FF_CREWOP_BTN_Y: at the new width/gap the row is 264px wide, and its
+ * farthest corner (bottom-LEFT — the row is centred on the framebuffer's
+ * x=206, 2px left of the glass centre's 208, so the LEFT edge is farther)
+ * does not clear FF_THEME_GLASS_R at y=300 (see the math this constant's
+ * containment assert states directly) the way it did at the old 48px
+ * height. FF_CREWOP_CONFIRM_BTN_Y is the highest the row can sit while
+ * still landing directly under FF_CREWOP_BODY_Y's text, derived the same
+ * "measure the actual corner" way as every other constant in this file's
+ * geometry — not shared with the single-pill rows, which have no reason
+ * to move up into content that is not there on those faces.
+ *
+ * READY-not-leaving's SHOW CODE (BTN2) is deliberately NOT part of this
+ * growth: it is not named by this slice's ask, and there is no room for
+ * it to grow anyway — the code label above it (FF_CREWOP_CODE_Y) and
+ * DONE below it (now at its full 80px) leave exactly the old 48px gap
+ * this pill has always used. FF_CREWOP_BTN2_H keeps its own, independent
+ * value for this reason (same call as FF_CALCAL_BTN_H / FF_CREW_PAGE_ROW_H
+ * above — see either one's comment), and FF_CREWOP_BTN2_Y is now a plain
+ * literal rather than derived from FF_CREWOP_BTN_Y, since the two no
+ * longer share a height. */
+#define FF_CREWOP_BTN_H         FF_SETTINGS_ROW_H
+#define FF_CREWOP_BTN_Y         300
+#define FF_CREWOP_CONFIRM_BTN_Y 274
+#define FF_CREWOP_BTN2_H        48
+#define FF_CREWOP_BTN2_Y        242
+#define FF_CREWOP_BTN_W         124
+#define FF_CREWOP_BTN_GAP       FF_HIT_MIN_GAP_DESTRUCTIVE_PX
 
 _Static_assert(FF_CREWOP_BTN_H >= FF_THEME_MIN_HIT_PX, "crew confirm buttons must clear the 44px hit floor");
+_Static_assert(FF_CREWOP_BTN2_H >= FF_THEME_MIN_HIT_PX, "the READY page's SHOW CODE pill must clear the 44px hit floor");
+_Static_assert(FF_CREWOP_BTN_GAP >= FF_HIT_MIN_GAP_DESTRUCTIVE_PX,
+               "NOT NOW / LEAVE is a destructive-adjacent-to-cancel pair; its gap must clear the destructive "
+               "floor, matching the flare takeover's 16px (finding 10)");
 
 /* Containment, against the GLASS and not against the 412 pixel array.
  *
@@ -2279,7 +2403,7 @@ _Static_assert(FF_CREWOP_BTN_H >= FF_THEME_MIN_HIT_PX, "crew confirm buttons mus
  *
  * The pill row is `2*W + GAP` wide, centred on the array
  * (LV_ALIGN_TOP_MID), so its corners are at
- *   x = (FF_THEME_PUCK_PX -/+ row_w) / 2,  y = BTN_Y + BTN_H
+ *   x = (FF_THEME_PUCK_PX -/+ row_w) / 2,  y = FF_CREWOP_CONFIRM_BTN_Y + BTN_H
  * and the bottom-left corner is the worst case. Stated as arithmetic
  * rather than eyeballed off a render: a golden is a pixel-diff against
  * itself and would keep a corner over the bezel forever. (The pills are
@@ -2288,7 +2412,7 @@ _Static_assert(FF_CREWOP_BTN_H >= FF_THEME_MIN_HIT_PX, "crew confirm buttons mus
 #define FF_CREWOP_ROW_W  (2 * FF_CREWOP_BTN_W + FF_CREWOP_BTN_GAP)
 #define FF_CREWOP_DX_L   (FF_THEME_GLASS_CX - (FF_THEME_PUCK_PX - FF_CREWOP_ROW_W) / 2)
 #define FF_CREWOP_DX_R   ((FF_THEME_PUCK_PX + FF_CREWOP_ROW_W) / 2 - FF_THEME_GLASS_CX)
-#define FF_CREWOP_DY_B   (FF_CREWOP_BTN_Y + FF_CREWOP_BTN_H - FF_THEME_GLASS_CY)
+#define FF_CREWOP_DY_B   (FF_CREWOP_CONFIRM_BTN_Y + FF_CREWOP_BTN_H - FF_THEME_GLASS_CY)
 
 _Static_assert(FF_CREWOP_DX_L * FF_CREWOP_DX_L + FF_CREWOP_DY_B * FF_CREWOP_DY_B <=
                    FF_THEME_GLASS_R * FF_THEME_GLASS_R,
@@ -2296,15 +2420,27 @@ _Static_assert(FF_CREWOP_DX_L * FF_CREWOP_DX_L + FF_CREWOP_DY_B * FF_CREWOP_DY_B
 _Static_assert(FF_CREWOP_DX_R * FF_CREWOP_DX_R + FF_CREWOP_DY_B * FF_CREWOP_DY_B <=
                    FF_THEME_GLASS_R * FF_THEME_GLASS_R,
                "the crew confirm button row's bottom-RIGHT corner must stay inside FF_THEME_GLASS_R");
-/* The second row (READY's SHOW CODE) sits a whole row higher, so its
- * corners are strictly inside the row above's — pinned anyway, because
- * "strictly inside" stops being true the moment somebody widens it. */
-_Static_assert(((FF_CREWOP_BTN_W + 1) / 2 + (FF_THEME_GLASS_CX - FF_THEME_PUCK_PX / 2)) *
-                       ((FF_CREWOP_BTN_W + 1) / 2 + (FF_THEME_GLASS_CX - FF_THEME_PUCK_PX / 2)) +
-                   (FF_CREWOP_BTN2_Y + FF_CREWOP_BTN_H - FF_THEME_GLASS_CY) *
-                       (FF_CREWOP_BTN2_Y + FF_CREWOP_BTN_H - FF_THEME_GLASS_CY) <=
+/* The single-pill BACK/DONE rows (FF_CREWOP_BTN_Y, unmoved) — checked
+ * directly rather than assumed, now that they no longer share a Y with
+ * the two-pill row above. */
+#define FF_CREWOP_SOLO_DX ((FF_CREWOP_BTN_W + 1) / 2 + (FF_THEME_GLASS_CX - FF_THEME_PUCK_PX / 2))
+#define FF_CREWOP_SOLO_DY_B (FF_CREWOP_BTN_Y + FF_CREWOP_BTN_H - FF_THEME_GLASS_CY)
+_Static_assert(FF_CREWOP_SOLO_DX * FF_CREWOP_SOLO_DX + FF_CREWOP_SOLO_DY_B * FF_CREWOP_SOLO_DY_B <=
                    FF_THEME_GLASS_R * FF_THEME_GLASS_R,
-               "the crew READY face's single pill must stay inside FF_THEME_GLASS_R");
+               "the crew confirm/status page's single BACK/DONE pill must stay inside FF_THEME_GLASS_R");
+/* The READY page's SHOW CODE pill (BTN2) — its own, smaller, unmoved
+ * geometry; checked directly for the same reason. */
+#define FF_CREWOP_BTN2_DX ((FF_CREWOP_BTN_W + 1) / 2 + (FF_THEME_GLASS_CX - FF_THEME_PUCK_PX / 2))
+#define FF_CREWOP_BTN2_DY_B (FF_CREWOP_BTN2_Y + FF_CREWOP_BTN2_H - FF_THEME_GLASS_CY)
+_Static_assert(FF_CREWOP_BTN2_DX * FF_CREWOP_BTN2_DX + FF_CREWOP_BTN2_DY_B * FF_CREWOP_BTN2_DY_B <=
+                   FF_THEME_GLASS_R * FF_THEME_GLASS_R,
+               "the crew READY face's SHOW CODE pill must stay inside FF_THEME_GLASS_R");
+/* BTN2 (SHOW CODE) and the single-pill DONE below it on the same READY
+ * face must not collide now that they no longer share one derived
+ * height — pinned explicitly since the old formula that guaranteed this
+ * for free is gone. */
+_Static_assert(FF_CREWOP_BTN2_Y + FF_CREWOP_BTN2_H + 10 <= FF_CREWOP_BTN_Y,
+               "the READY face's SHOW CODE pill must clear DONE below it by at least 10px");
 
 static void settings_crewop_title(lv_obj_t *puck, char const *text, uint32_t color)
 {
@@ -2333,22 +2469,35 @@ static void settings_crewop_body(lv_obj_t *puck, char const *text, int32_t y)
 }
 
 /* A centred row of one or two pills. `right_text == NULL` centres the
- * single pill, rather than leaving it lopsided where a pair would be. */
-static void settings_crewop_buttons(lv_obj_t *puck, int32_t y, char const *left_text, uint32_t left_fg,
-                                     lv_event_cb_t left_cb, char const *right_text, uint32_t right_fg,
-                                     lv_event_cb_t right_cb)
+ * single pill, rather than leaving it lopsided where a pair would be.
+ * `h` is explicit (not always FF_CREWOP_BTN_H) because this face now has
+ * TWO button heights: the grown 80px primary/confirm rows this slice
+ * raised, and the READY page's own un-grown SHOW CODE pill (BTN2) — see
+ * FF_CREWOP_BTN2_H's own comment for why that one stays behind. */
+static void settings_crewop_buttons_h(lv_obj_t *puck, int32_t y, int32_t h, char const *left_text, uint32_t left_fg,
+                                       lv_event_cb_t left_cb, char const *right_text, uint32_t right_fg,
+                                       lv_event_cb_t right_cb)
 {
     if (right_text == NULL) {
-        settings_make_pill(puck, left_text, (FF_THEME_PUCK_PX - FF_CREWOP_BTN_W) / 2, y, FF_CREWOP_BTN_W,
-                           FF_CREWOP_BTN_H, FF_THEME_COLOR_SURFACE, left_fg, 2, left_cb, NULL);
+        settings_make_pill(puck, left_text, (FF_THEME_PUCK_PX - FF_CREWOP_BTN_W) / 2, y, FF_CREWOP_BTN_W, h,
+                           FF_THEME_COLOR_SURFACE, left_fg, 2, left_cb, NULL);
         return;
     }
     int32_t const total = 2 * FF_CREWOP_BTN_W + FF_CREWOP_BTN_GAP;
     int32_t const x0 = (FF_THEME_PUCK_PX - total) / 2;
-    settings_make_pill(puck, left_text, x0, y, FF_CREWOP_BTN_W, FF_CREWOP_BTN_H, FF_THEME_COLOR_SURFACE,
+    settings_make_pill(puck, left_text, x0, y, FF_CREWOP_BTN_W, h, FF_THEME_COLOR_SURFACE,
                        left_fg, 2, left_cb, NULL);
-    settings_make_pill(puck, right_text, x0 + FF_CREWOP_BTN_W + FF_CREWOP_BTN_GAP, y, FF_CREWOP_BTN_W,
-                       FF_CREWOP_BTN_H, FF_THEME_COLOR_SURFACE, right_fg, 2, right_cb, NULL);
+    settings_make_pill(puck, right_text, x0 + FF_CREWOP_BTN_W + FF_CREWOP_BTN_GAP, y, FF_CREWOP_BTN_W, h,
+                       FF_THEME_COLOR_SURFACE, right_fg, 2, right_cb, NULL);
+}
+
+/* The common case — every caller except the READY page's stacked SHOW
+ * CODE pill wants the primary FF_CREWOP_BTN_H (80). */
+static void settings_crewop_buttons(lv_obj_t *puck, int32_t y, char const *left_text, uint32_t left_fg,
+                                     lv_event_cb_t left_cb, char const *right_text, uint32_t right_fg,
+                                     lv_event_cb_t right_cb)
+{
+    settings_crewop_buttons_h(puck, y, FF_CREWOP_BTN_H, left_text, left_fg, left_cb, right_text, right_fg, right_cb);
 }
 
 static void settings_build_crew_confirm_page(lv_obj_t *parent, ff_app_crew_page_t const *cw)
@@ -2374,7 +2523,10 @@ static void settings_build_crew_confirm_page(lv_obj_t *parent, ff_app_crew_page_
         }
         settings_crewop_title(puck, "Leave the crew?", FF_THEME_COLOR_INK);
         settings_crewop_body(puck, "Your radio goes back to its old settings.", FF_CREWOP_BODY_Y);
-        settings_crewop_buttons(puck, FF_CREWOP_BTN_Y, "NOT NOW", FF_THEME_COLOR_MUTED,
+        /* The destructive confirm pair (finding 10) — its own, higher Y;
+         * see FF_CREWOP_CONFIRM_BTN_Y's comment for why it can't share
+         * FF_CREWOP_BTN_Y with the single-pill rows any more. */
+        settings_crewop_buttons(puck, FF_CREWOP_CONFIRM_BTN_Y, "NOT NOW", FF_THEME_COLOR_MUTED,
                                  settings_crew_dismiss_cb, "LEAVE", FF_THEME_COLOR_STALE_AMBER,
                                  settings_crew_leave_confirm_cb);
         return;
@@ -2382,7 +2534,7 @@ static void settings_build_crew_confirm_page(lv_obj_t *parent, ff_app_crew_page_
 
     settings_crewop_title(puck, "Start a new crew?", FF_THEME_COLOR_INK);
     settings_crewop_body(puck, "Your radio saves it and restarts for a few seconds.", FF_CREWOP_BODY_Y);
-    settings_crewop_buttons(puck, FF_CREWOP_BTN_Y, "NOT NOW", FF_THEME_COLOR_MUTED, settings_crew_dismiss_cb,
+    settings_crewop_buttons(puck, FF_CREWOP_CONFIRM_BTN_Y, "NOT NOW", FF_THEME_COLOR_MUTED, settings_crew_dismiss_cb,
                              "START", FF_THEME_COLOR_AMBER, settings_crew_start_confirm_cb);
 }
 
@@ -2461,8 +2613,11 @@ static void settings_build_crew_status_page(lv_obj_t *parent, ff_app_crew_page_t
             lv_obj_align(code, LV_ALIGN_TOP_MID, 0, FF_CREWOP_CODE_Y);
             lv_obj_clear_flag(code, LV_OBJ_FLAG_CLICKABLE);
         }
-        settings_crewop_buttons(puck, FF_CREWOP_BTN2_Y, "SHOW CODE", FF_THEME_COLOR_AMBER,
-                                 settings_crew_show_code_cb, NULL, 0, NULL);
+        /* BTN2 keeps its own, pre-pass height — see FF_CREWOP_BTN2_H's
+         * comment for why this one pill is not part of this slice's
+         * growth. */
+        settings_crewop_buttons_h(puck, FF_CREWOP_BTN2_Y, FF_CREWOP_BTN2_H, "SHOW CODE", FF_THEME_COLOR_AMBER,
+                                   settings_crew_show_code_cb, NULL, 0, NULL);
         settings_crewop_buttons(puck, FF_CREWOP_BTN_Y, "DONE", FF_THEME_COLOR_MUTED,
                                  settings_crew_dismiss_cb, NULL, 0, NULL);
         return;
@@ -2505,7 +2660,19 @@ static void settings_build_crew_status_page(lv_obj_t *parent, ff_app_crew_page_t
 #define FF_CALCAL_RING_Y     130
 #define FF_CALCAL_SAMPLES_Y  (FF_CALCAL_RING_Y + FF_CALCAL_RING_DIAM + 10)
 #define FF_CALCAL_BTN_W      120
-#define FF_CALCAL_BTN_H      FF_SETTINGS_ROW_H /* 48 — clears the hit floor */
+/* Deliberately its OWN constant, not FF_SETTINGS_ROW_H, since usability-
+ * review slice 3 raised that to 80 and this pair of buttons does not have
+ * the room to follow: at FF_CALCAL_BTN_Y (below) the two-pill row's own
+ * band is already flush against FF_CALCAL_SAMPLES_Y's text above it (the
+ * pre-pass 48px height leaves this face's tightest margin on the whole
+ * device — see that constant's own derivation comment). Growing to 80
+ * needs either narrower buttons (a real width cut, this face's own
+ * version of the flare takeover's "costs the starburst" trade) or moved
+ * content above, and this slice's ask did not name this face — kept at
+ * 48 (still clears the 44px absolute floor) rather than silently
+ * reflowing a screen nobody asked to change. Same call as the CREW page's
+ * FF_CREW_PAGE_ROW_H just above; see that constant's comment. */
+#define FF_CALCAL_BTN_H      48
 #define FF_CALCAL_BTN_GAP    16
 /* Measured against the round glass (test_face_hit_targets.c's own
  * sweep, not hand math — a first pass at Y=324 shipped off-glass
@@ -3521,15 +3688,27 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
      * next item needs, so insertion/removal anywhere never requires touching
      * a downstream constant — the failure mode the old REL_*_Y macro chain
      * had (S21/S27's own amendments each had to manually re-derive every
-     * later offset by hand). Order: DISPLAY (BRIGHTNESS, CLOCK, SCREEN,
-     * COLORBLIND) -> SOUND (SOUNDS, UI TICKS, QUIET HOURS) -> UNITS (UNITS)
-     * -> DEVICE (CALIBRATE TOUCH), per the audit's maintainer-decided
-     * section order. The four hidden rows (SHARE/HAPTICS/GLOW/WATER NUDGE)
-     * are NOT assigned a section here — see their own trailing block below
-     * this one for why. ------------------------------------------------- */
+     * later offset by hand). Order: CREW -> DISPLAY (BRIGHTNESS, CLOCK,
+     * SCREEN, COLORBLIND) -> SOUND (SOUNDS, UI TICKS, QUIET HOURS) -> UNITS
+     * (UNITS) -> DEVICE (CALIBRATE TOUCH) -> NAME, per the audit's
+     * maintainer-decided section order EXCEPT for CREW, promoted to the
+     * top by usability-review slice 3 (docs/reviews/puck-ux-usability-
+     * 2026-09-15.md finding 9 / §4 task 4): SHOW CODE is the #1 day-one
+     * task and it used to sit ~830px down a scrolling list — worse, in
+     * this same slice's own change, once the rows above it also grew from
+     * 48px to 80px each (finding 5's "the two changes have to ship
+     * together" — see FF_SETTINGS_ROW_H's own comment). CREW is now
+     * reachable with ZERO scrolling from the Settings root. The four
+     * hidden rows (SHARE/HAPTICS/GLOW/WATER NUDGE) are NOT assigned a
+     * section here — see their own trailing block below this one for
+     * why. ------------------------------------------------------------- */
     int32_t y = 0;
 
-    y = settings_build_section_header(list, y, row_w, "DISPLAY", /*first=*/true);
+    y = settings_build_section_header(list, y, row_w, "CREW", /*first=*/true);
+    settings_build_crew_open_row(list, y, row_w);
+    y += FF_SETTINGS_ROW_H; /* last (only) row of CREW */
+
+    y = settings_build_section_header(list, y, row_w, "DISPLAY", /*first=*/false);
     settings_build_brightness(list, row_w, y);
     y += FF_SETTINGS_BRIGHT_BLOCK_H + FF_SETTINGS_ROW_GAP;
     settings_build_toggle_row(list, y, row_w, "CLOCK", "12H", "24H", s_settings.clock_24h ? 1 : 0, settings_clock_cb);
@@ -3575,10 +3754,6 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
     settings_build_name_row(list, y, row_w, s_settings.my_name, s_settings.mesh_name_confirmed,
                             s_settings.mesh_name_push_failed, s_settings.mesh_name_mismatch);
     y += FF_SETTINGS_ROW_H; /* last (only) row of NAME */
-
-    y = settings_build_section_header(list, y, row_w, "CREW", /*first=*/false);
-    settings_build_crew_open_row(list, y, row_w);
-    y += FF_SETTINGS_ROW_H; /* last (only) row of CREW */
 
     /* ---------------------------------------------------------------------
      * Hidden rows (settings audit 2026-09-03) — SHARE, HAPTICS, GLOW, WATER
