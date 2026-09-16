@@ -45,16 +45,22 @@ static radar_layout_rect_t dot_rect(radar_layout_dot_result_t const *d)
     return square_at(d->dx, d->dy, RADAR_LAYOUT_DOT_PX);
 }
 
-/* A minimal bounding square around the arrow's head (tip + both base
- * corners) — good enough to check "does the head land inside reserved
- * chrome", which is exactly what the resolver itself tests against. */
+/* A minimal bounding square around the whole dart (tip + both base
+ * corners + notch, 2026-09-15 one-compass-arrow — was "tip + both base
+ * corners" for the old shaft-and-head shape, which had no notch) — good
+ * enough to check "does the dart land inside reserved chrome", which is
+ * exactly what the resolver itself tests against. Includes the notch
+ * because it is a real point of the rendered outline (the concave point
+ * between the two base corners): a bbox that omitted it could pass this
+ * test while the actual drawn shape still overlapped reserved chrome at
+ * the notch alone. */
 static radar_layout_rect_t arrow_head_bbox(radar_layout_arrow_t const *a)
 {
     float min_x = a->tip_dx, max_x = a->tip_dx;
     float min_y = a->tip_dy, max_y = a->tip_dy;
-    float xs[2] = {a->left_dx, a->right_dx};
-    float ys[2] = {a->left_dy, a->right_dy};
-    for (int i = 0; i < 2; i++) {
+    float xs[3] = {a->left_dx, a->right_dx, a->notch_dx};
+    float ys[3] = {a->left_dy, a->right_dy, a->notch_dy};
+    for (int i = 0; i < 3; i++) {
         if (xs[i] < min_x) min_x = xs[i];
         if (xs[i] > max_x) max_x = xs[i];
         if (ys[i] < min_y) min_y = ys[i];
@@ -232,13 +238,49 @@ static void test_arrow_not_shortened_when_clear(void)
     radar_layout_registry_t reg;
     radar_layout_build_registry(RADAR_LIVE, false, &reg);
 
-    /* Due "north" (straight up, away from the name/dist/chip stack and
-     * the status bar) needs no shortening at all. */
+    /* 2026-09-15, one-compass-arrow: due "north" (bearing 0) is NO LONGER
+     * the clear case for this shape — measured, not assumed
+     * (AGENTS.md's "measuring, not reasoning harder"). The dart is
+     * CENTRED on the ring centre (docs/design/compass-arrow.md), so a
+     * due-north tip's BASE lands behind it, i.e. straight down, at
+     * (0, +83.25) — squarely inside this mode's name/dist/chip stack
+     * rect (y in [40,172], x in [-140,140]). The old shaft-and-head
+     * shape never had this problem: its tail started AT the centre and
+     * only ever extended toward the tip, so it had nothing on the far
+     * side to collide with.
+     *
+     * Due EAST (bearing 90) is genuinely clear at full reach instead:
+     * tip at (83.25, 0), base at (-83.25, 0), notch at (-41.625, 0),
+     * both wide corners at y = +-19.15 (0.23 * 83.25 half-width) — every
+     * one of those y-magnitudes is well under the stack's y1=40, and the
+     * status bar (y in [-177,-143]) / page-dot row (y in [176,196])
+     * bands are unreachable at this reach (83.25) from ANY bearing, so
+     * this is a genuine no-collision case, not a narrower one that
+     * happens to pass. */
     radar_layout_arrow_t arrow;
-    radar_layout_resolve_arrow(&reg, 0.0f, RADAR_LAYOUT_ARROW_LEN_PX, &arrow);
+    radar_layout_resolve_arrow(&reg, 90.0f, RADAR_LAYOUT_ARROW_LEN_PX, &arrow);
 
     TEST_ASSERT_FALSE(arrow.shortened);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, RADAR_LAYOUT_ARROW_LEN_PX, arrow.len_px);
+}
+
+/* The due-north case above is exactly what DOES need shortening now —
+ * pinned as its own test so the behavior change is a named regression
+ * target, not just a repurposed helper. */
+static void test_arrow_due_north_now_shortens_because_base_hits_the_stack(void)
+{
+    radar_layout_registry_t reg;
+    radar_layout_build_registry(RADAR_LIVE, false, &reg);
+
+    radar_layout_arrow_t arrow;
+    radar_layout_resolve_arrow(&reg, 0.0f, RADAR_LAYOUT_ARROW_LEN_PX, &arrow);
+
+    TEST_ASSERT_TRUE(arrow.shortened);
+    TEST_ASSERT_TRUE(arrow.len_px < RADAR_LAYOUT_ARROW_LEN_PX);
+    /* Still honest: the tip sits exactly on bearing 0 (straight up), just
+     * closer in. */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f, arrow.tip_dx);
+    TEST_ASSERT_TRUE(arrow.tip_dy < 0.0f);
 }
 
 /* ---------------------------------------------------------------------
@@ -573,6 +615,7 @@ int main(void)
     RUN_TEST(test_arrow_sweep_place);
     RUN_TEST(test_arrow_sweep_signal_ghost);
     RUN_TEST(test_arrow_not_shortened_when_clear);
+    RUN_TEST(test_arrow_due_north_now_shortens_because_base_hits_the_stack);
 
     RUN_TEST(test_all_8_dots_same_bearing_close_mode_cluster_not_hidden);
     RUN_TEST(test_widely_spaced_dots_stay_distinct_not_clustered);
