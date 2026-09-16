@@ -29,7 +29,18 @@
  * (the recommended scratch capacity) lives in fp_pack.h now — callers
  * need it to size their own buffer.
  * ------------------------------------------------------------------- */
-#define FP_MAX_JSON_LEN (64u * 1024u)
+/* 2026-09-16: raised 64 KB -> 256 KB. fest-almanac's real Lost Lands 2026
+ * pack grew to 91,403 bytes once it carried the 87-entry `events` array
+ * and a long `meta.notes` provenance string (both unknown to this parser
+ * and tolerantly skipped, but still tokenized and still counted against
+ * this input bound). At 64 KB fp_parse() rejected the whole pack with
+ * FP_ERR_TOO_BIG, so the puck would have booted with NO festival and the
+ * app's almanac refresh would have kept falling back to its bundled copy
+ * — caught by test_field_pack.c, which parses the embedded asset itself.
+ * 256 KB is the field pack's own size with ~2.8x headroom; the bound
+ * still exists so a hostile document cannot make the tokenizer walk an
+ * unbounded input (S05 fuzz contract). */
+#define FP_MAX_JSON_LEN (256u * 1024u)
 
 /* Real festpacks nest ~7-8 levels deep at most (root -> map -> features ->
  * [i] -> polygon -> [k] -> [lat,lon] -> number). 16 is generous headroom;

@@ -50,7 +50,12 @@ extern "C" {
  *  `FP_MAX_TOKENS * sizeof(jsmntok_t)` and pass it as `ntoks`. A smaller
  *  buffer is legal — fp_parse() returns FP_ERR_TOO_BIG rather than
  *  overrunning it, never a crash. */
-#define FP_MAX_TOKENS 8192
+/* 2026-09-16: 8192 -> 16384. The refreshed Lost Lands 2026 pack (91 KB,
+ *  87 `events`) tokenizes to ~7.3k jsmn tokens — 89 % of the old budget,
+ *  one more event sweep from FP_ERR_TOO_BIG. 16384 * sizeof(jsmntok_t)
+ *  is 256 KB, PSRAM on the device (app_main.c), heap in the app
+ *  (FestpackParser.swift), .bss in the sim/tests. */
+#define FP_MAX_TOKENS 16384
 
 /** Result of fp_parse(). */
 typedef enum {

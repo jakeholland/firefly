@@ -55,15 +55,17 @@ final class FestpackProvidingMapAdapterTests: XCTestCase {
     func testPlacedStagesGetARealCentreRecoveredFromTheEastNorthMeters() throws {
         let real = try loadLostLands()
         let mapped = try XCTUnwrap(FestpackProvidingMapAdapter.map(real))
-        // Lost Lands 2026's own fixture: four stages have exactly one
-        // known map point each (crater/prehistoric/wompy-woods/subsidia)
+        // Lost Lands 2026's own fixture (2026-09-16 refresh): all seven
+        // stages now have exactly one known map point each — six are
+        // satellite-view pins, The Grove an approximate campground point
         // — untraced stubs, so `polygon` stays empty, but `centre` must
         // round-trip back to real WGS84 coordinates close to the pack's
         // own venue (never (0, 0), never the venue itself standing in
         // for a stage's own position).
-        let placedIDs: Set<String> = ["crater", "prehistoric", "wompy-woods", "subsidia"]
+        let placedIDs: Set<String> = ["crater", "prehistoric", "wompy-woods", "subsidia",
+                                      "forest", "raptor-alley", "grove"]
         let placed = mapped.stages.filter { placedIDs.contains($0.id) }
-        XCTAssertEqual(placed.count, 4)
+        XCTAssertEqual(placed.count, 7)
         for stage in placed {
             let centre = try XCTUnwrap(stage.centre, "\(stage.id) should have a recovered centre")
             XCTAssertTrue(stage.polygon.isEmpty, "\(stage.id) is an untraced (1-point) stub, never a polygon")
@@ -77,12 +79,31 @@ final class FestpackProvidingMapAdapterTests: XCTestCase {
     }
 
     func testUnplacedStagesGetNoFabricatedCentre() throws {
-        let real = try loadLostLands()
-        let mapped = try XCTUnwrap(FestpackProvidingMapAdapter.map(real))
-        // "raptor-alley"/"grove" have no map feature at all; "forest"
-        // has one with an explicit null polygon ("Forest Stage
-        // (unplaced)") — all three must come through with NO centre,
-        // never a fabricated (0, 0) or venue-anchored placeholder.
+        // Until the 2026-09-16 pack refresh this ran against the real
+        // pack, where "raptor-alley"/"grove" had no map feature and
+        // "forest" had one with an explicit null polygon. Every real
+        // stage is placed now, so the unplaced contract is proved on a
+        // pack of our own with the same three shapes the real one used
+        // to have: no feature at all, and a feature whose polygon is
+        // null. Both must come through with NO centre — never a
+        // fabricated (0, 0) or venue-anchored placeholder.
+        let json = """
+        {"festpack":"0.1",
+         "festival":{"name":"Unplaced Fest","year":2026,"start":"2026-09-18","end":"2026-09-20",
+                     "venue":{"name":"Legend Valley","lat":39.9387,"lon":-82.4027,"approximate":true}},
+         "stages":[{"id":"forest","name":"Forest Stage","color":"#ffc66b"},
+                   {"id":"raptor-alley","name":"Raptor Alley","color":"#ffc66b"},
+                   {"id":"grove","name":"The Grove","color":"#ffc66b"}],
+         "schedule":[],
+         "map":{"features":[{"kind":"stage","stage":"forest","label":"Forest Stage (unplaced)","polygon":null}],
+                "landmarks":[]}}
+        """
+        let pack: Festpack
+        switch FestpackParser.parse(Data(json.utf8)) {
+        case .success(let p): pack = p
+        case .failure(let error): throw error
+        }
+        let mapped = try XCTUnwrap(FestpackProvidingMapAdapter.map(pack))
         let unplacedIDs: Set<String> = ["raptor-alley", "grove", "forest"]
         let unplaced = mapped.stages.filter { unplacedIDs.contains($0.id) }
         XCTAssertEqual(unplaced.count, 3)

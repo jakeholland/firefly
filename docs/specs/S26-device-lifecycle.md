@@ -234,7 +234,7 @@ renders WITHOUT an active banner are untouched (goldens byte-identical).
 `fp_pack.c` is pure C11 (no ESP allocators, no `EXT_RAM_BSS_ATTR`), so the
 caller supplies the scratch: `fp_pack_parse(..., jsmntok_t *toks, int ntoks)`
 (exact signature per the existing parse entry point; keep a thin wrapper only
-if the sim/tests need it). The esp32s3 target allocates `8192 * sizeof
+if the sim/tests need it). The esp32s3 target allocates `FP_MAX_TOKENS * sizeof` (16384 since 2026-09-16, was `8192 * sizeof
 (jsmntok_t)` in **PSRAM** (`MALLOC_CAP_SPIRAM`) around the demo parse and
 frees it after (transient — it is parse-time only).
 - **AC1** `static jsmntok_t toks[...]` is gone from `fp_pack.c`; `idf.py size`
