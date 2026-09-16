@@ -814,6 +814,37 @@ smoothed over:
   targets, flagged for the owner's awareness rather than addressed here,
   given the field deadline.
 
+**Independent review decision (2026-09-16) — touch-INT wake disarmed by
+default on the scheduled (field/battery) sleep path.** The bench evidence
+above is exactly the hazard this fix's own risk assessment must weigh: if
+GPIO4 fires spuriously on battery the way it did over USB here, the puck
+never reaches the intended 300ms/1500ms cadence — it wakes on every
+spurious edge instead, each wake costing an active-mode render-loop
+burst, which is a real and unbounded (not "once per sleep-entry event")
+battery cost, unlike the fast-window fix's own bounded estimate above. Against
+that risk, touch-INT's actual benefit is now small: with the 300ms
+fast-window timer wake already bounding a missed tap to at most one fast
+period for the first 5 minutes (the window a wearer is statistically most
+likely to still be interacting with the puck), a working touch-INT would
+only improve on an already-tight worst case, and there is no confirmed
+evidence it works at all on this hardware.
+
+Decision: `CONFIG_FF_TOUCH_INT_WAKE` (`firmware/targets/esp32s3/main/
+Kconfig.projbuild`, `[api]`), default **OFF**, gates whether touch-INT
+(GPIO4) is armed as a wake source on the ORDINARY SCHEDULED light-sleep
+path — TIMER, PWR (GPIO6), and BOOT (GPIO0) remain armed either way, and
+timer wake alone already guarantees a wake per its own contract. The
+bench `sleep`/`sleep <ms>` debug-console command is deliberately
+UNAFFECTED by this default: `ff_run_light_sleep_cycle` (`app_main.c`)
+arms touch-INT for every FORCED cycle regardless of the Kconfig setting,
+so the owner can keep running the verification steps below on the bench
+without rebuilding — the default only governs what a puck in someone's
+pocket does. Turn the Kconfig option on once a battery-only test (step 3
+below) shows GPIO4 genuinely quiescent off USB; until then, shipping it
+armed by default would risk trading a bounded, estimated ~0.1 mAh/sleep-
+event cost for an unbounded one on the strength of bench evidence that
+points the other way.
+
 **Owner steps to finish verification** (needs a real finger and/or real
 battery operation — an agent cannot do either):
   1. **On-glass tap test** (bench, USB fine): `sleep 5000` on the console,

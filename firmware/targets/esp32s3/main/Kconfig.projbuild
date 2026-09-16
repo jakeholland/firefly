@@ -410,6 +410,47 @@ menu "Firefly bring-up (S15 slice b)"
             then disable again before a field build — see this spec's
             device on-glass steps for the full bring-up sequence.
 
+    config FF_TOUCH_INT_WAKE
+        bool "Arm touch-INT (GPIO4) as a light-sleep GPIO wake source"
+        default n
+        help
+            S26f field fix (2026-09-16), independent review finding. The
+            scheduled light-sleep cycle's touch-INT GPIO wake was added as
+            a free, best-effort second path alongside the timer wake (see
+            `app_main.c`'s own doc comment on `FF_PIN_TOUCH_INT`) — but
+            bench evidence gathered for this same fix (PR body,
+            docs/specs/S26-device-lifecycle.md slice (f)'s dated
+            amendment) found GPIO4 does NOT idle cleanly HIGH on the
+            bench unit tested: with no finger anywhere near the glass,
+            most forced cycles at 1.5-10s configured periods instead woke
+            on a GPIO cause after only 52-487ms, and one cycle aborted
+            sleep entry outright (wake cause UNDEFINED, touch-INT already
+            LOW pre-sleep). That evidence was gathered entirely over USB
+            (a possible EMI/noise source of its own) and is NOT proof the
+            line is equally noisy on battery — but it is also not proof
+            it isn't, and a spurious-wake storm on battery (the puck
+            waking every few tens/hundreds of ms instead of the intended
+            300ms/1500ms schedule) would cost real charge for no benefit:
+            the 300ms fast-window timer wake alone already bounds a
+            missed tap to, at most, one fast period — touch-INT buys
+            little on top of it even when it DOES work as intended.
+
+            Default OFF: until a battery-only test proves the line is
+            quiet, this wake source stays disarmed on the scheduled sleep
+            path — TIMER, PWR (GPIO6), and BOOT (GPIO0) remain the only
+            armed wake sources; the light-sleep timer wake alone is
+            sufficient to guarantee a wake per its own contract
+            (ff_idle.h's `ff_idle_light_sleep_timer_ms` doc comment).
+            Turn ON only once the owner's battery test (see the S26
+            spec's "Owner steps to finish verification") shows GPIO4
+            genuinely quiescent off USB. The bench `sleep`/`sleep <ms>`
+            debug-console command (CONFIG_FF_DEBUG_CONSOLE) is UNAFFECTED
+            by this setting — it always arms touch-INT for its own forced
+            cycle regardless, so the owner can keep testing the line's
+            behavior on the bench without rebuilding; only the ORDINARY
+            scheduled sleep path (on battery, in the field) respects this
+            Kconfig default.
+
     config FF_DEBUG_CONSOLE
         bool "Bench/debug console over USB-Serial-JTAG (opt-in, bench/test only)"
         default n

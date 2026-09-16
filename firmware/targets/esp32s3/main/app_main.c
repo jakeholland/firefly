@@ -661,10 +661,14 @@ static ff_idle_t s_idle;
  *     every wake, per the spec: "each timer wake services the link and
  *     returns to sleep unless input arrived") even with the puck sitting
  *     untouched in a pocket.
- *   - GPIO: PWR (GPIO6), BOOT (GPIO0), and the SPD2010 touch INT line
- *     (GPIO4) — `esp_sleep_enable_gpio_wakeup()` is light sleep's own
- *     wake mechanism (distinct from deep sleep's ext0/ext1), driven by
- *     `gpio_wakeup_enable()` per pin.
+ *   - GPIO: PWR (GPIO6) and BOOT (GPIO0) always; the SPD2010 touch INT
+ *     line (GPIO4) only when `CONFIG_FF_TOUCH_INT_WAKE` is on (default
+ *     OFF as of the 2026-09-16 independent review — see that Kconfig
+ *     option's own help and `ff_run_light_sleep_cycle`'s doc comment
+ *     below for the bench evidence and the bench `sleep` command's own
+ *     unconditional override) — `esp_sleep_enable_gpio_wakeup()` is
+ *     light sleep's own wake mechanism (distinct from deep sleep's
+ *     ext0/ext1), driven by `gpio_wakeup_enable()` per pin.
  *   - NOT UART: this spec slice is explicit that a UART wake is wrong for
  *     this board — the XIAO comms brain runs STOCK Meshtastic with no
  *     wake preamble, so RX bytes that arrive mid-sleep and trigger a wake
@@ -682,21 +686,34 @@ static ff_idle_t s_idle;
  * touch is polled instead of interrupt-driven at runtime. That is direct
  * prior evidence this specific board's INT line may never assert on a
  * touch at all, not merely "unverified" — arming it as a light-sleep
- * wake source here is a free, best-effort addition (`gpio_wakeup_enable`
+ * wake source would be a free, best-effort addition (`gpio_wakeup_enable`
  * costs nothing to configure) that may simply never fire in practice.
  * `FF_PIN_TOUCH_INT`'s active-level (open-drain, active-LOW, the common
  * touch-controller convention, matching the runtime polarity assumption
  * elsewhere on this board) is unverified either way, same posture as
  * ff_power.c's `FF_POWER_PWR_ACTIVE_LOW` flag; an internal pull-up is
  * enabled here so the line reads a clean idle HIGH regardless of the
- * board's own pull-up. None of this matters for correctness: the 1500 ms
- * TIMER wake above is the guaranteed path regardless of whether INT ever
- * asserts, so a touch arriving while asleep costs AT MOST one timer
- * period (1.5 s) of latency before the next scheduled wake notices it —
- * never a missed wake. S26f AC1 (on-glass) will show which: if the log's
- * wake-cause line ever reads GPIO on a touch, this line works on this
- * unit after all; if every wake during a touch test reads TIMER, it
- * doesn't, and the timer alone is still carrying the AC. */
+ * board's own pull-up. None of this matters for correctness: the S26f
+ * fast-window TIMER wake (300ms for 5 minutes after SLEEP, 1500ms after —
+ * see `ff_idle_light_sleep_timer_ms`) is the guaranteed path regardless
+ * of whether INT ever asserts, so a touch arriving while asleep costs AT
+ * MOST one fast-window timer period of latency before the next scheduled
+ * wake notices it — never a missed wake.
+ *
+ * **2026-09-16 independent review update**: the "free" framing above no
+ * longer holds. Bench evidence gathered for the S26f field fix (this
+ * file's own `ff_run_light_sleep_cycle` doc comment;
+ * docs/specs/S26-device-lifecycle.md slice (f)'s dated amendment) found
+ * GPIO4 does NOT idle cleanly HIGH on the unit tested — most forced
+ * cycles woke on a GPIO cause well before the configured timer, with no
+ * finger near the glass. If that holds on battery too, arming this as a
+ * wake source is not free: it costs an unbounded spurious-wake storm
+ * instead of the intended schedule. `CONFIG_FF_TOUCH_INT_WAKE` (default
+ * OFF; see that Kconfig option's own help) now gates whether this line
+ * is armed on the ordinary SCHEDULED sleep path; the bench `sleep`
+ * command still arms it unconditionally for its own forced cycles, so
+ * the on-glass/battery verification this comment's last sentence
+ * describes remains possible without a rebuild. */
 #define FF_PIN_TOUCH_INT GPIO_NUM_4 /* matches ff_display.c's FF_PIN_TP_INT (4) — SPD2010 touch INT, normally unused/polled */
 
 /* Timer wake period. Spec range is 1-2 s; 1500 ms is the midpoint —
@@ -879,7 +896,19 @@ static void ff_configure_light_sleep_wake(void)
 
     /* Touch INT (GPIO4) — see this block's top comment for the
      * active-LOW interpretation call. Not otherwise configured anywhere
-     * in this codebase (ff_display.c polls the controller instead). */
+     * in this codebase (ff_display.c polls the controller instead).
+     * Pin config (input + pull-up) always happens here regardless of
+     * CONFIG_FF_TOUCH_INT_WAKE below — `ff_run_light_sleep_cycle` samples
+     * this pin's LEVEL every cycle (touch_int_pre/post, always recorded
+     * into the wake-log ring buffer for bench diagnosis) independent of
+     * whether it is armed as an actual WAKE source, so the pin must
+     * always be a valid input. What varies by Kconfig is only whether
+     * `gpio_wakeup_enable` is called on it — see `ff_run_light_sleep_cycle`,
+     * which re-applies that decision fresh on every cycle (same
+     * idempotent-reconfigure pattern as its own timer-wake period), NOT
+     * this one-time boot config, so a bench `sleep` command can force it
+     * on for one forced cycle without this function needing to know
+     * about that override. */
     const gpio_config_t touch_int_io = {
         .pin_bit_mask = 1ULL << FF_PIN_TOUCH_INT,
         .mode = GPIO_MODE_INPUT,
@@ -887,9 +916,8 @@ static void ff_configure_light_sleep_wake(void)
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
-    if ((err = gpio_config(&touch_int_io)) != ESP_OK ||
-        (err = gpio_wakeup_enable(FF_PIN_TOUCH_INT, GPIO_INTR_LOW_LEVEL)) != ESP_OK) {
-        ESP_LOGE(TAG, "touch-INT (GPIO%d) light-sleep wake config failed: %s — timer wake still covers it",
+    if ((err = gpio_config(&touch_int_io)) != ESP_OK) {
+        ESP_LOGE(TAG, "touch-INT (GPIO%d) pin config failed: %s — timer wake still covers it",
                  (int)FF_PIN_TOUCH_INT, esp_err_to_name(err));
     }
 
@@ -919,8 +947,17 @@ static void ff_configure_light_sleep_wake(void)
                  esp_err_to_name(err));
     }
 
-    ESP_LOGI(TAG, "S26f light-sleep wake sources armed: timer=%dms, GPIO wake on PWR(6)/BOOT(0)/touch-INT(%d), VDD_SDIO forced ON",
-             (int)(FF_LIGHT_SLEEP_TIMER_WAKE_US / 1000), (int)FF_PIN_TOUCH_INT);
+    ESP_LOGI(TAG,
+             "S26f light-sleep wake sources armed: timer=%dms, GPIO wake on PWR(6)/BOOT(0), touch-INT(%d) "
+             "scheduled-wake=%s (CONFIG_FF_TOUCH_INT_WAKE; bench `sleep` can still force it per cycle), VDD_SDIO "
+             "forced ON",
+             (int)(FF_LIGHT_SLEEP_TIMER_WAKE_US / 1000), (int)FF_PIN_TOUCH_INT,
+#if CONFIG_FF_TOUCH_INT_WAKE
+             "ON"
+#else
+             "OFF"
+#endif
+    );
 }
 
 /* ---------------------------------------------------------------------
@@ -978,7 +1015,18 @@ static void ff_wake_log_push(ff_wake_log_entry_t const *e)
  * already establishes). Stops appending (rather than truncating a partial
  * entry) the moment the next one would not fit — never a garbled trailing
  * fragment. Always succeeds (returns 0, "n=0" when the ring is empty —
- * an honest fact, not an error) so callers never need a failure path. */
+ * an honest fact, not an error) so callers never need a failure path.
+ *
+ * Gated behind CONFIG_FF_DEBUG_CONSOLE (independent review fix,
+ * 2026-09-16): its own only caller is `dbgconsole_wake_log`
+ * (`diag`'s wake-log fragment, below), which is itself inside this same
+ * `#if` — the RECORDING side (`s_wake_log`/`ff_wake_log_push`, just
+ * above) stays always-compiled (cheap, and future consumers may want it
+ * with the console off), but this READ-BACK formatter has no other
+ * caller, so leaving it unguarded produced a real `-Wunused-function`
+ * warning (device build, console off — CLAUDE.md's own "0 warnings"
+ * gate) the very first field-configuration build would have hit. */
+#if CONFIG_FF_DEBUG_CONSOLE
 static int ff_wake_log_format(char *out, size_t cap)
 {
     if (out == NULL || cap == 0u) return -1;
@@ -1007,6 +1055,7 @@ static int ff_wake_log_format(char *out, size_t cap)
     }
     return 0;
 }
+#endif /* CONFIG_FF_DEBUG_CONSOLE */
 
 typedef struct {
     esp_sleep_wakeup_cause_t cause;
@@ -1027,9 +1076,19 @@ typedef struct {
  * itself already establishes), so a caller never needs to reset it back
  * afterward: the next cycle (whether the normal schedule or another
  * forced one) always states its own period explicitly. `forced` is
- * recorded into the ring buffer only — it changes no sleep BEHAVIOR here
- * (every wake source is always armed regardless), only how this cycle is
- * labeled in `diag`'s own readback. */
+ * recorded into the ring buffer for `diag`'s own readback, AND (2026-09-16
+ * independent review finding — see CONFIG_FF_TOUCH_INT_WAKE's own Kconfig
+ * help for the bench evidence this responds to) decides whether
+ * touch-INT (GPIO4) is armed as a WAKE source for THIS cycle: a forced
+ * (bench `sleep`) cycle always arms it, regardless of the Kconfig
+ * default, so an owner can keep exercising/testing the line without a
+ * rebuild; an ordinary SCHEDULED cycle (forced == false, the field/
+ * battery path) arms it only if CONFIG_FF_TOUCH_INT_WAKE is on — default
+ * off, since this fix's own bench evidence found GPIO4 does not idle
+ * cleanly HIGH on the unit tested, and TIMER/PWR/BOOT alone already
+ * guarantee a wake. PWR and BOOT's own GPIO wakes (armed once, at boot,
+ * in `ff_configure_light_sleep_wake`) are entirely unaffected either
+ * way. */
 static ff_light_sleep_result_t ff_run_light_sleep_cycle(uint32_t timer_wake_ms, bool forced)
 {
     ff_light_sleep_result_t r = {0};
@@ -1038,6 +1097,20 @@ static ff_light_sleep_result_t ff_run_light_sleep_cycle(uint32_t timer_wake_ms, 
     if (terr != ESP_OK) {
         ESP_LOGE(TAG, "esp_sleep_enable_timer_wakeup(%u ms) failed: %s — light sleep would never wake on its own",
                  (unsigned)timer_wake_ms, esp_err_to_name(terr));
+    }
+
+#if CONFIG_FF_TOUCH_INT_WAKE
+    bool const touch_int_wake_this_cycle = true;
+#else
+    bool const touch_int_wake_this_cycle = forced;
+#endif
+    esp_err_t const twerr = touch_int_wake_this_cycle ? gpio_wakeup_enable(FF_PIN_TOUCH_INT, GPIO_INTR_LOW_LEVEL)
+                                                       : gpio_wakeup_disable(FF_PIN_TOUCH_INT);
+    if (twerr != ESP_OK) {
+        ESP_LOGE(TAG, "touch-INT (GPIO%d) wake %s failed: %s — %s", (int)FF_PIN_TOUCH_INT,
+                 touch_int_wake_this_cycle ? "enable" : "disable", esp_err_to_name(twerr),
+                 touch_int_wake_this_cycle ? "this cycle may not see a touch-INT wake"
+                                            : "timer wake still covers it");
     }
 
     r.touch_int_pre = gpio_get_level(FF_PIN_TOUCH_INT) != 0;
