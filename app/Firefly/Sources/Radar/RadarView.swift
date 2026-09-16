@@ -151,8 +151,16 @@ struct RadarView: View {
             Label(model.isFindActive ? "FIND — \(model.findPingCount) sent" : "FIND",
                   systemImage: "dot.radiowaves.left.and.right")
         }
-        .buttonStyle(.bordered)
+        // Owner decision, 2026-09-15 ("Fill it like CONNECT"): FIND is a
+        // primary action on this screen, not a secondary one like RESCAN
+        // — it read dim next to filled-amber primaries elsewhere in the
+        // app. Same filled-primary modifier trio as CONNECT/JOIN/IMPORT
+        // (ConnectScreen.swift's `primaryButton`, CrewJoinView's JOIN),
+        // reused rather than reinvented. Bordered stays for secondary
+        // actions (RESCAN, STOP in FindPanel).
+        .buttonStyle(.borderedProminent)
         .tint(.ffAmber)
+        .foregroundStyle(Color.ffBackground)
         .frame(minWidth: 44, minHeight: 44)
         .contentShape(Rectangle())
         .disabled(model.findTargetNodeID == nil && !model.isFindActive)
