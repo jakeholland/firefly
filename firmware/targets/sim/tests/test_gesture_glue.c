@@ -533,6 +533,46 @@ static void S28_AC16_long_press_on_a_radar_button_does_not_flare(void)
     lv_deinit();
 }
 
+/* puck-ux-usability-2026-09-15 finding 1 / slice 2 — the Radar centre-
+ * select disc is the SAME shape of "a real button in the middle of the
+ * one place G3 fires from" as AC16 above, so it gets the same
+ * regression: a long press starting on it must not ALSO arm the
+ * quick-flare countdown. Unlike AC16's FLARE button (found by its own
+ * label), the disc draws nothing (radar_build_select_tap's own doc
+ * comment), so this presses GG_CENTER_X/Y directly — the disc is
+ * centered on the puck at exactly that point, 120px wide, so the small
+ * (2px) framebuffer/glass-center offset GG_CENTER_X/Y itself already
+ * accounts for is nowhere close to its edge. */
+static void S06_slice2_long_press_on_the_centre_select_disc_does_not_flare(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+    ff_ctl_handlers_t h;
+    open_session(&shell, &pack, &ctx, &h);
+    goto_face(&ctx, 0 /* Radar */);
+
+    /* One paired member — no position/heading needed — is enough to
+     * leave RADAR_NOSEL, the ONLY mode the disc is not built in (see
+     * app/screens/scr_radar.c's ff_scr_radar_build call site). */
+    TEST_ASSERT_TRUE(ff_shell_pair(ctx.shell, GG_KEV, true));
+    ff_ctl_loop_pump(&ctx);
+    lv_timer_handler();
+    lv_refr_now(ctx.disp);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(RADAR_NOSEL, ctx.state.radar.mode, "setup failed to leave RADAR_NOSEL");
+
+    gg_hold(&ctx, GG_CENTER_X, GG_CENTER_Y, 1250);
+
+    TEST_ASSERT_FALSE_MESSAGE(
+        ctx.state.flare.sending,
+        "a long press on the centre-select disc must not ALSO arm the quick-flare gesture");
+
+    gg_release(&ctx, GG_CENTER_X, GG_CENTER_Y);
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
 /* ===================================================================
  * AC17 — during the flare (send) countdown, a bottom-rim swipe does
  * nothing.
@@ -651,6 +691,7 @@ int main(void)
     RUN_TEST(S28_AC14_rim_swipe_on_launcher_is_a_no_op);
     RUN_TEST(S28_AC15_long_press_on_empty_radar_arms_flare_countdown);
     RUN_TEST(S28_AC16_long_press_on_a_radar_button_does_not_flare);
+    RUN_TEST(S06_slice2_long_press_on_the_centre_select_disc_does_not_flare);
     RUN_TEST(S28_AC17_bottom_rim_swipe_during_flare_countdown_does_nothing);
     RUN_TEST(S28_AC18_back_on_settings_and_lineup_goes_home);
     RUN_TEST(S31_back_on_music_goes_home);

@@ -243,6 +243,40 @@ static void radar_live_dot_imprecise_defaults_false(void)
     }
 }
 
+/* puck-ux-usability-2026-09-15 finding 1 / slice 2 — dots[].selected,
+ * the new golden fixture (radar_select_member2.json: 8 members, only
+ * "B" — index 1 — flagged). Same "one dot true, the rest exercised as
+ * false in the same fixture" shape radar_dot_imprecise_parses_true_
+ * only_on_the_flagged_dot above uses for its own sibling field. */
+static void radar_dot_selected_parses_true_only_on_the_flagged_dot(void)
+{
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_select_member2.json"), &s));
+
+    TEST_ASSERT_EQUAL_UINT8(8, s.radar.n_dots);
+    for (uint8_t i = 0; i < s.radar.n_dots; i++) {
+        if (i == 1) {
+            TEST_ASSERT_TRUE_MESSAGE(s.radar.dots[i].selected, "dot 1 (\"B\") must be the flagged dot");
+        } else {
+            TEST_ASSERT_FALSE_MESSAGE(s.radar.dots[i].selected, "only dot 1 (\"B\") should parse selected");
+        }
+    }
+}
+
+/* dots[].selected absent (every OTHER committed radar fixture) must
+ * default false — same "absent key -> least-claiming default"
+ * convention radar_live_dot_imprecise_defaults_false above pins for its
+ * sibling field. */
+static void radar_live_dot_selected_defaults_false(void)
+{
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_live.json"), &s));
+    TEST_ASSERT_EQUAL_UINT8(4, s.radar.n_dots);
+    for (uint8_t i = 0; i < s.radar.n_dots; i++) {
+        TEST_ASSERT_FALSE(s.radar.dots[i].selected);
+    }
+}
+
 /* ---------------------------------------------------------------------
  * Error paths.
  * ------------------------------------------------------------------- */
@@ -1168,6 +1202,28 @@ static void dump_then_reload_round_trips_signal_fixture(void)
     TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
 }
 
+/* puck-ux-usability-2026-09-15 finding 1 / slice 2 — same round-trip
+ * contract as dump_then_reload_round_trips_committed_fixture above,
+ * exercised against radar_select_member2.json so dots[].selected (this
+ * slice's own new field) round-trips when TRUE, not only in the
+ * all-false case every other radar fixture happens to exercise. */
+static void dump_then_reload_round_trips_radar_select_member2_fixture(void)
+{
+    ff_app_state_t original;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_select_member2.json"), &original));
+    TEST_ASSERT_TRUE(original.radar.dots[1].selected);
+
+    char json[FF_FIXTURE_DUMP_MAX];
+    int n = ff_fixture_dump_json(&original, json, sizeof(json));
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)strlen(json), (uint32_t)n);
+
+    ff_app_state_t reloaded;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
+
+    TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
+}
+
 /* S29 PR2 — same round-trip contract, exercised against the FIND golden
  * fixture (radar_find_active.json) so the new `find` top-level section
  * (fx_parse_find/fw_find in fixture.c) is covered too. */
@@ -1574,6 +1630,8 @@ int main(void)
     RUN_TEST(radar_dot_imprecise_parses_true_only_on_the_flagged_dot);
     RUN_TEST(radar_dot_precise_parses_imprecise_false_on_every_dot);
     RUN_TEST(radar_live_dot_imprecise_defaults_false);
+    RUN_TEST(radar_dot_selected_parses_true_only_on_the_flagged_dot);
+    RUN_TEST(radar_live_dot_selected_defaults_false);
 
     RUN_TEST(missing_file_returns_io_error);
     RUN_TEST(malformed_json_returns_json_error);
@@ -1630,6 +1688,7 @@ int main(void)
 
     RUN_TEST(dump_then_reload_round_trips_committed_fixture);
     RUN_TEST(dump_then_reload_round_trips_signal_fixture);
+    RUN_TEST(dump_then_reload_round_trips_radar_select_member2_fixture);
     RUN_TEST(dump_then_reload_round_trips_find_fixture);
     RUN_TEST(dump_then_reload_round_trips_settings_default_fixture);
     RUN_TEST(bug5a_ui_settings_scroll_y_parses_and_round_trips);

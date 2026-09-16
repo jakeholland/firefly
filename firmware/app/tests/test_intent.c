@@ -1412,6 +1412,131 @@ static void S16_c2_flare_start_is_rejected_while_a_takeover_is_visible(void)
     TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->sending);
 }
 
+/* =================================================================== */
+/* SELECT_CREW -> ff_crew_select_next (puck-ux-usability-2026-09-15      */
+/* finding 1 / slice 2, "you can point it at your friend" — the Radar    */
+/* centre-disc's own emit site is scr_radar.c's radar_build_select_tap; */
+/* this file only proves the SHELL side of the seam, same division of   */
+/* labor test_scr_intent.c's own header comment states for every other  */
+/* wired control.)                                                       */
+/* =================================================================== */
+
+static void S06_slice2_select_crew_cycles_to_next_paired_member(void)
+{
+    harness_init(100000u);
+    pair_named(DANA, "DANA");
+    pair_named(KEV_ID, "KEV");
+    TEST_ASSERT_EQUAL_STRING("DANA", view()->radar.name);
+
+    send_kind(FF_INTENT_SELECT_CREW);
+    TEST_ASSERT_EQUAL_STRING("KEV", view()->radar.name);
+}
+
+static void S06_slice2_select_crew_wraps_around(void)
+{
+    harness_init(100000u);
+    pair_named(DANA, "DANA");
+    pair_named(KEV_ID, "KEV");
+    TEST_ASSERT_EQUAL_STRING("DANA", view()->radar.name);
+
+    send_kind(FF_INTENT_SELECT_CREW);
+    TEST_ASSERT_EQUAL_STRING("KEV", view()->radar.name);
+    send_kind(FF_INTENT_SELECT_CREW);
+    TEST_ASSERT_EQUAL_STRING("DANA", view()->radar.name); /* wrapped back to the first */
+}
+
+/* The design's own explicit rule: one paired member is a no-op, not an
+ * error — ff_crew_select_next already wraps a single-member roster back
+ * to itself (core/src/ff_crew.c), so this is a regression guard on the
+ * SHELL wiring never second-guessing that, not new behavior. */
+static void S06_slice2_select_crew_noop_with_one_paired_member(void)
+{
+    harness_init(100000u);
+    pair_named(DANA, "DANA");
+    TEST_ASSERT_EQUAL_STRING("DANA", view()->radar.name);
+
+    send_kind(FF_INTENT_SELECT_CREW);
+    TEST_ASSERT_EQUAL_STRING("DANA", view()->radar.name); /* unchanged — no error */
+}
+
+/* RADAR_NOSEL (nobody paired at all): must not crash, and must not
+ * conjure a selection out of nothing — the disc is never even built in
+ * this state (test_scr_intent.c's own S06_slice2_radar_nosel_has_no_
+ * center_disc), but the shell handler must be safe on its own terms
+ * too (a stray/injected intent, same defensive posture
+ * S16_c1_null_and_garbage_dispatch_is_safe takes elsewhere in this
+ * file). */
+static void S06_slice2_select_crew_noop_with_no_paired_members(void)
+{
+    harness_init(100000u);
+    TEST_ASSERT_EQUAL(RADAR_NOSEL, view()->radar.mode);
+
+    send_kind(FF_INTENT_SELECT_CREW);
+    TEST_ASSERT_EQUAL(RADAR_NOSEL, view()->radar.mode);
+    TEST_ASSERT_EQUAL_STRING("", view()->radar.name);
+}
+
+/* S10 AC3, the exact wording: "GO locks selection: `ff_crew_select_next`
+ * no-ops while LOCKED; unlock on expiry restores cycling." ff_flare.h's
+ * own doc comment on `ff_flare_locked_node` names this as unfinished
+ * business until "S06's job once its shell exists" — this is that
+ * shell, and this is its regression test. */
+static void S06_slice2_select_crew_noops_while_flare_locked_then_unlocks_on_expiry(void)
+{
+    harness_init(100000u);
+    pair_named(DANA, "DANA");
+    pair_named(KEV_ID, "KEV");
+    TEST_ASSERT_EQUAL_STRING("DANA", view()->radar.name);
+
+    inject_flare(KEV_ID, 300u);
+    send_kind(FF_INTENT_TAKEOVER_GO);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_flare(&H.shell)->locked_node_id);
+    TEST_ASSERT_EQUAL_STRING("KEV", view()->radar.name);
+
+    /* LOCKED: a centre tap must not cycle away from the sender. */
+    send_kind(FF_INTENT_SELECT_CREW);
+    TEST_ASSERT_EQUAL_STRING("KEV", view()->radar.name);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_flare(&H.shell)->locked_node_id);
+
+    /* Positive control: once the lock expires, cycling is unlocked
+     * again — proves the rejection above is the LOCK gate specifically,
+     * not a SELECT_CREW path that never works at all. */
+    H.clk.t += 301u * 1000u; /* past the 300s lock duration */
+    ff_app_state_t const *v = view(); /* ticks the flare; releases the expired lock */
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_shell_flare(&H.shell)->locked_node_id);
+    TEST_ASSERT_EQUAL_STRING("KEV", v->radar.name); /* S10's own rule: expiry does not revert selection */
+
+    send_kind(FF_INTENT_SELECT_CREW);
+    TEST_ASSERT_EQUAL_STRING("DANA", view()->radar.name); /* cycling works again */
+}
+
+static void S06_slice2_select_crew_is_rejected_while_a_takeover_is_visible(void)
+{
+    /* Routing rule 4: the disc lives on the Radar tile, which is not the
+     * visible face while a takeover is up — same principle
+     * S16_c2_flare_start_is_rejected_while_a_takeover_is_visible pins for
+     * FLARE_START, just above. */
+    harness_init(100000u);
+    pair_named(DANA, "DANA");
+    pair_named(KEV_ID, "KEV");
+    TEST_ASSERT_EQUAL_STRING("DANA", view()->radar.name);
+
+    /* DISMISS the takeover (never GO), so the selection is never
+     * force-moved by the sender-select fix — isolating this test to the
+     * routing gate alone. */
+    inject_flare(KEV_ID, 300u);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    send_kind(FF_INTENT_SELECT_CREW);
+    TEST_ASSERT_EQUAL_STRING("DANA", view()->radar.name); /* rejected: selection untouched */
+
+    /* Positive control: dismiss the takeover, and the identical intent
+     * now works. */
+    send_kind(FF_INTENT_TAKEOVER_DISMISS);
+    send_kind(FF_INTENT_SELECT_CREW);
+    TEST_ASSERT_EQUAL_STRING("KEV", view()->radar.name);
+}
+
 static void S16_c2_flare_end_cancels_a_send_even_while_a_takeover_is_visible(void)
 {
     /* FLARE_END (the sender overlay's CANCEL) is deliberately UNGATED:
@@ -3085,6 +3210,12 @@ int main(void)
 
     RUN_TEST(S16_c2_flare_start_begins_sending);
     RUN_TEST(S16_c2_flare_start_is_rejected_while_a_takeover_is_visible);
+    RUN_TEST(S06_slice2_select_crew_cycles_to_next_paired_member);
+    RUN_TEST(S06_slice2_select_crew_wraps_around);
+    RUN_TEST(S06_slice2_select_crew_noop_with_one_paired_member);
+    RUN_TEST(S06_slice2_select_crew_noop_with_no_paired_members);
+    RUN_TEST(S06_slice2_select_crew_noops_while_flare_locked_then_unlocks_on_expiry);
+    RUN_TEST(S06_slice2_select_crew_is_rejected_while_a_takeover_is_visible);
     RUN_TEST(S16_c2_flare_end_cancels_a_send_even_while_a_takeover_is_visible);
     RUN_TEST(S16_AC8_setting_set_applies_and_persists_only_on_change);
     RUN_TEST(S17a_AC2_setting_set_colorblind_applies_and_persists_only_on_change);

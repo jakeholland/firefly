@@ -8038,14 +8038,6 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
     case FF_INTENT_MARK_FEED_READ: /* c2 relic — S24 replaced the face-view clear with per-thread
                                      * mark-read on open (INBOX_OPEN_THREAD/PICK above); nothing
                                      * emits this and a whole-feed clear would zero every badge. */
-    case FF_INTENT_SELECT_CREW:    /* c2 — radar tap-cycle (docs/specs/S06-radar-face.md's
-                                     * "tap center = cycle selected member" input rule). Retained
-                                     * though nothing emits it today: the S06 tap-cycle gesture
-                                     * was never wired into scr_radar.c, and the S26(e) nav rework
-                                     * that followed made the radar hub a plain launcher satellite
-                                     * rather than the tap surface the spec describes — so this
-                                     * stays the ready-made handler for whichever face eventually
-                                     * re-adds that gesture, same reasoning as SELECT_RALLY below. */
     case FF_INTENT_SELECT_RALLY:   /* still unbuilt: ff_crew_select_rally does not exist yet
                                      * (core/include/ff_crew.h's own documented deviation —
                                      * a rally point doesn't fit ff_crew_member_t, deferred to
@@ -8054,6 +8046,37 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                                      * target"), and the shell has nothing to call yet — wiring
                                      * the emit site now means the eventual handler is the
                                      * only piece still missing, not a second UI change too. */
+        return;
+
+    case FF_INTENT_SELECT_CREW:
+        /* puck-ux-usability-2026-09-15 finding 1 / slice 2 — the radar
+         * face's centre-disc tap (`scr_radar.c`'s `radar_build_select_tap`,
+         * built on every mode except RADAR_NOSEL). This used to be a
+         * documented no-op (see the block just above's own history:
+         * "the S06 tap-cycle gesture was never wired into scr_radar.c")
+         * — this is that wiring, finally landing S06's own spec line
+         * ("tap center = cycle selected member") and its AC5.
+         *
+         * Gated on the visible face exactly like FF_INTENT_FLARE_START
+         * just above (routing rule 4): the disc only exists on the
+         * Radar tile, which is not the visible face while a takeover
+         * owns the screen.
+         *
+         * ALSO gated on the flare lock — S10 AC3's own wording:
+         * "GO locks selection: `ff_crew_select_next` no-ops while
+         * LOCKED; unlock on expiry restores cycling" (docs/specs/
+         * S10-flare.md). `ff_flare.h`'s own doc comment on
+         * `ff_flare_locked_node` calls this out by name as unfinished
+         * business — "Wiring `ff_crew_select_next` to no-op while
+         * locked (spec AC3) is S06's job once its shell exists" — this
+         * is that shell. Without this gate a stray centre tap right
+         * after accepting an incoming flare (ff_flare_go's own "GO
+         * force-selects the sender" fix, just above in this switch)
+         * could cycle the puck away from the person who just asked to
+         * be found, silently undoing that fix's whole point. */
+        if (takeover_up) return;
+        if (ff_flare_locked_node(&sh->flare) != 0u) return;
+        ff_crew_select_next(&sh->crew);
         return;
 
     case FF_INTENT_QUICK_FLARE:
