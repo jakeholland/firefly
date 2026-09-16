@@ -321,6 +321,13 @@ targets:
       # shape and same reason as `FireflyDebugStartDestinationLaunch.swift`
       # above.
       - path: Firefly/Sources/FireflyDebugHideBadgeLaunch.swift
+      # 2026-09-15, one-compass-arrow: the compass dart's shape, split
+      # out of `RadarRingView.swift`'s `ArrowShape` into a CoreGraphics-
+      # only file (no `import SwiftUI`) for the SAME reason as every
+      # other file in this list — so this target can pin the shape's
+      # actual path points (normalized geometry, notch position, width
+      # ratio) without dragging in SwiftUI/Theme.
+      - path: Firefly/Sources/Radar/ArrowGeometry.swift
       - path: Firefly/Tests
     dependencies:
       - package: FireflyKit

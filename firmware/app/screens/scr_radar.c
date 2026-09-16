@@ -679,52 +679,88 @@ static void radar_draw_filled_triangle(lv_obj_t *parent, float p0x, float p0y, f
     lv_obj_add_event_cb(obj, radar_triangle_draw_cb, LV_EVENT_DRAW_MAIN, td);
 }
 
-/* Outline-only triangle: three thin segments, no fill — the LOST "ghost"
- * arrowhead (PR #16 UX review finding #1's ruling: "arrow reduced to a
- * faint outline-only ghost (no fill)"). A shape distinct in KIND from
- * LIVE/STALE's solid filled head, not just a dimmer copy of the same
- * silhouette — that's the point: STALE and LOST must read as different
- * screens, not different opacities of the same screen. */
-static void radar_draw_outline_triangle(lv_obj_t *parent, float p0x, float p0y, float p1x, float p1y, float p2x,
-                                         float p2y, uint32_t color_hex, lv_opa_t opa)
+/* 2026-09-15, one-compass-arrow (docs/design/compass-arrow.md): the dart
+ * has four outline points (tip, right, notch, left — radar_layout.h's
+ * own doc comment on radar_layout_arrow_t) and no separate "head"/"tail"
+ * split any more, so the old 3-point-only `radar_draw_outline_triangle`
+ * and the tail-then-head shape of the old `radar_draw_arrow` are
+ * replaced by these two dart-shaped primitives, both driven straight off
+ * `radar_layout_resolve_arrow`'s output. */
+
+/* Filled dart: a fan triangulation from the tip — (tip, right, notch) +
+ * (tip, notch, left) — both triangles convex, their union exactly the
+ * dart (the tip "sees" every other vertex, so a fan from it is a valid
+ * triangulation of this star-shaped quadrilateral; see
+ * radar_layout.h's own doc comment on the point order). */
+static void radar_draw_dart_fill(lv_obj_t *parent, radar_layout_arrow_t const *arrow, uint32_t color_hex,
+                                  lv_opa_t opa)
 {
-    radar_draw_segment(parent, p0x, p0y, p1x, p1y, color_hex, opa, 4);
-    radar_draw_segment(parent, p1x, p1y, p2x, p2y, color_hex, opa, 4);
-    radar_draw_segment(parent, p2x, p2y, p0x, p0y, color_hex, opa, 4);
+    radar_draw_filled_triangle(parent, arrow->tip_dx, arrow->tip_dy, arrow->right_dx, arrow->right_dy,
+                                arrow->notch_dx, arrow->notch_dy, color_hex, opa);
+    radar_draw_filled_triangle(parent, arrow->tip_dx, arrow->tip_dy, arrow->notch_dx, arrow->notch_dy,
+                                arrow->left_dx, arrow->left_dy, color_hex, opa);
+}
+
+/* Outline of the dart's four edges (tip->right, right->notch,
+ * notch->left, left->tip). LVGL has no dashed-line primitive, so
+ * `dashed` is approximated the same way this file's old tail-dashing
+ * did: each edge split into `N_DASHES` short sub-segments with gaps,
+ * applied per-edge instead of only along the old shaft. */
+static void radar_draw_dart_outline(lv_obj_t *parent, radar_layout_arrow_t const *arrow, uint32_t color_hex,
+                                     lv_opa_t opa, int32_t width, bool dashed)
+{
+    const float ex0[4] = {arrow->tip_dx, arrow->right_dx, arrow->notch_dx, arrow->left_dx};
+    const float ey0[4] = {arrow->tip_dy, arrow->right_dy, arrow->notch_dy, arrow->left_dy};
+    const float ex1[4] = {arrow->right_dx, arrow->notch_dx, arrow->left_dx, arrow->tip_dx};
+    const float ey1[4] = {arrow->right_dy, arrow->notch_dy, arrow->left_dy, arrow->tip_dy};
+
+    for (int i = 0; i < 4; i++) {
+        if (!dashed) {
+            radar_draw_segment(parent, ex0[i], ey0[i], ex1[i], ey1[i], color_hex, opa, width);
+            continue;
+        }
+        enum { N_DASHES = 2 };
+        for (int d = 0; d < N_DASHES; d++) {
+            float t0 = ((float)d + 0.15f) / (float)N_DASHES;
+            float t1 = ((float)d + 0.65f) / (float)N_DASHES;
+            float ax = ex0[i] + (ex1[i] - ex0[i]) * t0, ay = ey0[i] + (ey1[i] - ey0[i]) * t0;
+            float bx = ex0[i] + (ex1[i] - ex0[i]) * t1, by = ey0[i] + (ey1[i] - ey0[i]) * t1;
+            radar_draw_segment(parent, ax, ay, bx, by, color_hex, opa, width);
+        }
+    }
 }
 
 typedef enum {
-    RADAR_ARROW_SOLID,  /* LIVE: solid tail + filled head, full opacity */
-    RADAR_ARROW_DASHED, /* STALE: dashed tail + filled head, reduced opacity */
-    RADAR_ARROW_GHOST,  /* LOST (real fix): faint dashed tail + OUTLINE-ONLY head */
+    RADAR_ARROW_SOLID,  /* LIVE/PLACE: filled dart, full opacity, no outline — a real bearing. */
+    RADAR_ARROW_DASHED, /* STALE: dim filled dart + a dashed outline at fuller opacity, mirroring the
+                          * app's `fill(opacity: 0.28).overlay(stroke(dashed))`. */
+    RADAR_ARROW_GHOST,  /* LOST (real prior fix) / SIGNAL ghost: NO fill, dashed outline only — a
+                          * placeholder, not a real bearing right now. A shape distinct in KIND from
+                          * LIVE/STALE's filled dart, not just a dimmer copy of the same silhouette —
+                          * that's the point: STALE and LOST must read as different screens, not
+                          * different opacities of the same screen. */
 } radar_arrow_style_t;
 
-/* Draws an ALREADY-RESOLVED arrow (radar_layout_resolve_arrow's output —
+/* Draws an ALREADY-RESOLVED dart (radar_layout_resolve_arrow's output —
  * this file does no arrow placement math itself, see the file's top
- * comment): a thin tail from puck-center to the head's base, then a
- * triangular head from that base to the tip. `style` controls the tail's
- * dash pattern and whether the head is filled or outline-only. */
+ * comment). `style` selects which of the three treatments
+ * docs/design/compass-arrow.md's "puck arrow treatments" table
+ * describes — the same three the app's `RadarRingView.swift` `arrow`
+ * draws. */
 static void radar_draw_arrow(lv_obj_t *parent, radar_layout_arrow_t const *arrow, uint32_t color_hex, lv_opa_t opa,
                               radar_arrow_style_t style)
 {
-    if (style == RADAR_ARROW_SOLID) {
-        radar_draw_segment(parent, 0.0f, 0.0f, arrow->base_dx, arrow->base_dy, color_hex, opa, 6);
-    } else {
-        enum { N_DASHES = 3 };
-        for (int i = 0; i < N_DASHES; i++) {
-            float t0 = ((float)i + 0.15f) / (float)N_DASHES;
-            float t1 = ((float)i + 0.65f) / (float)N_DASHES;
-            radar_draw_segment(parent, arrow->base_dx * t0, arrow->base_dy * t0, arrow->base_dx * t1,
-                                arrow->base_dy * t1, color_hex, opa, 5);
-        }
-    }
-
-    if (style == RADAR_ARROW_GHOST) {
-        radar_draw_outline_triangle(parent, arrow->tip_dx, arrow->tip_dy, arrow->left_dx, arrow->left_dy,
-                                     arrow->right_dx, arrow->right_dy, color_hex, opa);
-    } else {
-        radar_draw_filled_triangle(parent, arrow->tip_dx, arrow->tip_dy, arrow->left_dx, arrow->left_dy,
-                                    arrow->right_dx, arrow->right_dy, color_hex, opa);
+    switch (style) {
+    case RADAR_ARROW_SOLID:
+        radar_draw_dart_fill(parent, arrow, color_hex, opa);
+        break;
+    case RADAR_ARROW_DASHED:
+        radar_draw_dart_fill(parent, arrow, color_hex, opa);
+        radar_draw_dart_outline(parent, arrow, color_hex, LV_OPA_COVER, 2, /*dashed=*/true);
+        break;
+    case RADAR_ARROW_GHOST:
+        radar_draw_dart_outline(parent, arrow, color_hex, opa, 2, /*dashed=*/true);
+        break;
     }
 }
 
