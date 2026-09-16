@@ -1,6 +1,9 @@
 # A05 — My Lineup on the puck: picks, happenings and your own events
 
-**Status:** DRAFT 2026-09-16 — decisions for Jake in §8. Nothing here is built.
+**Status:** SPEC'D 2026-09-16, **DEFERRED until after Lost Lands** by Jake's call — not
+field-critical, and the two days before the festival go to what already exists
+(battery, close-range finding, the field build). Decisions are all taken (§8);
+nothing here is built.
 **Surfaces:** Firefly app (iOS), puck firmware, fest-almanac pack, settimes (read-only mirror).
 **Ask (Jake, 2026-09-16):** "a targeted feature for loading a user's favorites to a
 puck from the Firefly app. This should include adding support for the sidequests
@@ -172,14 +175,52 @@ Sets-only (1–4, 7) is the smallest thing that is useful on Sep 18. 5 and 6
 make the phone match settimes; they ride the same wire format with no puck
 change, so they can land after the puck slices without reflashing.
 
-## 8. Decisions for Jake
+## 8. Decisions — TAKEN (Jake, 2026-09-16)
 
-1. **Wire format B (resolved items)** vs A (settimes codes on the puck)? — recommend B.
-2. **Scope for Lost Lands:** sets-only to the puck first (slices 1–4, 7), happenings + own events on the phone after? Or hold for all seven? Two days remain; 1–4 alone is a day of agent work plus a flash and a TestFlight.
-3. **Nudge tier and lead time:** BANNER at T-15 (recommend), or none for v1?
-4. **"My puck" pairing:** via the puck's SHOW CODE QR (recommend) or a Settings picker over crew nodes?
-5. **Own-event title cap on the puck:** 40 chars as settimes (fits two lines of the puck's 20 px face)?
-6. **Landmarks have no coordinates.** Accept text-only places for events (recommend), or wait for fest-almanac to survey the eight dinosaurs?
+1. **Wire format: B, resolved items.** Sets travel as `(stage id, night index,
+   start_min)`; happenings and own events carry their own title/where/time. The
+   puck never re-derives a settimes id, never parses `events`, and a newer pack
+   on the phone cannot silently drop picks.
+2. **Scheduling: deferred until after Lost Lands.** Not field-critical. The
+   festival window goes to the battery question, close-range finding and the
+   field build. Nothing in this spec is cut — it is queued, not trimmed.
+3. **Nudge: BANNER at T-15**, never TAKEOVER, gated by quiet hours, one per item
+   per boot. Wires the already-written, never-called `ff_sched_alarm_tick`.
+4. **Pairing: the puck's SHOW CODE QR carries its node id**, and the app
+   remembers it as "my puck". **There is no Wi-Fi or Bluetooth involved** — see
+   §4's transport note and the correction below. A crew member's puck is never a
+   valid target.
+5. **Own-event titles: truncate at 40 characters** on the phone, with an
+   ellipsis, matching settimes. The puck never truncates a string it was sent.
+6. **Landmarks stay text-only.** All nine landmarks in the Lost Lands pack carry
+   null coordinates, and a pack can never be assumed to place them, so an event
+   at "the T-Rex" is a readable place and not a navigable one. No slice waits on
+   fest-almanac surveying anything.
+
+### Correction recorded: the puck has no Wi-Fi and no Bluetooth
+
+Asked during decision 4 whether the phone would "hook up to puck Wi-Fi". It
+cannot, today, on either radio:
+
+- **Bluetooth is not built in.** `CONFIG_BT_ENABLED` is unset in the target's
+  `sdkconfig` — there is no host stack in the image at all.
+- **Wi-Fi is never brought up.** ESP-IDF leaves `CONFIG_ESP_WIFI_ENABLED=y` by
+  default (the S3 silicon has the radio), but no Firefly code calls
+  `esp_wifi_init`, `esp_wifi_start`, or creates a netif — grepped across the
+  whole `firmware/` tree, zero hits. The option being on is a build default, not
+  a feature.
+
+So every byte between the phone and the puck goes phone → its own Heltec (BLE) →
+LoRa → the puck's comms brain → UART, which is why §3's 200-byte frames and §4's
+chunking exist.
+
+**A future option worth naming, not chosen here:** the S3 *does* have Wi-Fi
+silicon, so a SoftAP on the puck for bulk transfer (a whole lineup, or a fresh
+festpack, in one shot instead of thirteen LoRa frames) is buildable. It costs
+flash, RAM, a power budget that the 2026-09-16 battery work has not yet sized,
+and an honest answer to "what happens when two pucks are in range". Revisit it
+when the lineup feature comes back off the shelf, alongside the festpack-load
+path S05 still lists as open.
 
 ## 9. Out of scope
 
