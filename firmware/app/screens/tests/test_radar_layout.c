@@ -45,16 +45,22 @@ static radar_layout_rect_t dot_rect(radar_layout_dot_result_t const *d)
     return square_at(d->dx, d->dy, RADAR_LAYOUT_DOT_PX);
 }
 
-/* A minimal bounding square around the arrow's head (tip + both base
- * corners) — good enough to check "does the head land inside reserved
- * chrome", which is exactly what the resolver itself tests against. */
+/* A minimal bounding square around the whole dart (tip + both base
+ * corners + notch, 2026-09-15 one-compass-arrow — was "tip + both base
+ * corners" for the old shaft-and-head shape, which had no notch) — good
+ * enough to check "does the dart land inside reserved chrome", which is
+ * exactly what the resolver itself tests against. Includes the notch
+ * because it is a real point of the rendered outline (the concave point
+ * between the two base corners): a bbox that omitted it could pass this
+ * test while the actual drawn shape still overlapped reserved chrome at
+ * the notch alone. */
 static radar_layout_rect_t arrow_head_bbox(radar_layout_arrow_t const *a)
 {
     float min_x = a->tip_dx, max_x = a->tip_dx;
     float min_y = a->tip_dy, max_y = a->tip_dy;
-    float xs[2] = {a->left_dx, a->right_dx};
-    float ys[2] = {a->left_dy, a->right_dy};
-    for (int i = 0; i < 2; i++) {
+    float xs[3] = {a->left_dx, a->right_dx, a->notch_dx};
+    float ys[3] = {a->left_dy, a->right_dy, a->notch_dy};
+    for (int i = 0; i < 3; i++) {
         if (xs[i] < min_x) min_x = xs[i];
         if (xs[i] > max_x) max_x = xs[i];
         if (ys[i] < min_y) min_y = ys[i];
@@ -178,17 +184,30 @@ static void sweep_arrow_never_overlaps_registry_or_changes_bearing(radar_mode_t 
         }
 
         /* Never fakes the bearing: the tip must sit exactly on the true
-         * ray, just possibly closer in (CLAUDE.md's honesty rule — see
-         * radar_layout.h's doc comment). Reconstruct the expected
-         * unit-direction from the resolved tip and compare against the
-         * bearing's own direction; skip the (extremely rare) case where
-         * shortening bottomed all the way out to ~0 length, where the
-         * direction of a near-zero vector is numerically meaningless. */
-        float tip_mag = sqrtf(arrow.tip_dx * arrow.tip_dx + arrow.tip_dy * arrow.tip_dy);
+         * ray FROM THE PIVOT, just possibly closer in (CLAUDE.md's
+         * honesty rule — see radar_layout.h's doc comment).
+         *
+         * 2026-09-15, raise-the-pivot: this used to check the tip against
+         * the true CENTRE (0,0) — correct when the pivot was the centre,
+         * but the puck's pivot is now raised RADAR_LAYOUT_ARROW_PIVOT_DY_PX
+         * above it (radar_layout.h's own comment on that constant has the
+         * full derivation). The dart's pointing AXIS is still exactly
+         * bearing-aligned — only its draw origin moved — so the honesty
+         * property this test pins is unchanged: subtract the pivot offset
+         * from the resolved tip before checking direction, so this is
+         * "the tip lies on the bearing ray from the pivot", not "from the
+         * true centre". Reconstruct the expected unit-direction from the
+         * pivot-relative tip and compare against the bearing's own
+         * direction; skip the (extremely rare) case where shortening
+         * bottomed all the way out to ~0 length, where the direction of a
+         * near-zero vector is numerically meaningless. */
+        float pivot_tip_dx = arrow.tip_dx - 0.0f;
+        float pivot_tip_dy = arrow.tip_dy - RADAR_LAYOUT_ARROW_PIVOT_DY_PX;
+        float tip_mag = sqrtf(pivot_tip_dx * pivot_tip_dx + pivot_tip_dy * pivot_tip_dy);
         if (tip_mag > 1.0f) {
             float rad = bearing * (TEST_RADAR_LAYOUT_PI / 180.0f);
             float expected_x = sinf(rad), expected_y = -cosf(rad);
-            float actual_x = arrow.tip_dx / tip_mag, actual_y = arrow.tip_dy / tip_mag;
+            float actual_x = pivot_tip_dx / tip_mag, actual_y = pivot_tip_dy / tip_mag;
             TEST_ASSERT_FLOAT_WITHIN(0.02f, expected_x, actual_x);
             TEST_ASSERT_FLOAT_WITHIN(0.02f, expected_y, actual_y);
         }
@@ -232,13 +251,153 @@ static void test_arrow_not_shortened_when_clear(void)
     radar_layout_registry_t reg;
     radar_layout_build_registry(RADAR_LIVE, false, &reg);
 
-    /* Due "north" (straight up, away from the name/dist/chip stack and
-     * the status bar) needs no shortening at all. */
+    /* 2026-09-15, one-compass-arrow: due "north" (bearing 0) is NO LONGER
+     * the clear case for this shape — measured, not assumed
+     * (AGENTS.md's "measuring, not reasoning harder"). The dart is
+     * CENTRED on the ring centre (docs/design/compass-arrow.md), so a
+     * due-north tip's BASE lands behind it, i.e. straight down — squarely
+     * inside this mode's name/dist/chip stack rect (y in [40,172], x in
+     * [-140,140]). The old shaft-and-head shape never had this problem:
+     * its tail started AT the centre and only ever extended toward the
+     * tip, so it had nothing on the far side to collide with.
+     *
+     * Due EAST (bearing 90) is genuinely clear at full reach instead, and
+     * stays clear after 2026-09-15's raise-the-pivot change too (verified
+     * by the sweep test above, not just this single-bearing check; this
+     * test exists to pin the *unshortened, full-reach* case as its own
+     * named target). With the pivot raised RADAR_LAYOUT_ARROW_PIVOT_DY_PX
+     * (-25) above centre: tip at (83.25, -25), base at (-83.25, -25),
+     * notch at (-41.625, -25), both wide corners at y = -25 +- 19.15 (0.23
+     * * 83.25 half-width) = -44.15 / -5.85 — every one of those y-values
+     * is well under the stack's y1=40 (if anything, the raised pivot
+     * pulls this bearing's dart further from the stack than before, not
+     * closer), and the status bar (y in [-177,-143]) / page-dot row (y in
+     * [176,196]) bands are unreachable at this reach from ANY bearing, so
+     * this is a genuine no-collision case, not a narrower one that
+     * happens to pass. */
     radar_layout_arrow_t arrow;
-    radar_layout_resolve_arrow(&reg, 0.0f, RADAR_LAYOUT_ARROW_LEN_PX, &arrow);
+    radar_layout_resolve_arrow(&reg, 90.0f, RADAR_LAYOUT_ARROW_LEN_PX, &arrow);
 
     TEST_ASSERT_FALSE(arrow.shortened);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, RADAR_LAYOUT_ARROW_LEN_PX, arrow.len_px);
+}
+
+/* The due-north case above is exactly what DOES need shortening now —
+ * pinned as its own test so the behavior change is a named regression
+ * target, not just a repurposed helper.
+ *
+ * 2026-09-15, raise-the-pivot: this rule still fires at due north after
+ * the pivot moved — measured, not assumed. Before the raise, due north
+ * resolved to 39.25px (this file's own prior value); the raised pivot
+ * recovers reach (radar_layout.h's RADAR_LAYOUT_ARROW_PIVOT_DY_PX comment
+ * has the full sweep) but the collision the centred dart introduced is
+ * still there — due north now resolves to exactly 63.25px, the same
+ * worst-case value the sizing review measured across the ENTIRE sweep at
+ * this pivot (see test_arrow_worst_case_reach_meets_floor below): after
+ * raising the pivot, due north (not ~6.3deg off-axis, as it was
+ * unraised) is once again the single worst bearing. The point of this
+ * test is that the rule still fires when it must, not that it fires at
+ * the same length as before. */
+static void test_arrow_due_north_now_shortens_because_base_hits_the_stack(void)
+{
+    radar_layout_registry_t reg;
+    radar_layout_build_registry(RADAR_LIVE, false, &reg);
+
+    radar_layout_arrow_t arrow;
+    radar_layout_resolve_arrow(&reg, 0.0f, RADAR_LAYOUT_ARROW_LEN_PX, &arrow);
+
+    TEST_ASSERT_TRUE(arrow.shortened);
+    TEST_ASSERT_TRUE(arrow.len_px < RADAR_LAYOUT_ARROW_LEN_PX);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 63.25f, arrow.len_px);
+    /* Still honest: the tip sits exactly on bearing 0 (straight up) FROM
+     * THE PIVOT, just closer in — x unchanged, y raised by the pivot
+     * offset from what an un-raised dart's tip_dy would have been. */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f, arrow.tip_dx);
+    TEST_ASSERT_TRUE(arrow.tip_dy < RADAR_LAYOUT_ARROW_PIVOT_DY_PX);
+}
+
+/* 2026-09-15, raise-the-pivot (owner decision on PR #333's code review) —
+ * the whole point of raising the pivot: the worst-case reach across every
+ * bearing must recover to a real, checked floor, not just improve on
+ * paper. The review's own empirical sweep at this pivot value found
+ * 63.25px as the global worst case (at exactly bearing 0, the same
+ * bearing test_arrow_due_north_now_shortens_because_base_hits_the_stack
+ * pins above) — checked here at every tenth of a degree, not spot-checked,
+ * against a floor of 60px so this is a real regression guard, not a
+ * restatement of one sample. */
+static void test_arrow_worst_case_reach_meets_floor(void)
+{
+    radar_layout_registry_t reg;
+    radar_layout_build_registry(RADAR_LIVE, false, &reg);
+
+    float worst_len = RADAR_LAYOUT_ARROW_LEN_PX;
+    float worst_bearing = 0.0f;
+    for (int tenth_deg = 0; tenth_deg < 3600; tenth_deg++) {
+        float bearing = (float)tenth_deg / 10.0f;
+        radar_layout_arrow_t arrow;
+        radar_layout_resolve_arrow(&reg, bearing, RADAR_LAYOUT_ARROW_LEN_PX, &arrow);
+        if (arrow.len_px < worst_len) {
+            worst_len = arrow.len_px;
+            worst_bearing = bearing;
+        }
+    }
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "worst-case reach %.2fpx at bearing %.1f, below the 60px floor", (double)worst_len,
+              (double)worst_bearing);
+    TEST_ASSERT_TRUE_MESSAGE(worst_len >= 60.0f, msg);
+    /* Pin the exact measured value too (not just the floor), so a future
+     * change to the pivot, the stack rect, or the dart's proportions that
+     * quietly erodes this margin shows up as a specific number moving,
+     * not just a still-passing >=60 check. */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 63.25f, worst_len);
+}
+
+/* 2026-09-15, raise-the-pivot — the raised pivot must not let any dart
+ * vertex, at any bearing, land inside the name/distance/chip stack rect
+ * (redundant with the sweep test above in spirit, but that test uses a
+ * bounding-box proxy via arrow_head_bbox; this checks the four real
+ * outline points against the exact stack rect directly, per AGENTS.md's
+ * "proxy check" — a bbox could theoretically clear a rotated rect's
+ * corner while a real vertex still lands inside an axis-aligned rect
+ * exactly matching it, though not in this case since the stack rect IS
+ * axis-aligned; still worth the direct check since it's what the fix is
+ * actually supposed to guarantee) nor leave the 200px glass circle
+ * (case/bezel radius — docs/design/compass-arrow.md's own glass-clipping
+ * note). */
+static void test_arrow_raised_pivot_clears_stack_and_glass(void)
+{
+    radar_layout_registry_t reg;
+    radar_layout_build_registry(RADAR_LIVE, false, &reg);
+
+    radar_layout_rect_t const stack = {-140.0f, RADAR_LAYOUT_STACK_NAME_DY - 20.0f, 140.0f,
+                                         RADAR_LAYOUT_STACK_CHIP_DY + 24.0f};
+    float const glass_r2 = 200.0f * 200.0f;
+
+    for (int tenth_deg = 0; tenth_deg < 3600; tenth_deg++) {
+        float bearing = (float)tenth_deg / 10.0f;
+        radar_layout_arrow_t arrow;
+        radar_layout_resolve_arrow(&reg, bearing, RADAR_LAYOUT_ARROW_LEN_PX, &arrow);
+
+        float xs[4] = {arrow.tip_dx, arrow.left_dx, arrow.right_dx, arrow.notch_dx};
+        float ys[4] = {arrow.tip_dy, arrow.left_dy, arrow.right_dy, arrow.notch_dy};
+        for (int i = 0; i < 4; i++) {
+            bool in_stack = xs[i] >= stack.x1 && xs[i] <= stack.x2 && ys[i] >= stack.y1 && ys[i] <= stack.y2;
+            if (in_stack) {
+                char msg[160];
+                snprintf(msg, sizeof(msg), "bearing %.1f: vertex %d at (%.1f,%.1f) lands inside the name/dist/chip stack",
+                          (double)bearing, i, (double)xs[i], (double)ys[i]);
+                TEST_FAIL_MESSAGE(msg);
+            }
+            float r2 = xs[i] * xs[i] + ys[i] * ys[i];
+            if (r2 > glass_r2) {
+                char msg[160];
+                snprintf(msg, sizeof(msg), "bearing %.1f: vertex %d at (%.1f,%.1f), dist %.1f, leaves the 200px glass",
+                          (double)bearing, i, (double)xs[i], (double)ys[i], (double)sqrtf(r2));
+                TEST_FAIL_MESSAGE(msg);
+            }
+        }
+    }
 }
 
 /* ---------------------------------------------------------------------
@@ -573,6 +732,9 @@ int main(void)
     RUN_TEST(test_arrow_sweep_place);
     RUN_TEST(test_arrow_sweep_signal_ghost);
     RUN_TEST(test_arrow_not_shortened_when_clear);
+    RUN_TEST(test_arrow_due_north_now_shortens_because_base_hits_the_stack);
+    RUN_TEST(test_arrow_worst_case_reach_meets_floor);
+    RUN_TEST(test_arrow_raised_pivot_clears_stack_and_glass);
 
     RUN_TEST(test_all_8_dots_same_bearing_close_mode_cluster_not_hidden);
     RUN_TEST(test_widely_spaced_dots_stay_distinct_not_clustered);

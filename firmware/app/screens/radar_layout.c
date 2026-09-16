@@ -143,42 +143,63 @@ void radar_layout_resolve_arrow(radar_layout_registry_t const *reg, float arrow_
 
     float rad = arrow_deg * (RADAR_LAYOUT_PI / 180.0f);
     float fx = sinf(rad), fy = -cosf(rad); /* forward unit vector, toward the tip */
-    float px = cosf(rad), py = sinf(rad);  /* perpendicular unit vector, the head's base spread */
-    float half_w = RADAR_LAYOUT_ARROW_HEAD_WIDTH_PX / 2.0f;
+    float px = cosf(rad), py = sinf(rad);  /* perpendicular unit vector, the base's width spread */
 
-    /* Bounded shortening loop: (ARROW_LEN_PX - ARROW_MIN_LEN_PX) / 4 =
-     * 30 steps needed in the worst case (`max_len_px` is never larger
-     * than RADAR_LAYOUT_ARROW_LEN_PX — see this function's doc comment —
-     * so a smaller starting length, e.g. the locked reach cap, only ever
-     * needs FEWER steps); MAX_STEPS is deliberately far more generous
-     * than that so this is a hard, provable cap, not a tight fit to
-     * today's constants. Every candidate is tested against the FULL
-     * registry union fresh each step (point_in_registry), never an
-     * incremental push toward one violated rectangle — so overlapping
-     * reserved rectangles cannot make this oscillate. */
+    /* 2026-09-15, one-compass-arrow: the dart is defined ENTIRELY by
+     * `tip_r`, the tip's reach from centre (docs/design/compass-arrow.md
+     * — L = 2*tip_r, W = RADAR_LAYOUT_ARROW_WIDTH_RATIO*L, base at
+     * -tip_r, notch at -0.5*tip_r == -0.25*L). Shortening scales `tip_r`
+     * down, which scales every other point down WITH it (same
+     * proportions throughout) — unlike the old fixed-head-on-a-shaft
+     * shape, there is no separately-sized piece that stays fixed while
+     * the rest shrinks.
+     *
+     * Bounded shortening loop: worst case
+     * (RADAR_LAYOUT_ARROW_LEN_PX - RADAR_LAYOUT_ARROW_MIN_LEN_PX) / 4 =
+     * (83.25 - 20) / 4 ~= 16 steps (`max_len_px` is never larger than
+     * RADAR_LAYOUT_ARROW_LEN_PX — see this function's doc comment — so a
+     * smaller starting length only ever needs FEWER steps). MAX_STEPS is
+     * deliberately far more generous than that so this is a hard,
+     * provable cap, not a tight fit to today's constants. Every
+     * candidate is tested against the FULL registry union fresh each
+     * step (point_in_registry), never an incremental push toward one
+     * violated rectangle — so overlapping reserved rectangles cannot
+     * make this oscillate. */
     enum { MAX_STEPS = 64 };
 
     float tip_r = max_len_px;
     bool shortened = false;
-    float tip_x = 0.0f, tip_y = 0.0f, base_x = 0.0f, base_y = 0.0f, left_x = 0.0f, left_y = 0.0f, right_x = 0.0f,
-          right_y = 0.0f;
+    float tip_x = 0.0f, tip_y = 0.0f, left_x = 0.0f, left_y = 0.0f, right_x = 0.0f, right_y = 0.0f, notch_x = 0.0f,
+          notch_y = 0.0f;
+
+    /* 2026-09-15, raise-the-pivot (radar_layout.h's own comment on
+     * RADAR_LAYOUT_ARROW_PIVOT_DY_PX has the full derivation): a fixed
+     * screen-space Y offset, added to every point AFTER the bearing
+     * rotation below (it does not itself rotate with the bearing — the
+     * pivot's on-screen position is the same regardless of which way the
+     * dart points). Collision testing below uses these offset points,
+     * since that is the actual on-screen position that will be drawn
+     * against the true-centre-relative registry rectangles. */
+    float const pivot_dy = RADAR_LAYOUT_ARROW_PIVOT_DY_PX;
 
     for (int step = 0; step <= MAX_STEPS; step++) {
-        float base_r = tip_r - RADAR_LAYOUT_ARROW_HEAD_LEN_PX;
-        if (base_r < 0.0f) {
-            base_r = 0.0f; /* degenerate guard: only reachable if MIN_LEN < HEAD_LEN */
-        }
+        float base_r = -tip_r;         /* base line: -0.5*L == -tip_r, opposite the tip */
+        float notch_r = -0.5f * tip_r; /* -0.25*L == 0.5*base_r, on-axis */
+        float half_w = RADAR_LAYOUT_ARROW_WIDTH_RATIO * tip_r; /* 0.5*W == ratio*(2*tip_r)*0.5 == ratio*tip_r */
+
         tip_x = fx * tip_r;
-        tip_y = fy * tip_r;
-        base_x = fx * base_r;
-        base_y = fy * base_r;
+        tip_y = fy * tip_r + pivot_dy;
+        float base_x = fx * base_r, base_y = fy * base_r + pivot_dy;
         left_x = base_x - px * half_w;
         left_y = base_y - py * half_w;
         right_x = base_x + px * half_w;
         right_y = base_y + py * half_w;
+        notch_x = fx * notch_r;
+        notch_y = fy * notch_r + pivot_dy;
 
         bool hit = point_in_registry(reg, tip_x, tip_y, 0.0f) || point_in_registry(reg, left_x, left_y, 0.0f) ||
-                   point_in_registry(reg, right_x, right_y, 0.0f);
+                   point_in_registry(reg, right_x, right_y, 0.0f) ||
+                   point_in_registry(reg, notch_x, notch_y, 0.0f);
         if (!hit || tip_r <= RADAR_LAYOUT_ARROW_MIN_LEN_PX) {
             break;
         }
@@ -191,12 +212,12 @@ void radar_layout_resolve_arrow(radar_layout_registry_t const *reg, float arrow_
 
     out->tip_dx = tip_x;
     out->tip_dy = tip_y;
-    out->base_dx = base_x;
-    out->base_dy = base_y;
     out->left_dx = left_x;
     out->left_dy = left_y;
     out->right_dx = right_x;
     out->right_dy = right_y;
+    out->notch_dx = notch_x;
+    out->notch_dy = notch_y;
     out->len_px = tip_r;
     out->shortened = shortened;
 }

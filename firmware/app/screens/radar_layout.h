@@ -66,11 +66,109 @@ extern "C" {
  * is exactly what gets drawn.
  * ------------------------------------------------------------------- */
 
-#define RADAR_LAYOUT_ARROW_LEN_PX 140.0f     /* S06 spec: "arrow 140 px glyph" — full length before shortening */
-#define RADAR_LAYOUT_ARROW_MIN_LEN_PX 20.0f  /* never shorten past this — a nub, not nothing */
-#define RADAR_LAYOUT_ARROW_HEAD_LEN_PX 46.0f
-#define RADAR_LAYOUT_ARROW_HEAD_WIDTH_PX 34.0f
 #define RADAR_LAYOUT_RING_RADIUS_PX 185.0f
+
+/* 2026-09-15, one-compass-arrow (docs/design/compass-arrow.md): the
+ * puck's arrow is now the SAME notched-dart shape
+ * `app/Firefly/Sources/Radar/RadarRingView.swift`'s `ArrowShape` draws —
+ * a dart CENTRED on the ring centre (tip ahead, base behind), not the
+ * old separate full-length shaft-from-centre with a fixed-size
+ * triangular head bolted on the end. Was "arrow 140 px glyph" per the
+ * S06 spec sketch; that sentence and this file's own shortening-search
+ * doc comment are updated together with this change (S06's own
+ * Amendments has the dated entry).
+ *
+ * L = total dart length (tip to base line) = 0.9 * ring radius, exactly
+ * the ratio the app's RadarRingView.swift has always used for its own
+ * arrowLength. RADAR_LAYOUT_ARROW_LEN_PX keeps its ORIGINAL role — the
+ * tip's reach from centre, `radar_layout_resolve_arrow`'s search-
+ * starting length — but that is now L/2 (half the dart is ahead of
+ * centre, half behind), not the whole dart as it was when the shape
+ * started AT centre. Value: 0.5 * 0.9 * 185 = 83.25 (0.45 * ring
+ * radius). */
+#define RADAR_LAYOUT_ARROW_LEN_PX (0.45f * RADAR_LAYOUT_RING_RADIUS_PX) /* == 83.25f: tip's reach from centre */
+#define RADAR_LAYOUT_ARROW_MIN_LEN_PX 20.0f  /* never shorten past this (tip reach) — a nub, not nothing */
+
+/* 2026-09-15, raise-the-pivot (owner, Jake, code review of PR #333):
+ * the app keeps its rotation pivot at the ring centre — it has no fixed
+ * chrome the dart can collide with (docs/design/compass-arrow.md). The
+ * puck does: centring the dart on the ring centre (this same PR) put the
+ * BASE and NOTCH behind the tip, where they now reach into the LIVE/
+ * STALE/PLACE name-distance-chip stack that sits just below centre. The
+ * review's own measured worst case (`radar_layout_resolve_arrow` swept at
+ * every tenth of a degree against the real registry) was a reach of only
+ * 35.25px — a dart barely a fifth of its nominal 166.5px length.
+ *
+ * Fix: raise the WHOLE dart's rotation pivot — tip, both base corners,
+ * and the notch — by a fixed offset above the ring centre, so there is
+ * more headroom before the base/notch reach the stack. This is a
+ * puck-only constant: the app has no such collision system and its own
+ * pivot is untouched (docs/design/compass-arrow.md's "the rotation pivot
+ * is the ring/compass centre" invariant still holds for the APP; this
+ * constant is the puck's own documented divergence from it, not a
+ * contradiction of it).
+ *
+ * Value: -25px (negative == up in this file's screen-space convention,
+ * matching deg_to_offset's own sign). Chosen from the review's own
+ * empirical sweep of candidate shifts against the real registries:
+ *
+ *   shift    worst-case reach   locked FLARE-chip margin
+ *   0 (was)  35.25px            68.75px
+ *   20       55.25px            28.75px
+ *   25       63.25px            19.75px   <- chosen
+ *   30       67.25px            10.75px
+ *   31       67.25px             9.75px  (last value >= the 8px floor)
+ *   32+      67-83px            <8px — violates S10's guard
+ *
+ * 25px very nearly maximizes the worst-case reach recovery (63.25px vs.
+ * the ceiling's ~67-83px) while keeping a full 19.75px of margin above
+ * the 8px floor `S10_locked_arrow_head_clears_the_lock_chip` enforces —
+ * comfortable headroom rather than riding the limit at 31-32px. Re-
+ * verified after the shift (radar_layout.c's resolver, not hand algebra):
+ * worst-case reach is now 63.25px at bearing 0 (the raised pivot moves
+ * the true worst bearing from ~6.3deg back to exactly due north — the
+ * off-axis base-corner effect the un-raised dart had is now dominated by
+ * the base itself), a +79% recovery of reach, still well short of the
+ * app's own fixed 77.9pt but no longer "a fifth of the shape." The due-
+ * north shortening rule from this same PR still fires (63.25px <
+ * 83.25px, `test_arrow_due_north_now_shortens_because_base_hits_the_
+ * stack`, updated expectation) — raising the pivot recovers length, it
+ * does not eliminate the collision the centred dart introduced.
+ *
+ * Applied inside `radar_layout_resolve_arrow` as a constant Y offset
+ * added to every one of the dart's four points AFTER the bearing
+ * rotation (the pivot's screen position doesn't rotate with the
+ * bearing — only the dart drawn around it does), so every existing
+ * `scr_radar.c` call site needs no change: the resolved tip/left/right/
+ * notch fields already carry this offset, same as they already carry
+ * the ring-centre origin. The collision search tests these offset
+ * points directly, since that is the actual on-screen position being
+ * checked against the (also centre-relative, un-shifted) registry
+ * rectangles.
+ *
+ * Invariant update: the tip no longer lies on the bearing ray from the
+ * TRUE centre (it lies on the ray from centre + this offset) —
+ * `test_radar_layout.c`'s `sweep_arrow_never_overlaps_registry_or_
+ * changes_bearing` is updated to check the tip against the PIVOT
+ * (centre + `RADAR_LAYOUT_ARROW_PIVOT_DY_PX`), not the true centre. The
+ * property CLAUDE.md's honesty rule actually cares about — the dart's
+ * pointing axis (tip through base) is exactly bearing-aligned, and
+ * shortening only ever gives up length, never moves off that axis — is
+ * unchanged and still what this offset-aware check verifies. */
+#define RADAR_LAYOUT_ARROW_PIVOT_DY_PX (-25.0f)
+
+/* W / L — "a tad fatter" (owner, 2026-09-15). Shared with the app's
+ * `ArrowGeometry.widthRatio`. Replaces the old fixed-px
+ * ARROW_HEAD_LEN_PX (46) / ARROW_HEAD_WIDTH_PX (34) pair: the old shape
+ * had a separately-sized triangular head riding a full-length shaft, so
+ * the head's size was independent of the shaft's length. The new dart
+ * IS the whole arrow — there is no separate head — so its width scales
+ * WITH its length, including while the collision search shortens it
+ * (radar_layout_resolve_arrow scales the whole dart by one factor, not
+ * just a fixed head sliding down a shrinking shaft). The previous shape
+ * worked out to roughly 0.19 of its own full length; 0.23 is about 20%
+ * fatter than that. */
+#define RADAR_LAYOUT_ARROW_WIDTH_RATIO 0.23f
 #define RADAR_LAYOUT_DOT_PX 34.0f
 
 /* Angular search bounds for both the arrow-shortening search and the
@@ -220,60 +318,64 @@ extern "C" {
  * covering the arrowhead, the arrow gives up length while LOCKED, so its
  * head never reaches the chip's band in the first place.
  *
- * DERIVATION. `radar_layout_resolve_arrow`'s head-shape math (tip at
- * `tip_r` along the bearing; base at `tip_r - RADAR_LAYOUT_ARROW_HEAD_LEN_PX`;
- * left/right base corners offset by `RADAR_LAYOUT_ARROW_HEAD_WIDTH_PX/2`
- * perpendicular to the bearing) makes the TIP the head's topmost
- * (most-negative-y) point for every bearing from due north out to
- * `atan(RADAR_LAYOUT_ARROW_HEAD_LEN_PX / (RADAR_LAYOUT_ARROW_HEAD_WIDTH_PX/2))`
- * ~= 70 deg either side — verified by an exhaustive tenth-degree sweep
- * (0..360 deg) of tip/left/right corner y for a fixed reach, not just
- * this arithmetic (AGENTS.md's "measuring, not reasoning harder"): the
- * worst case is ALWAYS exactly bearing 0, where the topmost head pixel's
- * y equals `-reach` exactly, with every other bearing strictly less
- * extreme (`|cos(deg)|` scales the whole geometry down together, so a
- * fixed reach's topmost reach only ever SHRINKS as bearing turns away
- * from north — a wide-angle corner case where a base corner momentarily
- * out-climbs the tip was checked and never wins: at those bearings
- * `cos(deg)` is already small enough that the whole head sits far below
- * bearing 0's topmost point). So bounding bearing 0 alone is sufficient
- * to bound every bearing.
+ * 2026-09-15, one-compass-arrow (docs/design/compass-arrow.md):
+ * superseded to EQUAL `RADAR_LAYOUT_ARROW_LEN_PX` — read the rest of
+ * this comment as history explaining WHY a separate, shorter value used
+ * to exist, not as the current derivation.
  *
- * The chip's bottom edge is `RADAR_LAYOUT_LOCK_CHIP_DY + 14.0f` (the
- * chip's own half-height — see that constant's own derivation comment):
- * `-122 + 14 = -108`. Requiring the head's topmost pixel (bearing 0's
- * `-reach`) to clear that edge by the same >=8px floor this whole fix
- * chain uses, plus the same "double the floor" margin convention
- * `RADAR_LAYOUT_LOCK_CHIP_DY` itself used (16px, not the bare 8px
- * minimum):
+ * ORIGINAL DERIVATION (with the old shaft-from-centre shape, kept for
+ * context). The old head-shape math (tip at `tip_r` along the bearing;
+ * base at `tip_r - 46px` fixed head length; left/right base corners
+ * offset by 34px/2 fixed head width) made the TIP the head's topmost
+ * point for every bearing from due north out to ~70deg either side
+ * (verified by an exhaustive tenth-degree sweep, AGENTS.md's "measuring,
+ * not reasoning harder"), worst case always exactly bearing 0, where the
+ * topmost head pixel's y equalled `-reach` exactly. The chip's bottom
+ * edge is `RADAR_LAYOUT_LOCK_CHIP_DY + 14.0f = -122 + 14 = -108`.
+ * Requiring the head's topmost pixel to clear that edge by a 16px
+ * margin gave `max reach = 108 - 16 = 92` — LESS than the old unlocked
+ * `RADAR_LAYOUT_ARROW_LEN_PX` (140), so a separate, shorter locked
+ * search-starting length was genuinely load-bearing: the ordinary
+ * unlocked reach (140) very much DID reach the chip's band at bearing 0
+ * (140 > 108), and only the capped 92 avoided it.
  *
- *   max reach = -(chip bottom edge) - gap = 108 - 16 = 92
+ * WHY THAT'S NO LONGER NEEDED. The new centred-dart shape's unlocked
+ * `RADAR_LAYOUT_ARROW_LEN_PX` is itself only 83.25 (0.45 * ring radius)
+ * — the tip's reach from centre is now HALF the dart's total on-screen
+ * length, because the other half (the base) extends BEHIND centre
+ * instead of the whole dart starting at centre and reaching outward. At
+ * bearing 0 (the same worst-case bearing the original derivation used,
+ * re-verified rather than assumed — the new dart's tip is still its
+ * topmost point out to a wide bearing range around north, by the same
+ * "|cos(deg)| scales everything down together" argument, and this is
+ * exercised by the full tenth-degree sweep in
+ * app/screens/tests/test_radar_layout.c), the tip sits at y = -83.25 —
+ * ABOVE (numerically greater than) the chip's bottom edge at -108 by a
+ * 24.75px margin, more than triple the 8px floor
+ * `S10_locked_arrow_head_clears_the_lock_chip` checks for. The ordinary
+ * unlocked reach now clears the chip band on its own, unconditionally,
+ * with no separate cap required — so LOCKED and UNLOCKED converge on
+ * the same starting length.
  *
- * `RADAR_LAYOUT_ARROW_REACH_LOCKED_PX` is this module's SEARCH STARTING
- * length while locked (`radar_layout_resolve_arrow`'s `max_len_px`
- * parameter), used in place of `RADAR_LAYOUT_ARROW_LEN_PX` — NOT a
- * bypass of the existing registry search. The search still independently
- * (and correctly) shortens further, exactly as it always has, if a
- * locked arrow's bearing points it into some OTHER reserved rectangle
- * (e.g. LIVE/STALE's name/dist/chip stack when locked onto someone
- * behind you) — that avoidance is unrelated to this fix and unchanged by
- * it. What IS guaranteed, because 92 is provably the bearing-0 worst
- * case for reaching the chip specifically and the chip itself is not a
- * registered rectangle (scr_flare.h's doc comment explains why): a
- * locked arrow's head can NEVER reach the chip's band regardless of
- * bearing, so there is no bearing-dependent "wobble" in the one
- * respect this fix is about — how close the head gets to the chip. At
- * both fixtures this PR/its follow-up cover (`radar_flare_locked`,
- * bearing 42; `radar_flare_locked_north`, bearing 0) the capped reach is
- * ALSO short enough to clear every other registered rectangle outright,
- * so the arrow renders at exactly 92px in both — but that is a property
- * of those two bearings, not a guarantee this constant makes on its own.
+ * Kept as its own named constant (equal to `RADAR_LAYOUT_ARROW_LEN_PX`)
+ * rather than deleted and inlined at call sites, for two reasons: every
+ * `scr_radar.c` render function still branches
+ * `locked ? RADAR_LAYOUT_ARROW_REACH_LOCKED_PX : RADAR_LAYOUT_ARROW_LEN_PX`
+ * (no call site needed editing for this change — only the two constants'
+ * VALUES converged, which is the point: the invariant this constant
+ * exists to name — "a locked arrow's head can never reach the chip's
+ * band" — still holds, just by construction now instead of by a
+ * distinct shorter search bound), and a future change to either the
+ * chip's position or the dart's proportions could reintroduce the
+ * conflict this constant's derivation is about, at which point it can
+ * diverge from `RADAR_LAYOUT_ARROW_LEN_PX` again without touching any
+ * caller.
  *
  * Guarded by app/screens/tests/test_scr_flare.c's
  * S10_locked_arrow_head_clears_the_lock_chip (measures real built arrow
- * geometry against the real built chip geometry — fails if this constant
- * is reverted to the unlocked RADAR_LAYOUT_ARROW_LEN_PX while locked). */
-#define RADAR_LAYOUT_ARROW_REACH_LOCKED_PX 92.0f
+ * geometry against the real built chip geometry) — still green under the
+ * new geometry, now with a wider margin than before. */
+#define RADAR_LAYOUT_ARROW_REACH_LOCKED_PX RADAR_LAYOUT_ARROW_LEN_PX
 
 /* LIVE / STALE / LOST-with-a-real-fix shared vertical stack. */
 #define RADAR_LAYOUT_STACK_NAME_DY 60.0f
@@ -424,37 +526,73 @@ typedef struct {
 void radar_layout_build_registry(radar_mode_t mode, bool never_fixed, radar_layout_registry_t *out);
 
 /** Resolved arrow geometry, center-relative — everything scr_radar.c
- * needs to draw the tail and the (filled or outline) triangular head
- * without recomputing any of this module's trigonometry itself. */
+ * needs to draw the notched dart (docs/design/compass-arrow.md) without
+ * recomputing any of this module's trigonometry itself. Four outline
+ * points, in drawing order: tip -> right -> notch -> left -> (back to
+ * tip). Filled, this triangulates as a fan from the tip — (tip, right,
+ * notch) + (tip, notch, left) — both triangles convex, their union
+ * exactly the dart; scr_radar.c does that split, this struct just hands
+ * over the four points.
+ *
+ * 2026-09-15, one-compass-arrow: replaces the old
+ * tip_dx/dy+base_dx/dy+left_dx/dy+right_dx/dy fields (a full-length
+ * shaft from centre to `base`, then a separate fixed-size triangular
+ * head from `base` to `tip`) — the new dart has no separate "base
+ * midpoint" vertex (the base EDGE runs directly between the two wide
+ * corners) and no separate tail (the dart itself spans from ahead of
+ * centre to behind it, so there's nothing left to draw from centre to
+ * `base`). `left_dx/dy`/`right_dx/dy` keep their names and their role
+ * (the two wide corners) since nothing about what they MEAN changed,
+ * only where they sit relative to the tip. */
 typedef struct {
-    float tip_dx, tip_dy;
-    float base_dx, base_dy; /* head base == tail end */
-    float left_dx, left_dy; /* head's two base corners */
-    float right_dx, right_dy;
-    float len_px;    /* the (possibly-shortened) tip radius actually used */
+    float tip_dx, tip_dy;     /* +0.5*L along the bearing, THEN raised by RADAR_LAYOUT_ARROW_PIVOT_DY_PX */
+    float left_dx, left_dy;   /* -0.5*L along the bearing, -0.5*W perpendicular, then raised */
+    float right_dx, right_dy; /* -0.5*L along the bearing, +0.5*W perpendicular, then raised */
+    float notch_dx, notch_dy; /* -0.25*L along the bearing, on-axis (the concave point), then raised */
+    float len_px;    /* the (possibly-shortened) tip's reach from the PIVOT actually used */
     bool shortened;  /* true if it had to give up length to clear the registry */
 } radar_layout_arrow_t;
 
 /**
  * radar_layout_resolve_arrow — the arrow's on-screen geometry for
- * `arrow_deg`. A 1-D monotonic search over length: starts at
- * `max_len_px` (callers pass RADAR_LAYOUT_ARROW_LEN_PX for the normal,
- * unlocked reach, or RADAR_LAYOUT_ARROW_REACH_LOCKED_PX while the flare
- * lock chip is showing — see that constant's own derivation comment for
- * why locked reach is a fixed, shorter starting point rather than a
- * per-bearing collision search against the chip specifically), and on
- * each step tests the CURRENT candidate's tip and both head-base corners
- * against the full registry union (a fresh test every step, not an
- * incremental push), shortening by a fixed amount until every point
- * clears every rectangle or the length hits RADAR_LAYOUT_ARROW_MIN_LEN_PX.
- * The bearing itself never changes. Bounded by a hard iteration cap —
- * terminates in a fixed maximum number of steps regardless of `*reg`'s
- * contents or `max_len_px`'s value (a smaller starting length only ever
- * needs FEWER steps to resolve, never more).
+ * `arrow_deg`. A 1-D monotonic search over a single SCALE factor applied
+ * to the whole dart: starts at `max_len_px` (callers pass
+ * RADAR_LAYOUT_ARROW_LEN_PX for the normal, unlocked reach, or
+ * RADAR_LAYOUT_ARROW_REACH_LOCKED_PX while the flare lock chip is
+ * showing — now numerically equal; see that constant's own comment for
+ * why a separate shorter locked value is no longer needed), and on each
+ * step tests the CURRENT candidate's tip, both wide corners, AND the
+ * notch against the full registry union (a fresh test every step, not
+ * an incremental push), shrinking the scale by a fixed amount until
+ * every point clears every rectangle or the tip's reach hits
+ * RADAR_LAYOUT_ARROW_MIN_LEN_PX. The bearing itself never changes, and
+ * every point of the dart shrinks TOWARD the centre together (tip, base
+ * corners, and notch all scale by the same factor) — CLAUDE.md's
+ * honesty rule: an arrow may go short, it must never point somewhere it
+ * doesn't mean. Bounded by a hard iteration cap — terminates in a fixed
+ * maximum number of steps regardless of `*reg`'s contents or
+ * `max_len_px`'s value (a smaller starting length only ever needs FEWER
+ * steps to resolve, never more).
  *
  * `max_len_px` is expected `<= RADAR_LAYOUT_ARROW_LEN_PX`; passing a
  * larger value is not defended against; every caller in this codebase
  * passes one of the two named constants above.
+ *
+ * 2026-09-15, raise-the-pivot: every output point (tip, both base
+ * corners, notch) is computed about a pivot raised
+ * `RADAR_LAYOUT_ARROW_PIVOT_DY_PX` above the true centre passed in via
+ * `reg` (see that constant's own comment for the full derivation) — the
+ * bearing rotation happens first, then the fixed pivot offset is added,
+ * so the offset does not rotate with the bearing. Collision testing uses
+ * these same offset (true-centre-relative, on-screen) points, since that
+ * is what will actually be drawn against the (also true-centre-relative)
+ * registry rectangles. The dart's pointing AXIS (tip through base) is
+ * still exactly bearing-aligned — only its draw origin moved — so
+ * CLAUDE.md's "never point somewhere it doesn't mean" still holds; what
+ * changed is that the tip's position vector *from the true centre* is no
+ * longer purely `length * (sinθ,-cosθ)` — it now has this constant
+ * vertical component mixed in. `len_px` is the reach from the PIVOT, not
+ * the true centre.
  */
 void radar_layout_resolve_arrow(radar_layout_registry_t const *reg, float arrow_deg, float max_len_px,
                                  radar_layout_arrow_t *out);
