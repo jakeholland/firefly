@@ -372,7 +372,8 @@ per-node lookup is needed. At SF11/BW250:
 - A PONG (`[ver:1][type:1][nonce:4][rssi:2][has_snr:1][snr_x10:2]` = 11 B app payload, ~27 B on
   air) is marginally longer, ~180-210 ms.
 - One ping+pong round trip every 10 s is therefore roughly **330-390 ms of air time per 10,000 ms
-  window ≈ 3.3-3.9%** for the two nodes directly involved — this is higher than the "~1-2%"
+  window ≈ 3.3-3.9%** — **SUPERSEDED, see the 2026-09-16 correction at the end of this file: the
+  per-packet figure above is ~2x too low; the real round trip is ~700 ms** for the two nodes directly involved — this is higher than the "~1-2%"
   figure named in the task brief once actually computed against SF11/BW250 (not SF7/BW250, which
   this fleet does not use); flagged explicitly here per AGENTS.md rather than silently matched to
   the brief's number. Meshtastic's own duty-cycle/airtime-fairness limiter
@@ -551,3 +552,57 @@ the PR body; ESP32-S3 device build (sdkconfig + `CONFIG_FF_DEBUG_CONSOLE=y` +
   **Gates.** clang and gcc-14 sim builds, zero warnings; `ctest` all green (105/105); FireflyKit's
   full Swift test suite green (1114 tests, 5 pre-existing skips unrelated to this change, 0
   failures) on both the direct `swift test` run and through the app's own package graph.
+
+## 2026-09-16 correction — the airtime baseline was wrong by ~2x
+
+The "Airtime" section above (written with PR 2, 2026-09-07) estimates a ~22 B
+packet at LONG_FAST as **150-210 ms** on air, and every cadence decision since —
+including this same day's 10 s -> 5 s halving — was reasoned against it. That
+figure is **too low by roughly a factor of two**. Found by the independent
+reviewer of the cadence change, then recomputed twice from the Semtech
+SX1261/2 datasheet formula before being accepted.
+
+Run `tools/lora_toa.py` (added with this correction) rather than trusting any
+number quoted in prose:
+
+```
+LONG_FAST = SF11 / BW250 kHz / CR 4-5, 8-symbol preamble, CRC on
+  symbol time      8.192 ms (< 16 ms, so low-data-rate optimisation is OFF)
+  PING  (22 B)     28 payload symbols  ->  330 ms
+  PONG  (27 B)     33 payload symbols  ->  371 ms
+  round trip                                  700 ms
+  at 10 s (pre-2026-09-16)  7.0% of channel for one session, 14.0% for two
+  at 5 s (current)          14.0% of channel for one session, 28.0% for two
+```
+
+Where the original went wrong: it counted roughly 70-85 symbols total for a
+short packet, when the preamble alone is 12.25 symbols (100.4 ms) and the
+28-symbol payload adds 229 ms. The symbol count is right; the arithmetic that
+turned symbols into milliseconds was not.
+
+**What this changes.** The honest numbers for a FIND session are **14%** of the
+channel for one, **28%** for two running at once — not the 6.6-7.8% / 13.2-15.6%
+this spec claimed an hour earlier. Both are below Meshtastic's own
+`AirTime::isTxAllowedChannelUtil` backstop, and a session is still hard-capped
+at 5 minutes and 60 pings, so the 5 s cadence **stands** — it was shipped on the
+strength of the usability argument (a first warmer/colder verdict at 20 s
+instead of 60 s), and that argument does not depend on the airtime figure. But
+the margin is thinner than the earlier number implied, and this is a shared
+physical resource: unicast addressing stops packets being *forwarded* across the
+mesh, it does not stop them occupying the air that every nearby node competes
+for. Several simultaneous FIND pairs at a festival all draw on the same budget.
+
+**The lever this points at.** Every number above is a consequence of SF11.
+LONG_FAST buys range this project does not need at a festival where the whole
+crew is inside a few hundred metres. A faster modem preset cuts symbol time
+geometrically — and with it airtime, transmit energy (see the 2026-09-16 power
+audit) and the floor under the FIND cadence all at once. Not changed here: the
+preset is a fleet-wide setting that every node must adopt together, and the
+range cost has not been measured on real hardware. Named as the next thing to
+test, not as a decision taken.
+
+**Estimate discipline.** The 330/371 ms figures are computed, not measured — the
+datasheet formula is exact for the modem, but real occupancy also includes
+Meshtastic's own CSMA backoff before each transmission, which this does not
+model and which only ever makes the true figure larger. No ammeter or radio
+capture has ever been taken on this fleet; when one is, it supersedes this.
