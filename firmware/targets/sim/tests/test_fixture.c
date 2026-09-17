@@ -87,16 +87,49 @@ static void radar_stale_parses_exact_values(void)
     TEST_ASSERT_TRUE(s.radar.arrow_valid); /* STALE still draws a (dashed) arrow per S06 */
 }
 
+/* 2026-09-16 amendment (close-range-honest-distance): `dist_str` is now
+ * the fixed FF_CREW_CLOSE_RANGE_M threshold text ("30 m"), never a
+ * measured point distance (see docs/specs/S06-radar-face.md's own
+ * amendment) — the fixture's `close_leg: "distance"` is what the
+ * renderer actually keys off (radar_close_rssi_parses_exact_values
+ * below covers the other leg). */
 static void radar_close_parses_exact_values(void)
 {
     ff_app_state_t s;
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_close.json"), &s));
 
     TEST_ASSERT_EQUAL_INT(RADAR_CLOSE, s.radar.mode);
-    TEST_ASSERT_EQUAL_STRING("15 m", s.radar.dist_str);
+    TEST_ASSERT_EQUAL_INT(FF_CREW_CLOSE_BY_DISTANCE, s.radar.close_leg);
+    TEST_ASSERT_EQUAL_STRING("30 m", s.radar.dist_str);
     TEST_ASSERT_EQUAL_STRING("3 SEC", s.radar.age_str);
     TEST_ASSERT_EQUAL_INT(1, s.radar.trend);
     TEST_ASSERT_FALSE(s.radar.arrow_valid); /* S06: "false in CLOSE/NOFIX/NOSEL" */
+}
+
+/* 2026-09-16 amendment (close-range-honest-distance) — the OTHER leg:
+ * no coordinate at all (dist_str/age_str both ""), CLOSE fired by a
+ * fresh, strong DIRECT RSSI sample instead. */
+static void radar_close_rssi_parses_exact_values(void)
+{
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_close_rssi.json"), &s));
+
+    TEST_ASSERT_EQUAL_INT(RADAR_CLOSE, s.radar.mode);
+    TEST_ASSERT_EQUAL_INT(FF_CREW_CLOSE_BY_RSSI, s.radar.close_leg);
+    TEST_ASSERT_EQUAL_STRING("", s.radar.dist_str);
+    TEST_ASSERT_EQUAL_STRING("", s.radar.age_str);
+    TEST_ASSERT_FALSE(s.radar.arrow_valid);
+}
+
+/* An absent `close_leg` key must default to FF_CREW_CLOSE_NONE (the
+ * enum's own zero value — see fx_close_leg_table's doc comment) so a
+ * fixture that never mentions it (e.g. any LIVE/STALE/... fixture) does
+ * not silently claim a CLOSE leg fired. */
+static void radar_live_close_leg_defaults_none(void)
+{
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_live.json"), &s));
+    TEST_ASSERT_EQUAL_INT(FF_CREW_CLOSE_NONE, s.radar.close_leg);
 }
 
 /* issue #33 — RADAR_PLACE: age_str always empty, one ring dot flagged
@@ -1202,6 +1235,29 @@ static void dump_then_reload_round_trips_signal_fixture(void)
     TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
 }
 
+/* 2026-09-16 amendment (close-range-honest-distance) — same round-trip
+ * contract as dump_then_reload_round_trips_committed_fixture above,
+ * exercised against radar_close_rssi.json so `close_leg` (this
+ * amendment's own new field) round-trips at a NON-zero enum value
+ * (FF_CREW_CLOSE_BY_RSSI) — radar_live.json's own round-trip test above
+ * only ever exercises the zero/default value. */
+static void dump_then_reload_round_trips_radar_close_leg_fixture(void)
+{
+    ff_app_state_t original;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_close_rssi.json"), &original));
+    TEST_ASSERT_EQUAL_INT(FF_CREW_CLOSE_BY_RSSI, original.radar.close_leg); /* exercises the non-zero case */
+
+    char json[FF_FIXTURE_DUMP_MAX];
+    int n = ff_fixture_dump_json(&original, json, sizeof(json));
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)strlen(json), (uint32_t)n);
+
+    ff_app_state_t reloaded;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
+
+    TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
+}
+
 /* puck-ux-usability-2026-09-15 finding 1 / slice 2 — same round-trip
  * contract as dump_then_reload_round_trips_committed_fixture above,
  * exercised against radar_select_member2.json so dots[].selected (this
@@ -1629,6 +1685,8 @@ int main(void)
     RUN_TEST(radar_live_parses_exact_values);
     RUN_TEST(radar_stale_parses_exact_values);
     RUN_TEST(radar_close_parses_exact_values);
+    RUN_TEST(radar_close_rssi_parses_exact_values);
+    RUN_TEST(radar_live_close_leg_defaults_none);
     RUN_TEST(radar_place_parses_exact_values);
     RUN_TEST(radar_imprecise_parses_exact_values);
     RUN_TEST(radar_live_dist_imprecise_defaults_false);
@@ -1697,6 +1755,7 @@ int main(void)
 
     RUN_TEST(dump_then_reload_round_trips_committed_fixture);
     RUN_TEST(dump_then_reload_round_trips_signal_fixture);
+    RUN_TEST(dump_then_reload_round_trips_radar_close_leg_fixture);
     RUN_TEST(dump_then_reload_round_trips_radar_select_member2_fixture);
     RUN_TEST(dump_then_reload_round_trips_find_fixture);
     RUN_TEST(dump_then_reload_round_trips_settings_default_fixture);

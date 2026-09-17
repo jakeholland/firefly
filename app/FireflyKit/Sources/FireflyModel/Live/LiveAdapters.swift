@@ -206,6 +206,7 @@ public final class CoreRadarComputing: RadarComputing {
             name: view.name,
             distanceText: view.distanceText,
             distanceImprecise: view.distanceImprecise,
+            closeLeg: view.closeLeg,
             ageText: view.ageText,
             trend: trendValue(view.trend),
             bearingDegrees: Double(view.bearingDeg),
@@ -276,8 +277,8 @@ public final class CoreRadarComputing: RadarComputing {
 /// `FindPinging` over the real `FindBridge` (`ff_find_t`) plus a real
 /// portnum-269 send. `MockFindSession` reimplemented `ff_find`'s cadence
 /// and cap bookkeeping in Swift as an honest stand-in; this replaces it
-/// with the C core itself, so the phone and the puck enforce the 10 s
-/// floor and the 30-ping/5-minute cap with the same object code.
+/// with the C core itself, so the phone and the puck enforce the 5 s
+/// floor and the 60-ping/5-minute cap with the same object code.
 ///
 /// `tick(now:)` is where the two halves meet: the bridge decides whether
 /// a ping is due AND mints the nonce (`ff_find_tick` -> `.sendPing`),

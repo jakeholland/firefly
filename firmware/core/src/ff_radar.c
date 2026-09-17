@@ -250,6 +250,7 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
         v->arrow_valid = false;
         v->name[0] = '\0';
         v->dist_str[0] = '\0';
+        v->close_leg = FF_CREW_CLOSE_NONE; /* 2026-09-16: no selection, nothing to be close to */
         v->age_str[0] = '\0';
         v->trend = 0;
         v->bearing_valid = false; /* 2026-09-05: no selection, no honest bearing either */
@@ -285,6 +286,15 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
     ff_freshness_t const fresh = ff_crew_freshness(member, now_ms);
     v->place = (fresh == FF_FRESH_ASSERTED);
     v->stale = !v->place && (fresh != FF_FRESH_LIVE);
+
+    /* 2026-09-16 amendment (close-range-honest-distance) — default;
+     * overwritten below only on the path that actually resolves
+     * RADAR_CLOSE. Set unconditionally, this early, so every OTHER
+     * return path in this function (RADAR_NOFIX/RADAR_NOHDG below, and
+     * every branch of the freshness switch further down) leaves it at
+     * the honest "not CLOSE" value without each of those paths having
+     * to remember to set it individually. */
+    v->close_leg = FF_CREW_CLOSE_NONE;
 
     /* 2026-09-07 amendment (presence-heard-vs-position) — the SEPARATE
      * heard axis (ff_radar.h's doc comment on this field): computed here
@@ -413,9 +423,30 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
         return;
     }
 
-    if (ff_crew_close_range(member, distance_for_close, now_ms)) {
+    ff_crew_close_leg_t const close_leg = ff_crew_close_range_leg(member, distance_for_close, now_ms);
+    if (close_leg != FF_CREW_CLOSE_NONE) {
         v->mode = RADAR_CLOSE;
         v->arrow_valid = false;
+        v->close_leg = close_leg;
+        /* 2026-09-16 amendment (close-range-honest-distance,
+         * docs/specs/S06-radar-face.md) — CLOSE never emits a point
+         * distance on EITHER leg: two ordinary, undegraded consumer GPS
+         * fixes a foot apart routinely disagree by 2-15 m, which is
+         * itself a meaningful fraction of the whole 30 m band CLOSE is
+         * measuring, so the DISTANCE leg's own `distance_m` (already
+         * computed above into `dist_str`) is overwritten here with the
+         * fixed THRESHOLD text instead — a constant that names the
+         * predicate that fired, never the untrustworthy measured value.
+         * The RSSI leg has no coordinate in it at all (S29: "signal is
+         * never distance") and is cleared to "" — scr_radar.c's own
+         * "NEARBY" copy carries that leg's honest claim instead. See
+         * ff_radar.h's doc comment on `close_leg`/`dist_str` for the
+         * full derivation. */
+        if (close_leg == FF_CREW_CLOSE_BY_DISTANCE) {
+            ff_fmt_distance(v->dist_str, sizeof(v->dist_str), FF_CREW_CLOSE_RANGE_M, imperial);
+        } else {
+            v->dist_str[0] = '\0';
+        }
         return;
     }
 

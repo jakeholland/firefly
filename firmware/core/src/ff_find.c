@@ -91,8 +91,8 @@ ff_find_haptic_t ff_find_on_pong(ff_find_t *f, uint32_t from_node_id, uint32_t n
     f->their_snr_of_us = has_snr ? snr_db : 0.0f;
     f->their_reading_age_ms = now_ms;
 
-    /* Ring buffer: FF_FIND_TREND_SAMPLES*2 (6) most recent samples,
-     * oldest overwritten first. */
+    /* Ring buffer: FF_FIND_TREND_SAMPLES*2 (4, since 2026-09-16 — was 6)
+     * most recent samples, oldest overwritten first. */
     uint8_t const cap = (uint8_t)(2u * FF_FIND_TREND_SAMPLES);
     f->sample_hist[f->sample_head] = rssi_dbm;
     f->sample_head = (uint8_t)((f->sample_head + 1u) % cap);
@@ -101,7 +101,7 @@ ff_find_haptic_t ff_find_on_pong(ff_find_t *f, uint32_t from_node_id, uint32_t n
     }
 
     if (f->sample_count < cap) {
-        /* Not enough samples for a full 3-vs-3 comparison yet — see
+        /* Not enough samples for a full 2-vs-2 comparison yet — see
          * ff_find.h's doc comment for why this is the gate (matches
          * ff_crew_rssi_trend's own "both halves must be non-empty"
          * convention) rather than a looser "skip only the first two"

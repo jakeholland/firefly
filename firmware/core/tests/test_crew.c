@@ -670,6 +670,88 @@ static void S02_AC4_close_range_never_direct_sentinel_guard(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* 2026-09-16 amendment (close-range-honest-distance) —                 */
+/* ff_crew_close_range_leg: WHICH leg fired, not just whether one did.  */
+/* ------------------------------------------------------------------- */
+
+static void S06_close_leg_none_when_neither_leg_fires(void)
+{
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    m.rssi_dbm = INT16_MIN;
+    m.rssi_age_ms = 0;
+
+    TEST_ASSERT_EQUAL_INT(FF_CREW_CLOSE_NONE, ff_crew_close_range_leg(&m, 100.0f, 1000u));
+}
+
+static void S06_close_leg_by_distance_when_only_distance_fires(void)
+{
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    m.rssi_dbm = INT16_MIN; /* radio leg can't fire at all */
+    m.rssi_age_ms = 0;
+
+    TEST_ASSERT_EQUAL_INT(FF_CREW_CLOSE_BY_DISTANCE, ff_crew_close_range_leg(&m, 10.0f, 1000u));
+}
+
+static void S06_close_leg_by_rssi_when_only_rssi_fires(void)
+{
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    m.rssi_dbm = -50; /* strong */
+    m.rssi_age_ms = 19000u;
+
+    /* distance_m negative ("unknown") AND far (100m) both take the same
+     * path (distance leg skipped) — covered as two separate rows so a
+     * regression that only handles one of "unknown" or "far enough"
+     * would still be caught. */
+    TEST_ASSERT_EQUAL_INT(FF_CREW_CLOSE_BY_RSSI, ff_crew_close_range_leg(&m, -1.0f, 20000u));
+    TEST_ASSERT_EQUAL_INT(FF_CREW_CLOSE_BY_RSSI, ff_crew_close_range_leg(&m, 100.0f, 20000u));
+}
+
+/* The DISTANCE leg wins outright when BOTH legs would independently
+ * fire — pins the priority `ff_crew_close_range_leg`'s own doc comment
+ * promises (unchanged from `ff_crew_close_range`'s original check
+ * order: distance first, then RSSI). A regression that let the RSSI
+ * leg win here would still pass every `ff_crew_close_range` bool test
+ * above (both legs report "close"), which is exactly why this needs
+ * its own dedicated coverage once the two legs became distinguishable. */
+static void S06_close_leg_by_distance_wins_when_both_legs_would_fire(void)
+{
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    m.rssi_dbm = -50;       /* strong */
+    m.rssi_age_ms = 19000u; /* fresh */
+
+    TEST_ASSERT_EQUAL_INT(FF_CREW_CLOSE_BY_DISTANCE, ff_crew_close_range_leg(&m, 10.0f, 20000u));
+}
+
+/* ff_crew_close_range (the bool-returning entry point) must remain
+ * exactly equivalent to "leg != FF_CREW_CLOSE_NONE" for every case
+ * above — pinning the relationship directly, not just re-testing the
+ * same rows under the old function name. */
+static void S06_close_range_bool_matches_leg_result(void)
+{
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    m.rssi_dbm = -50;
+    m.rssi_age_ms = 19000u;
+
+    struct {
+        float distance_m;
+        uint32_t now_ms;
+    } const cases[] = {
+        {10.0f, 20000u},  /* distance leg */
+        {100.0f, 20000u}, /* rssi leg */
+        {100.0f, 0u},     /* neither (rssi stale) */
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        bool const want = ff_crew_close_range_leg(&m, cases[i].distance_m, cases[i].now_ms) != FF_CREW_CLOSE_NONE;
+        TEST_ASSERT_EQUAL(want, ff_crew_close_range(&m, cases[i].distance_m, cases[i].now_ms));
+    }
+}
+
+/* ------------------------------------------------------------------- */
 /* AC5 — RSSI trend                                                     */
 /* ------------------------------------------------------------------- */
 
@@ -1512,6 +1594,11 @@ int main(void)
     RUN_TEST(S02_AC4_close_range_boundary_rssi_age_exclusive);
     RUN_TEST(S02_AC4_close_range_boundary_rssi_value_exclusive);
     RUN_TEST(S02_AC4_close_range_never_direct_sentinel_guard);
+    RUN_TEST(S06_close_leg_none_when_neither_leg_fires);
+    RUN_TEST(S06_close_leg_by_distance_when_only_distance_fires);
+    RUN_TEST(S06_close_leg_by_rssi_when_only_rssi_fires);
+    RUN_TEST(S06_close_leg_by_distance_wins_when_both_legs_would_fire);
+    RUN_TEST(S06_close_range_bool_matches_leg_result);
 
     RUN_TEST(S02_AC5_rssi_trend_monotonic_rising_is_plus_one);
     RUN_TEST(S02_AC5_rssi_trend_monotonic_falling_is_minus_one);

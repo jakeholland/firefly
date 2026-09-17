@@ -8962,7 +8962,12 @@ static void S29_ping_auto_reply_skipped_when_no_rssi_reading(void)
     TEST_ASSERT_EQUAL_INT(0, S.n_sends); /* nothing honest to report — see shell_find_auto_reply_ping's doc comment */
 }
 
-static void S29_find_session_sends_ping_at_10s_cadence(void)
+/* 2026-09-16 amendment (close-range-honest-distance): cadence halved
+ * 10s -> 5s (docs/specs/S29-radio-only.md's own amendment) — this test
+ * drives the interval symbolically via FF_FIND_PING_INTERVAL_MS so it
+ * exercises whatever the constant currently is, rather than a hardcoded
+ * literal that would silently stop matching the real cadence. */
+static void S29_find_session_sends_ping_at_configured_cadence(void)
 {
     harness_init(100000u, false);
     inject_my_info(MY_ID);
@@ -8976,13 +8981,13 @@ static void S29_find_session_sends_ping_at_10s_cadence(void)
     ff_proto_msg_t msg;
     TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PING, ff_proto_decode(S.buf, S.len, &msg));
 
-    /* Well under 10s later: no second send. */
-    advance(5000u);
+    /* Well under the interval later: no second send. */
+    advance(FF_FIND_PING_INTERVAL_MS / 2u);
     ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_EQUAL_INT(1, S.n_sends);
 
-    /* At 10s: sends again. */
-    advance(5000u);
+    /* At exactly the interval: sends again. */
+    advance(FF_FIND_PING_INTERVAL_MS / 2u);
     ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_EQUAL_INT(2, S.n_sends);
 }
@@ -9063,10 +9068,12 @@ static void S29_pong_from_wrong_node_does_not_update_find(void)
 }
 
 /* Trend-haptic/sound: fires the WARMER pulse+sound exactly once across a
- * real 6-sample improving crossing, driven entirely through the shell's
- * own tick/on_private seam (not ff_find_on_pong directly — this is the
- * end-to-end wiring test; ff_find's own crossing-detection math is
- * covered exhaustively in core's test_find.c). */
+ * real 4-sample improving crossing (2026-09-16: was 6 samples/3-vs-3 —
+ * see docs/specs/S29-radio-only.md's own amendment), driven entirely
+ * through the shell's own tick/on_private seam (not ff_find_on_pong
+ * directly — this is the end-to-end wiring test; ff_find's own
+ * crossing-detection math is covered exhaustively in core's
+ * test_find.c). */
 static void S29_pong_trend_crossing_fires_warmer_haptic_and_sound(void)
 {
     harness_init(100000u, false);
@@ -9076,14 +9083,14 @@ static void S29_pong_trend_crossing_fires_warmer_haptic_and_sound(void)
 
     ff_shell_debug_find_start(&H.shell, DANA);
 
-    int16_t const samples[] = {-100, -99, -101, -90, -89, -91}; /* delta +10 dB */
-    for (int i = 0; i < 6; i++) {
+    int16_t const samples[] = {-100, -99, -90, -89}; /* delta +10 dB */
+    for (int i = 0; i < 4; i++) {
         ff_shell_tick(&H.shell, H.clk.t);
         uint32_t const nonce = last_sent_ping_nonce();
         H.haptic.count = 0;
         inject_pong(DANA, nonce, samples[i], false, 0);
-        if (i < 5) {
-            TEST_ASSERT_EQUAL_INT_MESSAGE(0, H.haptic.count, "fired before the 6th (crossing) sample");
+        if (i < 3) {
+            TEST_ASSERT_EQUAL_INT_MESSAGE(0, H.haptic.count, "fired before the 4th (crossing) sample");
         }
         advance(FF_FIND_PING_INTERVAL_MS);
     }
@@ -9101,9 +9108,9 @@ static void S29_pong_trend_crossing_fires_colder_haptic_twice(void)
 
     ff_shell_debug_find_start(&H.shell, DANA);
 
-    int16_t const samples[] = {-70, -69, -71, -85, -86, -84}; /* delta ~ -15 dB */
+    int16_t const samples[] = {-70, -69, -85, -84}; /* delta ~ -15 dB */
     uint32_t nonce = 0u;
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 4; i++) {
         ff_shell_tick(&H.shell, H.clk.t);
         nonce = last_sent_ping_nonce();
         H.haptic.count = 0;
@@ -13161,7 +13168,7 @@ int main(void)
 
     RUN_TEST(S29_ping_auto_reply_produces_pong_with_our_rssi_reading);
     RUN_TEST(S29_ping_auto_reply_skipped_when_no_rssi_reading);
-    RUN_TEST(S29_find_session_sends_ping_at_10s_cadence);
+    RUN_TEST(S29_find_session_sends_ping_at_configured_cadence);
     RUN_TEST(S29_find_stops_on_leaving_radar_face);
     RUN_TEST(S29_pong_updates_both_readings);
     RUN_TEST(S29_pong_from_wrong_node_does_not_update_find);
