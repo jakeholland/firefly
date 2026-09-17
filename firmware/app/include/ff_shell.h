@@ -1694,6 +1694,40 @@ ff_shell_link_t ff_shell_link(ff_shell_t const *sh);
  */
 uint32_t ff_shell_handshake_retries(ff_shell_t const *sh);
 
+/**
+ * ff_shell_handshake_in_flight — [api] debt/link-churn-2026-09-16: true
+ * exactly while `mc_state(&sh->mc) == MC_STATE_HANDSHAKE` (a want_config
+ * has been sent and no config_complete has landed yet), false if `sh` is
+ * NULL. A thin wrapper around the existing `mc_state()` accessor
+ * (mc_client.h) — never reaches into `mc_client_t` directly, same
+ * discipline every other `ff_shell_*` accessor over `sh->mc` already
+ * follows.
+ *
+ * Deliberately NOT the same fact as `ff_shell_link() ==
+ * FF_SHELL_LINK_RECONNECTING`: that mapping (this header's own "Link
+ * state" comment) folds MC_STATE_HANDSHAKE and MC_STATE_DISCONNECTED
+ * into the same RECONNECTING value for display purposes, but this
+ * accessor's one caller (the esp32s3 target's light-sleep `sleep_inhibit`
+ * composition, `app_main.c`) needs exactly the HANDSHAKE half of that —
+ * inhibiting sleep while genuinely negotiating a session, but NOT while
+ * merely sitting in the 2s DISCONNECTED reconnect backoff between
+ * attempts, which folding the two together would do.
+ *
+ * Bounded, not permanent, by construction: MC_STATE_HANDSHAKE cannot be
+ * held forever even by a handshake that never completes — the existing
+ * S15c handshake-stall ladder (MC_HANDSHAKE_TIMEOUT_MS *
+ * (MC_HANDSHAKE_MAX_RETRIES + 1), mc_client.h) forces a drop to
+ * MC_STATE_DISCONNECTED for the ~2s reconnect backoff every ~42s, and
+ * that drop recurs every cycle for as long as the handshake keeps
+ * failing — see `mc_client.h`'s own comments on the ladder and
+ * `test_meshclient.c`'s
+ * `S03_debt_handshake_never_completing_does_not_inhibit_sleep_forever`
+ * for the test that walks three full cycles and pins this. A wedged
+ * handshake therefore costs light sleep MOST of the time it is wedged,
+ * never ALL of it — never a permanent battery leak.
+ */
+bool ff_shell_handshake_in_flight(ff_shell_t const *sh);
+
 /** ff_shell_my_node_id — this node's id as reported by
  *  `mc_events_t.on_my_info`, or 0 if the handshake has not got that far.
  *  The shell uses it to avoid treating its own traffic as inbound. */

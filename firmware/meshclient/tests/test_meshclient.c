@@ -398,7 +398,7 @@ static void S03_AC1_byte_dribble_yields_frame_once(void)
     uint8_t const *out = NULL;
     uint16_t out_len = 0;
     for (size_t i = 0; i < len; i++) {
-        if (mc_framer_feed(&f, fixture[i], &out, &out_len)) {
+        if (mc_framer_feed(&f, fixture[i], (uint32_t)i, &out, &out_len)) {
             complete_count++;
             TEST_ASSERT_EQUAL_UINT16((uint16_t)(len - 4), out_len);
             TEST_ASSERT_EQUAL_MEMORY(fixture + 4, out, out_len);
@@ -422,7 +422,7 @@ static void S03_AC1_garbage_prefix_yields_frame_once(void)
     uint8_t const *out = NULL;
     uint16_t out_len = 0;
     for (size_t i = 0; i < garbage_len; i++) {
-        if (mc_framer_feed(&f, garbage[i], &out, &out_len)) {
+        if (mc_framer_feed(&f, garbage[i], (uint32_t)i, &out, &out_len)) {
             complete_count++;
             TEST_ASSERT_EQUAL_UINT16((uint16_t)(text_len - 4), out_len);
             TEST_ASSERT_EQUAL_MEMORY(text + 4, out, out_len);
@@ -447,7 +447,7 @@ static void S03_AC1_oversize_len_resyncs_without_overflow(void)
     uint8_t const *out = NULL;
     uint16_t out_len = 0;
     for (size_t i = 0; i < oversize_len; i++) {
-        if (mc_framer_feed(&f, oversize[i], &out, &out_len)) {
+        if (mc_framer_feed(&f, oversize[i], (uint32_t)i, &out, &out_len)) {
             complete_count++;
             TEST_ASSERT_EQUAL_UINT16((uint16_t)(text_len - 4), out_len);
             TEST_ASSERT_EQUAL_MEMORY(text + 4, out, out_len);
@@ -483,7 +483,7 @@ static void S03_AC1_frame_length_exactly_512_is_accepted(void)
     uint8_t const *out = NULL;
     uint16_t out_len = 0;
     for (uint16_t i = 0; i < framed_len; i++) {
-        if (mc_framer_feed(&f, framed[i], &out, &out_len)) {
+        if (mc_framer_feed(&f, framed[i], (uint32_t)i, &out, &out_len)) {
             complete_count++;
             TEST_ASSERT_EQUAL_UINT16(MC_MAX_FRAME, out_len);
             TEST_ASSERT_EQUAL_MEMORY(payload, out, sizeof(payload));
@@ -511,7 +511,7 @@ static void S03_AC1_frame_length_513_resyncs(void)
     uint16_t out_len = 0;
 
     for (size_t i = 0; i < sizeof(oversize_513_hdr); i++) {
-        TEST_ASSERT_FALSE(mc_framer_feed(&f, oversize_513_hdr[i], &out, &out_len));
+        TEST_ASSERT_FALSE(mc_framer_feed(&f, oversize_513_hdr[i], (uint32_t)i, &out, &out_len));
     }
     /* Resynced immediately after reading the length, before ever touching
      * PAYLOAD — the whole point of the MC_MAX_FRAME check. */
@@ -523,7 +523,7 @@ static void S03_AC1_frame_length_513_resyncs(void)
      * mistaken for payload of anything. */
     int complete_count = 0;
     for (size_t i = 0; i < text_len; i++) {
-        if (mc_framer_feed(&f, text[i], &out, &out_len)) {
+        if (mc_framer_feed(&f, text[i], (uint32_t)(sizeof(oversize_513_hdr) + i), &out, &out_len)) {
             complete_count++;
             TEST_ASSERT_EQUAL_UINT16((uint16_t)(text_len - 4), out_len);
             TEST_ASSERT_EQUAL_MEMORY(text + 4, out, out_len);
@@ -532,6 +532,247 @@ static void S03_AC1_frame_length_513_resyncs(void)
     TEST_ASSERT_EQUAL_INT(1, complete_count);
 
     free(text);
+}
+
+/* -------------------------------------------------------------------- */
+/* AC1 (debt/link-churn-2026-09-16) — mid-frame resync timeout            */
+/*                                                                        */
+/* Direct repro of the report's mechanism: a byte gap mid-frame (light-  */
+/* sleep RX loss, per docs/specs/S26-device-lifecycle.md's own "the RX   */
+/* bytes ... are lost") must cost exactly the ONE frame it interrupted,  */
+/* never the frame after it. See MC_FRAMER_RESYNC_TIMEOUT_MS's own doc   */
+/* comment (mc_framing.h) for the timeout value and its justification.   */
+/* -------------------------------------------------------------------- */
+
+/* Builds a MC_MAX_FRAME-safe framed buffer with a deterministic,
+ * distinguishable payload pattern (so a test can tell two different
+ * frames' payloads apart at a glance in a failure message), returning
+ * the total framed length (header + payload). `seed` picks the pattern. */
+static uint16_t build_pattern_frame(uint8_t seed, uint16_t payload_len, uint8_t *out, size_t out_cap)
+{
+    uint8_t payload[64];
+    TEST_ASSERT_TRUE(payload_len <= sizeof(payload));
+    for (uint16_t i = 0; i < payload_len; i++) {
+        payload[i] = (uint8_t)((i * 3u) + seed);
+    }
+    return mc_frame_encode(out, out_cap, payload, payload_len);
+}
+
+static void S03_AC1_timeout_frame_interrupted_past_timeout_is_discarded_and_resyncs(void)
+{
+    uint8_t frame_a[24];
+    uint16_t const frame_a_len = build_pattern_frame(0x11u, 20u, frame_a, sizeof(frame_a));
+    TEST_ASSERT_TRUE(frame_a_len > 0);
+
+    uint8_t frame_b[24];
+    uint16_t const frame_b_len = build_pattern_frame(0x77u, 20u, frame_b, sizeof(frame_b));
+    TEST_ASSERT_TRUE(frame_b_len > 0);
+
+    mc_framer_t f;
+    mc_framer_init(&f);
+    uint8_t const *out = NULL;
+    uint16_t out_len = 0;
+    int complete_count = 0;
+
+    /* Frame A: header (4B) plus only HALF its payload arrives — the rest
+     * is simply never delivered (the light-sleep RX-loss model: bytes are
+     * LOST, not merely delayed, so nothing ever completes frame A). */
+    uint16_t const delivered_a = 4u + (frame_a_len - 4u) / 2u;
+    uint32_t now_ms = 0u;
+    for (uint16_t i = 0; i < delivered_a; i++) {
+        TEST_ASSERT_FALSE(mc_framer_feed(&f, frame_a[i], now_ms, &out, &out_len));
+        now_ms += 1u;
+    }
+    TEST_ASSERT_EQUAL(MC_FRAMER_PAYLOAD, f.state);
+    TEST_ASSERT_EQUAL_UINT32(0u, f.timeout_discards);
+
+    /* The gap: well past MC_FRAMER_RESYNC_TIMEOUT_MS with no byte at all —
+     * exactly what a light-sleep wake window looks like from the framer's
+     * side. Measured from the LAST BYTE ACTUALLY FED (now_ms - 1, since
+     * the loop above advances now_ms once more than bytes fed), not from
+     * `now_ms` itself. */
+    now_ms = (now_ms - 1u) + MC_FRAMER_RESYNC_TIMEOUT_MS + 1u;
+
+    /* Frame B arrives next, in full, at the wire's normal pace. Today
+     * (pre-fix) frame B's own 0x94 0xC3 header would be swallowed as
+     * "more of frame A's payload" and BOTH frames would be lost. With the
+     * fix, the stale frame A is discarded the moment frame B's first byte
+     * breaks the silence, and frame B is recognized and parsed cleanly. */
+    for (uint16_t i = 0; i < frame_b_len; i++) {
+        if (mc_framer_feed(&f, frame_b[i], now_ms, &out, &out_len)) {
+            complete_count++;
+            TEST_ASSERT_EQUAL_UINT16((uint16_t)(frame_b_len - 4u), out_len);
+            TEST_ASSERT_EQUAL_MEMORY(frame_b + 4, out, out_len);
+        }
+        now_ms += 1u;
+    }
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, complete_count,
+                                   "frame B must be recovered even though frame A stalled right before it");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1u, f.timeout_discards,
+                                      "exactly ONE stall was discarded — frame A's, and only once");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0u, f.resync_count,
+                                      "this is a clean timeout discard, not garbage-scanning — resync_count "
+                                      "(a DIFFERENT counter, see its own doc comment) must stay untouched");
+}
+
+/* The other half of the same fix: a pause SHORTER than the timeout is
+ * exactly what "legitimately slow-but-continuous sender" means, and must
+ * not be punished — the frame completes normally once the rest of its
+ * payload resumes. */
+static void S03_AC1_timeout_frame_interrupted_within_timeout_still_completes(void)
+{
+    uint8_t frame_a[24];
+    uint16_t const frame_a_len = build_pattern_frame(0x22u, 20u, frame_a, sizeof(frame_a));
+    TEST_ASSERT_TRUE(frame_a_len > 0);
+
+    mc_framer_t f;
+    mc_framer_init(&f);
+    uint8_t const *out = NULL;
+    uint16_t out_len = 0;
+
+    uint16_t const half = 4u + (frame_a_len - 4u) / 2u;
+    uint32_t now_ms = 0u;
+    for (uint16_t i = 0; i < half; i++) {
+        TEST_ASSERT_FALSE(mc_framer_feed(&f, frame_a[i], now_ms, &out, &out_len));
+        now_ms += 1u;
+    }
+
+    /* Pause, but strictly LESS than the timeout — comfortably so (half
+     * the timeout), to keep this test clearly distinct from the
+     * exact-boundary one below rather than merely one off it. Measured
+     * from the LAST BYTE ACTUALLY FED (now_ms - 1; see the equivalent
+     * comment in the timeout test above for why). */
+    TEST_ASSERT_TRUE(MC_FRAMER_RESYNC_TIMEOUT_MS >= 2u);
+    now_ms = (now_ms - 1u) + MC_FRAMER_RESYNC_TIMEOUT_MS / 2u;
+
+    int complete_count = 0;
+    for (uint16_t i = half; i < frame_a_len; i++) {
+        if (mc_framer_feed(&f, frame_a[i], now_ms, &out, &out_len)) {
+            complete_count++;
+            TEST_ASSERT_EQUAL_UINT16((uint16_t)(frame_a_len - 4u), out_len);
+            TEST_ASSERT_EQUAL_MEMORY(frame_a + 4, out, out_len);
+        }
+        now_ms += 1u;
+    }
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, complete_count, "a pause under the timeout must not lose the frame");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0u, f.timeout_discards, "no discard — the gap never exceeded the timeout");
+}
+
+/* Pins the exact comparison the timeout uses: a gap of EXACTLY
+ * MC_FRAMER_RESYNC_TIMEOUT_MS is still within budget (">", not ">="), one
+ * more millisecond is not. Both halves live in one test so a future
+ * change to the comparison operator cannot flip one half green by
+ * accident while this test still nominally "covers the boundary". */
+static void S03_AC1_timeout_gap_exactly_at_boundary_is_not_a_timeout(void)
+{
+    /* Exactly-at-boundary case: gap == timeout must NOT discard. */
+    {
+        uint8_t frame_a[24];
+        uint16_t const frame_a_len = build_pattern_frame(0x33u, 20u, frame_a, sizeof(frame_a));
+        TEST_ASSERT_TRUE(frame_a_len > 0);
+
+        mc_framer_t f;
+        mc_framer_init(&f);
+        uint8_t const *out = NULL;
+        uint16_t out_len = 0;
+
+        uint16_t const half = 4u + (frame_a_len - 4u) / 2u;
+        uint32_t now_ms = 0u;
+        for (uint16_t i = 0; i < half; i++) {
+            (void)mc_framer_feed(&f, frame_a[i], now_ms, &out, &out_len);
+            now_ms += 1u;
+        }
+        /* gap == timeout, exactly, measured from the LAST BYTE ACTUALLY
+         * FED (now_ms - 1; the loop above leaves now_ms one past it). */
+        now_ms = (now_ms - 1u) + MC_FRAMER_RESYNC_TIMEOUT_MS;
+
+        int complete_count = 0;
+        for (uint16_t i = half; i < frame_a_len; i++) {
+            if (mc_framer_feed(&f, frame_a[i], now_ms, &out, &out_len)) {
+                complete_count++;
+            }
+            now_ms += 1u;
+        }
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, complete_count, "gap == timeout must complete, not discard");
+        TEST_ASSERT_EQUAL_UINT32(0u, f.timeout_discards);
+    }
+
+    /* One millisecond further: gap == timeout + 1 MUST discard. */
+    {
+        uint8_t frame_a[24];
+        uint16_t const frame_a_len = build_pattern_frame(0x44u, 20u, frame_a, sizeof(frame_a));
+        TEST_ASSERT_TRUE(frame_a_len > 0);
+        uint8_t frame_b[24];
+        uint16_t const frame_b_len = build_pattern_frame(0x55u, 20u, frame_b, sizeof(frame_b));
+        TEST_ASSERT_TRUE(frame_b_len > 0);
+
+        mc_framer_t f;
+        mc_framer_init(&f);
+        uint8_t const *out = NULL;
+        uint16_t out_len = 0;
+
+        uint16_t const half = 4u + (frame_a_len - 4u) / 2u;
+        uint32_t now_ms = 0u;
+        for (uint16_t i = 0; i < half; i++) {
+            (void)mc_framer_feed(&f, frame_a[i], now_ms, &out, &out_len);
+            now_ms += 1u;
+        }
+        /* one past the boundary, again measured from the LAST BYTE
+         * ACTUALLY FED (now_ms - 1). */
+        now_ms = (now_ms - 1u) + MC_FRAMER_RESYNC_TIMEOUT_MS + 1u;
+
+        int complete_count = 0;
+        for (uint16_t i = 0; i < frame_b_len; i++) {
+            if (mc_framer_feed(&f, frame_b[i], now_ms, &out, &out_len)) {
+                complete_count++;
+            }
+            now_ms += 1u;
+        }
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, complete_count, "frame B still recovered after the discard");
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(1u, f.timeout_discards, "gap == timeout+1 must discard");
+    }
+}
+
+/* Regression guard: ordinary back-to-back frames (no artificial gap at
+ * all between frame A's last byte and frame B's first) must keep working
+ * exactly as before this fix — the timeout must never fire on healthy,
+ * continuous traffic. */
+static void S03_AC1_timeout_back_to_back_frames_no_gap_not_regressed(void)
+{
+    uint8_t frame_a[24];
+    uint16_t const frame_a_len = build_pattern_frame(0x66u, 20u, frame_a, sizeof(frame_a));
+    TEST_ASSERT_TRUE(frame_a_len > 0);
+    uint8_t frame_b[24];
+    uint16_t const frame_b_len = build_pattern_frame(0x99u, 20u, frame_b, sizeof(frame_b));
+    TEST_ASSERT_TRUE(frame_b_len > 0);
+
+    mc_framer_t f;
+    mc_framer_init(&f);
+    uint8_t const *out = NULL;
+    uint16_t out_len = 0;
+    int complete_count = 0;
+    uint32_t now_ms = 0u;
+
+    for (uint16_t i = 0; i < frame_a_len; i++) {
+        if (mc_framer_feed(&f, frame_a[i], now_ms, &out, &out_len)) {
+            complete_count++;
+            TEST_ASSERT_EQUAL_MEMORY(frame_a + 4, out, out_len);
+        }
+        now_ms += 1u;
+    }
+    for (uint16_t i = 0; i < frame_b_len; i++) {
+        if (mc_framer_feed(&f, frame_b[i], now_ms, &out, &out_len)) {
+            complete_count++;
+            TEST_ASSERT_EQUAL_MEMORY(frame_b + 4, out, out_len);
+        }
+        now_ms += 1u;
+    }
+
+    TEST_ASSERT_EQUAL_INT(2, complete_count);
+    TEST_ASSERT_EQUAL_UINT32(0u, f.timeout_discards);
+    TEST_ASSERT_EQUAL_UINT32(0u, f.resync_count);
 }
 
 /* -------------------------------------------------------------------- */
@@ -2008,6 +2249,83 @@ static void S03_debt_handshake_retry_budget_escalates_to_a_fresh_reconnect(void)
     TEST_ASSERT_TRUE(cc_len > 0);
     feed_frame(&c, &io, cc, cc_len, 46000u);
     TEST_ASSERT_EQUAL(MC_STATE_READY, mc_state(&c));
+}
+
+/* debt/link-churn-2026-09-16 (fix #2's bound): a handshake that NEVER
+ * completes must not be able to inhibit light sleep forever. The new
+ * sleep_inhibit source (app_main.c) is gated on `mc_state() ==
+ * MC_STATE_HANDSHAKE` via `ff_shell_handshake_in_flight()` (ff_shell.h)
+ * — this test proves, at the mc_client level that accessor reads
+ * straight through to, that MC_STATE_HANDSHAKE is NEVER held
+ * continuously: the existing S15c handshake-stall ladder (this file's
+ * own S03_debt_handshake_retry_budget_escalates_to_a_fresh_reconnect,
+ * immediately above) already forces a drop to MC_STATE_DISCONNECTED for
+ * the ~2s reconnect backoff every time a handshake's retry budget is
+ * spent — and this is not a one-off: it recurs every cycle, for as long
+ * as the handshake keeps failing to complete. That recurring, guaranteed
+ * release is the bound; this test exercises THREE full cycles (never
+ * just one) to demonstrate it keeps recurring rather than being a fluke
+ * of the first escalation. Cycle length is
+ * `MC_HANDSHAKE_TIMEOUT_MS * (MC_HANDSHAKE_MAX_RETRIES + 1)` (40s: the
+ * initial send plus 3 retries, each waiting the full timeout) plus the 2s
+ * reconnect backoff = 42s; the DISCONNECTED window is the last 2s of
+ * each 42s cycle. */
+static void S03_debt_handshake_never_completing_does_not_inhibit_sleep_forever(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+
+    mc_connect(&c);
+
+    uint8_t node_frame[200];
+    uint16_t const node_len = build_nodeinfo_frame(0x1A1A1A1Au, node_frame, sizeof(node_frame));
+    TEST_ASSERT_TRUE(node_len > 0);
+
+    /* Traffic flows continuously (framer happy, frames_ok climbing) but
+     * config_complete NEVER arrives — the exact "session handshake never
+     * lands" shape MC_HANDSHAKE_TIMEOUT_MS exists for. Walk 3 full
+     * escalation cycles (42s each = 126s), asserting the state at the
+     * three moments that matter: mid-cycle (still legitimately
+     * negotiating — sleep SHOULD be inhibited) and inside each cycle's
+     * guaranteed 2s DISCONNECTED window (sleep must NOT be inhibited). */
+    uint32_t const cycle_ms = 42000u;
+    for (uint32_t cycle = 0; cycle < 3u; cycle++) {
+        uint32_t const base = cycle * cycle_ms;
+
+        for (uint32_t t = base + 1000u; t <= base + 39000u; t += 1000u) {
+            feed_frame(&c, &io, node_frame, node_len, t);
+        }
+        TEST_ASSERT_EQUAL_MESSAGE(MC_STATE_HANDSHAKE, mc_state(&c),
+                                   "still legitimately negotiating mid-cycle — inhibit should hold here");
+
+        /* t = base+40000: the retry budget is spent this tick, escalating
+         * to mc_fail_and_schedule_reconnect() — state drops to
+         * DISCONNECTED with a 2s reconnect backoff pending. */
+        feed_frame(&c, &io, node_frame, node_len, base + 40000u);
+        feed_frame(&c, &io, node_frame, node_len, base + 41000u);
+        TEST_ASSERT_EQUAL_MESSAGE(MC_STATE_DISCONNECTED, mc_state(&c),
+                                   "the guaranteed release window — sleep_inhibit MUST go false here, every "
+                                   "cycle, or a never-completing handshake would be a permanent battery leak");
+
+        /* t = base+42000: reconnect fires, a fresh handshake begins (new
+         * nonce, fresh retry budget) — back to MC_STATE_HANDSHAKE for the
+         * next cycle. */
+        feed_frame(&c, &io, node_frame, node_len, base + 42000u);
+        TEST_ASSERT_EQUAL(MC_STATE_HANDSHAKE, mc_state(&c));
+    }
+
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(3u, mc_get_stats(&c).reconnects,
+                                      "one reconnect per cycle, exactly as many cycles as walked — the "
+                                      "release keeps recurring, it is not a one-time fluke of the first "
+                                      "escalation");
 }
 
 /* The watchdog must not fire on a handshake that is simply BUSY. A
@@ -5086,6 +5404,11 @@ int main(void)
     RUN_TEST(S03_AC1_frame_length_exactly_512_is_accepted);
     RUN_TEST(S03_AC1_frame_length_513_resyncs);
 
+    RUN_TEST(S03_AC1_timeout_frame_interrupted_past_timeout_is_discarded_and_resyncs);
+    RUN_TEST(S03_AC1_timeout_frame_interrupted_within_timeout_still_completes);
+    RUN_TEST(S03_AC1_timeout_gap_exactly_at_boundary_is_not_a_timeout);
+    RUN_TEST(S03_AC1_timeout_back_to_back_frames_no_gap_not_regressed);
+
     RUN_TEST(S03_AC2_connect_sends_want_config_and_enters_handshake);
     RUN_TEST(S03_AC2_handshake_dump_reaches_ready_with_node_and_myinfo);
     RUN_TEST(S03_AC2_handshake_wrong_nonce_stays_in_handshake);
@@ -5126,6 +5449,7 @@ int main(void)
     RUN_TEST(S03_debt_handshake_stall_reissues_want_config_and_reaches_ready);
     RUN_TEST(S03_debt_handshake_retry_keeps_nonce_so_a_late_answer_still_lands);
     RUN_TEST(S03_debt_handshake_retry_budget_escalates_to_a_fresh_reconnect);
+    RUN_TEST(S03_debt_handshake_never_completing_does_not_inhibit_sleep_forever);
     RUN_TEST(S03_debt_handshake_answered_within_timeout_never_retries);
 
     RUN_TEST(S03_debt_write_backpressure_below_budget_sends_frame_no_reconnect);

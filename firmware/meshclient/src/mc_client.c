@@ -991,7 +991,7 @@ static void mc_tick_feed_byte(mc_client_t *c, uint8_t byte, uint32_t *frames_dis
 {
     uint8_t const *frame_buf = NULL;
     uint16_t frame_len = 0;
-    if (mc_framer_feed(&c->framer, byte, &frame_buf, &frame_len)) {
+    if (mc_framer_feed(&c->framer, byte, now_ms, &frame_buf, &frame_len)) {
         c->stats.frames_ok++;
         (*frames_dispatched)++;
 
@@ -1462,5 +1462,6 @@ mc_stats_t mc_get_stats(mc_client_t const *c)
 {
     mc_stats_t s = c->stats;
     s.frames_resynced = c->framer.resync_count;
+    s.frames_timeout_discarded = c->framer.timeout_discards;
     return s;
 }

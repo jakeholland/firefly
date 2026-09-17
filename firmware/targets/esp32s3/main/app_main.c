@@ -3555,9 +3555,32 @@ void app_main(void)
          * to the speaker's I2S0 TX channel. Unconditional call (no `#if
          * CONFIG_FF_MIC`) — see dbgconsole_mic's own comment; `running`
          * honestly reads false forever with the Kconfig gate off or the
-         * mic never started, contributing nothing to this OR. */
+         * mic never started, contributing nothing to this OR.
+         *
+         * debt/link-churn-2026-09-16 (report's fix #3) adds a FOURTH
+         * source: `ff_shell_handshake_in_flight(&s_shell)` — true exactly
+         * while the meshclient has a want_config outstanding
+         * (MC_STATE_HANDSHAKE). Sleeping mid-handshake is the one race
+         * that is CERTAIN to stall it: light sleep drops inbound UART
+         * bytes outright (this file's own light-sleep slice, S26f,
+         * "Not UART-wake: the RX bytes ... are lost"), so a want_config
+         * or its config_complete answer landing during a sleep window is
+         * simply gone, guaranteeing at least one full
+         * MC_HANDSHAKE_TIMEOUT_MS retry cycle before the link recovers.
+         * Bounded, not permanent, by construction — see
+         * `ff_shell_handshake_in_flight`'s own doc comment (ff_shell.h)
+         * and `test_meshclient.c`'s
+         * `S03_debt_handshake_never_completing_does_not_inhibit_sleep_forever`:
+         * the existing S15c handshake-stall ladder forces a real, ~2s
+         * drop out of MC_STATE_HANDSHAKE every ~42s even when the
+         * handshake never completes, so a wedged handshake costs light
+         * sleep MOST of the time it stays wedged, never ALL of it — this
+         * is explicitly NOT "never sleep while the link is up" (the
+         * report's fix #4, out of scope here): once READY, this source
+         * contributes nothing to the OR. */
         bool const keep_awake = ff_shell_keep_awake(v, false);
-        bool const sleep_inhibit = usb_connected || ff_audio_busy() || ff_mic_status().running;
+        bool const sleep_inhibit =
+            usb_connected || ff_audio_busy() || ff_mic_status().running || ff_shell_handshake_in_flight(&s_shell);
         ff_idle_state_t const idle_state = ff_idle_tick(&s_idle, now_ms, keep_awake, sleep_inhibit);
 
         /* fix/s31-music-idle-drain (2026-09-09) — push this frame's idle

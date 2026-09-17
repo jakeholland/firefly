@@ -14,8 +14,13 @@
  *     wrote past its own accumulator.
  *   - the framer always returns to MC_FRAMER_START1 after completing (or
  *     giving up on) a frame, i.e. it never gets stuck.
- *   - resync_count only ever increases, never wraps/underflows within one
- *     run (it's a uint32_t event counter, not a ring index).
+ *   - resync_count and timeout_discards only ever increase, never
+ *     wrap/underflow within one run (both are uint32_t event counters,
+ *     not ring indices). `now_ms` is advanced by the harness on every
+ *     byte (mostly 1ms, occasionally a jump past
+ *     MC_FRAMER_RESYNC_TIMEOUT_MS) so the resync-on-stall path
+ *     (mc_framing.h) gets exercised alongside the garbage/oversize-len
+ *     paths.
  */
 #include <stdint.h>
 #include <stddef.h>
@@ -28,12 +33,22 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     mc_framer_init(&f);
 
     uint32_t last_resync = f.resync_count;
+    uint32_t last_timeout_discards = f.timeout_discards;
+    uint32_t now_ms = 0u;
 
     for (size_t i = 0; i < size; i++) {
         uint8_t const *out = NULL;
         uint16_t out_len = 0xFFFFu; /* poison, so a missed write is visible */
 
-        bool got = mc_framer_feed(&f, data[i], &out, &out_len);
+        /* Mostly advance by 1ms (well under MC_FRAMER_RESYNC_TIMEOUT_MS,
+         * so most of the run still exercises ordinary framing), but
+         * occasionally jump by well OVER the timeout so the resync-on-
+         * stall path (mc_framing.h) gets fuzzed too, not just the
+         * garbage/oversize-len paths the rest of this harness already
+         * covered. */
+        now_ms += ((data[i] % 8u) == 0u) ? (MC_FRAMER_RESYNC_TIMEOUT_MS + 25u) : 1u;
+
+        bool got = mc_framer_feed(&f, data[i], now_ms, &out, &out_len);
 
         if (got) {
             if (out_len > MC_MAX_FRAME) {
@@ -51,6 +66,11 @@ int LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
             __builtin_trap(); /* counter must never go backwards */
         }
         last_resync = f.resync_count;
+
+        if (f.timeout_discards < last_timeout_discards) {
+            __builtin_trap(); /* counter must never go backwards */
+        }
+        last_timeout_discards = f.timeout_discards;
     }
 
     /* Also exercise mc_frame_encode() with fuzzer-derived sizes — its own
