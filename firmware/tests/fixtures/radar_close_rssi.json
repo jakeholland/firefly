@@ -1,14 +1,14 @@
 {
-  "fixture": "banner_on_radar",
+  "fixture": "radar_close_rssi",
   "face": "radar",
   "radar": {
     "mode": "close",
     "arrow_deg": 0.0,
     "arrow_valid": false,
-    "name": "DANA",
-    "dist_str": "30 m",
-    "close_leg": "distance",
-    "age_str": "3 SEC",
+    "name": "Dana",
+    "dist_str": "",
+    "close_leg": "rssi",
+    "age_str": "",
     "trend": 1,
     "clock_str": "9:46 pm",
     "batt_pct": 74,
@@ -19,14 +19,5 @@
       {"ring_deg": 205.0, "initial": "M", "color_idx": 2, "stale": true},
       {"ring_deg": 301.0, "initial": "J", "color_idx": 3, "stale": false}
     ]
-  },
-  "banner": {
-    "active": true,
-    "kind": "message",
-    "node_id": 111,
-    "name": "DANA",
-    "color_idx": 0,
-    "text": "you close? we're at the tower",
-    "age_ms": 4000
   }
 }

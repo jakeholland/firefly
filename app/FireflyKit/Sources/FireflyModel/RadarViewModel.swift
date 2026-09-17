@@ -149,6 +149,11 @@ public struct RadarSnapshot: Sendable, Equatable {
     /// statement (e.g. "~5.8 km") when `distanceImprecise`.
     public var distanceText: String
     public var distanceImprecise: Bool
+    /// 2026-09-16 amendment (close-range-honest-distance) — which leg of
+    /// the CLOSE predicate fired; `.none` outside `mode == .close`. See
+    /// `primaryReadoutText`'s own doc comment for exactly how this
+    /// replaces `distanceImprecise` as the CLOSE-mode readout gate.
+    public var closeLeg: RadarCloseLeg
     /// "" when there has never been a fix (the NEVER-folded-into-LOST
     /// case) — see `heardPresence` for how the renderer tells that apart
     /// from a genuinely stale one.
@@ -185,8 +190,8 @@ public struct RadarSnapshot: Sendable, Equatable {
     public var meshOK: Bool
 
     public init(mode: RadarMode, arrowDegrees: Double, arrowValid: Bool, name: String,
-                distanceText: String, distanceImprecise: Bool, ageText: String, trend: Int,
-                bearingDegrees: Double, bearingValid: Bool, place: Bool, stale: Bool,
+                distanceText: String, distanceImprecise: Bool, closeLeg: RadarCloseLeg = .none, ageText: String,
+                trend: Int, bearingDegrees: Double, bearingValid: Bool, place: Bool, stale: Bool,
                 heardPresence: HeardPresence, dots: [RadarSnapshotDot], signalTier: SignalTierPresentation,
                 signalHeard: Bool, signalViaRelay: Bool, signalAgeText: String,
                 signalDots: [RadarSnapshotSignalDot], clockText: String, battPct: Int8?, meshOK: Bool) {
@@ -196,6 +201,7 @@ public struct RadarSnapshot: Sendable, Equatable {
         self.name = name
         self.distanceText = distanceText
         self.distanceImprecise = distanceImprecise
+        self.closeLeg = closeLeg
         self.ageText = ageText
         self.trend = trend
         self.bearingDegrees = bearingDegrees
@@ -220,7 +226,7 @@ public struct RadarSnapshot: Sendable, Equatable {
     /// answer" rule `AppDependencies.stub()` documents for the client.
     public static let empty = RadarSnapshot(
         mode: .noSel, arrowDegrees: 0, arrowValid: false, name: "",
-        distanceText: "", distanceImprecise: false, ageText: "", trend: 0,
+        distanceText: "", distanceImprecise: false, closeLeg: .none, ageText: "", trend: 0,
         bearingDegrees: 0, bearingValid: false, place: false, stale: false,
         heardPresence: .never, dots: [], signalTier: .none, signalHeard: false,
         signalViaRelay: false, signalAgeText: "", signalDots: [],
@@ -380,9 +386,9 @@ public enum FindHaptic: Sendable, Equatable {
 
 /// The narrow protocol `RadarViewModel` depends on for FIND (S29 PR2).
 /// Slice B's real `FindBridge` wraps `ff_find_t`
-/// (`core/include/ff_find.h`) — single active session, a hard 10 s
+/// (`core/include/ff_find.h`) — single active session, a hard 5 s
 /// send floor enforced INSIDE the session (not by the caller's tick
-/// cadence), a 30-ping/5-minute cap. `MockFindSession` below
+/// cadence), a 60-ping/5-minute cap. `MockFindSession` below
 /// reimplements that same cadence/cap bookkeeping (session
 /// rate-limiting, not bearing/distance math) as an honest stand-in.
 ///
@@ -401,8 +407,8 @@ public protocol FindPinging: AnyObject {
     func start(targetNodeID: UInt32, now: Date)
     /// Cancel-on-face-leave / explicit stop.
     func stop()
-    /// Periodic pump. The caller may tick as often as it likes — the 10 s
-    /// floor (`FF_FIND_PING_INTERVAL_MS`) and the 30-ping/5-minute cap
+    /// Periodic pump. The caller may tick as often as it likes — the 5 s
+    /// floor (`FF_FIND_PING_INTERVAL_MS`) and the 60-ping/5-minute cap
     /// are enforced inside the session itself. Returns true iff a ping
     /// was actually sent this call.
     @discardableResult
@@ -428,12 +434,24 @@ public protocol FindPinging: AnyObject {
 /// `ff_find.h`'s cadence/cap constants, transcribed — see that header's
 /// own doc comment for the full derivation (both independently enforced
 /// so an irregular tick loop can't dodge the wall-clock cap).
+///
+/// 2026-09-16 amendment (close-range-honest-distance): cadence halved
+/// 10s -> 5s, trend window halved 3-vs-3 -> 2-vs-2, threshold raised
+/// 3.0 -> 4.0 dB, `maxPings` doubled 30 -> 60 (so it still agrees with
+/// the unchanged 5-minute `sessionMaxSeconds` at the new cadence) —
+/// mirrors `ff_find.h`'s own constants exactly; this enum is a
+/// hand-transcribed MIRROR of those (`MockFindSession` below has no
+/// dependency on `FireflyCore`, unlike the real `FindBridge`/
+/// `CoreFindSession`, which call the actual `ff_find_t` state machine
+/// directly and therefore picked up this change automatically). If
+/// `ff_find.h`'s constants change again, this enum must be updated by
+/// hand to match — there is no compile-time link between the two.
 public enum FindSessionConstants {
-    public static let pingIntervalSeconds: TimeInterval = 10
-    public static let maxPings = 30
+    public static let pingIntervalSeconds: TimeInterval = 5
+    public static let maxPings = 60
     public static let sessionMaxSeconds: TimeInterval = 5 * 60
-    public static let trendSamples = 3
-    public static let trendThresholdDbm: Double = 3.0
+    public static let trendSamples = 2
+    public static let trendThresholdDbm: Double = 4.0
 }
 
 /// Honest stand-in for slice B's `FindBridge`. Reimplements `ff_find_t`'s
@@ -640,10 +658,19 @@ public final class RadarViewModel {
     /// the list, so on a busy mesh — or simply after a FIND session
     /// ended — this grew for the rest of the session. Same "bounded,
     /// drop-oldest" policy `ThreadViewModel.outbox` (cap 8) and
-    /// `ff_feed_t`'s own ring already follow; 32 is far more replies
-    /// than a 5-minute FIND session with a 30-ping cap can usefully
-    /// show, so nothing a user would look at is lost.
-    public static let findRepliesCap = 32
+    /// `ff_feed_t`'s own ring already follow.
+    ///
+    /// 2026-09-16 amendment (close-range-honest-distance): raised 32 ->
+    /// 64. The cadence halving doubled `FindSessionConstants.maxPings`
+    /// (30 -> 60) without this cap moving, which would have silently
+    /// started dropping real replies partway through any FIND session
+    /// that ran to its full 5-minute/60-ping length — the ORIGINAL
+    /// reasoning here ("far more replies than a session... can usefully
+    /// show, so nothing... is lost") is a promise this cap must keep,
+    /// not a number to leave stale once the thing it was sized against
+    /// changes. 64 restores headroom above the new 60-ping ceiling with
+    /// the same margin the original 32-vs-30 pairing had.
+    public static let findRepliesCap = 64
     public private(set) var findReplies: [FindReply] = []
     public private(set) var findHaptic: FindHaptic = .none
     private var findReplyCounter = 0
@@ -982,10 +1009,22 @@ public final class RadarViewModel {
     /// The big central readout the ring's text stack shows below the
     /// chip — "" for modes with nothing geometric to show at all
     /// (NOSEL/NOFIX; SIGNAL's own non-ghost sub-case, which has no
-    /// distance by definition). CLOSE substitutes "NEARBY" for a
-    /// degraded-precision fix rather than showing a fabricated big
-    /// number (S29: "shows 'NEARBY' instead of a fabricated big
-    /// number").
+    /// distance by definition).
+    ///
+    /// 2026-09-16 amendment (close-range-honest-distance) — CLOSE never
+    /// shows a measured point distance, on EITHER leg (superseding the
+    /// original issue #47 framing, which only withheld a point number
+    /// when the position was known-degraded): two ordinary, undegraded
+    /// consumer GPS fixes a foot apart can disagree by 2-15 m, a
+    /// meaningful fraction of the 30 m band CLOSE measures, so the
+    /// puck-side core (`ff_radar_compute`, S06's own amendment) never
+    /// puts a measured value in `distanceText` for CLOSE any more — see
+    /// `RadarCloseLeg`'s own doc comment. `.byDistance`: `distanceText`
+    /// is already the fixed close-range threshold ("30 m"/"98 ft"), so
+    /// this reads "WITHIN 30 m" — never a fabricated number, since the
+    /// threshold is a constant, not a measurement. `.byRSSI`/`.none`:
+    /// "NEARBY" — this leg has no coordinate in it at all (S29: "signal
+    /// is never distance").
     public var primaryReadoutText: String {
         switch snapshot.mode {
         case .noSel, .noFix:
@@ -993,7 +1032,10 @@ public final class RadarViewModel {
         case .signal:
             return snapshot.arrowValid ? displayDistanceText : ""
         case .close:
-            return snapshot.distanceImprecise ? "NEARBY" : snapshot.distanceText
+            switch snapshot.closeLeg {
+            case .byDistance: return "WITHIN \(snapshot.distanceText)"
+            case .byRSSI, .none: return "NEARBY"
+            }
         default:
             return displayDistanceText
         }

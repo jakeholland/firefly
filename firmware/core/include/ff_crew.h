@@ -132,6 +132,30 @@ extern "C" {
 #define FF_CREW_CLOSE_RANGE_RSSI_AGE_MS ((uint32_t)10u * 1000u)
 #define FF_CREW_CLOSE_RANGE_RSSI_DBM  (-60)
 
+/* 2026-09-16 amendment (close-range-honest-distance, docs/specs/
+ * S06-radar-face.md) — CLOSE fires via one of two independent legs (see
+ * `ff_crew_close_range`'s own doc comment), and the two legs support
+ * different HONEST statements: the DISTANCE leg licenses "within
+ * FF_CREW_CLOSE_RANGE_M" (a real GPS distance was measured under the
+ * threshold); the RSSI leg licenses only "strong signal, heard just
+ * now" — it carries no coordinate at all, so it must never be dressed
+ * up in metres (S29's own "signal is never distance" rule). Before this
+ * amendment `ff_crew_close_range` collapsed both into one bool and the
+ * caller (`ff_radar_compute`) had no way to tell them apart, so CLOSE's
+ * renderer displayed whatever raw `dist_str` had already been computed
+ * for the member's fix — a real problem on the DISTANCE leg too: two
+ * ordinary, "precise" (undegraded `precision_bits`) consumer GPS fixes
+ * a foot apart can disagree by 2-15 m (each carries several metres of
+ * independent error), so printing "15 m" implied a confidence neither
+ * fix actually supports. `FF_CREW_CLOSE_NONE` is the zero value so a
+ * zeroed `ff_radar_view_t`/fixture reads as "not CLOSE" rather than
+ * accidentally claiming a leg. */
+typedef enum {
+    FF_CREW_CLOSE_NONE = 0,
+    FF_CREW_CLOSE_BY_DISTANCE, /* distance_m < FF_CREW_CLOSE_RANGE_M */
+    FF_CREW_CLOSE_BY_RSSI,     /* fresh, strong DIRECT RSSI — no coordinate involved */
+} ff_crew_close_leg_t;
+
 /* RSSI trend: smoothed delta over a 5s window, split into an "older" and
  * "newer" half so a handful of noisy single-sample dBm wobbles average
  * out. FF_CREW_RSSI_TREND_THRESHOLD_DBM is a product judgment call (not
@@ -530,6 +554,35 @@ ff_crew_presence_t ff_crew_presence(ff_crew_member_t const *m, uint32_t now_ms);
 ff_freshness_t ff_crew_freshness(ff_crew_member_t const *m, uint32_t now_ms);
 
 /**
+ * ff_crew_close_range_leg — WHICH leg of the CLOSE predicate (if any)
+ * fires for `m`, as of `now_ms`:
+ *
+ *   distance_m < 30m           -> FF_CREW_CLOSE_BY_DISTANCE
+ *   rssi_age < 10s AND
+ *     rssi_dbm > -60dBm        -> FF_CREW_CLOSE_BY_RSSI (checked only if
+ *                                  the distance leg above did not fire)
+ *   neither                    -> FF_CREW_CLOSE_NONE
+ *
+ * `distance_m` is caller-computed (crew doesn't know "my" position — that
+ * lives in settings/geo); a negative value is treated as "distance
+ * unknown", i.e. the distance leg is skipped. The RSSI leg is skipped
+ * whenever `m->rssi_dbm == INT16_MIN` (never had a direct packet).
+ *
+ * The DISTANCE leg is checked first and wins outright when both legs
+ * would otherwise fire — unchanged priority from before this function
+ * existed (`ff_crew_close_range`'s original body checked distance,
+ * then RSSI, in that order; this function only makes the WINNING leg
+ * observable, it does not re-order or re-tier anything).
+ *
+ * 2026-09-16 amendment (close-range-honest-distance) — added so
+ * `ff_radar_compute`/`docs/specs/S06-radar-face.md` can render the two
+ * legs' different honest statements ("within 30 m" vs "strong signal,
+ * heard just now") instead of a single fabricated point distance. See
+ * `ff_crew_close_leg_t`'s own doc comment above for the full rationale.
+ */
+ff_crew_close_leg_t ff_crew_close_range_leg(ff_crew_member_t const *m, float distance_m, uint32_t now_ms);
+
+/**
  * ff_crew_close_range — true if `m` counts as "close range" (S06 face:
  * shows the up-close UI treatment), as of `now_ms`:
  *
@@ -539,6 +592,11 @@ ff_freshness_t ff_crew_freshness(ff_crew_member_t const *m, uint32_t now_ms);
  * lives in settings/geo); a negative value is treated as "distance
  * unknown", i.e. the distance leg of the OR is false. The RSSI leg is
  * false whenever `m->rssi_dbm == INT16_MIN` (never had a direct packet).
+ *
+ * Equivalent to `ff_crew_close_range_leg(m, distance_m, now_ms) !=
+ * FF_CREW_CLOSE_NONE` (that function's own doc comment has the full leg
+ * breakdown) — kept as a separate bool-returning entry point since most
+ * callers only ever cared whether CLOSE fires at all, not which leg.
  */
 bool ff_crew_close_range(ff_crew_member_t const *m, float distance_m, uint32_t now_ms);
 

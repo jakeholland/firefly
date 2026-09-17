@@ -230,7 +230,7 @@ typedef struct {
 
     ff_flare_t flare;
     /* S29 PR2 — FIND mode (docs/specs/S29-radio-only.md): the active
-     * "ping this node every 10s" session, from the Radar/SIGNAL face
+     * "ping this node every 5s" session, from the Radar/SIGNAL face
      * with a friend selected, or from the `find <node_hex>` console
      * command. Ticked alongside `flare` in ff_shell_tick; stopped via
      * `ff_find_leave_face` whenever the Radar face is no longer the
@@ -5795,7 +5795,7 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
     }
 
     /* S29 PR2 — FIND mode's own tick-driven sender: ff_find_tick owns
-     * the 10s cadence / 5min-30-ping cap entirely (ff_find.h) — this
+     * the 5s cadence / 5min-60-ping cap entirely (ff_find.h) — this
      * call site just acts on whatever it says, same "tick returns an
      * intent, the shell acts on it" shape the flare block above uses. */
     {

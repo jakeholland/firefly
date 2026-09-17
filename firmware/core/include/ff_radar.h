@@ -291,6 +291,15 @@ typedef struct {
      * pair this distance with any UI element that implies point precision
      * (no "exact-looking" mono digits without the area framing). */
     bool  dist_imprecise;
+    /* 2026-09-16 amendment (close-range-honest-distance) — WHICH leg of
+     * `ff_crew_close_range_leg()` produced `RADAR_CLOSE`, so the renderer
+     * can show the honest statement that leg actually supports instead
+     * of a fabricated point distance. `FF_CREW_CLOSE_NONE` (the enum's
+     * zero value) outside CLOSE mode — see `ff_crew_close_leg_t`'s own
+     * doc comment (ff_crew.h) for the full rationale and
+     * `ff_radar_compute`'s doc comment below for exactly how `dist_str`
+     * is populated per leg. */
+    ff_crew_close_leg_t close_leg;
     char  age_str[FF_RADAR_STR_LEN];
     int8_t trend; /* -1/0/+1, meaningful in CLOSE mode (hot/cold) */
     /* 2026-09-05 amendment: the ABSOLUTE true bearing (degrees, [0, 360),
@@ -530,14 +539,18 @@ void ff_radar_smooth_reset(ff_radar_smooth_t *s);
  *     which is expected to skip the "aging" rim tint for it even while
  *     the outer mode says NOHDG rather than PLACE — see `place`/`stale`'s
  *     own doc comment.
- *  4. RADAR_CLOSE — `ff_crew_close_range()` is true for the selected
- *     member (checked before freshness: a member can be RSSI-close even
- *     with a GPS-stale/lost/never/asserted position — proximity by real
- *     signal strength is a fact independent of the position's provenance,
- *     and by distance to an ASSERTED position CLOSE can still fire
- *     honestly: an asserted coordinate is a real place, just not a fresh
- *     measurement, so "you are standing next to this spot" is a true
- *     statement about geometry, not a false one about currency).
+ *  4. RADAR_CLOSE — `ff_crew_close_range_leg()` returns other than
+ *     FF_CREW_CLOSE_NONE for the selected member (checked before
+ *     freshness: a member can be RSSI-close even with a GPS-stale/lost/
+ *     never/asserted position — proximity by real signal strength is a
+ *     fact independent of the position's provenance, and by distance to
+ *     an ASSERTED position CLOSE can still fire honestly: an asserted
+ *     coordinate is a real place, just not a fresh measurement, so "you
+ *     are standing next to this spot" is a true statement about
+ *     geometry, not a false one about currency). The WINNING leg is
+ *     recorded verbatim in `v->close_leg` — see that field's own doc
+ *     comment and the 2026-09-16 amendment below for what each leg does
+ *     and does not license the renderer to say.
  *  5. Otherwise, `ff_crew_freshness()` of the selected member's position:
  *     FF_FRESH_LIVE -> RADAR_LIVE, FF_FRESH_STALE -> RADAR_STALE,
  *     FF_FRESH_ASSERTED -> RADAR_PLACE (issue #33 — checked as its own
@@ -665,6 +678,46 @@ void ff_radar_smooth_reset(ff_radar_smooth_t *s);
  * as "must be degraded" would regress every ordinary live position on
  * every replay-derived reading to a blanket "imprecise" label that is
  * itself dishonest).
+ *
+ * 2026-09-16 amendment (close-range-honest-distance) — `dist_str`/
+ * `close_leg` in RADAR_CLOSE specifically: CLOSE NEVER carries a
+ * measured point distance, on EITHER leg, not only the already-handled
+ * imprecise-position case above. The bench observation that prompted
+ * this: two ordinary, UNDEGRADED (has_precision_bits false, or
+ * precision_bits >= FF_CREW_POS_PRECISION_MIN_BITS) consumer GPS fixes
+ * roughly a foot apart can still disagree by 2-15 m — each fix carries
+ * several metres of its OWN independent error, and #47's precision-bits
+ * gate has nothing to say about that ordinary, undeclared noise floor.
+ * So even the DISTANCE leg's raw `distance_m` (computed from two
+ * "precise" fixes) is not trustworthy to printed-metre resolution once
+ * it is already under `FF_CREW_CLOSE_RANGE_M` — the two fixes' combined
+ * error routinely exceeds the whole 30 m band being measured. Once
+ * `ff_crew_close_range_leg()` returns anything other than
+ * FF_CREW_CLOSE_NONE, `ff_radar_compute` OVERWRITES whatever `dist_str`
+ * held from the ordinary distance/imprecise-area computation above:
+ *   - FF_CREW_CLOSE_BY_DISTANCE: `dist_str` becomes
+ *     `ff_fmt_distance(FF_CREW_CLOSE_RANGE_M, imperial)` — i.e. the
+ *     THRESHOLD itself ("30 m" / "98 ft"), a fixed unit-converted
+ *     constant that never varies with the actual (untrustworthy)
+ *     measured distance. This is not a measurement at all, so it
+ *     carries no fabricated precision — it is simply naming the
+ *     predicate that just fired ("you are within the close-range
+ *     band"), the one thing the DISTANCE leg actually proves.
+ *   - FF_CREW_CLOSE_BY_RSSI: `dist_str` becomes `""` — this leg has no
+ *     coordinate in it at all (S29's "signal is never distance" rule),
+ *     so there is nothing distance-shaped to print; the renderer's own
+ *     "NEARBY" copy (scr_radar.c) carries the honest claim instead.
+ * `dist_imprecise` is left exactly as computed above (independent of
+ * mode, per that field's own doc comment) — it is simply not consulted
+ * by CLOSE's renderer any more, since `close_leg` alone now fully
+ * determines CLOSE's copy (an imprecise position can only ever reach
+ * CLOSE via the RSSI leg in the first place — the DISTANCE leg's own
+ * gate already forces `distance_for_close` to -1 when imprecise, see
+ * the paragraph above — so `close_leg == FF_CREW_CLOSE_BY_RSSI` already
+ * implies whatever `dist_imprecise` would have added). See
+ * `docs/specs/S06-radar-face.md`'s 2026-09-16 amendment for the exact
+ * on-screen strings and the full derivation/rejected-alternatives
+ * writeup.
  *
  * The crew ring (`dots[]`/`n_dots`) is independent of the current
  * selection and mode: every *paired* member with a known position fix

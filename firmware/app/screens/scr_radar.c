@@ -1260,20 +1260,25 @@ static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r)
         lv_anim_start(&a);
     }
 
-    /* issue #47: CLOSE is only reachable here via the RSSI leg when the
-     * position is imprecise (ff_radar_compute gates the DISTANCE leg off
-     * for a degraded fix) — a real signal-strength proximity reading
-     * alongside a coordinate that could be kilometers off. Showing that
-     * coordinate's own "~5.8 km area" text as CLOSE's big pulsing-ring
-     * headline would directly contradict the rings ("you are basically
-     * standing together" next to "5.8 km"), so this mode names the fact
-     * it actually has (RSSI says nearby) instead of a distance number it
-     * cannot honestly produce. */
+    /* 2026-09-16 amendment (close-range-honest-distance,
+     * docs/specs/S06-radar-face.md) — CLOSE never shows a measured point
+     * distance on EITHER leg (superseding issue #47's original "CLOSE is
+     * only reachable here via the RSSI leg when imprecise" framing,
+     * which is still true but no longer the only reason a metre-looking
+     * number would be dishonest here: two ordinary, undegraded consumer
+     * GPS fixes a foot apart can disagree by 2-15 m, a meaningful chunk
+     * of the whole 30 m band CLOSE measures). `r->close_leg` names WHICH
+     * leg fired, and `ff_radar_compute` has already put the right honest
+     * text in `dist_str` for the DISTANCE leg (the fixed 30 m/98 ft
+     * threshold, never the untrustworthy measured value) and cleared it
+     * for the RSSI leg (which has no coordinate in it at all — S29:
+     * "signal is never distance"). This renderer just picks the wording
+     * that matches which leg fired; it does no distance math of its own. */
     char big_dist[24];
-    if (r->dist_imprecise) {
-        snprintf(big_dist, sizeof(big_dist), "NEARBY");
+    if (r->close_leg == FF_CREW_CLOSE_BY_DISTANCE) {
+        snprintf(big_dist, sizeof(big_dist), "WITHIN %s", (r->dist_str[0] != '\0') ? r->dist_str : "?");
     } else {
-        snprintf(big_dist, sizeof(big_dist), "~%s", (r->dist_str[0] != '\0') ? r->dist_str : "?");
+        snprintf(big_dist, sizeof(big_dist), "NEARBY");
     }
     radar_build_distance_label(parent, big_dist, (int32_t)RADAR_LAYOUT_CLOSE_RING_CY);
 

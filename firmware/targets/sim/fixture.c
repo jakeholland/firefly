@@ -389,6 +389,19 @@ static const fx_enum_entry_t fx_crew_presence_table[] = {
     {"lost", FF_CREW_PRESENCE_LOST}, {"never", FF_CREW_PRESENCE_NEVER},
 };
 
+/* 2026-09-16 amendment (close-range-honest-distance): radar.close_leg
+ * (ff_radar_view_t, ff_radar.h) — same string-enum convention as the
+ * tables above. Absent -> FF_CREW_CLOSE_NONE, which is ALSO this enum's
+ * zero value (ff_crew.h), so a fixture that never mentions close_leg at
+ * all reads correctly as "not CLOSE" from the plain memset(0) alone —
+ * no explicit non-zero default assignment needed in ff_fixture_load's
+ * defaults block, unlike radar.mode/heard_presence just above. */
+static const fx_enum_entry_t fx_close_leg_table[] = {
+    {"none", FF_CREW_CLOSE_NONE},
+    {"distance", FF_CREW_CLOSE_BY_DISTANCE},
+    {"rssi", FF_CREW_CLOSE_BY_RSSI},
+};
+
 /* S29 — ff_signal_tier_t, for both radar.signal_tier and each
  * signal_dots[] entry's own tier. */
 static const fx_enum_entry_t fx_signal_tier_table[] = {
@@ -490,6 +503,14 @@ static ff_fixture_result_t fx_parse_radar(fx_ctx_t const *c, int obj_i, ff_radar
     if (fx_obj_get(c, obj_i, "name", &t)) fx_copy_str(c, t, r->name, sizeof(r->name));
     if (fx_obj_get(c, obj_i, "dist_str", &t)) fx_copy_str(c, t, r->dist_str, sizeof(r->dist_str));
     if (fx_obj_get(c, obj_i, "dist_imprecise", &t)) r->dist_imprecise = fx_bool(c, t, false); /* issue #47 */
+    if (fx_obj_get(c, obj_i, "close_leg", &t)) {
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_close_leg_table,
+                                          sizeof(fx_close_leg_table) / sizeof(fx_close_leg_table[0]),
+                                          "radar.close_leg", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        r->close_leg = (ff_crew_close_leg_t)v;
+    }
     if (fx_obj_get(c, obj_i, "age_str", &t)) fx_copy_str(c, t, r->age_str, sizeof(r->age_str));
     if (fx_obj_get(c, obj_i, "trend", &t)) r->trend = (int8_t)fx_num(c, t, 0.0);
     /* 2026-09-05 amendment: same "valid defaults false" convention as
@@ -2594,6 +2615,10 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_raw(&w, ",\"dist_str\":");
     fw_json_str(&w, s->radar.dist_str);
     fw_raw(&w, s->radar.dist_imprecise ? ",\"dist_imprecise\":true" : ",\"dist_imprecise\":false"); /* issue #47 */
+    fw_raw(&w, ",\"close_leg\":\""); /* 2026-09-16 amendment */
+    fw_raw(&w, fx_enum_name(fx_close_leg_table, sizeof(fx_close_leg_table) / sizeof(fx_close_leg_table[0]),
+                             s->radar.close_leg, "none"));
+    fw_raw(&w, "\"");
     fw_raw(&w, ",\"age_str\":");
     fw_json_str(&w, s->radar.age_str);
     fw_fmt(&w, ",\"trend\":%d", (int)s->radar.trend);

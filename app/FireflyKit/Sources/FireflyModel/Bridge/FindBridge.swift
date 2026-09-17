@@ -4,7 +4,7 @@
 //
 //  Heap-owns one `ff_find_t` — the FIND session's state, which must
 //  persist across many `tick()` calls over the session's lifetime (the
-//  10 s ping cadence, the 30-ping/5-minute cap). One `FindBridge` per
+//  5 s ping cadence, the 60-ping/5-minute cap). One `FindBridge` per
 //  FIND session — the app creates a fresh one (or calls `stop()`/
 //  `start()` again) each time the user starts a new FIND from the
 //  Radar/Signal face.
@@ -50,7 +50,7 @@ public final class FindBridge {
 
     /// Periodic pump. No-op (`.none`) if not active; auto-stops the
     /// session once its own cap is reached (see ff_find.h's doc
-    /// comment); otherwise returns `.sendPing` at most once per 10 s,
+    /// comment); otherwise returns `.sendPing` at most once per 5 s,
     /// a hard floor enforced inside the core itself.
     public func tick(now: UInt32) -> Intent {
         let r = ff_find_tick(context, now)

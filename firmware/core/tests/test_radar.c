@@ -207,6 +207,15 @@ static void S06_AC1_mode_close_by_distance(void)
 
     TEST_ASSERT_EQUAL_INT(RADAR_CLOSE, v.mode);
     TEST_ASSERT_FALSE(v.arrow_valid);
+    /* 2026-09-16 amendment (close-range-honest-distance): the DISTANCE
+     * leg fired (member is ~11.1 m away, well under 30 m) — close_leg
+     * names that leg, and dist_str is the fixed FF_CREW_CLOSE_RANGE_M
+     * threshold text, NEVER the measured ~11.1 m (two "precise" GPS
+     * fixes a foot apart can disagree by 2-15 m, so even an
+     * undegraded measured distance under 30 m is not honestly
+     * printable to metre resolution here). */
+    TEST_ASSERT_EQUAL_INT(FF_CREW_CLOSE_BY_DISTANCE, v.close_leg);
+    TEST_ASSERT_EQUAL_STRING("30 m", v.dist_str);
 }
 
 static void S06_AC1_mode_close_by_rssi(void)
@@ -229,6 +238,57 @@ static void S06_AC1_mode_close_by_rssi(void)
 
     TEST_ASSERT_EQUAL_INT(RADAR_CLOSE, v.mode);
     TEST_ASSERT_FALSE(v.arrow_valid);
+    /* 2026-09-16 amendment: the RSSI leg fired (member is ~1112 m away
+     * by GPS, comfortably outside 30 m) — close_leg names that leg, and
+     * dist_str is empty (this leg has no coordinate in it at all; S29's
+     * "signal is never distance" rule), never the ~1112 m distance_m
+     * that was computed but explicitly NOT what tripped CLOSE here. */
+    TEST_ASSERT_EQUAL_INT(FF_CREW_CLOSE_BY_RSSI, v.close_leg);
+    TEST_ASSERT_EQUAL_STRING("", v.dist_str);
+}
+
+/* 2026-09-16 amendment — the core acceptance criterion for this whole
+ * change: CLOSE-by-distance's `dist_str` is INVARIANT under the actual
+ * measured distance (the fixed FF_CREW_CLOSE_RANGE_M threshold, always
+ * "30 m", regardless of whether the member is 1 m or 29 m away) —
+ * proof that it is naming the predicate, not measuring anything. A
+ * regression that slipped the real `distance_m` back into `dist_str`
+ * would pass every OTHER test in this file (each uses one fixed
+ * distance) but fail this one the moment two different distances
+ * produced two different strings. */
+static void S06_close_by_distance_dist_str_is_invariant_under_the_actual_distance(void)
+{
+    float const distances_m[] = {0.5f, 5.0f, 15.0f, 29.9f};
+    char first[FF_RADAR_STR_LEN] = {0};
+
+    for (size_t i = 0; i < sizeof(distances_m) / sizeof(distances_m[0]); i++) {
+        ff_crew_t c;
+        ff_crew_member_t *m = setup_selected_member(&c);
+        m->has_pos = true;
+        /* ~111,320 m per degree of latitude near the equator (this
+         * fixture's own convention, matching every other test in this
+         * file that derives a lat offset from a target metre distance). */
+        m->pos = (ff_latlon_t){(double)distances_m[i] / 111320.0, 0.0};
+        m->pos_age_ms = 0u;
+
+        ff_radar_view_t v;
+        memset(&v, 0, sizeof(v));
+        ff_radar_smooth_t sm;
+        ff_radar_smooth_reset(&sm);
+        ff_latlon_t my_pos = {0.0, 0.0};
+
+        ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+
+        TEST_ASSERT_EQUAL_INT(RADAR_CLOSE, v.mode);
+        TEST_ASSERT_EQUAL_INT(FF_CREW_CLOSE_BY_DISTANCE, v.close_leg);
+        if (i == 0) {
+            memcpy(first, v.dist_str, sizeof(first));
+        } else {
+            TEST_ASSERT_EQUAL_STRING_MESSAGE(first, v.dist_str,
+                                              "dist_str changed with the measured distance — it must not");
+        }
+    }
+    TEST_ASSERT_EQUAL_STRING("30 m", first);
 }
 
 static void S06_AC1_mode_live(void)
@@ -1729,6 +1789,7 @@ static void S47_close_by_distance_gated_off_when_imprecise(void)
 
     TEST_ASSERT_NOT_EQUAL_INT(RADAR_CLOSE, v.mode);
     TEST_ASSERT_EQUAL_INT(RADAR_LIVE, v.mode); /* falls through to ordinary freshness */
+    TEST_ASSERT_EQUAL_INT(FF_CREW_CLOSE_NONE, v.close_leg);
 }
 
 /* The RSSI leg is untouched by precision — it is measured by our own
@@ -1755,6 +1816,19 @@ static void S47_close_by_rssi_unaffected_by_imprecise_position(void)
     ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 5000u);
 
     TEST_ASSERT_EQUAL_INT(RADAR_CLOSE, v.mode);
+    /* 2026-09-16 amendment: this is the ONLY way CLOSE can be reached
+     * with an imprecise position (the distance leg is gated off above)
+     * — close_leg must read RSSI, and dist_str must be EMPTY, never the
+     * "~X km" area text `dist_imprecise`'s own gate produces for every
+     * OTHER (non-CLOSE) mode. Before this amendment, dist_str held that
+     * area text here too and the renderer special-cased dist_imprecise
+     * to paper over it with "NEARBY"; now the core-level fact itself
+     * (close_leg) is what carries the honest signal, and dist_str is
+     * simply never populated for CLOSE regardless of imprecision. */
+    TEST_ASSERT_EQUAL_INT(FF_CREW_CLOSE_BY_RSSI, v.close_leg);
+    TEST_ASSERT_EQUAL_STRING("", v.dist_str);
+    TEST_ASSERT_TRUE_MESSAGE(v.dist_imprecise,
+                              "dist_imprecise itself is still computed unconditionally from the member's own fix");
 }
 
 /* ------------------------------------------------------------------- */
@@ -1917,6 +1991,7 @@ int main(void)
     RUN_TEST(S06_AC1_nofix_age_str_known_but_dist_str_unknown);
     RUN_TEST(S06_AC1_mode_close_by_distance);
     RUN_TEST(S06_AC1_mode_close_by_rssi);
+    RUN_TEST(S06_close_by_distance_dist_str_is_invariant_under_the_actual_distance);
     RUN_TEST(S06_AC1_mode_live);
     RUN_TEST(S06_AC1_mode_stale);
     RUN_TEST(S06_AC1_mode_lost);

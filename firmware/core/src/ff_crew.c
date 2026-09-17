@@ -274,22 +274,27 @@ float ff_crew_pos_precision_grid_m(uint8_t precision_bits)
     return (float)(cells * deg_per_cell * m_per_deg_lat);
 }
 
-bool ff_crew_close_range(ff_crew_member_t const *m, float distance_m, uint32_t now_ms)
+ff_crew_close_leg_t ff_crew_close_range_leg(ff_crew_member_t const *m, float distance_m, uint32_t now_ms)
 {
     if (!m) {
-        return false;
+        return FF_CREW_CLOSE_NONE;
     }
     if (distance_m >= 0.0f && distance_m < FF_CREW_CLOSE_RANGE_M) {
-        return true;
+        return FF_CREW_CLOSE_BY_DISTANCE;
     }
     if (m->rssi_dbm == INT16_MIN) {
-        return false; /* never had a direct packet */
+        return FF_CREW_CLOSE_NONE; /* never had a direct packet */
     }
     uint32_t rssi_age = now_ms - m->rssi_age_ms; /* wraparound-safe */
     if (rssi_age < FF_CREW_CLOSE_RANGE_RSSI_AGE_MS && m->rssi_dbm > FF_CREW_CLOSE_RANGE_RSSI_DBM) {
-        return true;
+        return FF_CREW_CLOSE_BY_RSSI;
     }
-    return false;
+    return FF_CREW_CLOSE_NONE;
+}
+
+bool ff_crew_close_range(ff_crew_member_t const *m, float distance_m, uint32_t now_ms)
+{
+    return ff_crew_close_range_leg(m, distance_m, now_ms) != FF_CREW_CLOSE_NONE;
 }
 
 int8_t ff_crew_rssi_trend(ff_crew_t const *c, uint32_t node_id, uint32_t now_ms)

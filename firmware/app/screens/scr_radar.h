@@ -91,7 +91,7 @@ extern "C" {
  * edge case, not the UI-driven path, which only ever starts FIND from a
  * live SIGNAL selection). `scr_nav.c` passes `&state->find` directly —
  * the same struct the console's `find`/`find off` commands and the tick
- * loop's own 10s cadence all read/write, so the overlay can never show
+ * loop's own 5s cadence all read/write, so the overlay can never show
  * a session that isn't actually the live one.
  */
 void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool colorblind, bool screen_flip,

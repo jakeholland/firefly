@@ -563,7 +563,7 @@ static void dbgconsole_find_starts_session_on_parsed_target(void)
     TEST_ASSERT_TRUE(f->active);
     TEST_ASSERT_EQUAL_UINT32(0xa1b2c3d4u, f->target_node_id);
     /* Starting a session does not itself send — the tick loop does, on
-     * its own 10s cadence (see ff_find_tick's own doc comment). */
+     * its own 5s cadence (see ff_find_tick's own doc comment). */
     TEST_ASSERT_EQUAL_INT(0, H.sender.private_calls);
 }
 

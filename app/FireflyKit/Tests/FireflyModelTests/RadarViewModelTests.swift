@@ -39,14 +39,16 @@ final class RadarViewModelTests: XCTestCase {
 
     private func snapshot(
         mode: RadarMode, arrowDegrees: Double = 0, arrowValid: Bool = false, name: String = "",
-        distanceText: String = "", distanceImprecise: Bool = false, ageText: String = "", trend: Int = 0,
+        distanceText: String = "", distanceImprecise: Bool = false, closeLeg: RadarCloseLeg = .none,
+        ageText: String = "", trend: Int = 0,
         bearingDegrees: Double = 0, bearingValid: Bool = false, place: Bool = false, stale: Bool = false,
         heardPresence: HeardPresence = .never, dots: [RadarSnapshotDot] = [],
         signalTier: SignalTierPresentation = .none, signalHeard: Bool = false, signalViaRelay: Bool = false,
         signalAgeText: String = "", signalDots: [RadarSnapshotSignalDot] = []
     ) -> RadarSnapshot {
         RadarSnapshot(mode: mode, arrowDegrees: arrowDegrees, arrowValid: arrowValid, name: name,
-                      distanceText: distanceText, distanceImprecise: distanceImprecise, ageText: ageText,
+                      distanceText: distanceText, distanceImprecise: distanceImprecise, closeLeg: closeLeg,
+                      ageText: ageText,
                       trend: trend, bearingDegrees: bearingDegrees, bearingValid: bearingValid, place: place,
                       stale: stale, heardPresence: heardPresence, dots: dots, signalTier: signalTier,
                       signalHeard: signalHeard, signalViaRelay: signalViaRelay, signalAgeText: signalAgeText,
@@ -205,19 +207,43 @@ final class RadarViewModelTests: XCTestCase {
 
     // MARK: - radar_close.json
 
-    func testCloseShowsPulseHeadlineAndWarmerTrend() {
-        let s = snapshot(mode: .close, name: "Dana", distanceText: "15 m", ageText: "3 SEC", trend: 1)
+    /// 2026-09-16 amendment (close-range-honest-distance): CLOSE-by-
+    /// DISTANCE's `distanceText` is now the fixed close-range threshold
+    /// ("30 m"), never the measured distance (two "precise" GPS fixes a
+    /// foot apart can disagree by 2-15 m) — the readout is "WITHIN 30 m",
+    /// naming the predicate that fired, not a measurement.
+    func testCloseByDistanceShowsPulseHeadlineWithinThresholdAndWarmerTrend() {
+        let s = snapshot(mode: .close, name: "Dana", distanceText: "30 m", closeLeg: .byDistance,
+                          ageText: "3 SEC", trend: 1)
         let (model, _, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
         XCTAssertEqual(model.chipText, "CLOSE RANGE")
-        XCTAssertEqual(model.primaryReadoutText, "15 m")
+        XCTAssertEqual(model.primaryReadoutText, "WITHIN 30 m")
         XCTAssertTrue(model.showsTrendChip)
         XCTAssertEqual(model.trendLabel, "WARMER")
     }
 
+    /// 2026-09-16 amendment: the OTHER leg — no coordinate at all, CLOSE
+    /// fired by a fresh, strong DIRECT RSSI sample. "NEARBY" names the
+    /// leg honestly; never a distance number (S29: "signal is never
+    /// distance").
+    func testCloseByRSSIShowsNearbyNeverADistanceNumber() {
+        let s = snapshot(mode: .close, name: "Dana", distanceText: "", closeLeg: .byRSSI,
+                          ageText: "", trend: 0)
+        let (model, _, _) = makeModel(snapshot: s)
+        model.observe(); defer { model.stopObserving() }
+        XCTAssertEqual(model.primaryReadoutText, "NEARBY")
+    }
+
+    /// Supersedes the pre-2026-09-16 "degraded precision shows NEARBY"
+    /// test: imprecision can only ever reach CLOSE via the RSSI leg
+    /// (the DISTANCE leg is gated off for a degraded fix — issue #47),
+    /// so this is really the same case as the RSSI test above, pinned
+    /// once more against a fixture carrying `distanceImprecise: true`
+    /// to prove the readout no longer depends on that flag at all.
     func testCloseWithDegradedPrecisionShowsNearbyNeverAFabricatedNumber() {
-        let s = snapshot(mode: .close, name: "Dana", distanceText: "~5.8 km", distanceImprecise: true,
-                          ageText: "3 SEC", trend: 0)
+        let s = snapshot(mode: .close, name: "Dana", distanceText: "", distanceImprecise: true,
+                          closeLeg: .byRSSI, ageText: "", trend: 0)
         let (model, _, _) = makeModel(snapshot: s)
         model.observe(); defer { model.stopObserving() }
         // "shows NEARBY instead of a fabricated big number" (S29) — the
@@ -285,8 +311,13 @@ final class RadarViewModelTests: XCTestCase {
             let chip = model.chipText
             XCTAssertTrue(chip.contains("AREA"), "\(mode) chip should caveat imprecision: \(chip)")
         }
-        let closeSnapshot = snapshot(mode: .close, name: "Dana", distanceText: "~5.8 km",
-                                      distanceImprecise: true, ageText: "3 SEC")
+        // 2026-09-16 amendment: CLOSE reachable with an imprecise
+        // position ONLY via the RSSI leg (the distance leg is gated off
+        // for a degraded fix) — dist_str is "" here, never the "~5.8 km"
+        // area text a non-CLOSE mode would carry for the same imprecise
+        // fix, per that leg's own doc comment.
+        let closeSnapshot = snapshot(mode: .close, name: "Dana", distanceText: "",
+                                      distanceImprecise: true, closeLeg: .byRSSI, ageText: "")
         let (closeModel, _, _) = makeModel(snapshot: closeSnapshot)
         closeModel.observe(); defer { closeModel.stopObserving() }
         XCTAssertEqual(closeModel.primaryReadoutText, "NEARBY")
@@ -571,7 +602,7 @@ final class RadarViewModelTests: XCTestCase {
 
     // MARK: - FIND (S29 PR2): cadence, cap, cancel-on-new-target, stop
 
-    func testFindSendsFirstPingImmediatelyThenRespectsTheTenSecondFloor() {
+    func testFindSendsFirstPingImmediatelyThenRespectsTheConfiguredFloor() {
         let find = MockFindSession()
         var now = Date(timeIntervalSince1970: 1000)
         find.start(targetNodeID: 7, now: now)
@@ -582,7 +613,7 @@ final class RadarViewModelTests: XCTestCase {
         XCTAssertEqual(find.pingCount, 2)
     }
 
-    func testFindStopsAtThirtyPings() {
+    func testFindStopsAtMaxPings() {
         let find = MockFindSession()
         var now = Date(timeIntervalSince1970: 2000)
         find.start(targetNodeID: 7, now: now)
@@ -601,7 +632,7 @@ final class RadarViewModelTests: XCTestCase {
         XCTAssertFalse(find.isActive, "auto-stops once the cap-checking tick runs")
     }
 
-    func testFindStopsAtFiveMinutesEvenWithFewerThanThirtyPings() {
+    func testFindStopsAtFiveMinutesEvenWithFewerThanMaxPings() {
         let find = MockFindSession()
         let start = Date(timeIntervalSince1970: 3000)
         find.start(targetNodeID: 7, now: start)
@@ -764,21 +795,24 @@ final class RadarViewModelTests: XCTestCase {
 
     // MARK: - FIND trend-crossing haptics (radar_find_active.json's own numbers)
 
+    /// 2026-09-16 amendment (close-range-honest-distance): the trend
+    /// window halved 3-vs-3 -> 2-vs-2 (`FindSessionConstants.trendSamples`),
+    /// so a full window is 4 samples now, not 6.
     func testFindWarmerCrossingFiresExactlyOncePerCrossing() {
         let find = MockFindSession()
         let now = Date(timeIntervalSince1970: 5000)
         find.start(targetNodeID: 1, now: now)
-        // Steady baseline, then a >=3 dB improvement.
-        for rssi: Int16 in [-90, -90, -90] { XCTAssertEqual(find.recordPong(fromNodeID: 1, nonce: 7, rssiDbm: rssi, hasSNR: false, snrDb: 0, now: now), .none) }
+        // Steady baseline, then a >=4 dB improvement.
+        for rssi: Int16 in [-90, -90] { XCTAssertEqual(find.recordPong(fromNodeID: 1, nonce: 7, rssiDbm: rssi, hasSNR: false, snrDb: 0, now: now), .none) }
         var verdicts: [FindHaptic] = []
-        for rssi: Int16 in [-80, -80, -80] {
+        for rssi: Int16 in [-80, -80] {
             verdicts.append(find.recordPong(fromNodeID: 1, nonce: 7, rssiDbm: rssi, hasSNR: false, snrDb: 0, now: now))
         }
-        // A trend is computable only once a FULL 6-sample window exists
-        // (3 baseline + 3 new) — the crossing therefore fires on the
-        // THIRD "-80" sample, the first call where both 3-sample halves
+        // A trend is computable only once a FULL 4-sample window exists
+        // (2 baseline + 2 new) — the crossing therefore fires on the
+        // SECOND "-80" sample, the first call where both 2-sample halves
         // are populated, not on the first one to cross the threshold.
-        XCTAssertEqual(verdicts, [.none, .none, .warmer], "fires once per CROSSING, not once per sample above threshold")
+        XCTAssertEqual(verdicts, [.none, .warmer], "fires once per CROSSING, not once per sample above threshold")
         // A later call that still reads warmer must not re-fire.
         XCTAssertEqual(find.recordPong(fromNodeID: 1, nonce: 7, rssiDbm: -80, hasSNR: false, snrDb: 0, now: now), .none)
     }

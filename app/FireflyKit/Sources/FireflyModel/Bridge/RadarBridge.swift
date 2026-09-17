@@ -37,6 +37,24 @@ public enum RadarMode: Sendable, Equatable, CaseIterable {
     }
 }
 
+/// `ff_crew_close_leg_t` (core/ff_crew.h, 2026-09-16 amendment,
+/// close-range-honest-distance) — WHICH leg of the CLOSE predicate
+/// fired, so the renderer can show the honest statement that leg
+/// actually supports instead of a fabricated point distance (see that
+/// enum's own doc comment for the full derivation). `.none` outside
+/// RADAR_CLOSE.
+public enum RadarCloseLeg: Sendable, Equatable {
+    case none, byDistance, byRSSI
+
+    init(ffLeg: ff_crew_close_leg_t) {
+        switch ffLeg {
+        case FF_CREW_CLOSE_BY_DISTANCE: self = .byDistance
+        case FF_CREW_CLOSE_BY_RSSI: self = .byRSSI
+        default: self = .none
+        }
+    }
+}
+
 /// One crew-ring dot (`ff_radar_dot_t`).
 public struct RadarDot: Sendable, Equatable {
     public let ringDeg: Float
@@ -73,6 +91,12 @@ public struct RadarView: Sendable, Equatable {
     /// True when `distanceText` is an approximate-AREA statement
     /// ("~5.8 km area"), never a raw point distance (issue #47).
     public let distanceImprecise: Bool
+    /// 2026-09-16 amendment (close-range-honest-distance): which leg of
+    /// the CLOSE predicate fired — `.none` outside `mode == .close`. In
+    /// CLOSE mode, `distanceText` is either the fixed close-range
+    /// threshold ("30 m", `.byDistance`) or "" (`.byRSSI` — no
+    /// coordinate involved at all), never a measured point distance.
+    public let closeLeg: RadarCloseLeg
     public let ageText: String
     /// CLOSE/SIGNAL warmer(+)/colder(-)/steady(0).
     public let trend: RSSITrend
@@ -104,6 +128,7 @@ public struct RadarView: Sendable, Equatable {
             name: FixedCString.decode(v.name),
             distanceText: FixedCString.decode(v.dist_str),
             distanceImprecise: v.dist_imprecise,
+            closeLeg: RadarCloseLeg(ffLeg: v.close_leg),
             ageText: FixedCString.decode(v.age_str),
             trend: RSSITrend(raw: v.trend),
             bearingDeg: v.bearing_deg,
