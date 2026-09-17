@@ -8,12 +8,28 @@ void mc_framer_init(mc_framer_t *f)
     f->state = MC_FRAMER_START1;
 }
 
-bool mc_framer_feed(mc_framer_t *f, uint8_t byte, uint8_t const **out, uint16_t *out_len)
+bool mc_framer_feed(mc_framer_t *f, uint8_t byte, uint32_t now_ms, uint8_t const **out, uint16_t *out_len)
 {
+    /* debt/link-churn-2026-09-16 — mid-frame resync timeout (see
+     * MC_FRAMER_RESYNC_TIMEOUT_MS, mc_framing.h, for the full mechanism
+     * and the value's justification). Checked BEFORE `byte` is processed
+     * by the state switch below, so a timed-out byte is never lost: once
+     * the stale frame is discarded and state resets to START1, `byte`
+     * falls straight into the START1 case as if it had simply arrived
+     * first — which is exactly correct when it's the next frame's own
+     * magic byte (the splice scenario this fix exists for). Never fires
+     * from START1 itself: idle scanning between frames is normal, not a
+     * stall. */
+    if (f->state != MC_FRAMER_START1 && (uint32_t)(now_ms - f->last_byte_ms) > MC_FRAMER_RESYNC_TIMEOUT_MS) {
+        f->state = MC_FRAMER_START1;
+        f->timeout_discards++;
+    }
+
     switch (f->state) {
     case MC_FRAMER_START1:
         if (byte == MC_FRAME_MAGIC1) {
             f->state = MC_FRAMER_START2;
+            f->last_byte_ms = now_ms;
         }
         /* else: garbage before the first magic byte — not a resync, just
          * normal seeking. Stay in START1. */
@@ -28,12 +44,15 @@ bool mc_framer_feed(mc_framer_t *f, uint8_t byte, uint8_t const **out, uint16_t 
         } else {
             f->state = MC_FRAMER_START1;
             f->resync_count++;
+            return false;
         }
+        f->last_byte_ms = now_ms;
         return false;
 
     case MC_FRAMER_LEN_HI:
         f->expected = (uint16_t)(byte << 8);
         f->state = MC_FRAMER_LEN_LO;
+        f->last_byte_ms = now_ms;
         return false;
 
     case MC_FRAMER_LEN_LO:
@@ -58,10 +77,12 @@ bool mc_framer_feed(mc_framer_t *f, uint8_t byte, uint8_t const **out, uint16_t 
             return true;
         }
         f->state = MC_FRAMER_PAYLOAD;
+        f->last_byte_ms = now_ms;
         return false;
 
     case MC_FRAMER_PAYLOAD:
         f->buf[f->filled++] = byte;
+        f->last_byte_ms = now_ms;
         if (f->filled == f->expected) {
             f->state = MC_FRAMER_START1;
             if (out) {

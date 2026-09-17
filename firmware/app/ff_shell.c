@@ -4143,6 +4143,8 @@ static void shell_compute_diag(shell_t const *sh, uint32_t now_ms, ff_app_diag_t
         d->decode_errors = stats.decode_errors;
         d->reconnects = stats.reconnects;
         d->handshake_retries = stats.handshake_retries;
+        d->frames_resynced = stats.frames_resynced;
+        d->frames_timeout_discarded = stats.frames_timeout_discarded;
     }
 
     /* 2. Position (mine) */
@@ -8580,6 +8582,12 @@ uint32_t ff_shell_handshake_retries(ff_shell_t const *sh_pub)
 {
     if (sh_pub == NULL) return 0u;
     return mc_get_stats(&shell_of_const(sh_pub)->mc).handshake_retries;
+}
+
+bool ff_shell_handshake_in_flight(ff_shell_t const *sh_pub)
+{
+    if (sh_pub == NULL) return false;
+    return mc_state(&shell_of_const(sh_pub)->mc) == MC_STATE_HANDSHAKE;
 }
 
 uint32_t ff_shell_my_node_id(ff_shell_t const *sh_pub)

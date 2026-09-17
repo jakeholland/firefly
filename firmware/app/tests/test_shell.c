@@ -3491,6 +3491,58 @@ static void s22_connect_shell(void)
     TEST_ASSERT_EQUAL_INT(FF_SHELL_LINK_CONNECTED, ff_shell_link(&H.shell));
 }
 
+/* debt/link-churn-2026-09-16 (fix #2) — ff_shell_handshake_in_flight()
+ * must read the REAL mc_client_t's own state (mc_state(&sh->mc)), not a
+ * shell-level projection: this is exactly why it is driven through the
+ * real-transport pipeline (`s22_connect_shell`'s own preamble, open-coded
+ * here so the test can stop and look partway through) rather than the
+ * lighter `harness_init` + synthetic `H.ev.on_state(...)` injection most
+ * of this file uses — that shortcut fires the shell's notification
+ * callback directly without ever touching the underlying mc_client_t's
+ * state field, so it could not tell this accessor apart from a stub that
+ * always returns whatever the last injected event implied. */
+static void S_link_churn_handshake_in_flight_true_only_between_connect_and_config_complete(void)
+{
+    memset(&P, 0, sizeof(P));
+    memset(&H, 0, sizeof(H));
+    H.clk.t = 100000u;
+    H.clock.now_ms = fake_now;
+    H.clock.user = &H.clk;
+
+    ff_shell_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.clock = &H.clock;
+    cfg.pack = &H.pack;
+    cfg.toks = H.toks;
+    cfg.ntoks = FP_MAX_TOKENS;
+    cfg.transport.read = pipe_read;
+    cfg.transport.write = pipe_write;
+    cfg.transport.io = &P;
+
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_handshake_in_flight(NULL), "NULL is never in flight");
+
+    /* ff_shell_init() itself sends the first want_config (mc_connect()
+     * runs as part of init) — the client is mid-handshake before this
+     * test ever calls ff_shell_tick(). */
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&H.shell, &cfg));
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_handshake_in_flight(&H.shell),
+                              "want_config sent, no config_complete yet — genuinely in flight");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FF_SHELL_LINK_RECONNECTING, ff_shell_link(&H.shell),
+                                   "sanity: the coarser display state agrees this is not yet CONNECTED");
+
+    uint32_t const nonce = pipe_want_config_id(&P);
+    size_t n = 0;
+    n += frame_my_info(P.rx + n, sizeof(P.rx) - n, MY_ID);
+    n += frame_config_complete(P.rx + n, sizeof(P.rx) - n, nonce);
+    P.rx_len = n;
+
+    advance(20u);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SHELL_LINK_CONNECTED, ff_shell_link(&H.shell));
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_handshake_in_flight(&H.shell),
+                               "config_complete landed — no longer in flight, sleep may proceed");
+}
+
 /* =================================================================== */
 /* S22 slice d — AC4: action send wiring + rally-to-crew confirm        */
 /* =================================================================== */
@@ -12919,6 +12971,7 @@ int main(void)
     RUN_TEST(S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover);
     RUN_TEST(S16_b1_shell_footprint_excludes_the_pack);
     RUN_TEST(S22b_inbox_target_survives_rebuild_and_is_gated);
+    RUN_TEST(S_link_churn_handshake_in_flight_true_only_between_connect_and_config_complete);
     RUN_TEST(S24_flare_chip_addresses_member_vs_whole_crew_as_flare);
     RUN_TEST(S10_want_ack_inbox_flare_to_scope_sets_want_ack);
     RUN_TEST(S10_want_ack_real_adapter_flare_true_flare_end_false_rally_false);

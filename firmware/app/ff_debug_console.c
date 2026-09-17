@@ -736,10 +736,24 @@ static void dbgconsole_diag(ff_shell_t *sh, ff_dbgconsole_wake_log_fn wake_log, 
      * nearly fills DBGCONSOLE_LINE_BUF on its own, and
      * debt/S15c-handshake-stall's `hs_retries` is the counter that pushed
      * it over. Splitting is also the more readable presentation: one line
-     * of "who are we talking to", one line of "how has that gone". */
-    snprintf(line, sizeof(line), "dbg: diag frames_ok=%u decode_err=%u reconnects=%u hs_retries=%u",
+     * of "who are we talking to", one line of "how has that gone".
+     *
+     * debt/link-churn-2026-09-16 (report's fix #5): `resync`/`timeout`
+     * APPENDED at the end, existing fields and order UNCHANGED — a bench
+     * script parses this line, per this comment's own long-standing rule.
+     * Six %u fields at worst-case width (10 digits each) is 133 bytes,
+     * comfortably inside DBGCONSOLE_LINE_BUF (200) even under GCC's own
+     * -Wformat-truncation estimate, so no further line split is needed
+     * yet. `resync` = mc_stats_t.frames_resynced (garbage-prefix/
+     * oversize-len events); `timeout` = mc_stats_t.
+     * frames_timeout_discarded (a mid-frame stall past
+     * MC_FRAMER_RESYNC_TIMEOUT_MS, discarded before it could corrupt a
+     * decode) — see that field's own doc comment (mc_client.h) for how to
+     * read the two against each other and against `decode_err`. */
+    snprintf(line, sizeof(line),
+             "dbg: diag frames_ok=%u decode_err=%u reconnects=%u hs_retries=%u resync=%u timeout=%u",
              (unsigned)d.frames_ok, (unsigned)d.decode_errors, (unsigned)d.reconnects,
-             (unsigned)d.handshake_retries);
+             (unsigned)d.handshake_retries, (unsigned)d.frames_resynced, (unsigned)d.frames_timeout_discarded);
     reply_line(reply, user, line);
 
     /* 2. Position (mine) */

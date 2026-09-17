@@ -388,3 +388,113 @@ than the executable, and reverted with targeted edits — both per
    fails, exactly the property it exists for.
 After reverting, `mc_client.c.o` hashed back to the pre-mutation value
 and all 107 `test_meshclient` cases passed.
+
+### Mid-frame resync timeout — a byte gap now costs one frame, not two (debt/link-churn-2026-09-16, festival field-test finding)
+
+Bench finding, real puck + comms brain, 4h17m uptime: `diag` showed 315
+`reconnects` / 662 `hs_retries` / 45 `decode_err` out of 1879 frames — a
+reconnect roughly every 49s, suspiciously close to the handshake-stall
+ladder's own ~42s escalation ceiling (§2 of
+`scratchpad/link-churn-2026-09-16.md`, the investigation this fix
+implements), meaning the true disruption rate was almost certainly much
+higher than the counter showed. Root cause, established by that
+investigation and confirmed here: `docs/specs/S26-device-lifecycle.md`'s
+own slice (f) says outright that ESP32-S3 light sleep loses in-flight
+inbound UART bytes ("the RX bytes that trigger a wake are lost"), and
+this file's framer (`mc_framing.c`, `MC_FRAMER_PAYLOAD` state) had **no
+timeout on a mid-frame byte gap** — it kept writing whatever arrived next
+into the accumulator regardless of how long the wait was, so a light-sleep
+window landing mid-frame spliced the FOLLOWING frame's own magic/length
+header onto the tail of the frame in progress. That Frankenstein blob
+then failed `pb_decode()` in `mc_tick_feed_byte()` (`decode_errors++`) —
+and critically, it also consumed the next frame's header, so **one byte
+gap cost TWO frames**, not one: the truncated frame, and the well-formed
+one immediately after it that never got a chance to be recognized.
+
+**The fix**: `mc_framer_feed()` gains a third parameter, `now_ms` — the
+same explicit-caller-supplied-clock convention every other `mc_client`
+entry point already uses (`ff_clock_t`; the framer itself still never
+calls a clock). `mc_framer_t` tracks `last_byte_ms`, the timestamp of the
+most recent byte accepted while a frame is in progress (any state other
+than `MC_FRAMER_START1`); if the next byte arrives more than
+`MC_FRAMER_RESYNC_TIMEOUT_MS` (50 ms — a judgement call, not a derived
+constant; see that macro's own doc comment in `mc_framing.h` for the
+full justification against the wire's actual byte time at 115200 baud,
+firmware scheduling jitter, and the light-sleep window durations that
+actually cause the gaps) after the last one, the frame in progress is
+discarded and the state machine resets to `START1` **before** the new
+byte is processed — so if that byte happens to be the next frame's own
+`0x94` (exactly the splice scenario above), it is recognized as a fresh
+frame start immediately, rather than being eaten as bogus payload. Net
+effect: a byte gap now costs exactly the ONE frame it interrupted; the
+parser resynchronizes on the very next header instead of the one after
+that. This is a per-byte INACTIVITY timeout, not a total-frame deadline —
+the clock resets on every byte accepted while mid-frame — so a
+legitimately slow-but-continuous sender (real, if unlikely, on this
+fixed-baud board-to-board link) is never punished, only an actual gap
+longer than the timeout is.
+
+**`[api]`**: `mc_framer_feed()`'s signature changes (adds `now_ms`) — every
+call site in-tree updated (`mc_client.c`, `fuzz_mc_framing.c`,
+`test_meshclient.c`'s existing AC1 tests, none of which needed behavioral
+changes beyond supplying a monotonically-nondecreasing clock value).
+`mc_framer_t` gains `last_byte_ms` (internal bookkeeping) and
+`timeout_discards` — a counter **distinct from `resync_count`**, which
+already existed and keeps its existing, narrower meaning ("garbage-prefix
+or oversize declared length seen while scanning"); `timeout_discards`
+means "a frame that legitimately began was abandoned because it stalled
+too long," a different failure shape a bench operator needs told apart
+from ordinary line noise. `mc_stats_t` gains `frames_timeout_discarded`
+(mirroring the existing `frames_resynced` ← `resync_count` passthrough in
+`mc_get_stats()`), and both counters are now surfaced through `diag` (see
+this repo's `docs/specs/S26-device-lifecycle.md` amendment for the
+sleep-inhibit half of this same fix, and `ff_debug_console.c`'s own
+comment for the exact `resync=`/`timeout=` field names appended to the
+existing `frames_ok=… decode_err=… reconnects=… hs_retries=…` line —
+appended, not reordered, since a bench script parses that line).
+
+**Rejected**: raising the timeout "for safety" — the whole point is to
+detect a stall well before the NEXT scheduled light-sleep wake (300ms-
+1500ms, `ff_idle.h`'s fast/slow windows) could deliver the colliding
+frame, so a timeout anywhere near that scale would defeat the fix for the
+fast-window case specifically. Also rejected: applying the timeout only
+inside `MC_FRAMER_PAYLOAD` (not the 2-byte magic / 2-byte length header
+states) — a gap could in principle land inside the 4-byte header just as
+easily as inside the payload, and excluding those states would leave that
+narrow but real window unprotected for no benefit; the fix applies the
+same per-byte check uniformly to every state except `START1` (ordinary
+idle scanning between frames, never a stall).
+
+Tests (`test_meshclient.c`, new `S03_AC1_timeout_*` cases — the existing
+`S03_AC1_*` byte-dribble/garbage/oversize-len tests were updated in place
+to pass a monotonically-increasing `now_ms` and are otherwise unchanged):
+- `S03_AC1_timeout_frame_interrupted_past_timeout_is_discarded_and_resyncs`
+  — THE REPRO: frame A truncated mid-payload, a gap past the timeout,
+  then frame B arrives in full immediately after. Frame B is recovered
+  intact; `timeout_discards` is exactly 1; `resync_count` (the OTHER
+  counter) stays 0, confirming this is a clean timeout discard, not
+  garbage-scanning.
+- `S03_AC1_timeout_frame_interrupted_within_timeout_still_completes` — a
+  pause comfortably under the timeout must not lose the frame: the
+  "legitimately slow-but-continuous sender" case.
+- `S03_AC1_timeout_gap_exactly_at_boundary_is_not_a_timeout` — pins the
+  exact comparison (`>`, not `>=`): gap == timeout completes normally,
+  gap == timeout + 1 discards. Both halves live in one test so a future
+  change to the comparison operator cannot flip one half green by
+  accident.
+- `S03_AC1_timeout_back_to_back_frames_no_gap_not_regressed` — ordinary
+  continuous traffic (no artificial gap at all) must keep working exactly
+  as before this fix.
+- The AC8 fuzz harness (`fuzz_mc_framing.c`) now advances a simulated
+  `now_ms` per byte, occasionally jumping past the timeout, so the
+  resync-on-stall path is fuzzed alongside the garbage/oversize-len paths
+  it already covered; `timeout_discards` joins `resync_count` in that
+  harness's monotonic-counter invariant.
+
+Companion fix (report's #3, `docs/specs/S26-device-lifecycle.md`'s own
+amendment): inhibiting light sleep while a handshake is in flight reduces
+how OFTEN this mechanism gets exercised in the first place, but does not
+replace it — a byte gap can still land mid-frame from other causes (a
+forced bench `sleep` command, a future wake source, ordinary scheduling
+jitter), so the framer-level fix stands on its own regardless of what
+inhibits sleep.

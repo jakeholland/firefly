@@ -1069,6 +1069,21 @@ typedef struct {
      * mode that used to present as a permanently RECONNECTING link. */
     uint32_t      handshake_retries;
 
+    /* debt/link-churn-2026-09-16 (report's fix #5): mc_stats_t.
+     * frames_resynced/frames_timeout_discarded, since boot — the
+     * framer-level counters mc_framing.c already tracked but `diag`
+     * never surfaced. Appended after `handshake_retries` (never
+     * reordered): `dbgconsole_diag`'s own comment (ff_debug_console.c)
+     * says a bench script parses that line's existing field order.
+     * `frames_resynced` = garbage-prefix/oversize-len events (mc_framer_t.
+     * resync_count); `frames_timeout_discarded` = mid-frame stalls
+     * discarded past MC_FRAMER_RESYNC_TIMEOUT_MS (mc_framer_t.
+     * timeout_discards) — two DIFFERENT failure shapes, see mc_client.h's
+     * own comment on `frames_timeout_discarded` for how to read them
+     * against each other and against `decode_errors`. */
+    uint32_t      frames_resynced;
+    uint32_t      frames_timeout_discarded;
+
     /* --- 2. Position (mine) --- */
     ff_app_pos_src_t pos_src;
     bool             pos_ok;

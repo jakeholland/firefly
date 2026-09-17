@@ -571,6 +571,30 @@ typedef struct {
      * precisely the "radio is fine, PhoneAPI session is not" shape that
      * used to be invisible. */
     uint32_t handshake_retries;
+
+    /* [api] debt/link-churn-2026-09-16: `mc_framer_t.timeout_discards`
+     * (mc_framing.h — see MC_FRAMER_RESYNC_TIMEOUT_MS's own doc comment
+     * for the full mechanism), since boot. A frame that legitimately
+     * began (first magic byte matched) but then went more than the
+     * timeout without another byte — most plausibly a light-sleep byte
+     * gap, per docs/specs/S26-device-lifecycle.md's own statement that
+     * inbound UART bytes are lost during light sleep — was discarded
+     * rather than spliced with whatever arrived next. Distinct from
+     * `frames_resynced` (which counts garbage-prefix/oversize-len events,
+     * a different failure shape — see that field's own comment): this
+     * counts a frame that started well but stalled, not noise the framer
+     * never mistook for a frame at all. Read against `decode_errors`: a
+     * session where THIS climbs while `decode_errors` stays flat is the
+     * fix working as intended — stalls caught and discarded cleanly
+     * (costing exactly the one interrupted frame) instead of silently
+     * corrupting a `pb_decode()` (which used to also cost the frame
+     * AFTER it, the one whose header got spliced in). `decode_errors` can
+     * of course still climb for reasons unrelated to a stall — a
+     * genuinely malformed message is still a genuinely malformed message
+     * (mc_client.h's own decode_errors doc comment lists the other
+     * sources) — this field only rules IN the stall mechanism, it cannot
+     * rule other causes out. */
+    uint32_t frames_timeout_discarded;
 } mc_stats_t;
 
 /* -------------------------------------------------------------------- */

@@ -1648,9 +1648,13 @@ static void dbgconsole_diag_reports_unknowns_when_nothing_known(void)
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag link=NONE node=!00000000 name=?/?"));
     /* debt/S15c-handshake-stall — the counter that makes a stalled
      * handshake visible on the bench console. `reconnects` flat while
-     * this climbs is "radio alive, session handshake not". */
+     * this climbs is "radio alive, session handshake not".
+     *
+     * debt/link-churn-2026-09-16 (report's fix #5) — `resync`/`timeout`
+     * APPENDED at the end: a shell that never handshaked never resynced
+     * or timed-out a frame either. */
     TEST_ASSERT_TRUE(capture_has_line_containing(
-        &cap, "dbg: diag frames_ok=0 decode_err=0 reconnects=0 hs_retries=0"));
+        &cap, "dbg: diag frames_ok=0 decode_err=0 reconnects=0 hs_retries=0 resync=0 timeout=0"));
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag pos src=unknown ok=0"));
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag mesh crew=0 heard=0 rssi_dbm=? snr_db=?"));
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag time latched=0 trust=? src_node=? offset_min=?"));

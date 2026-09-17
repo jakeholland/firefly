@@ -874,6 +874,90 @@ battery operation — an agent cannot do either):
      naturally entered while USB-tethered (the amendment above) and no
      agent can unplug the cable.
 
+**AMENDED 2026-09-16 — "sleep_inhibit gains a fourth source: a meshclient
+handshake in flight" (debt/link-churn-2026-09-16, festival field-test
+finding).** `scratchpad/link-churn-2026-09-16.md`'s investigation traced
+315 `reconnects` in 4h17m of uptime to, in part, this exact race: light
+sleep (this slice) drops in-flight inbound UART bytes outright (the
+sentence at the top of this slice, unchanged by this fix), and if that
+happens to a `want_config` request or its `config_complete` answer, the
+handshake is guaranteed to sit stalled for a full
+`MC_HANDSHAKE_TIMEOUT_MS` retry cycle (`mc_client.h`) before it can
+recover — a race that is CERTAIN to cost time whenever it fires, not a
+rare unlucky coincidence.
+
+**The fix**: `ff_shell_handshake_in_flight(&s_shell)` — true exactly
+while `mc_state(&sh->mc) == MC_STATE_HANDSHAKE` (a want_config sent, no
+config_complete landed yet) — joins `usb_connected`, `ff_audio_busy()`,
+and `ff_mic_status().running` as a fourth OR'd source into the SAME
+`sleep_inhibit` parameter this slice's 2026-09-02 amendment introduced
+(`app_main.c`, `ff_idle_tick`'s 4th argument) — same composition pattern,
+same semantics (withholds only the OFF → SLEEP transition; DIM/OFF still
+happen on schedule; `ref_ms` is never re-pinned by it). `mc_state()` is
+the existing accessor (`mc_client.h`) — `ff_shell_handshake_in_flight` is
+a thin wrapper that never reaches into `mc_client_t` directly, same
+discipline `ff_shell_handshake_retries` (debt/S15c-handshake-stall,
+above) already follows for the same struct.
+
+**Deliberately narrower than `ff_shell_link() ==
+FF_SHELL_LINK_RECONNECTING`**: that display-facing mapping (`ff_shell.h`'s
+own "Link state" comment) folds `MC_STATE_HANDSHAKE` and
+`MC_STATE_DISCONNECTED` together, but this inhibit source needs exactly
+the HANDSHAKE half — inhibiting sleep while a session is genuinely being
+negotiated, but NOT while merely sitting in the ~2s DISCONNECTED
+reconnect backoff between attempts. Folding the two together would have
+inhibited sleep almost continuously during a sustained link failure,
+which is exactly the unbounded-inhibit risk addressed below.
+
+**Bounded, not permanent — the part most likely to be got wrong.** A
+handshake that never completes cannot hold `sleep_inhibit` true forever:
+the existing S15c handshake-stall ladder (`MC_HANDSHAKE_TIMEOUT_MS *
+(MC_HANDSHAKE_MAX_RETRIES + 1)` = 40s, then a ~2s reconnect backoff before
+a fresh handshake begins — `mc_client.c`, unchanged by this fix) forces a
+real drop out of `MC_STATE_HANDSHAKE` into `MC_STATE_DISCONNECTED` every
+~42s, and that drop recurs every cycle for as long as the handshake keeps
+failing — it is not a one-time grace period that only fires once. A
+wedged handshake therefore costs light sleep MOST of the time it stays
+wedged (roughly 40 of every 42 seconds), never ALL of it: never a silent,
+permanent battery leak. This is intentionally NOT the same claim as "sleep
+resumes promptly" — a device stuck in this state is still losing the
+large majority of its light-sleep window, which is itself a real, visible
+cost (surfaced via `hs_retries`/`reconnects` climbing in `diag`) rather
+than a hidden one. Pinned by `test_meshclient.c`'s
+`S03_debt_handshake_never_completing_does_not_inhibit_sleep_forever`,
+which walks THREE full 42s cycles of a handshake that never completes and
+asserts `mc_state()` drops to `MC_STATE_DISCONNECTED` in each cycle's ~2s
+window — proving the release recurs, not just fires once — and by
+`test_shell.c`'s
+`S_link_churn_handshake_in_flight_true_only_between_connect_and_config_complete`,
+which drives a REAL `mc_client_t` through the real-transport pipeline
+(not the lighter synthetic-event-injection harness most of that file
+uses, which never touches the underlying `mc_client_t.state` field and so
+could not distinguish this accessor from a stub) to confirm it reads
+true immediately after `mc_connect()` and false the instant
+`config_complete` lands.
+
+**Explicitly out of scope for this fix** (would trade battery for link
+stability without the field data to justify it yet, per the task that
+produced this amendment): broadening this into "never sleep while the
+link is up" (`scratchpad/link-churn-2026-09-16.md`'s ranked fix #4) — this
+amendment inhibits sleep only DURING the negotiation itself, not for the
+whole time the link is `READY`; once connected, this source contributes
+nothing to the `sleep_inhibit` OR. Also out of scope: any change to the
+light-sleep timings themselves (fast/slow window durations, this slice's
+own 2026-09-16 touch-INT amendment above), making UART a wake source, or
+adding an `esp_pm_lock` (`scratchpad/link-churn-2026-09-16.md`'s ranked
+fix #1, the "real fix" — flagged there as needing bench verification this
+task's timeline did not allow).
+
+**What could not be verified without hardware**: whether this
+measurably reduces `reconnects`/`hs_retries` on a real device over a real
+field session — that needs the bench procedure
+`scratchpad/link-churn-2026-09-16.md` §7 already lays out (read `diag`
+before/after a period of light-sleep cycling), run on real hardware,
+which this task's environment cannot do (no serial port opened, per the
+task's own constraint).
+
 ### (g) Boot animation
 A splash (the firefly mark, ~1 s: ramp up, hold at full amber, ramp down —
 raised from ≤ 1 s after the first cut read as a blink on glass) drawn as the
